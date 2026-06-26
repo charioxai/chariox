@@ -553,6 +553,15 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ApplyWorkflowCodeArtifact(_) => "workflow_code_artifact.apply",
         LocalDaemonRequest::RunWorkflowCode(_) => "workflow_code.run",
         LocalDaemonRequest::RunWorkflowCodeArtifact(_) => "workflow_code_artifact.run",
+        LocalDaemonRequest::ListWorkflowRegistry(_) => "workflow_registry.list",
+        LocalDaemonRequest::GetWorkflowRegistryEntry(_) => "workflow_registry.get",
+        LocalDaemonRequest::AddWorkflowRegistryEntry(_) => "workflow_registry.add",
+        LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(_) => {
+            "workflow_registry.add_from_workflow"
+        }
+        LocalDaemonRequest::DeleteWorkflowRegistryEntry(_) => "workflow_registry.delete",
+        LocalDaemonRequest::LoadWorkflowRegistryEntry(_) => "workflow_registry.load",
+        LocalDaemonRequest::RunWorkflowRegistryEntry(_) => "workflow_registry.run",
         LocalDaemonRequest::CreateWorkflowCodeArtifact(_) => "workflow_code_artifact.create",
         LocalDaemonRequest::UpdateWorkflowCodeArtifact(_) => "workflow_code_artifact.update",
         LocalDaemonRequest::GetWorkflowCodeArtifact(_) => "workflow_code_artifact.get",

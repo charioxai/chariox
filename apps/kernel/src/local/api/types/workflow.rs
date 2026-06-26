@@ -67,6 +67,67 @@ pub struct RunWorkflowCodeArtifactRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowRegistryRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    pub source: crate::workflow_code::WorkflowRegistrySourceInput,
+    pub node_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowRegistryEntryFromWorkflowRequest {
+    pub session_id: String,
+    pub name: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowCodeArtifactRequest {
     pub session_id: String,
     pub name: String,

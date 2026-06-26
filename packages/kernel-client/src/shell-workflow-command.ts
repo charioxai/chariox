@@ -36,6 +36,12 @@ import {
 import { executeWorkflowCodeCommand } from "./shell-workflow-code-command.js"
 import { executeWorkflowPublicationCommand } from "./shell-workflow-publication-command.js"
 import {
+  executeWorkflowRegistryCommand,
+  executeWorkflowRegistryLoadCommand,
+  executeWorkflowRegistryRunCommand,
+  workflowRunLooksLikeRegistryLoad,
+} from "./shell-workflow-registry-command.js"
+import {
   formatWorkflowDetails,
   formatWorkflowLabel,
   formatWorkflowList,
@@ -101,6 +107,9 @@ export async function executeWorkflowCommand(
     }
     case "run":
     case "start": {
+      if (action === "run" && workflowRunLooksLikeRegistryLoad(args)) {
+        return executeWorkflowRegistryRunCommand(args, context, deps)
+      }
       const [workflowRef, endpointRef, ...promptParts] = args
       if (!workflowRef || !endpointRef) {
         return { ok: false, message: `usage: workflow ${action} <workflow-ref> <endpoint-ref> [prompt] [--queue <queue-ref>]` }
@@ -234,11 +243,15 @@ export async function executeWorkflowCommand(
       return executeWorkflowWatchdogCommand(args, context, deps)
     case "queue":
       return executeWorkflowQueueCommand(args, context, deps)
+    case "registry":
+      return executeWorkflowRegistryCommand(args, context, deps)
+    case "load":
+      return executeWorkflowRegistryLoadCommand(args, context, deps)
     case "code":
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue|code" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue|registry|code" }
   }
 }
 

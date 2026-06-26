@@ -8,6 +8,8 @@ import type {
   WorkflowCodeSourceExportTarget,
   WorkflowDesignOp,
   WorkflowPublicationSnapshot,
+  WorkflowRegistrySourceInput,
+  WorkflowRegistrySourceScope,
 } from "./kernel-types.js"
 
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
@@ -152,6 +154,175 @@ export function runWorkflowCodeArtifactRequest(
   const providerRebindings = options.providerRebindings ?? []
   return {
     RunWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
+      ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
+      prompt,
+    },
+  }
+}
+
+export type ListWorkflowRegistryRequest = {
+  ListWorkflowRegistry: {
+    session_id: string
+  }
+}
+
+export function listWorkflowRegistryRequest(sessionId: string): ListWorkflowRegistryRequest {
+  return {
+    ListWorkflowRegistry: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export type GetWorkflowRegistryEntryRequest = {
+  GetWorkflowRegistryEntry: {
+    session_id: string
+    name: string
+  }
+}
+
+export function getWorkflowRegistryEntryRequest(
+  sessionId: string,
+  name: string,
+): GetWorkflowRegistryEntryRequest {
+  return {
+    GetWorkflowRegistryEntry: {
+      session_id: sessionId,
+      name,
+    },
+  }
+}
+
+export type AddWorkflowRegistryEntryRequest = {
+  AddWorkflowRegistryEntry: {
+    session_id: string
+    name: string
+    scope?: WorkflowRegistrySourceScope
+    source: WorkflowRegistrySourceInput
+    node_path: string
+  }
+}
+
+export function addWorkflowRegistryEntryRequest(
+  sessionId: string,
+  name: string,
+  source: WorkflowRegistrySourceInput,
+  nodePath: string,
+  scope?: WorkflowRegistrySourceScope,
+): AddWorkflowRegistryEntryRequest {
+  return {
+    AddWorkflowRegistryEntry: {
+      session_id: sessionId,
+      name,
+      ...(scope !== undefined ? { scope } : {}),
+      source,
+      node_path: nodePath,
+    },
+  }
+}
+
+export type AddWorkflowRegistryEntryFromWorkflowRequest = {
+  AddWorkflowRegistryEntryFromWorkflow: {
+    session_id: string
+    name: string
+    workflow_ref: string
+    scope?: WorkflowRegistrySourceScope
+    agent_mode?: WorkflowCodeSourceExportAgentMode
+  }
+}
+
+export function addWorkflowRegistryEntryFromWorkflowRequest(
+  sessionId: string,
+  name: string,
+  workflowRef: string,
+  options: {
+    scope?: WorkflowRegistrySourceScope
+    agentMode?: WorkflowCodeSourceExportAgentMode
+  } = {},
+): AddWorkflowRegistryEntryFromWorkflowRequest {
+  return {
+    AddWorkflowRegistryEntryFromWorkflow: {
+      session_id: sessionId,
+      name,
+      workflow_ref: workflowRef,
+      ...(options.scope !== undefined ? { scope: options.scope } : {}),
+      ...(options.agentMode !== undefined ? { agent_mode: options.agentMode } : {}),
+    },
+  }
+}
+
+export type DeleteWorkflowRegistryEntryRequest = {
+  DeleteWorkflowRegistryEntry: {
+    session_id: string
+    name: string
+    scope?: WorkflowRegistrySourceScope
+  }
+}
+
+export function deleteWorkflowRegistryEntryRequest(
+  sessionId: string,
+  name: string,
+  scope?: WorkflowRegistrySourceScope,
+): DeleteWorkflowRegistryEntryRequest {
+  return {
+    DeleteWorkflowRegistryEntry: {
+      session_id: sessionId,
+      name,
+      ...(scope !== undefined ? { scope } : {}),
+    },
+  }
+}
+
+export type LoadWorkflowRegistryEntryRequest = {
+  LoadWorkflowRegistryEntry: {
+    session_id: string
+    name: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
+  }
+}
+
+export function loadWorkflowRegistryEntryRequest(
+  sessionId: string,
+  name: string,
+  providerRebindings: WorkflowCodeProviderRebinding[] = [],
+): LoadWorkflowRegistryEntryRequest {
+  return {
+    LoadWorkflowRegistryEntry: {
+      session_id: sessionId,
+      name,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+    },
+  }
+}
+
+export type RunWorkflowRegistryEntryRequest = {
+  RunWorkflowRegistryEntry: {
+    session_id: string
+    name: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queue_ref?: string | null
+    prompt: string
+  }
+}
+
+export function runWorkflowRegistryEntryRequest(
+  sessionId: string,
+  name: string,
+  prompt: string,
+  options: {
+    providerRebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queueRef?: string | null
+  } = {},
+): RunWorkflowRegistryEntryRequest {
+  const providerRebindings = options.providerRebindings ?? []
+  return {
+    RunWorkflowRegistryEntry: {
       session_id: sessionId,
       name,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),

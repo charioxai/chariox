@@ -1483,7 +1483,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 194
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 195
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2127,6 +2127,38 @@ export type WorkflowCodeSourceExportFile = {
   sha256: string
 }
 
+export type WorkflowRegistrySourceScope = "workspace" | "user" | "builtin"
+export type WorkflowRegistrySourceKind = "single_file" | "source_directory"
+
+export type WorkflowRegistrySourceInput =
+  | {
+      kind: "single_file"
+      source: string
+      source_path?: string | null
+    }
+  | {
+      kind: "source_directory"
+      files: WorkflowCodeSourceExportFile[]
+    }
+
+export type WorkflowRegistryValidationSummary = {
+  ok: boolean
+  diagnostics?: string[]
+}
+
+export type WorkflowRegistryEntryMetadata = {
+  name: string
+  source_scope: WorkflowRegistrySourceScope
+  source_kind: WorkflowRegistrySourceKind
+  source_path: string
+  source_sha256: string
+  source_bytes: number
+  definition_sha256?: string | null
+  created_at_ms: number
+  updated_at_ms: number
+  validation: WorkflowRegistryValidationSummary
+}
+
 export type WorkflowCodeSourceExport = {
   name: string
   language: WorkflowCodeLanguage
@@ -2217,6 +2249,47 @@ export type WorkflowCodePackageImportedResponse = {
 export type WorkflowCodeSourceExportedResponse = {
   WorkflowCodeSourceExported: {
     export: WorkflowCodeSourceExport
+  }
+}
+
+export type WorkflowRegistryListedResponse = {
+  WorkflowRegistryListed: {
+    entries: WorkflowRegistryEntryMetadata[]
+  }
+}
+
+export type WorkflowRegistryEntryResponse = {
+  WorkflowRegistryEntry: {
+    entry: WorkflowRegistryEntryMetadata
+  }
+}
+
+export type WorkflowRegistryEntryAddedResponse = {
+  WorkflowRegistryEntryAdded: {
+    entry: WorkflowRegistryEntryMetadata
+  }
+}
+
+export type WorkflowRegistryEntryDeletedResponse = {
+  WorkflowRegistryEntryDeleted: {
+    name: string
+    path: string
+  }
+}
+
+export type WorkflowRegistryEntryLoadedResponse = {
+  WorkflowRegistryEntryLoaded: {
+    entry: WorkflowRegistryEntryMetadata
+    result: WorkflowCodeCompileAndApplyResult
+    session: RuntimeSession
+  }
+}
+
+export type WorkflowRegistryEntryRunResponse = {
+  WorkflowRegistryEntryRun: {
+    entry: WorkflowRegistryEntryMetadata
+    result: WorkflowCodeRunResult
+    session: RuntimeSession
   }
 }
 

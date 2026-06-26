@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -380,6 +381,149 @@ test("executeShellCommand validates, saves, applies, and runs workflow-code arti
   }
 })
 
+test("executeShellCommand manages workflow registry entries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-registry-shell-"))
+  try {
+    const source = "workflow.define({ alias: \"registered\" })\n"
+    await writeFile(join(root, "registered.workflow.js"), source, "utf8")
+    await mkdir(join(root, "registered-source", "schemas"), { recursive: true })
+    await writeFile(join(root, "registered-source", "workflow.js"), "workflow.define({ alias: \"dir\" })\n", "utf8")
+    await writeFile(join(root, "registered-source", "schemas", "final.json"), "{\n  \"type\": \"object\"\n}\n", "utf8")
+    await writeFile(join(root, "registered-source", "manifest.json"), "{\n  \"manifest_version\": 1\n}\n", "utf8")
+
+    const entry = {
+      name: "dev-team-small",
+      source_scope: "workspace",
+      source_kind: "single_file",
+      source_path: "workflow.js",
+      source_sha256: "source-sha256",
+      source_bytes: source.length,
+      definition_sha256: "definition-sha256",
+      created_at_ms: 1_000,
+      updated_at_ms: 1_000,
+      validation: { ok: true, diagnostics: [] },
+    }
+    const session = makeSession()
+    const requests: Record<string, unknown>[] = []
+    const fake = {
+      client: {
+        send: async (request: Record<string, unknown>) => {
+          requests.push(request)
+          if ("ListWorkflowRegistry" in request) {
+            return { WorkflowRegistryListed: { entries: [entry] } }
+          }
+          if ("GetWorkflowRegistryEntry" in request) {
+            return { WorkflowRegistryEntry: { entry } }
+          }
+          if ("LoadWorkflowRegistryEntry" in request) {
+            return { WorkflowRegistryEntryLoaded: { entry, result: { compile: { definition: { workflow: {} }, validation: { ok: true, diagnostics: [] }, logs: "" }, apply: { workflow_id: "workflow-loaded", canvas_layout_applied: true } }, session } }
+          }
+          if ("RunWorkflowRegistryEntry" in request) {
+            return {
+              WorkflowRegistryEntryRun: {
+                entry,
+                result: {
+                  apply: { compile: { definition: { workflow: {} }, validation: { ok: true, diagnostics: [] }, logs: "" }, apply: { workflow_id: "workflow-run", canvas_layout_applied: true } },
+                  invocation: { kind: "started", workflow_run: makeWorkflowRun(), workflow: makeWorkflow(), endpoint: makeWorkflow().endpoints![0] },
+                },
+                session,
+              },
+            }
+          }
+          if ("DeleteWorkflowRegistryEntry" in request) {
+            return { WorkflowRegistryEntryDeleted: { name: "dev-team-small", path: "/repo/.arroba/workflows/dev-team-small" } }
+          }
+          return { WorkflowRegistryEntryAdded: { entry } }
+        },
+      },
+    }
+    const context = createDefaultShellContext({ workspace: root, worktree: root, sessionId: "session-1" })
+    const list = await executeShellCommand(parseShellCommand("workflow registry list"), context, { client: fake.client })
+    const get = await executeShellCommand(parseShellCommand("workflow registry get dev-team-small"), context, { client: fake.client })
+    const addFile = await executeShellCommand(parseShellCommand("workflow registry add dev-team-small registered.workflow.js --workspace"), context, { client: fake.client })
+    const addDir = await executeShellCommand(parseShellCommand("workflow registry add dev-team-dir registered-source --user"), context, { client: fake.client })
+    const addFromWorkflow = await executeShellCommand(parseShellCommand("workflow registry add-from-workflow copied-team workflow-1 --existing-agents --user"), context, { client: fake.client })
+    const load = await executeShellCommand(parseShellCommand("workflow load dev-team-small --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
+    const run = await executeShellCommand(parseShellCommand("workflow run dev-team-small --endpoint entry --queue urgent --prompt \"Run it\" --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
+    const deleted = await executeShellCommand(parseShellCommand("workflow registry delete dev-team-small --workspace"), context, { client: fake.client })
+
+    assert.equal(list.ok, true)
+    assert.match(list.message ?? "", /dev-team-small scope=workspace/)
+    assert.equal(get.ok, true)
+    assert.match(get.message ?? "", /workflow registry entry dev-team-small/)
+    assert.equal(addFile.ok, true)
+    assert.equal(addDir.ok, true)
+    assert.equal(addFromWorkflow.ok, true)
+    assert.equal(load.ok, true)
+    assert.match(load.message ?? "", /workflow-loaded/)
+    assert.equal(run.ok, true)
+    assert.match(run.message ?? "", /workflow-run/)
+    assert.equal(deleted.ok, true)
+    assert.deepEqual(requests, [
+      { ListWorkflowRegistry: { session_id: "session-1" } },
+      { GetWorkflowRegistryEntry: { session_id: "session-1", name: "dev-team-small" } },
+      {
+        AddWorkflowRegistryEntry: {
+          session_id: "session-1",
+          name: "dev-team-small",
+          scope: "workspace",
+          source: {
+            kind: "single_file",
+            source,
+            source_path: "registered.workflow.js",
+          },
+          node_path: process.execPath,
+        },
+      },
+      {
+        AddWorkflowRegistryEntry: {
+          session_id: "session-1",
+          name: "dev-team-dir",
+          scope: "user",
+          source: {
+            kind: "source_directory",
+            files: [
+              { path: "manifest.json", contents: "{\n  \"manifest_version\": 1\n}\n", sha256: sha256("{\n  \"manifest_version\": 1\n}\n") },
+              { path: "schemas/final.json", contents: "{\n  \"type\": \"object\"\n}\n", sha256: sha256("{\n  \"type\": \"object\"\n}\n") },
+              { path: "workflow.js", contents: "workflow.define({ alias: \"dir\" })\n", sha256: sha256("workflow.define({ alias: \"dir\" })\n") },
+            ],
+          },
+          node_path: process.execPath,
+        },
+      },
+      {
+        AddWorkflowRegistryEntryFromWorkflow: {
+          session_id: "session-1",
+          name: "copied-team",
+          workflow_ref: "workflow-1",
+          scope: "user",
+          agent_mode: "existing_agents",
+        },
+      },
+      {
+        LoadWorkflowRegistryEntry: {
+          session_id: "session-1",
+          name: "dev-team-small",
+          provider_rebindings: [{ node: "planner", provider: "dev-stub", model: "default" }],
+        },
+      },
+      {
+        RunWorkflowRegistryEntry: {
+          session_id: "session-1",
+          name: "dev-team-small",
+          provider_rebindings: [{ node: "planner", provider: "dev-stub", model: "default" }],
+          endpoint: "entry",
+          queue_ref: "urgent",
+          prompt: "Run it",
+        },
+      },
+      { DeleteWorkflowRegistryEntry: { session_id: "session-1", name: "dev-team-small", scope: "workspace" } },
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("executeShellCommand runs and controls workflow runs", async () => {
   const workflow = makeWorkflow()
   const workflowRun = makeWorkflowRun()
@@ -430,6 +574,10 @@ test("executeShellCommand runs and controls workflow runs", async () => {
     { ResumeWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
   ])
 })
+
+function sha256(contents: string): string {
+  return createHash("sha256").update(contents, "utf8").digest("hex")
+}
 
 test("executeShellCommand manages workflow graph and endpoints", async () => {
   const workflow = makeWorkflow({

@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 194;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 195;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -344,6 +344,13 @@ pub enum LocalDaemonRequest {
     ApplyWorkflowCodeArtifact(ApplyWorkflowCodeArtifactRequest),
     RunWorkflowCode(RunWorkflowCodeRequest),
     RunWorkflowCodeArtifact(RunWorkflowCodeArtifactRequest),
+    ListWorkflowRegistry(ListWorkflowRegistryRequest),
+    GetWorkflowRegistryEntry(GetWorkflowRegistryEntryRequest),
+    AddWorkflowRegistryEntry(AddWorkflowRegistryEntryRequest),
+    AddWorkflowRegistryEntryFromWorkflow(AddWorkflowRegistryEntryFromWorkflowRequest),
+    DeleteWorkflowRegistryEntry(DeleteWorkflowRegistryEntryRequest),
+    LoadWorkflowRegistryEntry(LoadWorkflowRegistryEntryRequest),
+    RunWorkflowRegistryEntry(RunWorkflowRegistryEntryRequest),
     CreateWorkflowCodeArtifact(CreateWorkflowCodeArtifactRequest),
     UpdateWorkflowCodeArtifact(UpdateWorkflowCodeArtifactRequest),
     GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
@@ -1106,6 +1113,29 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowCodeRun {
+        result: crate::workflow_code::WorkflowCodeRunResult,
+        session: RuntimeSession,
+    },
+    WorkflowRegistryListed {
+        entries: Vec<crate::workflow_code::WorkflowRegistryEntryMetadata>,
+    },
+    WorkflowRegistryEntry {
+        entry: crate::workflow_code::WorkflowRegistryEntryMetadata,
+    },
+    WorkflowRegistryEntryAdded {
+        entry: crate::workflow_code::WorkflowRegistryEntryMetadata,
+    },
+    WorkflowRegistryEntryDeleted {
+        name: String,
+        path: PathBuf,
+    },
+    WorkflowRegistryEntryLoaded {
+        entry: crate::workflow_code::WorkflowRegistryEntryMetadata,
+        result: crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+        session: RuntimeSession,
+    },
+    WorkflowRegistryEntryRun {
+        entry: crate::workflow_code::WorkflowRegistryEntryMetadata,
         result: crate::workflow_code::WorkflowCodeRunResult,
         session: RuntimeSession,
     },

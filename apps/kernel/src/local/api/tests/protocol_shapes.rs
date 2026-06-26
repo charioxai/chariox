@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -38,7 +38,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -86,7 +86,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let steer_request =
         LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
@@ -162,7 +162,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),
@@ -206,7 +206,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -421,7 +421,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     run_workflow.add_endpoint(run_endpoint.clone());
     let run_response = LocalDaemonResponse::WorkflowCodeRun {
         result: crate::workflow_code::WorkflowCodeRunResult {
-            apply: apply_result,
+            apply: apply_result.clone(),
             invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
                 workflow_run: crate::session::WorkflowRun::new(
                     "workflow-run-1",
@@ -595,6 +595,78 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode::ExistingAgents,
         },
     );
+    let registry_list_request =
+        LocalDaemonRequest::ListWorkflowRegistry(crate::local::ListWorkflowRegistryRequest {
+            session_id: "session-1".to_string(),
+        });
+    let registry_get_request = LocalDaemonRequest::GetWorkflowRegistryEntry(
+        crate::local::GetWorkflowRegistryEntryRequest {
+            session_id: "session-1".to_string(),
+            name: "toy-flow".to_string(),
+        },
+    );
+    let registry_add_request = LocalDaemonRequest::AddWorkflowRegistryEntry(
+        crate::local::AddWorkflowRegistryEntryRequest {
+            session_id: "session-1".to_string(),
+            name: "toy-flow".to_string(),
+            scope: Some(crate::workflow_code::WorkflowRegistrySourceScope::Workspace),
+            source: crate::workflow_code::WorkflowRegistrySourceInput::SourceDirectory {
+                files: vec![
+                    crate::workflow_code::WorkflowCodeSourceExportFile {
+                        path: "workflow.js".to_string(),
+                        contents: "workflow.workflow({ alias: 'toy' })".to_string(),
+                        sha256: "source-sha256".to_string(),
+                    },
+                    crate::workflow_code::WorkflowCodeSourceExportFile {
+                        path: "schemas/final.json".to_string(),
+                        contents: "{\n  \"type\": \"object\"\n}\n".to_string(),
+                        sha256: "schema-sha256".to_string(),
+                    },
+                ],
+            },
+            node_path: "/usr/local/bin/node".to_string(),
+        },
+    );
+    let registry_add_from_workflow_request =
+        LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(
+            crate::local::AddWorkflowRegistryEntryFromWorkflowRequest {
+                session_id: "session-1".to_string(),
+                name: "copied-toy-flow".to_string(),
+                workflow_ref: "workflow-1".to_string(),
+                scope: Some(crate::workflow_code::WorkflowRegistrySourceScope::User),
+                agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode::ExistingAgents,
+            },
+        );
+    let registry_delete_request = LocalDaemonRequest::DeleteWorkflowRegistryEntry(
+        crate::local::DeleteWorkflowRegistryEntryRequest {
+            session_id: "session-1".to_string(),
+            name: "toy-flow".to_string(),
+            scope: Some(crate::workflow_code::WorkflowRegistrySourceScope::Workspace),
+        },
+    );
+    let registry_load_request = LocalDaemonRequest::LoadWorkflowRegistryEntry(
+        crate::local::LoadWorkflowRegistryEntryRequest {
+            session_id: "session-1".to_string(),
+            name: "toy-flow".to_string(),
+            provider_rebindings: vec![crate::workflow_code::WorkflowCodeProviderRebinding {
+                node: "planner".to_string(),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                account_profile: None,
+            }],
+        },
+    );
+    let registry_run_request = LocalDaemonRequest::RunWorkflowRegistryEntry(
+        crate::local::RunWorkflowRegistryEntryRequest {
+            session_id: "session-1".to_string(),
+            name: "toy-flow".to_string(),
+            provider_rebindings: Vec::new(),
+            endpoint: Some("entry".to_string()),
+            queue_ref: Some("default".to_string()),
+            prompt: "Run this registered workflow.".to_string(),
+        },
+    );
     let package_exported_response = LocalDaemonResponse::WorkflowCodePackageExported {
         package: package.clone(),
     };
@@ -615,6 +687,81 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 sha256: "schema-sha256".to_string(),
             }],
         },
+    };
+    let registry_entry = crate::workflow_code::WorkflowRegistryEntryMetadata {
+        name: "toy-flow".to_string(),
+        source_scope: crate::workflow_code::WorkflowRegistrySourceScope::Workspace,
+        source_kind: crate::workflow_code::WorkflowRegistrySourceKind::SourceDirectory,
+        source_path: "workflow.js".to_string(),
+        source_sha256: "source-sha256".to_string(),
+        source_bytes: 37,
+        definition_sha256: Some(package.definition_sha256.clone()),
+        created_at_ms: 1_000,
+        updated_at_ms: 2_000,
+        validation: crate::workflow_code::WorkflowRegistryValidationSummary {
+            ok: true,
+            diagnostics: Vec::new(),
+        },
+    };
+    let registry_listed_response = LocalDaemonResponse::WorkflowRegistryListed {
+        entries: vec![registry_entry.clone()],
+    };
+    let registry_entry_response = LocalDaemonResponse::WorkflowRegistryEntry {
+        entry: registry_entry.clone(),
+    };
+    let registry_entry_added_response = LocalDaemonResponse::WorkflowRegistryEntryAdded {
+        entry: registry_entry.clone(),
+    };
+    let registry_entry_deleted_response = LocalDaemonResponse::WorkflowRegistryEntryDeleted {
+        name: "toy-flow".to_string(),
+        path: std::path::PathBuf::from("/workspace/.arroba/workflows/toy-flow"),
+    };
+    let registry_entry_loaded_response = LocalDaemonResponse::WorkflowRegistryEntryLoaded {
+        entry: registry_entry.clone(),
+        result: apply_result.clone(),
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+    let registry_entry_run_response = LocalDaemonResponse::WorkflowRegistryEntryRun {
+        entry: registry_entry,
+        result: crate::workflow_code::WorkflowCodeRunResult {
+            apply: apply_result,
+            invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
+                queued_prompt: crate::session::WorkflowQueuedPrompt::new(
+                    "queue-1",
+                    "default",
+                    "workflow-1",
+                    "endpoint-1",
+                    Some("Run this registered workflow.".to_string()),
+                    None,
+                    crate::session::WorkflowQueuedPromptSource::Manual,
+                    None,
+                ),
+                workflow: crate::session::WorkflowDefinition::new(
+                    "workflow-1",
+                    Some("toy".to_string()),
+                ),
+                endpoint: crate::session::WorkflowEndpointDefinition::new(
+                    "endpoint-1",
+                    Some("entry".to_string()),
+                    "node-1",
+                ),
+            },
+        },
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
     };
 
     let snapshot = serde_json::json!([
@@ -646,7 +793,20 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         workflow_source_export_request,
         package_exported_response,
         package_imported_response,
-        source_exported_response
+        source_exported_response,
+        registry_list_request,
+        registry_get_request,
+        registry_add_request,
+        registry_add_from_workflow_request,
+        registry_delete_request,
+        registry_load_request,
+        registry_run_request,
+        registry_listed_response,
+        registry_entry_response,
+        registry_entry_added_response,
+        registry_entry_deleted_response,
+        registry_entry_loaded_response,
+        registry_entry_run_response
     ]);
     assert_eq!(
         snapshot.pointer("/0/ValidateWorkflowCode/session_id"),
@@ -866,11 +1026,71 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         snapshot.pointer("/28/WorkflowCodeSourceExported/export/files/0/path"),
         Some(&serde_json::json!("schemas/final.json"))
     );
+    assert_eq!(
+        snapshot.pointer("/29/ListWorkflowRegistry/session_id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/30/GetWorkflowRegistryEntry/name"),
+        Some(&serde_json::json!("toy-flow"))
+    );
+    assert_eq!(
+        snapshot.pointer("/31/AddWorkflowRegistryEntry/scope"),
+        Some(&serde_json::json!("workspace"))
+    );
+    assert_eq!(
+        snapshot.pointer("/31/AddWorkflowRegistryEntry/source/kind"),
+        Some(&serde_json::json!("source_directory"))
+    );
+    assert_eq!(
+        snapshot.pointer("/31/AddWorkflowRegistryEntry/source/files/1/path"),
+        Some(&serde_json::json!("schemas/final.json"))
+    );
+    assert_eq!(
+        snapshot.pointer("/32/AddWorkflowRegistryEntryFromWorkflow/agent_mode"),
+        Some(&serde_json::json!("existing_agents"))
+    );
+    assert_eq!(
+        snapshot.pointer("/33/DeleteWorkflowRegistryEntry/scope"),
+        Some(&serde_json::json!("workspace"))
+    );
+    assert_eq!(
+        snapshot.pointer("/34/LoadWorkflowRegistryEntry/provider_rebindings/0/provider"),
+        Some(&serde_json::json!("dev-stub"))
+    );
+    assert_eq!(
+        snapshot.pointer("/35/RunWorkflowRegistryEntry/prompt"),
+        Some(&serde_json::json!("Run this registered workflow."))
+    );
+    assert_eq!(
+        snapshot.pointer("/36/WorkflowRegistryListed/entries/0/source_scope"),
+        Some(&serde_json::json!("workspace"))
+    );
+    assert_eq!(
+        snapshot.pointer("/37/WorkflowRegistryEntry/entry/source_kind"),
+        Some(&serde_json::json!("source_directory"))
+    );
+    assert_eq!(
+        snapshot.pointer("/38/WorkflowRegistryEntryAdded/entry/validation/ok"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        snapshot.pointer("/39/WorkflowRegistryEntryDeleted/path"),
+        Some(&serde_json::json!("/workspace/.arroba/workflows/toy-flow"))
+    );
+    assert_eq!(
+        snapshot.pointer("/40/WorkflowRegistryEntryLoaded/result/apply/workflow_id"),
+        Some(&serde_json::json!("workflow-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/41/WorkflowRegistryEntryRun/result/invocation/kind"),
+        Some(&serde_json::json!("enqueued"))
+    );
 }
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -1235,7 +1455,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {
@@ -1289,7 +1509,7 @@ fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -1328,7 +1548,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -1457,7 +1677,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -1603,7 +1823,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -1650,7 +1870,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -1716,7 +1936,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -1805,7 +2025,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -1935,7 +2155,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -2020,7 +2240,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
@@ -2119,7 +2339,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -2199,7 +2419,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -2731,7 +2951,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "prompt-1".to_string(),
@@ -2766,7 +2986,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::RequestNativeProviderInteraction(
         RequestNativeProviderInteractionRequest::allow_deny(
@@ -2817,7 +3037,7 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -2850,7 +3070,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -2886,7 +3106,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let undo_request = LocalDaemonRequest::UndoTurn(crate::local::UndoTurnRequest {
         session_id: "session-1".to_string(),
@@ -3000,7 +3220,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -3023,7 +3243,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_create_session_worktree_placement_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1").with_worktree_placement(
@@ -3054,7 +3274,7 @@ fn local_daemon_protocol_create_session_worktree_placement_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -3083,7 +3303,7 @@ fn local_daemon_protocol_kernel_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -3170,7 +3390,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
         name: "linux-dev".to_string(),
@@ -3328,7 +3548,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_auth_alias_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::SetSliceProviderAuthAlias(
         crate::local::SetSliceProviderAuthAliasRequest {
@@ -3459,7 +3679,7 @@ fn local_daemon_protocol_slice_auth_alias_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_provider_login_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request =
         LocalDaemonRequest::StartSliceProviderLogin(crate::local::StartSliceProviderLoginRequest {
@@ -3534,7 +3754,7 @@ fn local_daemon_protocol_slice_provider_login_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_logs_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::GetSliceLogs(crate::local::GetSliceLogsRequest {
         slice_ref: "linux-dev".to_string(),
@@ -3600,7 +3820,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_audit_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::ListSliceAudit(crate::local::ListSliceAuditRequest {
         slice_ref: "linux-dev".to_string(),
@@ -3654,7 +3874,7 @@ fn local_daemon_protocol_slice_audit_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::SemanticSearchRecall(SemanticSearchRecallRequest {
         query: "why did the build fail".to_string(),
@@ -3772,7 +3992,7 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some("session-1".to_string()),
@@ -3805,7 +4025,7 @@ fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -3838,7 +4058,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -3868,7 +4088,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),
@@ -3904,7 +4124,7 @@ fn local_daemon_protocol_terminal_input_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_output_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let response = LocalDaemonResponse::TerminalOutput {
         records: vec![crate::terminal::TerminalOutputRecord {
@@ -3944,7 +4164,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let search =
         LocalDaemonRequest::SearchMetaagentCommands(crate::local::SearchMetaagentCommandsRequest {
@@ -4187,7 +4407,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 194);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 195);
 
     let account = RelayProviderAccountSummary {
         provider: "codex".to_string(),

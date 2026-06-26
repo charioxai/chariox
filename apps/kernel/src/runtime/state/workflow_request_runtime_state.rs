@@ -67,6 +67,43 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+            LocalDaemonRequest::ListWorkflowRegistry(request) => (
+                self.execute_workflow_registry_list_request(request).await,
+                None,
+            ),
+            LocalDaemonRequest::GetWorkflowRegistryEntry(request) => (
+                self.execute_workflow_registry_get_request(request).await,
+                None,
+            ),
+            LocalDaemonRequest::AddWorkflowRegistryEntry(request) => (
+                self.execute_workflow_registry_add_request(request).await,
+                None,
+            ),
+            LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(request) => (
+                self.execute_workflow_registry_add_from_workflow_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::DeleteWorkflowRegistryEntry(request) => (
+                self.execute_workflow_registry_delete_request(request).await,
+                None,
+            ),
+            LocalDaemonRequest::LoadWorkflowRegistryEntry(request) => {
+                self.execute_workflow_registry_load_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
+            LocalDaemonRequest::RunWorkflowRegistryEntry(request) => {
+                self.execute_workflow_registry_run_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
             LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => (
                 self.execute_workflow_code_artifact_create_request(
                     request,
@@ -730,6 +767,274 @@ impl KernelRuntimeState {
         (result, session)
     }
 
+    async fn execute_workflow_registry_list_request(
+        &self,
+        request: crate::local::ListWorkflowRegistryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let entries = registry.list()?;
+            Ok(LocalDaemonResponse::WorkflowRegistryListed { entries })
+        })
+        .await
+    }
+
+    async fn execute_workflow_registry_get_request(
+        &self,
+        request: crate::local::GetWorkflowRegistryEntryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let entry = registry.get(&request.name)?;
+            Ok(LocalDaemonResponse::WorkflowRegistryEntry { entry })
+        })
+        .await
+    }
+
+    async fn execute_workflow_registry_add_request(
+        &self,
+        request: crate::local::AddWorkflowRegistryEntryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
+            let entry = registry.add(
+                &request.name,
+                scope,
+                request.source,
+                &request.node_path,
+                &limits,
+            )?;
+            app.durable_state_store().append_event(
+                "workflow_registry.added",
+                Some(request.session_id),
+                serde_json::json!({ "entry": &entry }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowRegistryEntryAdded { entry })
+        })
+        .await
+    }
+
+    async fn execute_workflow_registry_add_from_workflow_request(
+        &self,
+        request: crate::local::AddWorkflowRegistryEntryFromWorkflowRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            let session = crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(&request.session_id)?;
+            let export = crate::workflow_code::export_workflow_code_source_from_session_workflow(
+                &session,
+                &request.workflow_ref,
+                crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+                request.agent_mode,
+            )?;
+            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
+            let entry = registry.add_from_export(
+                &request.name,
+                scope,
+                export,
+                &format!("workflow-registry:{}", request.name),
+                &limits,
+            )?;
+            app.durable_state_store().append_event(
+                "workflow_registry.added_from_workflow",
+                Some(request.session_id),
+                serde_json::json!({
+                    "entry": &entry,
+                    "workflow_ref": &request.workflow_ref,
+                    "agent_mode": request.agent_mode,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowRegistryEntryAdded { entry })
+        })
+        .await
+    }
+
+    async fn execute_workflow_registry_delete_request(
+        &self,
+        request: crate::local::DeleteWorkflowRegistryEntryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_registry_for_session(app, &request.session_id)?;
+            let path = registry.delete(&request.name, request.scope)?;
+            app.durable_state_store().append_event(
+                "workflow_registry.deleted",
+                Some(request.session_id),
+                serde_json::json!({ "name": &request.name, "path": &path }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowRegistryEntryDeleted {
+                name: request.name,
+                path,
+            })
+        })
+        .await
+    }
+
+    async fn execute_workflow_registry_load_request(
+        &self,
+        request: crate::local::LoadWorkflowRegistryEntryRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let result = self
+            .with_app_side_effect(move |app| {
+                let (entry, result) = workflow_registry_apply_result(
+                    app,
+                    &request.session_id,
+                    &request.name,
+                    &request.provider_rebindings,
+                    caller_user_id,
+                    controlled_by_metaagent_id,
+                    "workflow_registry.load",
+                    None,
+                    None,
+                )?;
+                let session =
+                    crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
+                Ok(LocalDaemonResponse::WorkflowRegistryEntryLoaded {
+                    entry,
+                    result,
+                    session,
+                })
+            })
+            .await;
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
+    async fn execute_workflow_registry_run_request(
+        &self,
+        request: crate::local::RunWorkflowRegistryEntryRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let (entry, apply_result) = match self
+            .with_app_side_effect({
+                let session_id = session_id.clone();
+                let name = request.name.clone();
+                let provider_rebindings = request.provider_rebindings.clone();
+                let endpoint = request.endpoint.clone();
+                let queue_ref = request.queue_ref.clone();
+                let caller_user_id = caller_user_id.clone();
+                move |app| {
+                    workflow_registry_apply_result(
+                        app,
+                        &session_id,
+                        &name,
+                        &provider_rebindings,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                        "workflow_registry.run",
+                        Some(endpoint.as_deref()),
+                        queue_ref.as_deref(),
+                    )
+                }
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return (Err(error), None),
+        };
+        let endpoint_ref = match workflow_code_endpoint_ref(&apply_result.apply, request.endpoint) {
+            Ok(endpoint_ref) => endpoint_ref,
+            Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
+        };
+        let queue_ref = workflow_code_queue_ref(&apply_result.apply, request.queue_ref);
+        let invocation_prompt = workflow_code_invocation_prompt(
+            &request.prompt,
+            apply_result.compile.definition.workflow.prompt.as_deref(),
+        );
+        let (invoke_response, session) = self
+            .execute_workflow_invoke_endpoint_request(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: session_id.clone(),
+                    workflow_ref: apply_result.apply.workflow_id.clone(),
+                    endpoint_ref,
+                    queue_ref,
+                    prompt: Some(invocation_prompt),
+                    publication_invocation: None,
+                },
+                &caller_user_id,
+            )
+            .await;
+        let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(
+                crate::local::LocalDaemonResponse::WorkflowRegistryEntryRun {
+                    entry,
+                    result: crate::workflow_code::WorkflowCodeRunResult {
+                        apply: apply_result,
+                        invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
+                            workflow_run,
+                            workflow,
+                            endpoint,
+                        },
+                    },
+                    session,
+                },
+            ),
+            Ok(crate::local::LocalDaemonResponse::WorkflowPromptEnqueued {
+                queued_prompt,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(
+                crate::local::LocalDaemonResponse::WorkflowRegistryEntryRun {
+                    entry,
+                    result: crate::workflow_code::WorkflowCodeRunResult {
+                        apply: apply_result,
+                        invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
+                            queued_prompt,
+                            workflow,
+                            endpoint,
+                        },
+                    },
+                    session,
+                },
+            ),
+            Ok(_) => Err(DaemonError::LocalTransport {
+                operation: "workflow_registry.run",
+                message: "workflow endpoint invocation returned an unexpected response".to_string(),
+            }),
+            Err(error) => Err(error),
+        };
+        if let Ok(crate::local::LocalDaemonResponse::WorkflowRegistryEntryRun { result, .. }) =
+            &result
+        {
+            self.persist_workflow_code_run_event(
+                &session_id,
+                &caller_user_id,
+                caller_metaagent_id,
+                result,
+            );
+        }
+        let session = result
+            .as_ref()
+            .ok()
+            .and_then(workflow_response_session)
+            .or(session);
+        (result, session)
+    }
+
     pub(crate) fn persist_workflow_code_run_event(
         &self,
         session_id: &str,
@@ -1129,6 +1434,108 @@ fn workflow_code_registry_for_session(
     ))
 }
 
+fn workflow_registry_for_session(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+) -> Result<crate::workflow_code::WorkflowRegistry, DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    let workspace_root = if !session.workspace_id().trim().is_empty() {
+        Some(crate::workflow_code::WorkflowRegistry::workspace_root(
+            session.workspace_id(),
+        ))
+    } else {
+        None
+    };
+    Ok(crate::workflow_code::WorkflowRegistry::new(
+        workspace_root,
+        crate::workflow_code::WorkflowRegistry::user_root(),
+    ))
+}
+
+fn workflow_registry_write_scope(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    requested: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+) -> Result<crate::workflow_code::WorkflowRegistrySourceScope, DaemonError> {
+    if let Some(scope) = requested {
+        if scope == crate::workflow_code::WorkflowRegistrySourceScope::Builtin {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_registry.write_scope",
+                message: "builtin workflow registry entries cannot be modified".to_string(),
+            });
+        }
+        return Ok(scope);
+    }
+    let session = app.sessions().get_session(session_id)?;
+    if !session.workspace_id().trim().is_empty() {
+        Ok(crate::workflow_code::WorkflowRegistrySourceScope::Workspace)
+    } else {
+        Ok(crate::workflow_code::WorkflowRegistrySourceScope::User)
+    }
+}
+
+fn workflow_registry_apply_result(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+    name: &str,
+    provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    caller_user_id: String,
+    controlled_by_metaagent_id: Option<String>,
+    operation: &'static str,
+    run_endpoint: Option<Option<&str>>,
+    run_queue: Option<&str>,
+) -> Result<
+    (
+        crate::workflow_code::WorkflowRegistryEntryMetadata,
+        crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+    ),
+    DaemonError,
+> {
+    let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
+    let limits = app.config().workflow_code_limits();
+    let compile = crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+        &entry.node_path,
+        &entry.source,
+        crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+        &limits,
+        entry.schema_import_root.as_deref(),
+    )?;
+    reject_invalid_workflow_code_run_compile(operation, &compile.validation)?;
+    let metaagent_id = controlled_by_metaagent_id.as_deref();
+    let (definition, validation) = crate::app::KernelSessionService::new(app)
+        .validate_workflow_code_definition_with_rebindings(
+            session_id,
+            &compile.definition,
+            &limits,
+            provider_rebindings,
+            metaagent_id,
+        )?;
+    reject_invalid_workflow_code_run_compile(operation, &validation)?;
+    if let Some(endpoint) = run_endpoint {
+        workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
+    }
+    workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
+    let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
+        session_id,
+        &definition,
+        &limits,
+        caller_user_id,
+        controlled_by_metaagent_id,
+    )?;
+    Ok((
+        entry.metadata,
+        crate::workflow_code::WorkflowCodeCompileAndApplyResult {
+            compile: crate::workflow_code::WorkflowCodeCompileResult {
+                definition,
+                validation,
+                logs: compile.logs,
+                source_spans: compile.source_spans,
+            },
+            apply,
+        },
+    ))
+}
+
 fn workflow_code_artifact_apply_result(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
@@ -1426,6 +1833,8 @@ pub(super) fn workflow_response_session(
         LocalDaemonResponse::WorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
         | LocalDaemonResponse::WorkflowCodeRun { session, .. }
+        | LocalDaemonResponse::WorkflowRegistryEntryLoaded { session, .. }
+        | LocalDaemonResponse::WorkflowRegistryEntryRun { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }

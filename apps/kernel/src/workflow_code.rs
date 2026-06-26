@@ -22,6 +22,7 @@ use crate::session::{
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 2;
 pub const WORKFLOW_CODE_SOURCE_EXPORT_MANIFEST_VERSION: u32 = 1;
+pub const WORKFLOW_REGISTRY_MANIFEST_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
 pub const WORKFLOW_CODE_CANVAS_COORDINATE_SPACE: &str = "workflow-canvas-v1";
 pub const WORKFLOW_CODE_CANVAS_NODE_WIDTH: i64 = 232;
@@ -719,6 +720,87 @@ pub struct WorkflowCodeSourceExport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRegistrySourceScope {
+    Workspace,
+    User,
+    Builtin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRegistrySourceKind {
+    SingleFile,
+    SourceDirectory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowRegistrySourceInput {
+    SingleFile {
+        source: String,
+        #[serde(default)]
+        source_path: Option<String>,
+    },
+    SourceDirectory {
+        files: Vec<WorkflowCodeSourceExportFile>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRegistryValidationSummary {
+    pub ok: bool,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRegistryEntryMetadata {
+    pub name: String,
+    pub source_scope: WorkflowRegistrySourceScope,
+    pub source_kind: WorkflowRegistrySourceKind,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub source_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_sha256: Option<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub validation: WorkflowRegistryValidationSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRegistryResolvedEntry {
+    pub metadata: WorkflowRegistryEntryMetadata,
+    pub source: String,
+    pub node_path: String,
+    pub schema_import_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredWorkflowRegistryManifest {
+    manifest_version: u32,
+    name: String,
+    source_kind: WorkflowRegistrySourceKind,
+    source_path: String,
+    source_sha256: String,
+    source_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    definition_sha256: Option<String>,
+    #[serde(default)]
+    file_sha256: BTreeMap<String, String>,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    validation: WorkflowRegistryValidationSummary,
+}
+
+pub struct WorkflowRegistry {
+    workspace_root: Option<PathBuf>,
+    user_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WorkflowCodeSourceExportManifest {
     manifest_version: u32,
     name: String,
@@ -1039,6 +1121,392 @@ impl WorkflowCodeArtifactRegistry {
             field: "workflow-code registry roots",
             message: "must include at least one root",
         })
+    }
+}
+
+impl WorkflowRegistry {
+    pub fn new(workspace_root: Option<PathBuf>, user_root: Option<PathBuf>) -> Self {
+        Self {
+            workspace_root,
+            user_root,
+        }
+    }
+
+    pub fn workspace_root(workspace: impl AsRef<Path>) -> PathBuf {
+        workspace.as_ref().join(".arroba").join("workflows")
+    }
+
+    pub fn user_root() -> Option<PathBuf> {
+        arroba_home().map(|home| home.join("workflows"))
+    }
+
+    pub fn add(
+        &self,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+        source: WorkflowRegistrySourceInput,
+        node_path: &str,
+        limits: &WorkflowCodeLimitsConfig,
+    ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        validate_registry_name(name, "workflow registry entry name")?;
+        let root = self.write_root(scope.clone())?;
+        let entry_dir = root.join(name);
+        if entry_dir.exists() || root.join(format!("{name}.js")).exists() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.add",
+                message: format!("workflow registry entry `{name}` already exists"),
+            });
+        }
+        let temp_dir = root.join(format!(
+            ".{name}.tmp-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
+        }
+        fs::create_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
+        let result = self.write_entry_to_dir(name, scope, &temp_dir, source, node_path, limits);
+        match result {
+            Ok(metadata) => {
+                if let Some(parent) = entry_dir.parent() {
+                    fs::create_dir_all(parent).map_err(io_error("workflow_registry.add"))?;
+                }
+                fs::rename(&temp_dir, &entry_dir).map_err(io_error("workflow_registry.add"))?;
+                Ok(metadata)
+            }
+            Err(error) => {
+                fs::remove_dir_all(&temp_dir).ok();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn add_from_export(
+        &self,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+        export: WorkflowCodeSourceExport,
+        node_path: &str,
+        limits: &WorkflowCodeLimitsConfig,
+    ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        let source = match export.format {
+            WorkflowCodeSourceExportFormat::Inline => WorkflowRegistrySourceInput::SingleFile {
+                source: export.source,
+                source_path: Some(export.source_path),
+            },
+            WorkflowCodeSourceExportFormat::Directory => {
+                WorkflowRegistrySourceInput::SourceDirectory {
+                    files: export.files,
+                }
+            }
+        };
+        self.add(name, scope, source, node_path, limits)
+    }
+
+    pub fn list(&self) -> Result<Vec<WorkflowRegistryEntryMetadata>, crate::DaemonError> {
+        let mut entries = BTreeMap::new();
+        if let Some(root) = self.workspace_root.as_deref() {
+            for entry in self.list_root(root, WorkflowRegistrySourceScope::Workspace)? {
+                entries.entry(entry.name.clone()).or_insert(entry);
+            }
+        }
+        if let Some(root) = self.user_root.as_deref() {
+            for entry in self.list_root(root, WorkflowRegistrySourceScope::User)? {
+                entries.entry(entry.name.clone()).or_insert(entry);
+            }
+        }
+        for example in WORKFLOW_CODE_PATTERN_EXAMPLES {
+            entries
+                .entry(example.slug.to_string())
+                .or_insert_with(|| builtin_workflow_registry_metadata(example));
+        }
+        Ok(entries.into_values().collect())
+    }
+
+    pub fn get(&self, name: &str) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        Ok(self.resolve(name)?.metadata)
+    }
+
+    pub fn resolve(&self, name: &str) -> Result<WorkflowRegistryResolvedEntry, crate::DaemonError> {
+        validate_registry_name(name, "workflow registry entry name")?;
+        if let Some(root) = self.workspace_root.as_deref() {
+            if let Some(entry) =
+                self.resolve_root(root, name, WorkflowRegistrySourceScope::Workspace)?
+            {
+                return Ok(entry);
+            }
+        }
+        if let Some(root) = self.user_root.as_deref() {
+            if let Some(entry) = self.resolve_root(root, name, WorkflowRegistrySourceScope::User)? {
+                return Ok(entry);
+            }
+        }
+        if let Some(example) = WORKFLOW_CODE_PATTERN_EXAMPLES
+            .iter()
+            .find(|example| example.slug == name)
+        {
+            return Ok(WorkflowRegistryResolvedEntry {
+                metadata: builtin_workflow_registry_metadata(example),
+                source: example.source.to_string(),
+                node_path: example.path.to_string(),
+                schema_import_root: None,
+            });
+        }
+        Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.resolve",
+            message: format!("workflow registry entry `{name}` was not found"),
+        })
+    }
+
+    pub fn delete(
+        &self,
+        name: &str,
+        scope: Option<WorkflowRegistrySourceScope>,
+    ) -> Result<PathBuf, crate::DaemonError> {
+        validate_registry_name(name, "workflow registry entry name")?;
+        let scopes = match scope {
+            Some(WorkflowRegistrySourceScope::Builtin) => {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_registry.delete",
+                    message: format!("builtin workflow registry entry `{name}` cannot be deleted"),
+                });
+            }
+            Some(scope) => vec![scope],
+            None => vec![
+                WorkflowRegistrySourceScope::Workspace,
+                WorkflowRegistrySourceScope::User,
+            ],
+        };
+        for candidate_scope in scopes {
+            let Some(root) = self.root_for_scope(candidate_scope) else {
+                continue;
+            };
+            let dir = root.join(name);
+            if dir.exists() {
+                fs::remove_dir_all(&dir).map_err(io_error("workflow_registry.delete"))?;
+                return Ok(dir);
+            }
+            let file = root.join(format!("{name}.js"));
+            if file.exists() {
+                fs::remove_file(&file).map_err(io_error("workflow_registry.delete"))?;
+                return Ok(file);
+            }
+        }
+        if WORKFLOW_CODE_PATTERN_EXAMPLES
+            .iter()
+            .any(|example| example.slug == name)
+        {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.delete",
+                message: format!("builtin workflow registry entry `{name}` cannot be deleted"),
+            });
+        }
+        Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.delete",
+            message: format!("workflow registry entry `{name}` was not found"),
+        })
+    }
+
+    fn write_entry_to_dir(
+        &self,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+        entry_dir: &Path,
+        source: WorkflowRegistrySourceInput,
+        node_path: &str,
+        limits: &WorkflowCodeLimitsConfig,
+    ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        let (source_kind, source_path, files) = normalize_workflow_registry_input(source)?;
+        for file in &files {
+            if source_kind == WorkflowRegistrySourceKind::SourceDirectory
+                && file.path == "manifest.json"
+            {
+                continue;
+            }
+            write_registry_file(entry_dir, &file.path, &file.contents)?;
+        }
+        let source_file = entry_dir.join(&source_path);
+        let source = fs::read_to_string(&source_file).map_err(io_error("workflow_registry.add"))?;
+        validate_workflow_registry_source_directory_manifest(entry_dir, &files, &source_path)?;
+        let schema_import_root = match source_kind {
+            WorkflowRegistrySourceKind::SingleFile => None,
+            WorkflowRegistrySourceKind::SourceDirectory => Some(entry_dir),
+        };
+        let compile = compile_workflow_code_source_with_schema_import_root(
+            node_path,
+            &source,
+            WorkflowCodeLanguage::JavaScript,
+            limits,
+            schema_import_root,
+        )?;
+        if !compile.validation.ok {
+            let diagnostics = workflow_registry_validation_diagnostics(&compile.validation);
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.add",
+                message: format!(
+                    "workflow registry entry `{name}` is invalid: {}",
+                    diagnostics.join(", ")
+                ),
+            });
+        }
+        let now = crate::session::unix_epoch_ms();
+        let source_sha256 = sha256_hex(source.as_bytes());
+        let file_sha256 = files
+            .iter()
+            .filter(|file| {
+                source_kind != WorkflowRegistrySourceKind::SourceDirectory
+                    || file.path != "manifest.json"
+            })
+            .map(|file| (file.path.clone(), sha256_hex(file.contents.as_bytes())))
+            .collect::<BTreeMap<_, _>>();
+        let validation = WorkflowRegistryValidationSummary {
+            ok: compile.validation.ok,
+            diagnostics: workflow_registry_validation_diagnostics(&compile.validation),
+        };
+        let manifest = StoredWorkflowRegistryManifest {
+            manifest_version: WORKFLOW_REGISTRY_MANIFEST_VERSION,
+            name: name.to_string(),
+            source_kind: source_kind.clone(),
+            source_path: source_path.clone(),
+            source_sha256: source_sha256.clone(),
+            source_bytes: source.len() as u64,
+            definition_sha256: Some(workflow_code_definition_sha256_hex(&compile.definition)),
+            file_sha256,
+            created_at_ms: now,
+            updated_at_ms: now,
+            validation: validation.clone(),
+        };
+        write_workflow_registry_manifest(&entry_dir.join("manifest.json"), &manifest)?;
+        Ok(manifest.into_metadata(scope))
+    }
+}
+
+impl WorkflowRegistry {
+    fn list_root(
+        &self,
+        root: &Path,
+        scope: WorkflowRegistrySourceScope,
+    ) -> Result<Vec<WorkflowRegistryEntryMetadata>, crate::DaemonError> {
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(root).map_err(io_error("workflow_registry.list"))? {
+            let path = entry.map_err(io_error("workflow_registry.list"))?.path();
+            if path.is_dir() {
+                let manifest_path = path.join("manifest.json");
+                if manifest_path.exists() {
+                    let manifest = read_workflow_registry_manifest(&manifest_path)?;
+                    entries.push(manifest.into_metadata(scope.clone()));
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("js") {
+                entries.push(single_file_workflow_registry_metadata(
+                    &path,
+                    scope.clone(),
+                )?);
+            }
+        }
+        Ok(entries)
+    }
+
+    fn resolve_root(
+        &self,
+        root: &Path,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+    ) -> Result<Option<WorkflowRegistryResolvedEntry>, crate::DaemonError> {
+        let entry_dir = root.join(name);
+        if entry_dir.is_dir() {
+            let manifest_path = entry_dir.join("manifest.json");
+            let manifest = read_workflow_registry_manifest(&manifest_path)?;
+            validate_workflow_registry_manifest_hashes(&entry_dir, &manifest)?;
+            let source_path = entry_dir.join(&manifest.source_path);
+            let source =
+                fs::read_to_string(&source_path).map_err(io_error("workflow_registry.get"))?;
+            let schema_import_root = match manifest.source_kind {
+                WorkflowRegistrySourceKind::SingleFile => None,
+                WorkflowRegistrySourceKind::SourceDirectory => Some(entry_dir.clone()),
+            };
+            return Ok(Some(WorkflowRegistryResolvedEntry {
+                metadata: manifest.into_metadata(scope),
+                source,
+                node_path: source_path.display().to_string(),
+                schema_import_root,
+            }));
+        }
+        let source_path = root.join(format!("{name}.js"));
+        if source_path.is_file() {
+            let source =
+                fs::read_to_string(&source_path).map_err(io_error("workflow_registry.get"))?;
+            let metadata = single_file_workflow_registry_metadata(&source_path, scope)?;
+            return Ok(Some(WorkflowRegistryResolvedEntry {
+                metadata,
+                source,
+                node_path: source_path.display().to_string(),
+                schema_import_root: None,
+            }));
+        }
+        Ok(None)
+    }
+
+    fn write_root(
+        &self,
+        scope: WorkflowRegistrySourceScope,
+    ) -> Result<PathBuf, crate::DaemonError> {
+        match scope {
+            WorkflowRegistrySourceScope::Workspace => {
+                self.workspace_root
+                    .clone()
+                    .ok_or(crate::DaemonError::LocalTransport {
+                        operation: "workflow_registry.add",
+                        message: "workspace workflow registry is unavailable for this session"
+                            .to_string(),
+                    })
+            }
+            WorkflowRegistrySourceScope::User => {
+                self.user_root
+                    .clone()
+                    .ok_or(crate::DaemonError::LocalTransport {
+                    operation: "workflow_registry.add",
+                    message:
+                        "user workflow registry is unavailable because ARROBA_HOME/HOME is not set"
+                            .to_string(),
+                })
+            }
+            WorkflowRegistrySourceScope::Builtin => Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.add",
+                message: "builtin workflow registry entries cannot be modified".to_string(),
+            }),
+        }
+    }
+
+    fn root_for_scope(&self, scope: WorkflowRegistrySourceScope) -> Option<&PathBuf> {
+        match scope {
+            WorkflowRegistrySourceScope::Workspace => self.workspace_root.as_ref(),
+            WorkflowRegistrySourceScope::User => self.user_root.as_ref(),
+            WorkflowRegistrySourceScope::Builtin => None,
+        }
+    }
+}
+
+impl StoredWorkflowRegistryManifest {
+    fn into_metadata(
+        self,
+        source_scope: WorkflowRegistrySourceScope,
+    ) -> WorkflowRegistryEntryMetadata {
+        WorkflowRegistryEntryMetadata {
+            name: self.name,
+            source_scope,
+            source_kind: self.source_kind,
+            source_path: self.source_path,
+            source_sha256: self.source_sha256,
+            source_bytes: self.source_bytes,
+            definition_sha256: self.definition_sha256,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            validation: self.validation,
+        }
     }
 }
 
@@ -2354,6 +2822,325 @@ fn read_stored_artifact(path: &Path) -> Result<StoredWorkflowCodeArtifact, crate
             path.display()
         ),
     })
+}
+
+fn normalize_workflow_registry_input(
+    source: WorkflowRegistrySourceInput,
+) -> Result<
+    (
+        WorkflowRegistrySourceKind,
+        String,
+        Vec<WorkflowCodeSourceExportFile>,
+    ),
+    crate::DaemonError,
+> {
+    match source {
+        WorkflowRegistrySourceInput::SingleFile {
+            source,
+            source_path: _,
+        } => {
+            if source.trim().is_empty() {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_registry.add",
+                    message: "workflow registry source file must not be empty".to_string(),
+                });
+            }
+            let path = "workflow.js".to_string();
+            Ok((
+                WorkflowRegistrySourceKind::SingleFile,
+                path.clone(),
+                vec![WorkflowCodeSourceExportFile {
+                    sha256: sha256_hex(source.as_bytes()),
+                    path,
+                    contents: source,
+                }],
+            ))
+        }
+        WorkflowRegistrySourceInput::SourceDirectory { files } => {
+            if files.is_empty() {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_registry.add",
+                    message: "workflow registry source directory must include files".to_string(),
+                });
+            }
+            let mut normalized = Vec::new();
+            let mut source_path = None;
+            for file in files {
+                let path = normalize_registry_relative_path(&file.path)?;
+                let actual_sha = sha256_hex(file.contents.as_bytes());
+                if !file.sha256.is_empty() && file.sha256 != actual_sha {
+                    return Err(crate::DaemonError::LocalTransport {
+                        operation: "workflow_registry.add",
+                        message: format!("workflow registry source file `{path}` sha256 mismatch"),
+                    });
+                }
+                if path == "manifest.json" {
+                    if let Ok(manifest) =
+                        serde_json::from_str::<WorkflowCodeSourceExportManifest>(&file.contents)
+                    {
+                        source_path =
+                            Some(normalize_registry_relative_path(&manifest.source_path)?);
+                    }
+                }
+                normalized.push(WorkflowCodeSourceExportFile {
+                    path,
+                    contents: file.contents,
+                    sha256: actual_sha,
+                });
+            }
+            let source_path = source_path.unwrap_or_else(|| "workflow.js".to_string());
+            if !normalized.iter().any(|file| file.path == source_path) {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_registry.add",
+                    message: format!(
+                        "workflow registry source directory is missing `{source_path}`"
+                    ),
+                });
+            }
+            Ok((
+                WorkflowRegistrySourceKind::SourceDirectory,
+                source_path,
+                normalized,
+            ))
+        }
+    }
+}
+
+fn normalize_registry_relative_path(path: &str) -> Result<String, crate::DaemonError> {
+    let value = path.trim();
+    if value.is_empty() {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.path",
+            message: "workflow registry file path must not be empty".to_string(),
+        });
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.path",
+            message: "workflow registry file path must be relative".to_string(),
+        });
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.path",
+            message: format!("workflow registry file path `{value}` must stay inside the entry"),
+        });
+    }
+    Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn write_registry_file(
+    entry_dir: &Path,
+    relative_path: &str,
+    contents: &str,
+) -> Result<(), crate::DaemonError> {
+    let relative_path = normalize_registry_relative_path(relative_path)?;
+    let path = entry_dir.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(io_error("workflow_registry.write"))?;
+    }
+    fs::write(path, contents).map_err(io_error("workflow_registry.write"))
+}
+
+fn read_workflow_registry_manifest(
+    path: &Path,
+) -> Result<StoredWorkflowRegistryManifest, crate::DaemonError> {
+    let contents = fs::read_to_string(path).map_err(io_error("workflow_registry.read"))?;
+    let manifest =
+        serde_json::from_str::<StoredWorkflowRegistryManifest>(&contents).map_err(|error| {
+            crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.read",
+                message: format!(
+                    "failed to parse workflow registry manifest `{}`: {error}",
+                    path.display()
+                ),
+            }
+        })?;
+    if manifest.manifest_version != WORKFLOW_REGISTRY_MANIFEST_VERSION {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.read",
+            message: format!(
+                "unsupported workflow registry manifest version {}; expected {}",
+                manifest.manifest_version, WORKFLOW_REGISTRY_MANIFEST_VERSION
+            ),
+        });
+    }
+    Ok(manifest)
+}
+
+fn write_workflow_registry_manifest(
+    path: &Path,
+    manifest: &StoredWorkflowRegistryManifest,
+) -> Result<(), crate::DaemonError> {
+    let payload = serde_json::to_string_pretty(manifest).map_err(|error| {
+        crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.write",
+            message: format!("failed to serialize workflow registry manifest: {error}"),
+        }
+    })?;
+    fs::write(path, format!("{payload}\n")).map_err(io_error("workflow_registry.write"))
+}
+
+fn validate_workflow_registry_source_directory_manifest(
+    entry_dir: &Path,
+    files: &[WorkflowCodeSourceExportFile],
+    source_path: &str,
+) -> Result<(), crate::DaemonError> {
+    let Some(manifest_file) = files.iter().find(|file| file.path == "manifest.json") else {
+        return Ok(());
+    };
+    let manifest = serde_json::from_str::<WorkflowCodeSourceExportManifest>(
+        &manifest_file.contents,
+    )
+    .map_err(|error| crate::DaemonError::LocalTransport {
+        operation: "workflow_registry.add",
+        message: format!("workflow registry source manifest is invalid: {error}"),
+    })?;
+    if manifest.manifest_version != WORKFLOW_CODE_SOURCE_EXPORT_MANIFEST_VERSION {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.add",
+            message: format!(
+                "unsupported workflow-code source manifest version {}; expected {}",
+                manifest.manifest_version, WORKFLOW_CODE_SOURCE_EXPORT_MANIFEST_VERSION
+            ),
+        });
+    }
+    if normalize_registry_relative_path(&manifest.source_path)? != source_path {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.add",
+            message: "workflow registry source manifest source_path mismatch".to_string(),
+        });
+    }
+    let source =
+        fs::read(entry_dir.join(source_path)).map_err(io_error("workflow_registry.add"))?;
+    if sha256_hex(&source) != manifest.source_sha256 {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.add",
+            message: "workflow registry source manifest source_sha256 mismatch".to_string(),
+        });
+    }
+    for path in manifest.schema_paths.values() {
+        let path = normalize_registry_relative_path(path)?;
+        if !entry_dir.join(&path).is_file() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.add",
+                message: format!(
+                    "workflow registry source manifest references missing schema `{path}`"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_workflow_registry_manifest_hashes(
+    entry_dir: &Path,
+    manifest: &StoredWorkflowRegistryManifest,
+) -> Result<(), crate::DaemonError> {
+    let source_path = normalize_registry_relative_path(&manifest.source_path)?;
+    let source =
+        fs::read(entry_dir.join(&source_path)).map_err(io_error("workflow_registry.get"))?;
+    let source_len = source.len() as u64;
+    if source_len != manifest.source_bytes {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.get",
+            message: format!(
+                "workflow registry entry `{}` source byte count mismatch",
+                manifest.name
+            ),
+        });
+    }
+    if sha256_hex(&source) != manifest.source_sha256 {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_registry.get",
+            message: format!(
+                "workflow registry entry `{}` source sha256 mismatch",
+                manifest.name
+            ),
+        });
+    }
+    for (relative_path, expected_sha) in &manifest.file_sha256 {
+        let relative_path = normalize_registry_relative_path(relative_path)?;
+        let bytes =
+            fs::read(entry_dir.join(&relative_path)).map_err(io_error("workflow_registry.get"))?;
+        if sha256_hex(&bytes) != *expected_sha {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_registry.get",
+                message: format!(
+                    "workflow registry entry `{}` file `{relative_path}` sha256 mismatch",
+                    manifest.name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn workflow_registry_validation_diagnostics(
+    validation: &WorkflowCodeValidationReport,
+) -> Vec<String> {
+    validation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic
+                .handle
+                .as_deref()
+                .map(|handle| format!("{}:{handle}", diagnostic.code))
+                .unwrap_or_else(|| diagnostic.code.clone())
+        })
+        .collect()
+}
+
+fn single_file_workflow_registry_metadata(
+    path: &Path,
+    source_scope: WorkflowRegistrySourceScope,
+) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+    let source = fs::read(path).map_err(io_error("workflow_registry.list"))?;
+    let name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workflow")
+        .to_string();
+    Ok(WorkflowRegistryEntryMetadata {
+        name,
+        source_scope,
+        source_kind: WorkflowRegistrySourceKind::SingleFile,
+        source_path: path.display().to_string(),
+        source_sha256: sha256_hex(&source),
+        source_bytes: source.len() as u64,
+        definition_sha256: None,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        validation: WorkflowRegistryValidationSummary {
+            ok: true,
+            diagnostics: Vec::new(),
+        },
+    })
+}
+
+fn builtin_workflow_registry_metadata(
+    example: &WorkflowCodePatternExample,
+) -> WorkflowRegistryEntryMetadata {
+    WorkflowRegistryEntryMetadata {
+        name: example.slug.to_string(),
+        source_scope: WorkflowRegistrySourceScope::Builtin,
+        source_kind: WorkflowRegistrySourceKind::SingleFile,
+        source_path: example.path.to_string(),
+        source_sha256: sha256_hex(example.source.as_bytes()),
+        source_bytes: example.source.len() as u64,
+        definition_sha256: None,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        validation: WorkflowRegistryValidationSummary {
+            ok: true,
+            diagnostics: Vec::new(),
+        },
+    }
 }
 
 fn workflow_code_artifact_history_entry(
@@ -4312,6 +5099,213 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
             .source
             .contains("const endpoint_entry = workflow.endpoint"));
         assert!(directory.source.contains("runOutputSchema: schema_entry"));
+    }
+
+    #[test]
+    fn workflow_registry_lists_and_resolves_builtin_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-registry-builtin-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let registry = WorkflowRegistry::new(Some(root.join("workspace")), Some(root.join("user")));
+
+        let entries = registry
+            .list()
+            .expect("builtin workflow registry entries should list");
+        let slugs: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        for expected in [
+            "prompt-chaining",
+            "routing",
+            "fan-out-synthesize",
+            "parallelization",
+            "adversarial-verification",
+            "generate-filter",
+            "tournament",
+            "loop-until-done",
+            "orchestrator-workers",
+            "evaluator-optimizer",
+        ] {
+            assert!(
+                slugs.contains(&expected),
+                "builtin workflow registry should include {expected}"
+            );
+        }
+
+        let resolved = registry
+            .resolve("prompt-chaining")
+            .expect("builtin workflow registry entry should resolve");
+        assert_eq!(
+            resolved.metadata.source_scope,
+            WorkflowRegistrySourceScope::Builtin
+        );
+        assert_eq!(
+            resolved.metadata.source_kind,
+            WorkflowRegistrySourceKind::SingleFile
+        );
+        assert!(resolved.source.contains("workflow.define"));
+
+        let error = registry
+            .delete("prompt-chaining", None)
+            .expect_err("builtin registry entries must not be deleted");
+        assert!(format!("{error}").contains("builtin workflow registry entry"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_registry_applies_workspace_user_builtin_precedence() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow registry precedence test because node is not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-registry-precedence-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let registry = WorkflowRegistry::new(Some(root.join("workspace")), Some(root.join("user")));
+        let source = workflow_code_definition_to_javascript(&minimal_definition(), None)
+            .expect("workflow-code source should serialize");
+        let node_path = node.to_string_lossy().to_string();
+
+        registry
+            .add(
+                "prompt-chaining",
+                WorkflowRegistrySourceScope::User,
+                WorkflowRegistrySourceInput::SingleFile {
+                    source: source.clone(),
+                    source_path: Some("user.js".to_string()),
+                },
+                &node_path,
+                &WorkflowCodeLimitsConfig::default(),
+            )
+            .expect("user registry entry should add");
+        registry
+            .add(
+                "prompt-chaining",
+                WorkflowRegistrySourceScope::Workspace,
+                WorkflowRegistrySourceInput::SingleFile {
+                    source,
+                    source_path: Some("workspace.js".to_string()),
+                },
+                &node_path,
+                &WorkflowCodeLimitsConfig::default(),
+            )
+            .expect("workspace registry entry should add");
+
+        let resolved = registry
+            .resolve("prompt-chaining")
+            .expect("shadowed registry entry should resolve");
+        assert_eq!(
+            resolved.metadata.source_scope,
+            WorkflowRegistrySourceScope::Workspace
+        );
+        assert_eq!(resolved.metadata.source_path, "workflow.js");
+
+        registry
+            .delete(
+                "prompt-chaining",
+                Some(WorkflowRegistrySourceScope::Workspace),
+            )
+            .expect("workspace registry entry should delete");
+        let resolved = registry
+            .resolve("prompt-chaining")
+            .expect("user registry entry should resolve after workspace delete");
+        assert_eq!(
+            resolved.metadata.source_scope,
+            WorkflowRegistrySourceScope::User
+        );
+
+        registry
+            .delete("prompt-chaining", Some(WorkflowRegistrySourceScope::User))
+            .expect("user registry entry should delete");
+        let resolved = registry
+            .resolve("prompt-chaining")
+            .expect("builtin registry entry should resolve after user delete");
+        assert_eq!(
+            resolved.metadata.source_scope,
+            WorkflowRegistrySourceScope::Builtin
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_registry_adds_source_directory_and_rejects_hash_mismatch() {
+        let Some(node) = find_node() else {
+            eprintln!(
+                "skipping workflow registry source directory test because node is not available"
+            );
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-registry-directory-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace_root = root.join("workspace");
+        let registry = WorkflowRegistry::new(Some(workspace_root.clone()), Some(root.join("user")));
+        let node_path = node.to_string_lossy().to_string();
+        let export = export_workflow_code_source_from_definition(
+            "directory-flow",
+            &minimal_definition(),
+            WorkflowCodeSourceExportFormat::Directory,
+        )
+        .expect("workflow-code source directory should export");
+
+        let added = registry
+            .add_from_export(
+                "directory-flow",
+                WorkflowRegistrySourceScope::Workspace,
+                export.clone(),
+                &node_path,
+                &WorkflowCodeLimitsConfig::default(),
+            )
+            .expect("source directory registry entry should add");
+        assert_eq!(
+            added.source_kind,
+            WorkflowRegistrySourceKind::SourceDirectory
+        );
+        assert!(added.definition_sha256.is_some());
+
+        let resolved = registry
+            .resolve("directory-flow")
+            .expect("source directory registry entry should resolve");
+        assert!(resolved.schema_import_root.is_some());
+        let recompiled = compile_workflow_code_source_with_schema_import_root(
+            &node,
+            &resolved.source,
+            WorkflowCodeLanguage::JavaScript,
+            &WorkflowCodeLimitsConfig::default(),
+            resolved.schema_import_root.as_deref(),
+        )
+        .expect("resolved source directory registry entry should compile");
+        assert!(
+            recompiled.validation.ok,
+            "{:?}",
+            recompiled.validation.diagnostics
+        );
+        assert_eq!(
+            recompiled.definition.workflow.run_output_schema.as_deref(),
+            Some("final")
+        );
+
+        fs::write(
+            workspace_root.join("directory-flow").join("workflow.js"),
+            "workflow.define({ alias: 'tampered' })\n",
+        )
+        .expect("registry source should tamper");
+        let error = registry
+            .resolve("directory-flow")
+            .expect_err("tampered registry entry should fail hash validation");
+        let message = format!("{error}");
+        assert!(
+            message.contains("sha256 mismatch") || message.contains("byte count mismatch"),
+            "{message}"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
