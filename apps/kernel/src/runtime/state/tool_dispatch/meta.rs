@@ -60,7 +60,7 @@ impl KernelRuntimeState {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message:
-                    "metaagent runtime tools require exactly one active metaagent provider run"
+                    "Meta mode runtime tools require exactly one active provider run for an agent in Meta mode"
                         .to_string(),
             });
         };
@@ -104,7 +104,7 @@ impl KernelRuntimeState {
         if agent.session_id() != session.id() || !agent.is_metaagent() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "metaagent runtime tools are only available to session metaagents"
+                message: "Meta mode runtime tools are only available to agents currently in Meta mode"
                     .to_string(),
             });
         }
@@ -1562,14 +1562,14 @@ impl KernelRuntimeState {
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "metaagent tools require an agent-bound provider run".to_string(),
+                message: "Meta mode tools require an agent-bound provider run".to_string(),
             });
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if !agent.is_metaagent() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "metaagent tools are only available to session metaagents".to_string(),
+                message: "Meta mode tools are only available to agents currently in Meta mode".to_string(),
             });
         }
         let session = self
@@ -2187,7 +2187,7 @@ impl KernelRuntimeState {
             return Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
-                    "error": "metaagents cannot resolve their own runtime interactions",
+                    "error": "agents in Meta mode cannot resolve their own runtime interactions",
                     "interaction_id": interaction.id(),
                 }),
             });
@@ -2205,7 +2205,7 @@ impl KernelRuntimeState {
             return Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
-                    "error": "metaagents may only resolve interactions for owned regular agents",
+                    "error": "agents in Meta mode may only resolve interactions for owned regular agents",
                     "interaction_id": interaction.id(),
                     "target_agent_id": target.id(),
                 }),

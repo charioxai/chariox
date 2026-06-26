@@ -129,7 +129,7 @@ impl KernelRuntimeState {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
                     payload: serde_json::json!({
-                        "error": format!("runtime tool `{canonical_tool_name}` is not available to metaagents"),
+                        "error": format!("runtime tool `{canonical_tool_name}` is not available to agents in Meta mode"),
                         "tool": canonical_tool_name,
                     }),
                 });

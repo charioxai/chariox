@@ -212,7 +212,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 .payload
                 .get("error")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("not available to metaagents")),
+                .is_some_and(|message| message.contains("not available to agents in Meta mode")),
         "{:?}",
         denied_direct_tool.payload
     );
@@ -254,7 +254,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     assert!(
         denied
             .to_string()
-            .contains("exactly one active metaagent provider run"),
+            .contains("exactly one active provider run for an agent in Meta mode"),
         "{denied:?}"
     );
 }
@@ -2455,7 +2455,7 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
     assert!(
         denied
             .to_string()
-            .contains("exactly one active metaagent provider run"),
+            .contains("exactly one active provider run for an agent in Meta mode"),
         "{denied:?}"
     );
 }
@@ -3030,7 +3030,7 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
     assert!(
         regular_denied
             .to_string()
-            .contains("only available to session metaagents"),
+            .contains("agents currently in Meta mode"),
         "{regular_denied:?}"
     );
 }
