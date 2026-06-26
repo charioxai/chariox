@@ -18,6 +18,7 @@ impl CommandRouter {
             &self.runtime_state,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
+            self.remote_relay_inventory_projection.clone(),
             DEFAULT_LOCAL_USER_ID,
         )
         .await

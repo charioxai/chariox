@@ -150,6 +150,34 @@ test("automation action handler activates a selected unattached agent", async ()
   })
 })
 
+test("automation action handler sets waiting room launch placement", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    snapshot: () => ({ waitingRoomState }),
+  })
+
+  const result = await handler({
+    action: "set_waiting_room_launch",
+    machineRef: "machine-peer",
+    kernelRef: "kernel-peer",
+    focus: "new",
+  })
+
+  assert.deepEqual(result, {
+    waitingRoomState: {
+      ...waitingRoomFixture(),
+      selectedMachineRef: "machine-peer",
+      selectedKernelRef: "kernel-peer",
+      focus: "new",
+    },
+  })
+})
+
 test("automation connect action refreshes waiting room when already connected", async () => {
   let refreshed = false
   const handler = createCliAutomationActionHandler({

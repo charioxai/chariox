@@ -75,14 +75,14 @@ test("waiting room remote rows render machine and kernel inventory", () => {
   )
 
   assert.equal(rows.find((row) => row.id === "machines-header")?.value, "2 online (1 pending)")
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.title, "Builder")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.title, "builder")
   assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=1/1 leased=0")
   assert.equal(rows.find((row) => row.id === "machine:machine-2")?.title, "Cold (pending)")
   assert.equal(rows.find((row) => row.id === "machine:machine-2")?.value, "0 kernels no providers · next: approve machine-2")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.title, "builder-kernel @ builder")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.value, "ready codex,opencode")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.focused, true)
-  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "blocked no providers · next: run /machine kernels cold; enable remote leases on cold-kernel or choose another worker")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "blocked no providers · next: run /machine kernels cold; enable remote access on cold-kernel or choose another kernel")
 })
 
 test("waiting room remote rows warn when machine kernels reject leases", () => {
@@ -111,7 +111,7 @@ test("waiting room remote rows warn when machine kernels reject leases", () => {
     24,
   )
 
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 blocked=1 leased=0 · next: run /machine kernels Worker; enable remote leases on kernel-1 or choose another worker")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 blocked=1 leased=0 · next: run /machine kernels Worker; enable remote access on kernel-1 or choose another kernel")
 })
 
 test("waiting room remote rows distinguish provider and unknown readiness", () => {
@@ -144,9 +144,9 @@ test("waiting room remote rows distinguish provider and unknown readiness", () =
     24,
   )
 
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "2 kernels no providers · ready=0/2 needs-provider=1 unknown=1 leased=0 · next: fix listed kernel readiness issues on Worker or choose another worker")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "2 kernels no providers · ready=0/2 needs-provider=1 unknown=1 leased=0 · next: fix listed kernel readiness issues on Worker or choose another kernel")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-provider")?.value, "needs-provider no providers · next: run /machine kernels machine-1; configure provider CLIs on provider-kernel")
-  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-unknown")?.value, "unknown no providers · next: run /machine kernels machine-1; refresh unknown-kernel readiness or reconnect that worker before launching remote agents")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-unknown")?.value, "unknown no providers · next: run /machine kernels machine-1; refresh unknown-kernel readiness or reconnect that kernel before launching agents")
 })
 
 test("waiting room remote helpers classify deletable and attachable inventory", () => {

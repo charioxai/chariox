@@ -23,7 +23,7 @@ export function waitingRoomLaunchMachineOptions(remote: WaitingRoomRemoteState =
     { id: "local", label: "local", machine: null },
     ...(remote.machines ?? []).map((machine) => ({
       id: machine.machine_id,
-      label: machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id,
+      label: machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id,
       machine,
     })),
   ]

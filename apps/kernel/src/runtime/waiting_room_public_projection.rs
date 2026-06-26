@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, OnceLock};
 
+use arroba_relay::protocol::RelayKernelPresence;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::local::{
-    ExternalProviderSessionRecord, RelayStatus, TerminalRecord, WaitingRoomLaunchTarget,
-    WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
-    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
-    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
+    ExternalProviderSessionRecord, RelayStatus, RemoteMachineRecord, TerminalRecord,
+    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary,
+    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
+    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
+    WaitingRoomPublicWorkflowSummary,
 };
 use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::runtime::waiting_room_activity::{
@@ -48,6 +50,8 @@ pub(crate) fn build_waiting_room_public_snapshot(
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<String>,
     relay_status: RelayStatus,
+    remote_machines: Vec<RemoteMachineRecord>,
+    remote_kernels: Vec<RelayKernelPresence>,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
     caller_user_id: &str,
@@ -61,11 +65,13 @@ pub(crate) fn build_waiting_room_public_snapshot(
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor.as_deref(),
         &relay_status,
+        &remote_machines,
+        &remote_kernels,
         &terminals,
         launch_target.as_ref(),
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 8,
+        schema_version: 9,
         inventory_version,
         generated_at_ms,
         sessions,
@@ -73,6 +79,8 @@ pub(crate) fn build_waiting_room_public_snapshot(
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
         relay_status,
+        remote_machines,
+        remote_kernels,
         terminals,
         launch_target,
     })
@@ -128,6 +136,8 @@ fn waiting_room_inventory_version(
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<&str>,
     relay_status: &RelayStatus,
+    remote_machines: &[RemoteMachineRecord],
+    remote_kernels: &[RelayKernelPresence],
     terminals: &[TerminalRecord],
     launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
@@ -137,6 +147,8 @@ fn waiting_room_inventory_version(
         "external_provider_sessions_has_more": external_provider_sessions_has_more,
         "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
         "relay_status": relay_status,
+        "remote_machines": remote_machines,
+        "remote_kernels": remote_kernels,
         "terminals": terminals,
         "launch_target": launch_target,
     }))
@@ -372,8 +384,10 @@ fn waiting_room_public_workflow_summaries(
 
 #[cfg(test)]
 mod tests {
+    use arroba_relay::protocol::RelayKernelPresence;
+
     use crate::agent::{AgentInstance, GridPosition};
-    use crate::local::{RelayStatus, TerminalType};
+    use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, waiting_room_session_summaries,
@@ -542,6 +556,32 @@ mod tests {
                 machine_id: "machine".to_string(),
                 machine_alias: None,
             },
+            vec![RemoteMachineRecord {
+                machine_id: "machine-peer".to_string(),
+                machine_alias: Some("peer".to_string()),
+                registry_alias: None,
+                display_name: "peer".to_string(),
+                trust_status: RemoteMachineTrustStatus::Approved,
+                online: true,
+                pending: false,
+                kernel_count: 1,
+                available_providers: vec!["dev-stub".to_string()],
+                provider_accounts: Vec::new(),
+            }],
+            vec![RelayKernelPresence {
+                kernel_id: "kernel-peer".to_string(),
+                machine_id: "machine-peer".to_string(),
+                machine_alias: Some("peer".to_string()),
+                relay_alias: None,
+                kernel_alias: Some("peer-kernel".to_string()),
+                available_providers: vec!["dev-stub".to_string()],
+                provider_accounts: Vec::new(),
+                capabilities: vec!["remote_leases".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "peer-public-key".to_string(),
+            }],
             vec![crate::local::TerminalRecord {
                 terminal_id: "terminal-1".to_string(),
                 terminal_type: TerminalType::Cli,
@@ -554,10 +594,12 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 8);
+        assert_eq!(snapshot.schema_version, 9);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
+        assert_eq!(snapshot.remote_machines.len(), 1);
+        assert_eq!(snapshot.remote_kernels.len(), 1);
         assert_eq!(snapshot.terminals.len(), 1);
         assert!(!snapshot.inventory_version.is_empty());
     }

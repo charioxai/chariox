@@ -173,6 +173,26 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         await deps.refreshWaitingRoomData()
         return deps.snapshot()
       }
+      case "set_waiting_room_launch": {
+        if (deps.isAttached()) {
+          throw new Error("cannot set waiting room launch while attached")
+        }
+        const machineRef = typeof request.machineRef === "string" ? request.machineRef : undefined
+        const kernelRef = typeof request.kernelRef === "string" ? request.kernelRef : undefined
+        const focus = request.focus === "launch-machine" || request.focus === "launch-kernel" || request.focus === "new"
+          ? request.focus
+          : undefined
+        if (machineRef === undefined && kernelRef === undefined && focus === undefined) {
+          throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> focus=new|launch-machine|launch-kernel")
+        }
+        deps.setWaitingRoomState({
+          ...deps.waitingRoomState(),
+          ...(machineRef !== undefined ? { selectedMachineRef: machineRef } : {}),
+          ...(kernelRef !== undefined ? { selectedKernelRef: kernelRef } : {}),
+          ...(focus !== undefined ? { focus } : {}),
+        })
+        return deps.snapshot()
+      }
       case "snapshot":
         return deps.snapshot()
       case "interaction_submit": {

@@ -388,9 +388,9 @@ export function deriveWaitingRoomControlActivationDecision(options: {
     case "machine": {
       const machine = remote.machines?.[options.state.machineIndex]
       if (!machine) {
-        return { action: "error", message: "no remote machine selected" }
+        return { action: "error", message: "no machine selected" }
       }
-      const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+      const label = machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
       if (machine.online === false || machine.pending || machine.kernel_count === 0) {
         return { action: "info", message: `press D twice to delete machine ${label}` }
       }
@@ -404,7 +404,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
     case "remote-kernel": {
       const kernel = remote.kernels?.[options.state.remoteKernelIndex]
       if (!kernel) {
-        return { action: "error", message: "no remote kernel selected" }
+        return { action: "error", message: "no kernel selected" }
       }
       const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
       if (!waitingRoomRemoteKernelIsAttachable(kernel)) {
@@ -515,9 +515,9 @@ export function deriveWaitingRoomDeleteDecision(options: {
   }
 
   if (options.state.focus === "machine" && choice.remoteMachine) {
-    const label = choice.remoteMachine.display_name
-      ?? choice.remoteMachine.registry_alias
+    const label = choice.remoteMachine.registry_alias
       ?? choice.remoteMachine.machine_alias
+      ?? choice.remoteMachine.display_name
       ?? choice.remoteMachine.machine_id
     if (!waitingRoomRemoteMachineCanDelete(choice.remoteMachine)) {
       return {

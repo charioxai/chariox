@@ -27,6 +27,9 @@ export type CliAutomationRequest = {
   collapsed?: unknown
   externalSessionId?: unknown
   externalSessionIndex?: unknown
+  machineRef?: unknown
+  kernelRef?: unknown
+  focus?: unknown
 }
 
 export type CliAutomationResponse = {

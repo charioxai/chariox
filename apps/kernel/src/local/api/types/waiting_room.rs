@@ -23,6 +23,10 @@ pub struct WaitingRoomInventorySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_sessions_next_cursor: Option<String>,
     pub relay_status: RelayStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_machines: Vec<RemoteMachineRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
@@ -41,6 +45,10 @@ pub struct WaitingRoomPublicSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_sessions_next_cursor: Option<String>,
     pub relay_status: RelayStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_machines: Vec<RemoteMachineRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_kernels: Vec<RelayKernelPresence>,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
@@ -192,6 +200,8 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,
             external_provider_sessions_next_cursor: snapshot.external_provider_sessions_next_cursor,
             relay_status: snapshot.relay_status,
+            remote_machines: snapshot.remote_machines,
+            remote_kernels: snapshot.remote_kernels,
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,
         }

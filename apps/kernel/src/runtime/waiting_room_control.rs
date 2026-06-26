@@ -9,7 +9,9 @@ use crate::local::{
     ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
     WaitingRoomPublicSnapshot,
 };
-use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::projection::{
+    DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
+};
 use crate::runtime::relay_config_control::projected_relay_status_view;
 use crate::runtime::session_read_control::execute_list_sessions_request;
 use crate::runtime::state::KernelRuntimeState;
@@ -23,6 +25,7 @@ pub(crate) async fn execute_waiting_room_inventory_request(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::WaitingRoomInventory {
@@ -31,6 +34,7 @@ pub(crate) async fn execute_waiting_room_inventory_request(
             runtime_state,
             relay_state,
             config_projection,
+            remote_relay_inventory_projection,
             caller_user_id,
         )
         .await?
@@ -43,6 +47,7 @@ pub(crate) async fn execute_waiting_room_request(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     request: LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -53,6 +58,7 @@ pub(crate) async fn execute_waiting_room_request(
                 runtime_state,
                 relay_state,
                 config_projection,
+                remote_relay_inventory_projection,
                 caller_user_id,
             )
             .await
@@ -63,6 +69,7 @@ pub(crate) async fn execute_waiting_room_request(
                 runtime_state,
                 relay_state,
                 config_projection,
+                remote_relay_inventory_projection,
                 caller_user_id,
             )
             .await
@@ -79,6 +86,7 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot {
@@ -87,6 +95,7 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
             runtime_state,
             relay_state,
             config_projection,
+            remote_relay_inventory_projection,
             caller_user_id,
         )
         .await?,
@@ -98,6 +107,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let runtime_sessions =
@@ -113,6 +123,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
             }
         };
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
+    let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = paired_terminal_records();
     let (external_provider_session_page, metaagent_events) = {
         let app = app.lock().await;
@@ -134,6 +145,8 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
         external_provider_session_page.has_more,
         external_provider_session_page.next_cursor,
         relay_status,
+        remote_machines,
+        remote_kernels,
         terminals,
         unix_epoch_ms(),
         caller_user_id,

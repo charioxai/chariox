@@ -79,7 +79,7 @@ export function waitingRoomRemoteRows(
   if (inventoryLoading && machines.length === 0 && waitingRoomRemoteKernels(remote).length === 0) {
     rows.push({
       id: "machines-loading",
-      title: "Remote Machines",
+      title: "Machines",
       value: loadingText,
       titleWidth,
       indent: 1,
@@ -93,7 +93,7 @@ export function waitingRoomRemoteRows(
   if (!relay?.configured && machines.length === 0 && waitingRoomRemoteKernels(remote).length === 0) {
     rows.push({
       id: "machines-unavailable",
-      title: "Remote Machines",
+      title: "Machines",
       value: "unavailable until relay is configured",
       titleWidth,
       indent: 1,
@@ -107,7 +107,7 @@ export function waitingRoomRemoteRows(
   if (machines.length === 0) {
     rows.push({
       id: "machines-none",
-      title: "Remote Machines",
+      title: "Machines",
       value: relay?.connected ? "none online" : "waiting for relay connection",
       titleWidth,
       indent: 1,
@@ -120,7 +120,7 @@ export function waitingRoomRemoteRows(
 
   const kernels = waitingRoomRemoteKernels(remote)
   for (const [index, machine] of machines.entries()) {
-    const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+    const label = waitingRoomRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
     const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
     const machineKernels = kernels.filter((kernel) => kernel.machine_id === machine.machine_id)
@@ -140,7 +140,7 @@ export function waitingRoomRemoteRows(
   if (kernels.length > 0) {
     rows.push({
       id: "remote-kernels-header",
-      title: "Remote Kernels",
+      title: "Kernels",
       value: "",
       titleWidth,
       indent: 0,
@@ -211,7 +211,7 @@ function waitingRoomMachineReadinessSummary(machine: WaitingRoomRemoteMachine, k
 function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[] = []): string {
   const machineLabel = waitingRoomRemoteMachineLabel(machine)
   if (machine.online === false) {
-    return "connect or restart the remote kernel"
+    return "connect or restart the kernel"
   }
   if (machine.trust_status !== "approved" || machine.pending) {
     return `approve ${machine.machine_id}`
@@ -224,7 +224,7 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
     const kernelLabel = kernels.length === 1 && firstKernel
       ? waitingRoomRemoteKernelLabel(firstKernel)
       : "one of this machine's kernels"
-    return `run /machine kernels ${machineLabel}; enable remote leases on ${kernelLabel} or choose another worker`
+    return `run /machine kernels ${machineLabel}; enable remote access on ${kernelLabel} or choose another kernel`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
     return `run /machine kernels ${machineLabel}; configure provider CLIs on ${machineLabel}`
@@ -233,7 +233,7 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
     return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
   }
   if (kernels.length > 0 && !kernels.some((kernel) => remoteKernelReadiness(kernel) === "ready")) {
-    return `fix listed kernel readiness issues on ${machineLabel} or choose another worker`
+    return `fix listed kernel readiness issues on ${machineLabel} or choose another kernel`
   }
   if ((machine.available_providers ?? []).length === 0) {
     return `configure provider CLIs on ${machineLabel}`
@@ -247,10 +247,10 @@ function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): str
   const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
-    return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
+    return `${inspect}enable remote access on ${kernelLabel} or choose another kernel`
   }
   if (readiness === "unknown") {
-    return `${inspect}refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+    return `${inspect}refresh ${kernelLabel} readiness or reconnect that kernel before launching agents`
   }
   if (readiness === "needs-provider") {
     return `${inspect}configure provider CLIs on ${kernelLabel}`
@@ -259,7 +259,7 @@ function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): str
 }
 
 function waitingRoomRemoteMachineLabel(machine: WaitingRoomRemoteMachine): string {
-  return machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+  return machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
 }
 
 function waitingRoomRemoteKernelLabel(kernel: WaitingRoomRemoteKernel): string {

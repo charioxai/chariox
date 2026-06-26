@@ -1333,6 +1333,8 @@ export type WaitingRoomInventorySnapshot = {
   inventory_version: string
   sessions: WaitingRoomPublicSessionSummary[]
   relay_status: RelayStatus
+  remote_machines?: RemoteMachineRecord[]
+  remote_kernels?: RelayKernelPresence[]
   terminals?: TerminalRecord[]
   launch_target?: {
     workspace_id: string
@@ -1483,7 +1485,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 196
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 197
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

@@ -768,7 +768,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(inventory_version, "inventory-b");
-                assert_eq!(schema_version, 8);
+                assert_eq!(schema_version, 9);
                 assert_eq!(
                     sessions
                         .iter()
@@ -1076,7 +1076,7 @@ mod tests {
         sessions: Vec<WaitingRoomPublicSessionSummary>,
     ) -> WaitingRoomPublicSnapshot {
         WaitingRoomPublicSnapshot {
-            schema_version: 8,
+            schema_version: 9,
             inventory_version: inventory_version.to_string(),
             generated_at_ms: 100,
             sessions,
@@ -1093,6 +1093,8 @@ mod tests {
                 machine_id: "machine-1".to_string(),
                 machine_alias: None,
             },
+            remote_machines: Vec::new(),
+            remote_kernels: Vec::new(),
             terminals: Vec::new(),
             launch_target: None,
         }
