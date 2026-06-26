@@ -44,6 +44,15 @@ fn mark_test_agent_controlled_by_metaagent(
         .expect("test agent should exist");
 }
 
+fn activate_test_agent_meta_mode(
+    app: &mut DaemonApp,
+    agent: crate::agent::AgentInstance,
+) -> crate::agent::AgentInstance {
+    app.agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("test agent should enter meta mode")
+}
+
 fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
 where
     Fut: std::future::Future<Output = ()> + 'static,
@@ -78,12 +87,9 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let standard_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -272,12 +278,9 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let guide_search = router
         .runtime_state
@@ -969,12 +972,9 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let routing_example = crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES
         .iter()
@@ -1273,12 +1273,9 @@ async fn metaagent_workflow_code_applies_inline_typescript_source() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let source = r#"
 type ProviderName = "dev-stub";
@@ -1369,12 +1366,9 @@ async fn metaagent_workflow_code_applies_canonical_fan_out_pattern() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let fan_out_example = crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES
         .iter()
@@ -1551,12 +1545,9 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let owned_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -1799,12 +1790,9 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
@@ -2048,12 +2036,9 @@ async fn metaagent_wait_trace_wakes_when_worker_output_arrives_after_wait_starts
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
@@ -2178,12 +2163,9 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
         ))
         .expect("attachment should attach");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let submitted = app
         .submit_prompt(
             session.id(),
@@ -2252,12 +2234,9 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let standard_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2474,12 +2453,9 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     launch_test_provider(
         &mut app,
         session.id(),
@@ -2566,12 +2542,9 @@ async fn local_metaagent_task_update_notifies_metaagent() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     launch_test_provider(
         &mut app,
         session.id(),
@@ -2641,12 +2614,9 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     launch_test_provider(
         &mut app,
         session.id(),
@@ -2738,12 +2708,9 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let shared_auth_token = "shared-meta-runtime-token".to_string();
     let standard_run = app
         .launch_provider(
@@ -2851,12 +2818,9 @@ async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("remote-meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("remote-meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let metaagent = app
         .agents()
         .bind_remote_execution(
@@ -2929,12 +2893,9 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("remote-meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("remote-meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let metaagent = app
         .agents()
         .bind_remote_execution(
@@ -3061,12 +3022,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         )
         .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
@@ -3357,12 +3315,9 @@ async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -3745,12 +3700,9 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns_inner() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -3900,12 +3852,9 @@ async fn metaagent_prompt_command_does_not_queue_over_workflow_turns_inner() {
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
@@ -4000,12 +3949,9 @@ async fn metaagent_run_command_routes_core_workflow_commands_inner() {
         )
         .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -4217,12 +4163,9 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -4455,12 +4398,9 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
         )
         .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
@@ -4560,12 +4500,9 @@ async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_man
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -4697,20 +4634,17 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
         .has_member("user-2"));
 
     let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(&session_id, "dev-stub")
-                .with_alias("owner-meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-meta"))
         .expect("owner metaagent should spawn");
+    let owner_metaagent = activate_test_agent_meta_mode(&mut app, owner_metaagent);
     let peer_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("peer-meta")
-                .with_owner_user_id("user-2")
-                .with_role(crate::agent::AgentRole::Meta),
+                .with_owner_user_id("user-2"),
         )
         .expect("peer metaagent should spawn");
+    let peer_metaagent = activate_test_agent_meta_mode(&mut app, peer_metaagent);
     let owner_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
@@ -4728,20 +4662,17 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
         .expect("peer worker should spawn");
 
     let owner_second_metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(&session_id, "dev-stub")
-                .with_alias("owner-meta-2")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-meta-2"))
         .expect("owner should be allowed to create a second metaagent");
+    let owner_second_metaagent = activate_test_agent_meta_mode(&mut app, owner_second_metaagent);
     let peer_second_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("peer-meta-2")
-                .with_owner_user_id("user-2")
-                .with_role(crate::agent::AgentRole::Meta),
+                .with_owner_user_id("user-2"),
         )
         .expect("collaborator should be allowed to create a second metaagent");
+    let peer_second_metaagent = activate_test_agent_meta_mode(&mut app, peer_second_metaagent);
     assert!(owner_second_metaagent.is_metaagent());
     assert!(peer_second_metaagent.is_metaagent());
 
@@ -4861,12 +4792,9 @@ async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_i
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -5005,12 +4933,9 @@ async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -5091,12 +5016,9 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let prompt_flag_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -5295,12 +5217,9 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_i
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let _worker_run = launch_test_provider(
         &mut app,
@@ -5465,12 +5384,9 @@ async fn idle_metaagent_turn_with_active_task_injects_orphaned_task_event_inner(
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -5603,12 +5519,9 @@ async fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_i
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let _worker_run = launch_test_provider(
         &mut app,
@@ -5724,12 +5637,9 @@ async fn local_metaagent_command_search_request_enforces_owner_scope_impl() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let mut owner_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
@@ -5820,12 +5730,9 @@ async fn local_metaagent_turn_inspection_requests_enforce_owner_scope_impl() {
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
@@ -6013,12 +5920,9 @@ async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let event =
         app.metaagent_event_store()
             .record(crate::runtime::metaagent_event::NewMetaagentEvent {
@@ -6172,12 +6076,9 @@ async fn metaagent_event_prompts_retry_after_provider_launch() {
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
@@ -6269,12 +6170,9 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents_inn
         )
         .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
@@ -6543,12 +6441,9 @@ async fn metaagent_event_subscriptions_persist_and_can_be_removed() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -6653,12 +6548,9 @@ async fn metaagent_event_subscription_rejects_unknown_kinds_with_suggestions() {
         ))
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -6738,12 +6630,9 @@ async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_e
         )
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     let worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -6940,12 +6829,9 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
