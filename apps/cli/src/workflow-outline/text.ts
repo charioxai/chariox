@@ -84,6 +84,9 @@ export function renderWorkflowOutlineToText(outline: WorkflowOutline) {
     ...(outline.workflowRunId
       ? [`run: ${outline.workflowRunId} • status ${String(outline.workflowRunStatus).toLowerCase()}${outline.workflowFailureCount > 0 ? ` • failures ${outline.workflowFailureCount}` : ""}`]
       : []),
+    ...(outline.workflowRunFinalOutput
+      ? [`final output${outline.workflowRunFinalOutputValid === false ? " (invalid)" : ""}: ${outline.workflowRunFinalOutput}`]
+      : []),
     `Tab cycles nodes • nodes ${outline.nodeCount} • endpoints ${outline.endpointCount} • edges ${outline.edgeCount}`,
   ]
   for (const node of outline.nodes) {

@@ -84,6 +84,8 @@ export function buildWorkflowOutline(options: {
     workflowAlias: options.workflow.alias,
     workflowRunId: displayRun?.id ?? null,
     workflowRunStatus: displayRun?.status ?? null,
+    workflowRunFinalOutput: formatWorkflowRunFinalOutput(displayRun ?? null),
+    workflowRunFinalOutputValid: displayRun?.final_output_valid ?? null,
     workflowFailureCount: displayRun?.failure_events?.length ?? 0,
     edgeCount: edges.length,
     endpointCount: endpoints.length,
@@ -136,4 +138,16 @@ function resolveWorkflowDisplayRun(workflowId: string, workflowRuns: WorkflowRun
 
 function isTerminalWorkflowRunStatus(status: string) {
   return status === "Completed" || status === "Failed" || status === "Stopped"
+}
+
+function formatWorkflowRunFinalOutput(workflowRun: WorkflowRun | null) {
+  const message = workflowRun?.final_output?.message
+  if (!message) {
+    return null
+  }
+  const singleLine = message.replace(/\s+/g, " ").trim()
+  if (singleLine.length <= 180) {
+    return singleLine
+  }
+  return `${singleLine.slice(0, 177)}...`
 }

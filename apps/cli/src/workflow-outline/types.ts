@@ -42,6 +42,8 @@ export type WorkflowOutline = {
   workflowAlias: string | null
   workflowRunId: string | null
   workflowRunStatus: string | null
+  workflowRunFinalOutput: string | null
+  workflowRunFinalOutputValid: boolean | null
   workflowFailureCount: number
   edgeCount: number
   endpointCount: number

@@ -169,6 +169,32 @@ test("workflow outline surfaces failure counts and selected-node failure details
   assert.match(rendered, /outputvalidationfailed • output\.message must be an object with ok=true/i)
 })
 
+test("workflow outline renders completed run final output", () => {
+  const outline = buildWorkflowOutline({
+    workflow: workflow(),
+    agents: [
+      agent("agent-a", { agent_ref: "a1", alias: "lead" }),
+      agent("agent-b", { agent_ref: "b1" }),
+      agent("agent-c", { agent_ref: "c1" }),
+    ],
+    workflowRuns: [workflowRun({
+      status: "Completed",
+      active_node_run_id: null,
+      final_output: {
+        message: JSON.stringify({ decision: "accept", reason: "schema-valid result" }),
+      },
+      final_output_valid: true,
+      completed_at_ms: 20,
+    })],
+    selectedNodeId: "node-a",
+  })
+
+  const rendered = renderWorkflowOutlineToText(outline)
+
+  assert.match(rendered, /run: run-1 • status completed/)
+  assert.match(rendered, /final output: \{"decision":"accept","reason":"schema-valid result"\}/)
+})
+
 test("non-selected workflow nodes omit non-graph attributes in the outline text", () => {
   const outline = buildWorkflowOutline({
     workflow: workflow(),

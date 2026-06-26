@@ -43,6 +43,8 @@ import {
   runHetznerCommand,
   shellQuote,
 } from './lib/native-tui-remote-execution.mjs'
+import { buildWorkflowOutline } from '../dist/workflow-outline/build.js'
+import { renderWorkflowOutlineToText } from '../dist/workflow-outline/text.js'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -833,6 +835,49 @@ function validateExampleRuntimeResult(exampleName, run) {
   }
 }
 
+async function validateTopologyTuiOutlineProjection(client, sessionId, exampleName, apply, completedRun) {
+  const stateResponse = await client.send(getSessionStateRequest(sessionId))
+  const session = unwrap(stateResponse, 'SessionStateLoaded')?.session
+    ?? unwrap(stateResponse, 'SessionState')?.session
+  const workflow = (session?.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
+  assert(workflow, `example ${exampleName} TUI outline should find workflow in session`, { workflowId: apply.workflow_id })
+  const entryNodeId = completedRun.entry_node_id ?? workflow.endpoints?.[0]?.entry_node_id ?? workflow.nodes?.[0]?.id
+  const outline = buildWorkflowOutline({
+    workflow,
+    agents: session?.agents ?? [],
+    workflowRuns: session?.workflow_runs ?? [],
+    selectedNodeId: entryNodeId ?? null,
+  })
+  const rendered = renderWorkflowOutlineToText(outline)
+  assert(rendered.includes(`workflow: ${workflow.id}`), `example ${exampleName} TUI outline should include workflow id`, rendered)
+  assert(rendered.includes(`status ${String(completedRun.status).toLowerCase()}`), `example ${exampleName} TUI outline should include run status`, rendered)
+  const finalMessage = completedRun.final_output?.message
+  assert(finalMessage && rendered.includes(finalMessage), `example ${exampleName} TUI outline should include final output`, {
+    rendered,
+    finalMessage,
+  })
+  for (const node of workflow.nodes ?? []) {
+    assert(rendered.includes(`node ${node.id}`), `example ${exampleName} TUI outline should include node ${node.id}`, rendered)
+  }
+  for (const edge of workflow.edges ?? []) {
+    assert(rendered.includes(edge.id), `example ${exampleName} TUI outline should include edge ${edge.id}`, rendered)
+    assert(rendered.includes(edge.from_node_id), `example ${exampleName} TUI outline should include edge source ${edge.from_node_id}`, rendered)
+    assert(rendered.includes(edge.to_node_id), `example ${exampleName} TUI outline should include edge target ${edge.to_node_id}`, rendered)
+  }
+  for (const endpoint of workflow.endpoints ?? []) {
+    assert(rendered.includes(endpoint.id), `example ${exampleName} TUI outline should include endpoint ${endpoint.id}`, rendered)
+  }
+  return {
+    workflowId: workflow.id,
+    workflowRunId: completedRun.id,
+    statusVisible: rendered.includes(`status ${String(completedRun.status).toLowerCase()}`),
+    finalOutputVisible: Boolean(finalMessage && rendered.includes(finalMessage)),
+    nodes: workflow.nodes?.length ?? 0,
+    edges: workflow.edges?.length ?? 0,
+    endpoints: workflow.endpoints?.length ?? 0,
+  }
+}
+
 function validateApplyResult(result, label, expected = defaultToyExpectation()) {
   assert(result?.compile?.validation?.ok, `${label} compile validation failed`, result?.compile?.validation)
   const apply = result.apply
@@ -973,9 +1018,17 @@ async function completeAppliedTopologyWorkflow(client, sessionId, exampleName, d
   const runtimeRun = invokeResponse?.workflow_run
   assert(runtimeRun?.id, `example ${exampleName} runtime should start a workflow run`, invokeResponse)
   const completedRun = await waitForCompletedWorkflowRun(client, sessionId, runtimeRun.id, timeoutMs)
+  const tuiOutline = await validateTopologyTuiOutlineProjection(
+    client,
+    sessionId,
+    exampleName,
+    apply,
+    completedRun,
+  )
   return {
     workflowRunId: completedRun.id,
     runtime: validateExampleRuntimeResult(exampleName, completedRun),
+    tuiOutline,
   }
 }
 
@@ -1151,6 +1204,7 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace, timeout
       artifactName,
       topology,
       runtime: completed.runtime,
+      tuiOutline: completed.tuiOutline,
       packageImportedArtifactName: importedArtifactName,
       workflowId: apply.workflow_id,
       runtimeWorkflowId: runtimeApply.workflow_id,
@@ -1413,6 +1467,7 @@ async function validateTopologySourceExportOnKernel(client, session, nodePath, w
     applyWorkflowId: apply.workflow_id,
     workflowRunId: completed.workflowRunId,
     runtime: completed.runtime,
+    tuiOutline: completed.tuiOutline,
     sourceSha256: exportResult.source_sha256,
     directoryManifest: exportResult.format === 'directory'
       ? await writeSourceDirectoryExport(workspace, exportResult, label)
