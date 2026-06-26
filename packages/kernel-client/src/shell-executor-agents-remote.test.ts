@@ -729,7 +729,6 @@ test("executeShellCommand spawns worker agent on kernel", async () => {
         kernel_ref: "worker-1",
         slice_ref: null,
         worktree_placement: null,
-        metaagent: false,
       },
     })
     return { AgentSpawned: { agent } }
@@ -903,7 +902,6 @@ test("executeShellCommand treats --slice off as local agent placement", async ()
         kernel_ref: null,
         slice_ref: null,
         worktree_placement: null,
-        metaagent: false,
       },
     })
     return { AgentSpawned: { agent } }
@@ -999,7 +997,6 @@ test("executeShellCommand creates a new slice on an explicit worker kernel", asy
       kernel_ref: null,
       slice_ref: "slice-1",
       worktree_placement: null,
-      metaagent: false,
     },
   })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-slice" })
@@ -1091,7 +1088,6 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
         branch: "feature/login",
         from_ref: null,
       },
-      metaagent: false,
     },
   })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-slice" })

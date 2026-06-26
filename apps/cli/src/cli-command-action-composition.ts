@@ -375,7 +375,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
-      createSession(client, workspace, worktree, alias, agentDefaults, undefined, undefined, undefined, false, worktreePlacement),
+      createSession(client, workspace, worktree, alias, agentDefaults, undefined, undefined, undefined, worktreePlacement),
     createSessionInvite: (sessionId, expiresInMs, maxUses, collaborationLevel) =>
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
@@ -650,7 +650,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
     undoTurn: (agentRef, turnRef) => undoTurnApi(client, sessionState().id, agentRef, turnRef),
     forkAgent: (sourceAgentRef, alias) => forkAgentApi(client, sessionState().id, sourceAgentRef, alias),
-    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, metaagent) => {
+    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef) => {
       const agent = await spawnAgentApi(
         client,
         sessionState().id,
@@ -663,7 +663,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
           kernelRef: machineRef,
           worktreePlacement,
           sliceRef,
-          metaagent,
         },
       )
       return {

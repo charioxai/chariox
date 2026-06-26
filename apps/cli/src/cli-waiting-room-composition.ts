@@ -239,7 +239,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       account_profile: launch.account_profile,
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : launch.kernelRef, false),
+    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : launch.kernelRef),
     importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
     loadOlderExternalProviderSessions: async () => {
       const pageState = deps.externalProviderSessionsPageState()

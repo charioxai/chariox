@@ -12,7 +12,6 @@ export function createSessionRequest(
   sliceRef?: string | null,
   workspaceLiveSyncMode?: WorkspaceLiveSyncModeInput | null,
   kernelRef?: string | null,
-  metaagent = false,
   worktreePlacement?: Record<string, unknown> | null,
 ) {
   return {
@@ -25,7 +24,6 @@ export function createSessionRequest(
       ...(kernelRef?.trim() ? { kernel_ref: kernelRef.trim() } : {}),
       ...(worktreePlacement ? { worktree_placement: worktreePlacement } : {}),
       ...(workspaceLiveSyncMode ? { workspace_live_sync_mode: workspaceLiveSyncModeProtocolValue(workspaceLiveSyncMode) } : {}),
-      ...(metaagent ? { metaagent: true } : {}),
     },
   }
 }

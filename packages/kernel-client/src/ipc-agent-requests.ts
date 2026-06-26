@@ -20,7 +20,6 @@ export function spawnAgentRequest(
   kernelRef?: string,
   worktreePlacement?: Record<string, unknown>,
   sliceRef?: string,
-  metaagent = false,
 ) {
   return {
     SpawnAgent: {
@@ -35,7 +34,6 @@ export function spawnAgentRequest(
       kernel_ref: kernelRef ?? null,
       slice_ref: sliceRef ?? null,
       worktree_placement: worktreePlacement ?? null,
-      metaagent,
     },
   }
 }

@@ -351,7 +351,6 @@ async function main() {
         kernel_ref: null,
         slice_ref: startedSlice.id,
         worktree_placement: null,
-        metaagent: false,
       },
     }), "AgentSpawned")
     await sendWithTimeout(

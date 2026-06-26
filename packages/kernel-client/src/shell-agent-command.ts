@@ -158,7 +158,6 @@ export async function executeAgentCommand(
         sliceRef ? undefined : remoteKernelRef,
         worktreePlacement,
         sliceRef,
-        false,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution

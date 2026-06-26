@@ -9,6 +9,7 @@ export type SplitPaneFooterAgent = {
   id: string
   agent_ref: string
   role?: "standard" | "meta" | string
+  meta_mode?: { activated_at_ms?: number; task_id?: string | null } | null
   alias: string | null
   provider: string
   model: string | null

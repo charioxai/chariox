@@ -87,7 +87,7 @@ export async function executeSessionCommand(
         ?? context.worktree
       const worktreePlacement = shellGitWorktreePlacement(placement.options)
       const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps, placement.options.sliceDisplayMode)
-      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, false, worktreePlacement))
+      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, worktreePlacement))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session
       const attachmentId = await attachShellSession(session.id, deps)
