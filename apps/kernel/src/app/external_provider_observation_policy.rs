@@ -116,8 +116,37 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = strip_observed_attachment_markup(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn strip_observed_attachment_markup(text: &str) -> String {
+    ["image", "file"]
+        .into_iter()
+        .fold(text.to_string(), |current, tag| {
+            strip_observed_attachment_tag_blocks(&current, tag)
+        })
+}
+
+fn strip_observed_attachment_tag_blocks(text: &str, tag: &str) -> String {
+    let open_prefix = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find(&open_prefix) {
+        output.push_str(&remaining[..start]);
+        let after_open = &remaining[start..];
+        let Some(end) = after_open.find(&close) else {
+            output.push_str(after_open);
+            return output;
+        };
+        remaining = &after_open[end + close.len()..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 #[cfg(test)]
@@ -216,6 +245,22 @@ mod tests {
             Some("run this now".to_string())
         );
         assert_eq!(normalized_observed_prompt_text(" \n\t "), None);
+    }
+
+    #[test]
+    fn normalized_observed_prompt_text_ignores_generated_attachment_markup() {
+        assert_eq!(
+            normalized_observed_prompt_text(
+                "inspect this\n<image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>"
+            ),
+            Some("inspect this".to_string())
+        );
+        assert_eq!(
+            normalized_observed_prompt_text(
+                "read this <file name=\"notes.txt\" path=\"/tmp/notes.txt\"> </file> now"
+            ),
+            Some("read this now".to_string())
+        );
     }
 
     #[test]

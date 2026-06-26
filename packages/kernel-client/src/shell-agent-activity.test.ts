@@ -23,6 +23,7 @@ test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", ()
         status: "idle",
         prompt_status: "none",
         busy: false,
+        unread_idle_output: false,
       },
     },
   })
@@ -73,6 +74,7 @@ test("sessionHasActivePrompt follows projected active turn identity", () => {
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
         active_turn: {
           prompt_id: "prompt-2",
           provider_run_id: "run-1",
@@ -109,6 +111,7 @@ test("sessionPromptForAgent rejects legacy prompts that do not match projected a
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
         active_turn: {
           prompt_id: "prompt-2",
           provider_run_id: "run-1",
@@ -133,6 +136,7 @@ test("sessionHasActivePrompt does not invent prompt identity from anonymous proj
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
       },
     },
   })

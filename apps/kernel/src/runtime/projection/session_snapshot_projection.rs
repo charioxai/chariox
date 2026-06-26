@@ -49,7 +49,7 @@ pub struct AgentRuntimeActivity {
     pub status: AgentRuntimeStatus,
     pub prompt_status: AgentPromptRuntimeStatus,
     pub busy: bool,
-    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    #[serde(default)]
     pub unread_idle_output: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<AgentActiveTurnProjection>,
@@ -76,6 +76,15 @@ impl SessionSnapshotProjection {
         session_id: &str,
         last_event_id: u64,
     ) -> Result<Self, DaemonError> {
+        Self::from_daemon_app_for_user(app, session_id, last_event_id, None)
+    }
+
+    pub fn from_daemon_app_for_user(
+        app: &mut DaemonApp,
+        session_id: &str,
+        last_event_id: u64,
+        unread_for_user_id: Option<&str>,
+    ) -> Result<Self, DaemonError> {
         let mut session = app.sessions().get_session(session_id)?;
         let agents = app.agents().get_session_agents(session_id);
         session.set_agents(agents);
@@ -92,7 +101,7 @@ impl SessionSnapshotProjection {
             |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
             &prompt_activity,
             &active_turns,
-            None,
+            unread_for_user_id,
             |agent_id| {
                 completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id)
             },

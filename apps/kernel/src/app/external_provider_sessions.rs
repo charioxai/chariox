@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
-use crate::provider::ExternalProviderImportMetadata;
+use crate::provider::{ExternalProviderImportMetadata, ExternalProviderObservedCursor};
 use crate::session::unix_epoch_ms;
 
 const DEFAULT_EXTERNAL_PROVIDER_SESSION_LIMIT: usize = 25;
@@ -13,6 +13,61 @@ const MAX_EXTERNAL_PROVIDER_SESSION_LIMIT: usize = 100;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExternalProviderSessionIndexStore {
     inner: Arc<RwLock<ExternalProviderSessionIndex>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct AttachedProviderTranscriptCursorKey {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) provider: String,
+    pub(crate) provider_session_id: String,
+}
+
+impl AttachedProviderTranscriptCursorKey {
+    pub(crate) fn new(
+        session_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        provider: impl Into<String>,
+        provider_session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            agent_id: agent_id.into(),
+            provider: provider.into(),
+            provider_session_id: provider_session_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AttachedProviderTranscriptCursorStore {
+    inner:
+        Arc<RwLock<BTreeMap<AttachedProviderTranscriptCursorKey, ExternalProviderObservedCursor>>>,
+}
+
+impl AttachedProviderTranscriptCursorStore {
+    pub(crate) fn get(
+        &self,
+        key: &AttachedProviderTranscriptCursorKey,
+    ) -> ExternalProviderObservedCursor {
+        self.inner
+            .read()
+            .expect("attached provider transcript cursor store poisoned")
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set(
+        &self,
+        key: AttachedProviderTranscriptCursorKey,
+        cursor: ExternalProviderObservedCursor,
+    ) {
+        self.inner
+            .write()
+            .expect("attached provider transcript cursor store poisoned")
+            .insert(key, cursor);
+    }
 }
 
 #[derive(Debug, Clone, Default)]

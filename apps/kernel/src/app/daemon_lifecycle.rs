@@ -141,7 +141,7 @@ impl DaemonApp {
             ),
         );
         let imported_external_provider_observer_task = tokio::spawn(
-            crate::runtime::external_provider_session_control::run_imported_external_provider_transcript_observer(
+            crate::runtime::external_provider_session_control::run_attached_provider_transcript_observer(
                 Arc::clone(&app),
                 runtime_state,
                 shutdown_tx.subscribe(),

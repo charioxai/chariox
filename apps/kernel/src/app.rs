@@ -54,7 +54,8 @@ pub(crate) use external_provider_session_discovery::{
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub(crate) use external_provider_sessions::{
-    external_session_id_for_provider_session, ExternalProviderSessionIndexStore,
+    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
+    AttachedProviderTranscriptCursorStore, ExternalProviderSessionIndexStore,
 };
 pub(crate) use prompt_activity::{
     ActivePromptState, ActiveTurnPhase, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
@@ -124,6 +125,7 @@ pub struct DaemonApp {
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
+    attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -220,6 +222,7 @@ impl DaemonApp {
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             external_provider_sessions: ExternalProviderSessionIndexStore::default(),
+            attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore::default(),
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
@@ -374,6 +377,12 @@ impl DaemonApp {
         &self,
     ) -> ExternalProviderSessionIndexStore {
         self.external_provider_sessions.clone()
+    }
+
+    pub(crate) fn attached_provider_transcript_cursor_store(
+        &self,
+    ) -> AttachedProviderTranscriptCursorStore {
+        self.attached_provider_transcript_cursors.clone()
     }
 
     pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {

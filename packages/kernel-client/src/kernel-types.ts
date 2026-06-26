@@ -746,7 +746,7 @@ export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
-  unread_idle_output?: boolean
+  unread_idle_output: boolean
   active_turn?: AgentActiveTurn | null
   last_completed_turn?: CompletedGitTurnActionProjection | null
 }

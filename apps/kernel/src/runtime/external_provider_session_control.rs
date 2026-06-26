@@ -6,8 +6,8 @@ use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    external_session_id_for_provider_session, normalized_observed_prompt_text, DaemonApp,
-    ExternalProviderObservationPolicy,
+    external_session_id_for_provider_session, normalized_observed_prompt_text,
+    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
 };
 use crate::error::DaemonError;
 use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry};
@@ -17,7 +17,8 @@ use crate::local::{
     LocalDaemonResponse,
 };
 use crate::provider::{
-    ExternalProviderImportMetadata, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
+    ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
@@ -26,11 +27,11 @@ use crate::session::{
 };
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
-const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
-const EXTERNAL_PROVIDER_IMPORTED_IDLE_INTERVAL: Duration = Duration::from_secs(20);
-const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
-const EXTERNAL_PROVIDER_IMPORTED_SETTLE_GRACE: Duration = Duration::from_secs(4);
-const EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK: usize = 16;
+const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
+const EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL: Duration = Duration::from_secs(20);
+const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
+const EXTERNAL_PROVIDER_ATTACHED_SETTLE_GRACE: Duration = Duration::from_secs(4);
+const EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK: usize = 16;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 
 #[derive(Debug, Default)]
@@ -63,25 +64,35 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
 }
 
 #[derive(Debug, Clone)]
-struct ImportedExternalObserverTarget {
+struct AttachedExternalObserverTarget {
     session_id: String,
     agent_id: String,
     provider_run_id: Option<String>,
-    import: ExternalProviderImportMetadata,
+    external_session_id: String,
+    provider: String,
+    provider_session_id: String,
+    observed_cursor: ExternalProviderObservedCursor,
+    cursor_source: AttachedExternalObserverCursorSource,
 }
 
 #[derive(Debug, Clone)]
-struct ImportedExternalObserverRead {
-    target: ImportedExternalObserverTarget,
+enum AttachedExternalObserverCursorSource {
+    Imported(ExternalProviderImportMetadata),
+    ArrobaOwned(AttachedProviderTranscriptCursorKey),
+}
+
+#[derive(Debug, Clone)]
+struct AttachedExternalObserverRead {
+    target: AttachedExternalObserverTarget,
     turns: Vec<crate::app::ObservedExternalProviderTurn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ImportedExternalObserverAppendOptions {
+struct AttachedExternalObserverAppendOptions {
     allow_external_active_prompt_settlement: bool,
 }
 
-impl Default for ImportedExternalObserverAppendOptions {
+impl Default for AttachedExternalObserverAppendOptions {
     fn default() -> Self {
         Self {
             allow_external_active_prompt_settlement: true,
@@ -90,7 +101,7 @@ impl Default for ImportedExternalObserverAppendOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ImportedExternalObserverAppendOutcome {
+struct AttachedExternalObserverAppendOutcome {
     changed_count: usize,
     active_relevant_changed_count: usize,
     external_active_prompt_settled: bool,
@@ -100,31 +111,31 @@ struct ImportedExternalObserverAppendOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct ImportedExternalObserverSchedule {
+struct AttachedExternalObserverSchedule {
     next_due_at: tokio::time::Instant,
     active_until: Option<tokio::time::Instant>,
     last_changed_at: Option<tokio::time::Instant>,
     consecutive_errors: u32,
 }
 
-impl ImportedExternalObserverSchedule {
+impl AttachedExternalObserverSchedule {
     fn due_now(now: tokio::time::Instant) -> Self {
         Self {
             next_due_at: now,
-            active_until: Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW),
+            active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
             last_changed_at: None,
             consecutive_errors: 0,
         }
     }
 }
 
-pub(crate) async fn run_imported_external_provider_transcript_observer(
+pub(crate) async fn run_attached_provider_transcript_observer(
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: crate::runtime::state::KernelRuntimeState,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let mut schedule: BTreeMap<String, ImportedExternalObserverSchedule> = BTreeMap::new();
-    let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL);
+    let mut schedule: BTreeMap<String, AttachedExternalObserverSchedule> = BTreeMap::new();
+    let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
@@ -134,62 +145,62 @@ pub(crate) async fn run_imported_external_provider_transcript_observer(
                 }
             }
             _ = interval.tick() => {
-                poll_imported_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
+                poll_attached_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
             }
         }
     }
 }
 
-async fn poll_imported_external_provider_transcripts(
+async fn poll_attached_external_provider_transcripts(
     app: &Arc<Mutex<DaemonApp>>,
     runtime_state: &crate::runtime::state::KernelRuntimeState,
-    schedule: &mut BTreeMap<String, ImportedExternalObserverSchedule>,
+    schedule: &mut BTreeMap<String, AttachedExternalObserverSchedule>,
 ) {
     let now = tokio::time::Instant::now();
     let targets = {
         let app = app.lock().await;
-        imported_external_observer_targets(&app)
+        attached_external_observer_targets(&app)
     };
     let target_keys = targets
         .iter()
-        .map(imported_observer_target_key)
+        .map(attached_observer_target_key)
         .collect::<BTreeSet<_>>();
     schedule.retain(|key, _| target_keys.contains(key));
-    let due = due_imported_external_observer_targets(
+    let due = due_attached_external_observer_targets(
         targets,
         schedule,
         now,
-        EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK,
+        EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK,
     );
     if due.is_empty() {
         return;
     }
     for target in due {
-        let key = imported_observer_target_key(&target);
+        let key = attached_observer_target_key(&target);
         let allow_external_active_prompt_settlement = schedule
             .get(&key)
             .and_then(|state| state.last_changed_at)
             .is_some_and(|last_changed_at| {
-                now.duration_since(last_changed_at) >= EXTERNAL_PROVIDER_IMPORTED_SETTLE_GRACE
+                now.duration_since(last_changed_at) >= EXTERNAL_PROVIDER_ATTACHED_SETTLE_GRACE
             });
-        let provider = target.import.external_provider.clone();
-        let provider_session_id = target.import.external_provider_session_provider_id.clone();
+        let provider = target.provider.clone();
+        let provider_session_id = target.provider_session_id.clone();
         let read = match tokio::task::spawn_blocking(move || {
             crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
         })
         .await
         {
-            Ok(turns) => Ok(ImportedExternalObserverRead { target, turns }),
+            Ok(turns) => Ok(AttachedExternalObserverRead { target, turns }),
             Err(error) => Err(error.to_string()),
         };
         match read {
             Ok(read) => {
                 let outcome = {
                     let mut app = app.lock().await;
-                    append_observed_external_turns_for_import_with_options(
+                    append_observed_external_turns_for_attached_target_with_options(
                         &mut app,
                         read,
-                        ImportedExternalObserverAppendOptions {
+                        AttachedExternalObserverAppendOptions {
                             allow_external_active_prompt_settlement,
                         },
                     )
@@ -220,10 +231,10 @@ async fn poll_imported_external_provider_transcripts(
                 }
                 let state = schedule
                     .entry(key)
-                    .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
+                    .or_insert_with(|| AttachedExternalObserverSchedule::due_now(now));
                 state.consecutive_errors = 0;
                 if outcome.active_relevant_changed_count > 0 {
-                    state.active_until = Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW);
+                    state.active_until = Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW);
                     state.last_changed_at = Some(now);
                 }
                 let active = state
@@ -231,9 +242,9 @@ async fn poll_imported_external_provider_transcripts(
                     .is_some_and(|active_until| active_until > now);
                 state.next_due_at = now
                     + if active {
-                        EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL
+                        EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL
                     } else {
-                        EXTERNAL_PROVIDER_IMPORTED_IDLE_INTERVAL
+                        EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL
                     };
             }
             Err(error) => {
@@ -247,7 +258,7 @@ async fn poll_imported_external_provider_transcripts(
                 );
                 let state = schedule
                     .entry(key)
-                    .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
+                    .or_insert_with(|| AttachedExternalObserverSchedule::due_now(now));
                 state.consecutive_errors = state.consecutive_errors.saturating_add(1);
                 let backoff_secs = 2_u64.pow(state.consecutive_errors.min(5));
                 state.next_due_at = now + Duration::from_secs(backoff_secs);
@@ -256,19 +267,19 @@ async fn poll_imported_external_provider_transcripts(
     }
 }
 
-fn due_imported_external_observer_targets(
-    targets: Vec<ImportedExternalObserverTarget>,
-    schedule: &mut BTreeMap<String, ImportedExternalObserverSchedule>,
+fn due_attached_external_observer_targets(
+    targets: Vec<AttachedExternalObserverTarget>,
+    schedule: &mut BTreeMap<String, AttachedExternalObserverSchedule>,
     now: tokio::time::Instant,
     max_polls: usize,
-) -> Vec<ImportedExternalObserverTarget> {
+) -> Vec<AttachedExternalObserverTarget> {
     let mut due = targets
         .into_iter()
         .filter_map(|target| {
-            let key = imported_observer_target_key(&target);
+            let key = attached_observer_target_key(&target);
             let state = schedule
                 .entry(key.clone())
-                .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
+                .or_insert_with(|| AttachedExternalObserverSchedule::due_now(now));
             (state.next_due_at <= now).then_some((state.next_due_at, key, target))
         })
         .collect::<Vec<_>>();
@@ -379,7 +390,7 @@ pub(crate) async fn execute_external_provider_session_request(
                 let app = app.lock().await;
                 mark_attached_external_provider_sessions(&app, runtime_state, &store);
             }
-            refresh_imported_external_provider_histories(
+            refresh_attached_external_provider_histories(
                 app,
                 runtime_state,
                 request.provider.as_deref(),
@@ -396,10 +407,12 @@ pub(crate) async fn execute_external_provider_session_request(
         }
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
             let mut app = app.lock().await;
+            mark_attached_external_provider_sessions(&app, runtime_state, &store);
             import_external_provider_session(&mut app, &store, request, caller_user_id)
         }
         LocalDaemonRequest::ImportExternalProviderAgent(request) => {
             let mut app = app.lock().await;
+            mark_attached_external_provider_sessions(&app, runtime_state, &store);
             import_external_provider_agent(&mut app, &store, request, caller_user_id)
         }
         _ => Err(DaemonError::LocalTransport {
@@ -409,31 +422,31 @@ pub(crate) async fn execute_external_provider_session_request(
     }
 }
 
-async fn refresh_imported_external_provider_histories(
+async fn refresh_attached_external_provider_histories(
     app: &Arc<Mutex<DaemonApp>>,
     runtime_state: Option<&KernelRuntimeState>,
     provider_filter: Option<&str>,
 ) {
     let targets = {
         let app = app.lock().await;
-        imported_external_observer_targets(&app)
+        attached_external_observer_targets(&app)
             .into_iter()
             .filter(|target| {
                 provider_filter
-                    .map(|provider| target.import.external_provider == provider)
+                    .map(|provider| target.provider == provider)
                     .unwrap_or(true)
             })
             .collect::<Vec<_>>()
     };
     for target in targets {
-        let provider = target.import.external_provider.clone();
-        let provider_session_id = target.import.external_provider_session_provider_id.clone();
+        let provider = target.provider.clone();
+        let provider_session_id = target.provider_session_id.clone();
         let read = match tokio::task::spawn_blocking(move || {
             crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
         })
         .await
         {
-            Ok(turns) => ImportedExternalObserverRead { target, turns },
+            Ok(turns) => AttachedExternalObserverRead { target, turns },
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.external_provider_sessions",
@@ -445,7 +458,7 @@ async fn refresh_imported_external_provider_histories(
         };
         let outcome = {
             let mut app = app.lock().await;
-            append_observed_external_turns_for_import(&mut app, read).unwrap_or_default()
+            append_observed_external_turns_for_attached_target(&mut app, read).unwrap_or_default()
         };
         if outcome.external_active_prompt_settled {
             if let (Some(runtime_state), Some(provider_run_id)) =
@@ -688,48 +701,53 @@ fn append_observed_external_history(
             .get_latest_run_for_agent(session.id(), agent.id())
             .map(|run| run.id().to_string())
     });
-    let target = ImportedExternalObserverTarget {
+    let import = agent
+        .external_provider_import()
+        .cloned()
+        .unwrap_or_else(|| {
+            ExternalProviderImportMetadata::observed_history(
+                external.external_session_id.clone(),
+                external.provider.clone(),
+                external.provider_session_id.clone(),
+            )
+        });
+    let target = AttachedExternalObserverTarget {
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
         provider_run_id,
-        import: agent
-            .external_provider_import()
-            .cloned()
-            .unwrap_or_else(|| {
-                ExternalProviderImportMetadata::observed_history(
-                    external.external_session_id.clone(),
-                    external.provider.clone(),
-                    external.provider_session_id.clone(),
-                )
-            }),
+        external_session_id: import.external_provider_session_id.clone(),
+        provider: import.external_provider.clone(),
+        provider_session_id: import.external_provider_session_provider_id.clone(),
+        observed_cursor: import.observed_cursor.clone(),
+        cursor_source: AttachedExternalObserverCursorSource::Imported(import),
     };
-    let _ = append_observed_external_turns_for_import(
+    let _ = append_observed_external_turns_for_attached_target(
         app,
-        ImportedExternalObserverRead { target, turns },
+        AttachedExternalObserverRead { target, turns },
     );
 }
 
-fn append_observed_external_turns_for_import(
+fn append_observed_external_turns_for_attached_target(
     app: &mut DaemonApp,
-    read: ImportedExternalObserverRead,
-) -> Result<ImportedExternalObserverAppendOutcome, DaemonError> {
-    append_observed_external_turns_for_import_with_options(
+    read: AttachedExternalObserverRead,
+) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
+    append_observed_external_turns_for_attached_target_with_options(
         app,
         read,
-        ImportedExternalObserverAppendOptions::default(),
+        AttachedExternalObserverAppendOptions::default(),
     )
 }
 
-fn append_observed_external_turns_for_import_with_options(
+fn append_observed_external_turns_for_attached_target_with_options(
     app: &mut DaemonApp,
-    read: ImportedExternalObserverRead,
-    options: ImportedExternalObserverAppendOptions,
-) -> Result<ImportedExternalObserverAppendOutcome, DaemonError> {
-    let mut outcome = ImportedExternalObserverAppendOutcome {
+    read: AttachedExternalObserverRead,
+    options: AttachedExternalObserverAppendOptions,
+) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
+    let mut outcome = AttachedExternalObserverAppendOutcome {
         session_id: read.target.session_id.clone(),
         agent_id: read.target.agent_id.clone(),
         provider_run_id: read.target.provider_run_id.clone(),
-        ..ImportedExternalObserverAppendOutcome::default()
+        ..AttachedExternalObserverAppendOutcome::default()
     };
     if read.turns.is_empty() {
         return Ok(outcome);
@@ -742,12 +760,8 @@ fn append_observed_external_turns_for_import_with_options(
             .map(|run| run.id().to_string())
     });
     outcome.provider_run_id = provider_run_id.clone();
-    let provider = read.target.import.external_provider.clone();
-    let provider_session_id = read
-        .target
-        .import
-        .external_provider_session_provider_id
-        .clone();
+    let provider = read.target.provider.clone();
+    let provider_session_id = read.target.provider_session_id.clone();
     let external_merge_key_prefix = crate::history::external_provider_observed_merge_key_prefix(
         &provider,
         &provider_session_id,
@@ -783,7 +797,7 @@ fn append_observed_external_turns_for_import_with_options(
     }
     let mut appended = 0usize;
     let mut active_relevant_appended = 0usize;
-    let mut last_cursor = read.target.import.observed_cursor.clone();
+    let mut last_cursor = read.target.observed_cursor.clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
     let mut current_observed_turn_is_arroba_owned = false;
     let candidate_turns =
@@ -884,16 +898,10 @@ fn append_observed_external_turns_for_import_with_options(
     };
     outcome.external_active_prompt_settled =
         active_prompt_changed && latest_active_prompt.is_none();
-    let cursor_changed = last_cursor != read.target.import.observed_cursor;
+    let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
     if changed > 0 || cursor_changed {
-        let next_import = read.target.import.clone().with_cursor(last_cursor);
-        persist_external_import_metadata(
-            app,
-            &read.target.session_id,
-            &read.target.agent_id,
-            next_import,
-        )?;
+        persist_attached_external_observer_cursor(app, &read.target, last_cursor)?;
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     } else if active_prompt_changed {
@@ -948,12 +956,12 @@ fn external_observed_history_entry_matches(
 }
 
 fn external_active_prompt_from_turns(
-    target: &ImportedExternalObserverTarget,
+    target: &AttachedExternalObserverTarget,
     turns: &[crate::app::ObservedExternalProviderTurn],
     has_new_observations: bool,
     arroba_owned_prompt_texts: &BTreeSet<String>,
 ) -> Option<PromptQueueItem> {
-    let policy = ExternalProviderObservationPolicy::for_provider(&target.import.external_provider);
+    let policy = ExternalProviderObservationPolicy::for_provider(&target.provider);
     let latest = policy.active_external_prompt_turn(
         turns,
         has_new_observations,
@@ -961,13 +969,13 @@ fn external_active_prompt_from_turns(
     )?;
     let provider_turn_id = latest.provider_turn_id_or_fallback();
     let external_prompt_id = crate::history::external_provider_observed_merge_key(
-        &target.import.external_provider,
-        &target.import.external_provider_session_provider_id,
+        &target.provider,
+        &target.provider_session_id,
         &provider_turn_id,
     );
     Some(PromptQueueItem::external_observed_running(
         external_prompt_id,
-        &target.import.external_provider,
+        &target.provider,
         target.agent_id.clone(),
         latest.text.clone(),
     ))
@@ -985,7 +993,7 @@ fn latest_observed_user_turn_id(
 
 fn emit_observed_external_history_signal(
     app: &DaemonApp,
-    target: &ImportedExternalObserverTarget,
+    target: &AttachedExternalObserverTarget,
     provider_run_id: Option<&str>,
     entry: &SessionHistoryEntry,
 ) {
@@ -1014,7 +1022,7 @@ fn emit_observed_external_history_signal(
 
 fn emit_observed_external_state_signal(
     app: &DaemonApp,
-    target: &ImportedExternalObserverTarget,
+    target: &AttachedExternalObserverTarget,
     provider_run_id: Option<&str>,
     latest_merge_key: Option<&str>,
     reason: &str,
@@ -1038,8 +1046,8 @@ fn emit_observed_external_state_signal(
         Some(&target.agent_id),
         crate::terminal::TerminalOutputKind::ProviderStatus,
         Some(crate::history::external_provider_observed_state_merge_key(
-            &target.import.external_provider,
-            &target.import.external_provider_session_provider_id,
+            &target.provider,
+            &target.provider_session_id,
             reason,
             latest_merge_key,
         )),
@@ -1048,25 +1056,54 @@ fn emit_observed_external_state_signal(
     );
 }
 
-fn imported_external_observer_targets(app: &DaemonApp) -> Vec<ImportedExternalObserverTarget> {
-    app.agents()
-        .list_agents()
-        .into_iter()
-        .filter_map(|agent| {
-            let import = agent.external_provider_import()?.clone();
-            let session = app.sessions().get_session(agent.session_id()).ok()?;
-            let provider_run_id = app
-                .providers()
-                .get_latest_run_for_agent(session.id(), agent.id())
-                .map(|run| run.id().to_string());
-            Some(ImportedExternalObserverTarget {
-                session_id: session.id().to_string(),
-                agent_id: agent.id().to_string(),
-                provider_run_id,
+fn attached_external_observer_targets(app: &DaemonApp) -> Vec<AttachedExternalObserverTarget> {
+    let cursor_store = app.attached_provider_transcript_cursor_store();
+    let mut targets = BTreeMap::<String, AttachedExternalObserverTarget>::new();
+    for agent in app.agents().list_agents() {
+        let Ok(session) = app.sessions().get_session(agent.session_id()) else {
+            continue;
+        };
+        let provider_run_id = app
+            .providers()
+            .get_latest_run_for_agent(session.id(), agent.id())
+            .map(|run| run.id().to_string());
+        if let Some(import) = agent.external_provider_import().cloned() {
+            let target = attached_external_observer_target_from_import(
+                session.id(),
+                agent.id(),
+                provider_run_id.clone(),
                 import,
-            })
-        })
-        .collect()
+            );
+            targets.insert(attached_observer_target_key(&target), target);
+        }
+        for target in attached_external_observer_targets_from_resume_state(
+            &cursor_store,
+            session.id(),
+            agent.id(),
+            provider_run_id.clone(),
+            agent.provider_resume_state(),
+        ) {
+            targets
+                .entry(attached_observer_target_key(&target))
+                .or_insert(target);
+        }
+    }
+    for run in app.providers().list_runs() {
+        let Some(agent_id) = run.agent_instance_id() else {
+            continue;
+        };
+        if app.sessions().get_session(run.session_id()).is_err()
+            || app.agents().get_agent(agent_id).is_err()
+        {
+            continue;
+        }
+        for target in attached_external_observer_targets_from_provider_run(&cursor_store, &run) {
+            targets
+                .entry(attached_observer_target_key(&target))
+                .or_insert(target);
+        }
+    }
+    targets.into_values().collect()
 }
 
 fn mark_attached_external_provider_sessions(
@@ -1171,11 +1208,138 @@ fn push_resume_state_attachments(
     }
 }
 
-fn imported_observer_target_key(target: &ImportedExternalObserverTarget) -> String {
+fn attached_external_observer_target_from_import(
+    session_id: impl Into<String>,
+    agent_id: impl Into<String>,
+    provider_run_id: Option<String>,
+    import: ExternalProviderImportMetadata,
+) -> AttachedExternalObserverTarget {
+    let session_id = session_id.into();
+    let agent_id = agent_id.into();
+    AttachedExternalObserverTarget {
+        session_id,
+        agent_id,
+        provider_run_id,
+        external_session_id: import.external_provider_session_id.clone(),
+        provider: import.external_provider.clone(),
+        provider_session_id: import.external_provider_session_provider_id.clone(),
+        observed_cursor: import.observed_cursor.clone(),
+        cursor_source: AttachedExternalObserverCursorSource::Imported(import),
+    }
+}
+
+fn attached_external_observer_targets_from_provider_run(
+    cursor_store: &crate::app::AttachedProviderTranscriptCursorStore,
+    run: &RuntimeProviderRun,
+) -> Vec<AttachedExternalObserverTarget> {
+    let Some(agent_id) = run.agent_instance_id() else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    if let Some(provider_session_id) = run.provider_session_id() {
+        if let Some(target) = attached_external_observer_target_from_provider_session(
+            cursor_store,
+            run.session_id(),
+            agent_id,
+            Some(run.id().to_string()),
+            run.adapter_key(),
+            provider_session_id,
+        ) {
+            targets.push(target);
+        }
+    }
+    targets.extend(attached_external_observer_targets_from_resume_state(
+        cursor_store,
+        run.session_id(),
+        agent_id,
+        Some(run.id().to_string()),
+        run.resume_state(),
+    ));
+    targets
+}
+
+fn attached_external_observer_targets_from_resume_state(
+    cursor_store: &crate::app::AttachedProviderTranscriptCursorStore,
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: Option<String>,
+    resume_state: &ProviderResumeState,
+) -> Vec<AttachedExternalObserverTarget> {
+    [
+        ("codex", resume_state.codex_thread_id()),
+        ("opencode", resume_state.opencode_session_id()),
+        ("claude", resume_state.claude_session_id()),
+    ]
+    .into_iter()
+    .filter_map(|(provider, provider_session_id)| {
+        attached_external_observer_target_from_provider_session(
+            cursor_store,
+            session_id,
+            agent_id,
+            provider_run_id.clone(),
+            provider,
+            provider_session_id?,
+        )
+    })
+    .collect()
+}
+
+fn attached_external_observer_target_from_provider_session(
+    cursor_store: &crate::app::AttachedProviderTranscriptCursorStore,
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: Option<String>,
+    provider: &str,
+    provider_session_id: &str,
+) -> Option<AttachedExternalObserverTarget> {
+    let external_session_id =
+        external_session_id_for_provider_session(provider, provider_session_id)?;
+    let cursor_key = AttachedProviderTranscriptCursorKey::new(
+        session_id,
+        agent_id,
+        provider,
+        provider_session_id,
+    );
+    Some(AttachedExternalObserverTarget {
+        session_id: session_id.to_string(),
+        agent_id: agent_id.to_string(),
+        provider_run_id,
+        external_session_id,
+        provider: provider.to_string(),
+        provider_session_id: provider_session_id.to_string(),
+        observed_cursor: cursor_store.get(&cursor_key),
+        cursor_source: AttachedExternalObserverCursorSource::ArrobaOwned(cursor_key),
+    })
+}
+
+fn attached_observer_target_key(target: &AttachedExternalObserverTarget) -> String {
     format!(
         "{}:{}:{}",
-        target.session_id, target.agent_id, target.import.external_provider_session_id
+        target.session_id, target.agent_id, target.external_session_id
     )
+}
+
+fn persist_attached_external_observer_cursor(
+    app: &mut DaemonApp,
+    target: &AttachedExternalObserverTarget,
+    cursor: ExternalProviderObservedCursor,
+) -> Result<(), DaemonError> {
+    match &target.cursor_source {
+        AttachedExternalObserverCursorSource::Imported(import) => {
+            let next_import = import.clone().with_cursor(cursor);
+            persist_external_import_metadata(
+                app,
+                &target.session_id,
+                &target.agent_id,
+                next_import,
+            )?;
+        }
+        AttachedExternalObserverCursorSource::ArrobaOwned(key) => {
+            app.attached_provider_transcript_cursor_store()
+                .set(key.clone(), cursor);
+        }
+    }
+    Ok(())
 }
 
 fn persist_external_import_metadata(
@@ -1304,29 +1468,65 @@ mod tests {
     };
     use std::sync::Arc;
 
-    fn observer_target(agent_id: &str) -> ImportedExternalObserverTarget {
-        ImportedExternalObserverTarget {
-            session_id: format!("session-{agent_id}"),
-            agent_id: agent_id.to_string(),
-            provider_run_id: None,
-            import: ExternalProviderImportMetadata::observed_history(
+    fn observer_target(agent_id: &str) -> AttachedExternalObserverTarget {
+        attached_external_observer_target_from_import(
+            format!("session-{agent_id}"),
+            agent_id.to_string(),
+            None,
+            ExternalProviderImportMetadata::observed_history(
                 format!("codex:thread-{agent_id}"),
                 "codex".to_string(),
                 format!("thread-{agent_id}"),
             ),
-        }
+        )
+    }
+
+    fn test_codex_run(
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        provider_session_id: &str,
+    ) -> RuntimeProviderRun {
+        let request =
+            LaunchProviderRequest::new(session_id, "codex", "codex", "default", "gpt-test")
+                .with_agent_id(agent_id);
+        let launch = crate::provider::ProviderLaunchResult {
+            process_label: "codex:test".to_string(),
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("codex:test".to_string()),
+        };
+        let mut run = RuntimeProviderRun::new(provider_run_id, &request, launch);
+        run.set_provider_session_id(Some(provider_session_id.to_string()));
+        run.mark_running();
+        run
+    }
+
+    fn single_attached_target(app: &DaemonApp) -> AttachedExternalObserverTarget {
+        let targets = attached_external_observer_targets(app);
+        assert_eq!(
+            targets.len(),
+            1,
+            "expected exactly one attached observer target"
+        );
+        targets.into_iter().next().expect("target should exist")
     }
 
     #[test]
-    fn due_imported_external_observer_targets_prioritizes_overdue_targets() {
+    fn due_attached_external_observer_targets_prioritizes_overdue_targets() {
         let now = tokio::time::Instant::now();
         let mut schedule = BTreeMap::new();
         for agent in ["a", "b"] {
             schedule.insert(
-                imported_observer_target_key(&observer_target(agent)),
-                ImportedExternalObserverSchedule {
+                attached_observer_target_key(&observer_target(agent)),
+                AttachedExternalObserverSchedule {
                     next_due_at: now,
-                    active_until: Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW),
+                    active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
                     last_changed_at: None,
                     consecutive_errors: 0,
                 },
@@ -1334,17 +1534,17 @@ mod tests {
         }
         for agent in ["c", "d"] {
             schedule.insert(
-                imported_observer_target_key(&observer_target(agent)),
-                ImportedExternalObserverSchedule {
+                attached_observer_target_key(&observer_target(agent)),
+                AttachedExternalObserverSchedule {
                     next_due_at: now - Duration::from_secs(10),
-                    active_until: Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW),
+                    active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
                     last_changed_at: None,
                     consecutive_errors: 0,
                 },
             );
         }
 
-        let due = due_imported_external_observer_targets(
+        let due = due_attached_external_observer_targets(
             ["a", "b", "c", "d"]
                 .into_iter()
                 .map(observer_target)
@@ -1533,6 +1733,72 @@ mod tests {
     }
 
     #[test]
+    fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let (session_id, agent_id, store) = {
+                let mut app = app.lock().await;
+                let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                app.agents()
+                    .set_agent_runtime_profile(
+                        agent.id(),
+                        "codex",
+                        Some("gpt-test".to_string()),
+                        None,
+                        ProviderResumeState::from_codex_thread_id("thread-owned-by-resume"),
+                    )
+                    .expect("agent runtime profile should update");
+                let store = app.external_provider_session_index_store();
+                (session.id().to_string(), agent.id().to_string(), store)
+            };
+            store.upsert(record(
+                "codex",
+                "thread-owned-by-resume",
+                "/tmp/thread-owned-by-resume",
+            ));
+            assert!(
+                store
+                    .get("codex:thread-owned-by-resume")
+                    .expect("record should start indexed")
+                    .is_attachable_to_arroba(),
+                "test starts from a stale attachable store record",
+            );
+
+            let error = execute_external_provider_session_request(
+                &app,
+                None,
+                LocalDaemonRequest::ImportExternalProviderSession(
+                    ImportExternalProviderSessionRequest {
+                        external_session_id: "codex:thread-owned-by-resume".to_string(),
+                        alias: None,
+                        provider: None,
+                        model: None,
+                        effort: None,
+                        worktree_id: None,
+                    },
+                ),
+                "external-import-user",
+            )
+            .await
+            .expect_err("Arroba-owned Codex thread should not import as a second session");
+
+            let message = error.to_string();
+            assert!(message.contains(&format!(
+                "already attached to Arroba session `{session_id}` agent `{agent_id}`"
+            )));
+            assert!(store
+                .get("codex:thread-owned-by-resume")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
+        });
+    }
+
+    #[test]
     fn import_external_provider_agent_adds_agent_to_existing_session() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
         runtime.block_on(async {
@@ -1599,6 +1865,85 @@ mod tests {
                     .external_provider_session_provider_id,
                 "external-2"
             );
+        });
+    }
+
+    #[test]
+    fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let (target_session_id, owner_session_id, owner_agent_id, store) = {
+                let mut app = app.lock().await;
+                let (target_session, _) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new(
+                        "workspace-target",
+                        "worktree-target",
+                    ))
+                    .expect("target session should create");
+                let (owner_session, owner_agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new(
+                        "workspace-owner",
+                        "worktree-owner",
+                    ))
+                    .expect("owner session should create");
+                let run = test_codex_run(
+                    owner_session.id(),
+                    owner_agent.id(),
+                    "run-owned-thread",
+                    "thread-owned-by-run",
+                );
+                app.providers_mut().insert_run_for_test(run);
+                let store = app.external_provider_session_index_store();
+                (
+                    target_session.id().to_string(),
+                    owner_session.id().to_string(),
+                    owner_agent.id().to_string(),
+                    store,
+                )
+            };
+            store.upsert(record(
+                "codex",
+                "thread-owned-by-run",
+                "/tmp/thread-owned-by-run",
+            ));
+            assert!(
+                store
+                    .get("codex:thread-owned-by-run")
+                    .expect("record should start indexed")
+                    .is_attachable_to_arroba(),
+                "test starts from a stale attachable store record",
+            );
+
+            let error = execute_external_provider_session_request(
+                &app,
+                None,
+                LocalDaemonRequest::ImportExternalProviderAgent(
+                    ImportExternalProviderAgentRequest {
+                        session_id: target_session_id,
+                        external_session_id: "codex:thread-owned-by-run".to_string(),
+                        alias: None,
+                        provider: None,
+                        model: None,
+                        effort: None,
+                        focus: Some(true),
+                    },
+                ),
+                "external-agent-user",
+            )
+            .await
+            .expect_err("Arroba-owned Codex thread should not import as a second agent");
+
+            let message = error.to_string();
+            assert!(message.contains(&format!(
+                "already attached to Arroba session `{owner_session_id}` agent `{owner_agent_id}`"
+            )));
+            assert!(store
+                .get("codex:thread-owned-by-run")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
         });
     }
 
@@ -1670,6 +2015,300 @@ mod tests {
     }
 
     #[test]
+    fn arroba_owned_provider_run_provider_session_id_becomes_observer_target() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-arroba-owned",
+            "thread-arroba",
+        );
+        app.providers_mut().insert_run_for_test(run.clone());
+
+        let target = single_attached_target(&app);
+
+        assert_eq!(target.session_id, session.id());
+        assert_eq!(target.agent_id, agent.id());
+        assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
+        assert_eq!(target.external_session_id, "codex:thread-arroba");
+        assert_eq!(target.provider, "codex");
+        assert_eq!(target.provider_session_id, "thread-arroba");
+        assert!(matches!(
+            target.cursor_source,
+            AttachedExternalObserverCursorSource::ArrobaOwned(_)
+        ));
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
+    }
+
+    #[test]
+    fn imported_observer_target_keeps_import_cursor_source_when_provider_run_matches() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-imported".to_string(),
+            "codex".to_string(),
+            "thread-imported".to_string(),
+        );
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("import metadata should persist");
+        let run = test_codex_run(session.id(), agent.id(), "run-imported", "thread-imported");
+        app.providers_mut().insert_run_for_test(run.clone());
+
+        let target = single_attached_target(&app);
+
+        assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
+        assert!(matches!(
+            target.cursor_source,
+            AttachedExternalObserverCursorSource::Imported(_)
+        ));
+    }
+
+    #[test]
+    fn append_observed_arroba_owned_user_turn_adds_history_and_external_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-arroba-owned",
+            "thread-arroba",
+        );
+        app.providers_mut().insert_run_for_test(run);
+        let target = single_attached_target(&app);
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-native".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    text: "native prompt outside Arroba".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("observed Arroba-owned native user turn should append");
+
+        assert_eq!(outcome.changed_count, 1);
+        let active = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .expect("external active prompt should be set");
+        assert_eq!(active.prompt_origin(), PromptOrigin::External);
+        assert_eq!(active.prompt(), "native prompt outside Arroba");
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_external_provider_observed());
+        assert_eq!(entries[0].text, "native prompt outside Arroba");
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
+    }
+
+    #[test]
+    fn append_observed_arroba_owned_prompt_echoes_are_skipped_without_import_metadata() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-arroba-owned",
+            "thread-arroba",
+        );
+        app.providers_mut().insert_run_for_test(run);
+        app.append_history_entry(
+            session.id(),
+            SessionHistoryEntry::user_prompt(
+                session.id(),
+                "attachment-1",
+                agent.id(),
+                "arroba owned prompt",
+            ),
+        );
+        let target = single_attached_target(&app);
+        let cursor_key = match target.cursor_source.clone() {
+            AttachedExternalObserverCursorSource::ArrobaOwned(key) => key,
+            AttachedExternalObserverCursorSource::Imported(_) => {
+                panic!("Arroba-owned target should not use import metadata")
+            }
+        };
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "arroba owned prompt\n<image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "reply to Arroba owned prompt".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("observed Arroba-owned prompt echo should be skipped");
+
+        assert_eq!(outcome.changed_count, 0);
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .is_none());
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "arroba owned prompt");
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
+        let cursor = app
+            .attached_provider_transcript_cursor_store()
+            .get(&cursor_key);
+        assert_eq!(
+            cursor.last_observed_turn_id.as_deref(),
+            Some("assistant-owned")
+        );
+    }
+
+    #[tokio::test]
+    async fn append_observed_arroba_owned_completion_settles_and_advances_queued_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-arroba-owned",
+            "thread-arroba",
+        );
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        let target = single_attached_target(&app);
+        append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-native".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    text: "native prompt outside Arroba".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("native user turn should mark active prompt");
+        let queued_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "queued Arroba prompt",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+            .expect("Arroba prompt should queue behind external active prompt")
+        else {
+            panic!("Arroba prompt should not start while external active prompt is running");
+        };
+        let queued_prompt_id = prompt.id().to_string();
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-native".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "native prompt outside Arroba".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("complete-native".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("completion should settle active external prompt");
+        assert!(outcome.external_active_prompt_settled);
+
+        let app = Arc::new(tokio::sync::Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let dispatched = router
+            .runtime_state()
+            .dispatch_next_queued_prompt_after_external_settlement(
+                session.id(),
+                agent.id(),
+                run.id(),
+            )
+            .await
+            .expect("queued prompt should dispatch after external settlement");
+        assert!(dispatched);
+        let session = router
+            .runtime_state()
+            .session_snapshot(session.id())
+            .await
+            .expect("session should snapshot");
+        assert_eq!(
+            session
+                .active_prompt_for_agent(agent.id())
+                .map(|prompt| prompt.id()),
+            Some(queued_prompt_id.as_str())
+        );
+        assert!(session
+            .queued_prompts_for_agent(agent.id())
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true));
+    }
+
+    #[test]
     fn append_observed_external_turns_persists_cursor_without_provider_run() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1683,15 +2322,15 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: None,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
                     import,
-                },
+                ),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
                     role: crate::app::ObservedExternalProviderTurnRole::Assistant,
@@ -1738,16 +2377,16 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![
                     crate::app::ObservedExternalProviderTurn {
@@ -1858,15 +2497,15 @@ mod tests {
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: None,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
                     import,
-                },
+                ),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
                     role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -1913,15 +2552,15 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
-            import: import.clone(),
-        };
-        append_observed_external_turns_for_import(
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import.clone(),
+        );
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
@@ -1939,9 +2578,9 @@ mod tests {
             "external user turn should mark active before assistant output"
         );
 
-        let first_assistant_outcome = append_observed_external_turns_for_import(
+        let first_assistant_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
@@ -1962,9 +2601,9 @@ mod tests {
             "new assistant output should not settle the external active marker until it is stable"
         );
 
-        let stable_assistant_outcome = append_observed_external_turns_for_import(
+        let stable_assistant_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
@@ -2007,12 +2646,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2032,26 +2671,27 @@ mod tests {
             observed_at_ms: Some(126),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone(), assistant.clone()],
             },
         )
         .expect("observed Codex assistant turn should append");
 
-        let stable_assistant_outcome = append_observed_external_turns_for_import_with_options(
-            &mut app,
-            ImportedExternalObserverRead {
-                target: target.clone(),
-                turns: vec![prompt.clone(), assistant],
-            },
-            ImportedExternalObserverAppendOptions {
-                allow_external_active_prompt_settlement: true,
-            },
-        )
-        .expect("stable Codex assistant turn should stay active");
+        let stable_assistant_outcome =
+            append_observed_external_turns_for_attached_target_with_options(
+                &mut app,
+                AttachedExternalObserverRead {
+                    target: target.clone(),
+                    turns: vec![prompt.clone(), assistant],
+                },
+                AttachedExternalObserverAppendOptions {
+                    allow_external_active_prompt_settlement: true,
+                },
+            )
+            .expect("stable Codex assistant turn should stay active");
 
         assert_eq!(stable_assistant_outcome.changed_count, 0);
         assert!(!stable_assistant_outcome.external_active_prompt_settled);
@@ -2062,9 +2702,9 @@ mod tests {
             "Codex assistant commentary can be followed by tools and must not settle the turn"
         );
 
-        let complete_outcome = append_observed_external_turns_for_import(
+        let complete_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, task_complete],
             },
@@ -2095,21 +2735,21 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone()],
             },
@@ -2128,9 +2768,9 @@ mod tests {
             text: "codex event turn_aborted { \"type\": \"turn_aborted\" }".to_string(),
             observed_at_ms: Some(84),
         };
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, abort],
             },
@@ -2175,21 +2815,21 @@ mod tests {
                 import.clone(),
             )
             .expect("metadata should persist");
-            let target = ImportedExternalObserverTarget {
-                session_id: session.id().to_string(),
-                agent_id: agent.id().to_string(),
-                provider_run_id: None,
+            let target = attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
                 import,
-            };
+            );
             let prompt = crate::app::ObservedExternalProviderTurn {
                 provider_turn_id: Some("user-1".to_string()),
                 role: crate::app::ObservedExternalProviderTurnRole::User,
                 text: "external prompt".to_string(),
                 observed_at_ms: Some(42),
             };
-            append_observed_external_turns_for_import(
+            append_observed_external_turns_for_attached_target(
                 &mut app,
-                ImportedExternalObserverRead {
+                AttachedExternalObserverRead {
                     target: target.clone(),
                     turns: vec![prompt.clone()],
                 },
@@ -2208,9 +2848,9 @@ mod tests {
                 text: status_text.to_string(),
                 observed_at_ms: Some(84),
             };
-            let outcome = append_observed_external_turns_for_import(
+            let outcome = append_observed_external_turns_for_attached_target(
                 &mut app,
-                ImportedExternalObserverRead {
+                AttachedExternalObserverRead {
                     target,
                     turns: vec![prompt, abort_status],
                 },
@@ -2260,12 +2900,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let assistant = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::Assistant,
@@ -2273,9 +2913,9 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        let first_assistant_outcome = append_observed_external_turns_for_import(
+        let first_assistant_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
@@ -2288,22 +2928,22 @@ mod tests {
         .expect("observed user turn should append");
         assert_eq!(first_assistant_outcome.changed_count, 1);
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![assistant.clone()],
             },
         )
         .expect("observed assistant turn should append");
 
-        let early_stable_outcome = append_observed_external_turns_for_import_with_options(
+        let early_stable_outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![assistant.clone()],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: false,
             },
         )
@@ -2318,13 +2958,13 @@ mod tests {
             "stable assistant output should stay running until settlement is permitted"
         );
 
-        let late_stable_outcome = append_observed_external_turns_for_import_with_options(
+        let late_stable_outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![assistant],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: true,
             },
         )
@@ -2354,12 +2994,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2379,9 +3019,9 @@ mod tests {
             observed_at_ms: Some(126),
         };
 
-        let initial_outcome = append_observed_external_turns_for_import(
+        let initial_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone(), assistant.clone(), telemetry.clone()],
             },
@@ -2390,13 +3030,13 @@ mod tests {
         assert_eq!(initial_outcome.changed_count, 3);
         assert_eq!(initial_outcome.active_relevant_changed_count, 2);
 
-        let outcome = append_observed_external_turns_for_import_with_options(
+        let outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, assistant, telemetry],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: true,
             },
         )
@@ -2427,12 +3067,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2464,9 +3104,9 @@ mod tests {
             observed_at_ms: Some(168),
         };
 
-        let initial_outcome = append_observed_external_turns_for_import(
+        let initial_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![
                     prompt.clone(),
@@ -2488,13 +3128,13 @@ mod tests {
             "completed Claude imports should not create a running external prompt"
         );
 
-        let outcome = append_observed_external_turns_for_import_with_options(
+        let outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, tool, assistant, completion, telemetry],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: true,
             },
         )
@@ -2525,12 +3165,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2543,9 +3183,9 @@ mod tests {
             text: "TOOL_STEP_20: complete".to_string(),
             observed_at_ms: Some(84),
         };
-        let running_outcome = append_observed_external_turns_for_import(
+        let running_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone(), tool.clone()],
             },
@@ -2579,9 +3219,9 @@ mod tests {
             observed_at_ms: None,
         };
 
-        let completed_outcome = append_observed_external_turns_for_import(
+        let completed_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, tool, assistant, completion, telemetry],
             },
@@ -2613,12 +3253,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2632,22 +3272,22 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone(), tool.clone()],
             },
         )
         .expect("observed prompt and tool should append");
 
-        let stable_tool_outcome = append_observed_external_turns_for_import_with_options(
+        let stable_tool_outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, tool],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: true,
             },
         )
@@ -2677,12 +3317,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2697,22 +3337,22 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone()],
             },
         )
         .expect("observed prompt should append");
 
-        let token_count_outcome = append_observed_external_turns_for_import_with_options(
+        let token_count_outcome = append_observed_external_turns_for_attached_target_with_options(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, token_count],
             },
-            ImportedExternalObserverAppendOptions {
+            AttachedExternalObserverAppendOptions {
                 allow_external_active_prompt_settlement: true,
             },
         )
@@ -2742,12 +3382,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2761,9 +3401,9 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone()],
             },
@@ -2776,9 +3416,9 @@ mod tests {
             "OpenCode prompt should mark the external turn running"
         );
 
-        let first_status_outcome = append_observed_external_turns_for_import(
+        let first_status_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone(), status.clone()],
             },
@@ -2792,17 +3432,18 @@ mod tests {
             "OpenCode completion metadata should settle the external turn immediately"
         );
 
-        let stable_status_outcome = append_observed_external_turns_for_import_with_options(
-            &mut app,
-            ImportedExternalObserverRead {
-                target,
-                turns: vec![prompt, status],
-            },
-            ImportedExternalObserverAppendOptions {
-                allow_external_active_prompt_settlement: true,
-            },
-        )
-        .expect("stable completion status should stay settled");
+        let stable_status_outcome =
+            append_observed_external_turns_for_attached_target_with_options(
+                &mut app,
+                AttachedExternalObserverRead {
+                    target,
+                    turns: vec![prompt, status],
+                },
+                AttachedExternalObserverAppendOptions {
+                    allow_external_active_prompt_settlement: true,
+                },
+            )
+            .expect("stable completion status should stay settled");
 
         assert_eq!(stable_status_outcome.changed_count, 0);
         assert!(!stable_status_outcome.external_active_prompt_settled);
@@ -2828,12 +3469,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: None,
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -2866,18 +3507,18 @@ mod tests {
             observed_at_ms: Some(126),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone()],
             },
         )
         .expect("observed user turn should append");
 
-        let changed_reply_outcome = append_observed_external_turns_for_import(
+        let changed_reply_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![
                     prompt.clone(),
@@ -2945,9 +3586,9 @@ mod tests {
             "changed external assistant output should keep the external prompt marked running"
         );
 
-        let stable_reply_outcome = append_observed_external_turns_for_import(
+        let stable_reply_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![
                     prompt.clone(),
@@ -2969,9 +3610,9 @@ mod tests {
             "Codex stable assistant output should stay active until task_complete"
         );
 
-        let complete_outcome = append_observed_external_turns_for_import(
+        let complete_outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![
                     prompt,
@@ -3021,16 +3662,16 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![
                     crate::app::ObservedExternalProviderTurn {
@@ -3103,15 +3744,15 @@ mod tests {
         )
         .expect("active Arroba prompt should mirror");
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: None,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
                     import,
-                },
+                ),
                 turns: vec![
                     crate::app::ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned-active".to_string()),
@@ -3164,15 +3805,15 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
-            import: import.clone(),
-        };
-        append_observed_external_turns_for_import(
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import.clone(),
+        );
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
@@ -3184,9 +3825,9 @@ mod tests {
         )
         .expect("initial observed assistant turn should append");
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
@@ -3221,12 +3862,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
-            import: import.clone(),
-        };
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import.clone(),
+        );
         let turns = vec![
             crate::app::ObservedExternalProviderTurn {
                 provider_turn_id: Some("assistant-1".to_string()),
@@ -3242,9 +3883,9 @@ mod tests {
             },
         ];
 
-        let initial = append_observed_external_turns_for_import(
+        let initial = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: turns.clone(),
             },
@@ -3259,9 +3900,9 @@ mod tests {
         assert_eq!(entries[0].text, "complete external reply");
         assert_eq!(entries[0].observed_at_ms, Some(84));
 
-        let stable = append_observed_external_turns_for_import(
+        let stable = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead { target, turns },
+            AttachedExternalObserverRead { target, turns },
         )
         .expect("same duplicate snapshot should not churn history");
 
@@ -3294,29 +3935,29 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: None,
-                    import: import.clone(),
-                },
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
+                    import.clone(),
+                ),
                 turns: vec![turn.clone()],
             },
         )
         .expect("initial observed assistant turn should append");
 
-        let stable = append_observed_external_turns_for_import(
+        let stable = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: Some("provider-run-2".to_string()),
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    Some("provider-run-2".to_string()),
                     import,
-                },
+                ),
                 turns: vec![turn],
             },
         )
@@ -3364,15 +4005,15 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: Some(run.id().to_string()),
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    Some(run.id().to_string()),
                     import,
-                },
+                ),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
                     role: crate::app::ObservedExternalProviderTurnRole::Assistant,
@@ -3421,15 +4062,15 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
-                target: ImportedExternalObserverTarget {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    provider_run_id: None,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
                     import,
-                },
+                ),
                 turns: vec![crate::app::ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
                     role: crate::app::ObservedExternalProviderTurnRole::Assistant,
@@ -3478,12 +4119,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let target = ImportedExternalObserverTarget {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            provider_run_id: None,
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
             import,
-        };
+        );
         let prompt = crate::app::ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
             role: crate::app::ObservedExternalProviderTurnRole::User,
@@ -3497,9 +4138,9 @@ mod tests {
             observed_at_ms: Some(84),
         };
 
-        append_observed_external_turns_for_import(
+        append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target: target.clone(),
                 turns: vec![prompt.clone()],
             },
@@ -3509,9 +4150,9 @@ mod tests {
             .terminal_mut()
             .drain_output_records(session.id(), attachment.id());
 
-        let outcome = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
-            ImportedExternalObserverRead {
+            AttachedExternalObserverRead {
                 target,
                 turns: vec![prompt, completion],
             },

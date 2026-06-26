@@ -146,6 +146,15 @@ impl KernelRuntimeState {
         session_id: &str,
         last_event_id: u64,
     ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        self.session_snapshot_projection_for_user(session_id, last_event_id, None)
+    }
+
+    fn session_snapshot_projection_for_user(
+        &self,
+        session_id: &str,
+        last_event_id: u64,
+        unread_for_user_id: Option<&str>,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
         let session = self.owned.session_snapshot(session_id)?;
         let provider_run = session
             .active_provider_run_id()
@@ -156,7 +165,8 @@ impl KernelRuntimeState {
                     .ok()
                     .or_else(|| self.owned.provider_run_projection.get(provider_run_id))
             });
-        let agent_activity = self.agent_activity_for_session(&session);
+        let agent_activity =
+            self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
             metadata: crate::runtime::projection::ProjectionMetadata::new(2, last_event_id),
             session,
@@ -169,6 +179,15 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         last_event_id: u64,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        self.read_only_session_snapshot_projection_for_user(session_id, last_event_id, None)
+    }
+
+    fn read_only_session_snapshot_projection_for_user(
+        &self,
+        session_id: &str,
+        last_event_id: u64,
+        unread_for_user_id: Option<&str>,
     ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
         let mut session = self.owned.session_store.get_session(session_id)?;
         let agents = self.owned.agent_store.get_session_agents(session_id);
@@ -183,7 +202,8 @@ impl KernelRuntimeState {
                     .ok()
                     .or_else(|| self.owned.provider_run_projection.get(provider_run_id))
             });
-        let agent_activity = self.agent_activity_for_session(&session);
+        let agent_activity =
+            self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
             metadata: crate::runtime::projection::ProjectionMetadata::new(2, last_event_id),
             session,
@@ -205,7 +225,11 @@ impl KernelRuntimeState {
                 attachment_id: attachment_id.to_string(),
             });
         }
-        let mut projection = self.session_snapshot_projection(session_id, last_event_id)?;
+        let mut projection = self.session_snapshot_projection_for_user(
+            session_id,
+            last_event_id,
+            Some(attachment.owner_user_id()),
+        )?;
         projection.session = projection
             .session
             .redacted_for_user(attachment.owner_user_id());
@@ -246,8 +270,11 @@ impl KernelRuntimeState {
                 attachment_id: attachment_id.to_string(),
             });
         }
-        let mut projection =
-            self.read_only_session_snapshot_projection(session_id, last_event_id)?;
+        let mut projection = self.read_only_session_snapshot_projection_for_user(
+            session_id,
+            last_event_id,
+            Some(attachment.owner_user_id()),
+        )?;
         projection.session = projection
             .session
             .redacted_for_user(attachment.owner_user_id());

@@ -307,7 +307,12 @@ fn build_session_snapshot(
     session_id: &str,
     attachment_owner_user_id: &str,
 ) -> Result<SessionSnapshotProjection, DaemonError> {
-    let mut snapshot = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
+    let mut snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
+        app,
+        session_id,
+        0,
+        Some(attachment_owner_user_id),
+    )?;
     snapshot.session = snapshot.session.redacted_for_user(attachment_owner_user_id);
     snapshot.agent_activity.retain(|agent_id, _| {
         snapshot

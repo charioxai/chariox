@@ -14,6 +14,7 @@ import {
   importExternalProviderAgentRequest,
   importExternalProviderSessionRequest,
   listExternalProviderSessionsRequest,
+  launchProviderRunRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -29,6 +30,12 @@ function unwrap(response, variant) {
     throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
   }
   return response[variant]
+}
+
+function unwrapProviderRunLaunch(response) {
+  if (response && "ProviderRunLaunched" in response) return response.ProviderRunLaunched
+  if (response && "ProviderRunLaunchAccepted" in response) return response.ProviderRunLaunchAccepted
+  throw new Error(`expected provider run launch response, got ${JSON.stringify(response)}`)
 }
 
 function makePort() {
@@ -85,6 +92,7 @@ async function seedProviderHomes(root, marker, workspace) {
     codex: {
       session: { providerSessionId: `codex-${marker}-session`, file: "codex-thread-drill-session.jsonl" },
       agent: { providerSessionId: `codex-${marker}-agent`, file: "codex-thread-drill-agent.jsonl" },
+      arroba: { providerSessionId: `codex-${marker}-arroba-owned`, file: "codex-thread-drill-arroba-owned.jsonl" },
     },
     claude: {
       session: { providerSessionId: randomUUID(), file: "claude-session-drill-session.jsonl" },
@@ -100,14 +108,15 @@ async function seedProviderHomes(root, marker, workspace) {
   await mkdir(path.join(opencodeHome, "sessions"), { recursive: true })
 
   for (const [kind, fixture] of Object.entries(fixtures.codex)) {
-    await writeFile(
-      path.join(codexHome, "sessions", fixture.file),
-      [
-        JSON.stringify({
-          timestamp: "2026-06-09T12:00:00.000Z",
-          type: "session_meta",
-          payload: { id: fixture.providerSessionId, cwd: workspace, model_provider: "openai" },
-        }),
+    const lines = [
+      JSON.stringify({
+        timestamp: "2026-06-09T12:00:00.000Z",
+        type: "session_meta",
+        payload: { id: fixture.providerSessionId, cwd: workspace, model_provider: "openai" },
+      }),
+    ]
+    if (kind !== "arroba") {
+      lines.push(
         JSON.stringify({
           timestamp: "2026-06-09T12:00:01.000Z",
           type: "response_item",
@@ -128,8 +137,9 @@ async function seedProviderHomes(root, marker, workspace) {
             content: [{ type: "output_text", text: `Codex ${kind} observed reply ${marker}.` }],
           },
         }),
-      ].join("\n") + "\n",
-    )
+      )
+    }
+    await writeFile(path.join(codexHome, "sessions", fixture.file), lines.join("\n") + "\n")
   }
 
   for (const [kind, fixture] of Object.entries(fixtures.claude)) {
@@ -235,6 +245,44 @@ async function appendProviderNativeTurn(root, provider, marker, fixture, kind) {
   return { providerTurnId: `opencode-assistant-2-${kind}`, text: `OpenCode ${kind} native follow-up observed ${marker}.` }
 }
 
+async function appendCodexProviderNativePromptTurn(root, marker, fixture) {
+  const file = path.join(root, "provider-homes", "codex", "sessions", fixture.file)
+  const userText = `Codex Arroba-owned native prompt observed ${marker}.`
+  const assistantText = `Codex Arroba-owned native reply observed ${marker}.`
+  await writeFile(
+    file,
+    [
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: "response_item",
+        payload: {
+          id: "codex-arroba-owned-user-2",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: userText }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: "response_item",
+        payload: {
+          id: "codex-arroba-owned-assistant-2",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: assistantText }],
+        },
+      }),
+    ].join("\n") + "\n",
+    { flag: "a" },
+  )
+  return {
+    userProviderTurnId: "codex-arroba-owned-user-2",
+    assistantProviderTurnId: "codex-arroba-owned-assistant-2",
+    userText,
+    text: assistantText,
+  }
+}
+
 async function readHistoryEntries(historyRoot, sessionId) {
   const files = await readdir(historyRoot).catch(() => [])
   const historyFile = files.find((file) => file.startsWith(`${sessionId}-`) && file.endsWith(".jsonl"))
@@ -333,7 +381,7 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
     assertions: [
       assertion("refresh returned external session", Boolean(refreshedRecord)),
       assertion("external session listed", Boolean(listedRecord)),
-      assertion("external row has observed mode", listedRecord?.mode === "observed"),
+      assertion("external row advertises observed history", listedRecord?.capabilities?.can_read_history === true),
       assertion("import as new Arroba session created a session", Boolean(imported?.session?.id)),
       assertion("import as new Arroba session created an agent", Boolean(imported?.agent?.id)),
       assertion("import as agent created an agent", Boolean(importedAgent?.agent?.id)),
@@ -363,6 +411,71 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
     },
   }
   await writeEvidence(surfaceRoot, provider, manifest)
+  return manifest
+}
+
+async function runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, fixtures) {
+  const provider = "codex"
+  const fixture = fixtures.codex.arroba
+  const surfaceRoot = path.join(artifactRoot, "arroba-owned-codex")
+  await mkdir(path.join(surfaceRoot, "tui"), { recursive: true })
+  await mkdir(path.join(surfaceRoot, "web"), { recursive: true })
+  const createResult = await step("create-arroba-owned-codex-session", () =>
+    client.send(createSessionRequest(repoRoot, repoRoot, `arroba-owned-codex-${marker}`)))
+  const created = createResult.ok ? unwrap(createResult.value, "SessionCreated") : null
+  const launchResult = created ? await step("launch-arroba-owned-codex-provider-run", () =>
+    client.send(launchProviderRunRequest(
+      created.session.id,
+      "codex",
+      "default",
+      "default",
+      "",
+      created.agent.id,
+      {
+        providerSessionId: fixture.providerSessionId,
+        nativeTui: true,
+      },
+    ))) : { ok: false, error: "session did not create" }
+  const launched = launchResult.ok ? unwrapProviderRunLaunch(launchResult.value) : null
+  const nativeTurnResult = launched
+    ? await step("append-arroba-owned-codex-native-turn", () => appendCodexProviderNativePromptTurn(runtimeRoot, marker, fixture))
+    : { ok: false, error: "provider run did not launch" }
+  const observedHistoryResult = nativeTurnResult.ok && created
+    ? await step("observe-arroba-owned-codex-native-turn", () => waitForObservedHistory(historyRoot, created.session.id, nativeTurnResult.value.text))
+    : { ok: false, value: [], error: "native turn append did not complete" }
+  const observedHistory = observedHistoryResult.ok ? observedHistoryResult.value : []
+  const observed = observedHistory.filter((entry) => entry.source === "external_provider_observed")
+  const manifest = {
+    provider,
+    marker,
+    mode: "arroba-owned-provider-session",
+    provider_session_id: fixture.providerSessionId,
+    external_provider_session_id: `codex:${fixture.providerSessionId}`,
+    arroba_session_id: created?.session?.id ?? null,
+    agent_id: created?.agent?.id ?? null,
+    provider_run_id: launched?.provider_run?.id ?? null,
+    provider_run_provider_session_id: launched?.provider_run?.provider_session_id ?? null,
+    screenshots: [],
+    evidence_files: [],
+    assertions: [
+      assertion("created Arroba-owned session", Boolean(created?.session?.id)),
+      assertion("created Arroba-owned agent", Boolean(created?.agent?.id)),
+      assertion("launched provider run with seeded provider session id", launched?.provider_run?.provider_session_id === fixture.providerSessionId),
+      assertion("appended provider-native prompt outside Arroba", nativeTurnResult.ok),
+      assertion("provider-native turn observed in Arroba-created session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
+      assertion("observed Arroba-owned turn carries external source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
+    ],
+    records: {
+      observed_history: observed,
+      native_turn: nativeTurnResult,
+      steps: {
+        create_session: createResult,
+        launch_provider_run: launchResult,
+        observe_native_turn: observedHistoryResult,
+      },
+    },
+  }
+  await writeEvidence(surfaceRoot, "arroba-owned-codex", manifest)
   return manifest
 }
 
@@ -437,6 +550,7 @@ async function main() {
     for (const provider of providers) {
       manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker, providerSeed.fixtures))
     }
+    manifests.push(await runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, providerSeed.fixtures))
     const summary = {
       ok: manifests.every((manifest) => manifest.assertions.every((entry) => entry.passed)),
       marker,
