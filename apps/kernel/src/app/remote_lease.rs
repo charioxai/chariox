@@ -201,16 +201,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ),
             )?
         };
-        let backing_agent = {
+        let mut backing_agent = {
             let mut sessions = session_store.write();
             let mut request = CreateAgentRequest::new(session.id(), provider)
                 .with_owner_user_id(lease.owner_user_id.clone())
                 .with_worktree(session.worktree_id())
                 .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
                 .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string()));
-            if lease.home_agent_metaagent {
-                request = request.with_role(crate::agent::AgentRole::Meta);
-            }
             if let Some(execution_mode) = execution_mode {
                 request = request.with_execution_mode_override(execution_mode);
             }
@@ -219,6 +216,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             self.app.agents.create_agent(request, &mut sessions)?
         };
+        if lease.home_agent_metaagent {
+            backing_agent = self
+                .app
+                .agents_mut()
+                .activate_agent_meta_mode(backing_agent.id(), None)?;
+        }
         self.app.next_leased_agent_number = self.app.next_leased_agent_number.wrapping_add(1);
         let agent_id = format!(
             "leased-agent-{:016x}",
