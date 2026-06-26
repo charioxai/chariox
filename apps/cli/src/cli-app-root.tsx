@@ -620,6 +620,11 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let workflowRegistrySuggestionFetchedAtMs = 0
   let workflowRegistrySuggestionFetchInFlight = false
   let resyncWorkflowRegistrySuggestions: (() => void) | null = null
+  const invalidateWorkflowRegistrySuggestions = () => {
+    workflowRegistrySuggestionEntries = []
+    workflowRegistrySuggestionSessionId = null
+    workflowRegistrySuggestionFetchedAtMs = 0
+  }
   const refreshWorkflowRegistrySuggestions = (input: string) => {
     if (!shouldRefreshWorkflowRegistrySuggestions(input)) {
       return
@@ -658,7 +663,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshWorkflowRegistryEntries: refreshWorkflowRegistrySuggestions,
     getPromptText: promptTextController.currentText,
     replacePromptText: promptTextController.setText,
-    executeCommand: (command) => executeCommandCenterCommand(command),
+    executeCommand: async (command) => {
+      await executeCommandCenterCommand(command)
+      if (shouldInvalidateWorkflowRegistrySuggestions(command)) {
+        invalidateWorkflowRegistrySuggestions()
+      }
+    },
     onCommandError: (error) => {
       flashFooter(formatError(error), "error")
     },
@@ -1740,6 +1750,15 @@ function shouldRefreshWorkflowRegistrySuggestions(input: string): boolean {
   return normalized.startsWith("/workflow load ")
     || normalized.startsWith("/workflow run ")
     || normalized.startsWith("/workflow registry get ")
+    || normalized.startsWith("/workflow registry delete ")
+}
+
+function shouldInvalidateWorkflowRegistrySuggestions(command: string): boolean {
+  const normalized = command.trimStart()
+  return normalized.startsWith("/workflow load ")
+    || normalized.startsWith("/workflow run ")
+    || normalized.startsWith("/workflow registry add ")
+    || normalized.startsWith("/workflow registry add-from-workflow ")
     || normalized.startsWith("/workflow registry delete ")
 }
 
