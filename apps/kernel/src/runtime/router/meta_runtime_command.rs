@@ -459,7 +459,7 @@ impl CommandRouter {
             return Ok(meta_command_failure_result(
                 command,
                 meta_command_error(format!(
-                    "metaagent prompt does not support blocking reply flags (`{flag}`); use events and turn_overview"
+                    "Meta-mode prompt delegation does not support blocking reply flags (`{flag}`); use events and turn_overview"
                 )),
             ));
         }
@@ -631,7 +631,7 @@ impl CommandRouter {
         tokens: &[String],
     ) -> Result<LocalDaemonRequest, DaemonError> {
         let Some(command) = tokens.first().map(String::as_str) else {
-            return Err(meta_command_error("empty metaagent command"));
+            return Err(meta_command_error("empty Meta-mode command"));
         };
         match command {
             "agent" => {
@@ -681,7 +681,7 @@ impl CommandRouter {
                 meta_credential_request(session, metaagent, &tokens[1..])
             }
             other => Err(meta_command_error(format!(
-                "`{other}` is registered but not implemented by the metaagent command router"
+                "`{other}` is registered but not implemented by the Meta-mode command router"
             ))),
         }
     }
@@ -835,7 +835,7 @@ fn parse_meta_agent_spawn_args(
         match arg.as_str() {
             "--meta" | "--metaagent" | "--as-metaagent" => {
                 return Err(meta_command_error(
-                    "metaagents cannot spawn another metaagent through run_command",
+                    "agents in Meta mode cannot spawn another Meta-mode controller through run_command",
                 ));
             }
             "--provider" => {
@@ -1130,7 +1130,7 @@ fn meta_agent_request(
             let spawn = parse_meta_agent_spawn_args(&args[1..], session)?;
             if spawn.slice_create.is_some() {
                 return Err(meta_command_error(
-                    "agent spawn --slice new requires composed metaagent spawn dispatch",
+                    "agent spawn --slice new requires composed Meta-mode spawn dispatch",
                 ));
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
@@ -1660,7 +1660,7 @@ fn meta_extension_request(
                 workspace_id: Some(session.workspace_id().to_string()),
             })),
             _ => Err(meta_command_error(format!(
-                "`{family} list` is not supported by metaagent run_command"
+                "`{family} list` is not supported by Meta-mode run_command"
             ))),
         },
         Some("show" | "get") => {
@@ -1680,7 +1680,7 @@ fn meta_extension_request(
                     name: name.clone(),
                 })),
                 _ => Err(meta_command_error(format!(
-                    "`{family} show` is not supported by metaagent run_command"
+                    "`{family} show` is not supported by Meta-mode run_command"
                 ))),
             }
         }
@@ -1762,7 +1762,7 @@ fn meta_extension_request(
                     }))
                 }
                 _ => Err(meta_command_error(format!(
-                    "`{family} uninstall` is not supported by metaagent run_command"
+                    "`{family} uninstall` is not supported by Meta-mode run_command"
                 ))),
             }
         }
@@ -1791,7 +1791,7 @@ fn meta_extension_request(
                     name: args.get(2).cloned(),
                 })),
                 _ => Err(meta_command_error(format!(
-                    "`{family} import` is not supported by metaagent run_command"
+                    "`{family} import` is not supported by Meta-mode run_command"
                 ))),
             }
         }
