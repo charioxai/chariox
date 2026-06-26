@@ -198,7 +198,8 @@ mod tests {
     }
 
     #[test]
-    fn app_launch_preparation_forces_metaagents_to_plan_without_user_mcps() {
+    fn app_launch_preparation_forces_metaagents_to_plan_and_preserves_permission_level_without_user_mcps(
+    ) {
         let mut app =
             DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -236,10 +237,7 @@ mod tests {
             .expect("provider launch should prepare");
 
         assert_eq!(prepared.execution_mode, Some(AgentExecutionMode::Plan));
-        assert_eq!(
-            prepared.permission_level,
-            Some(AgentPermissionLevel::Required)
-        );
+        assert_eq!(prepared.permission_level, Some(AgentPermissionLevel::Yolo));
         assert!(
             prepared.mcp_servers.is_empty(),
             "metaagent provider runs should not receive user MCP servers"

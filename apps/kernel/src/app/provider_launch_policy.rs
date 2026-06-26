@@ -6,8 +6,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{
-    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState,
-    RuntimeProviderRun,
+    AgentExecutionMode, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::RuntimeSession;
 
@@ -111,7 +110,6 @@ pub(crate) fn apply_metaagent_launch_policy(
     }
     request = request
         .with_execution_mode(AgentExecutionMode::Plan)
-        .with_permission_level(AgentPermissionLevel::Required)
         .with_mcp_servers(Vec::new())
         .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest::default());
     request
