@@ -832,11 +832,12 @@ impl KernelRuntimeState {
             )?;
             let registry = workflow_registry_for_session(app, &request.session_id)?;
             let scope = workflow_registry_write_scope(app, &request.session_id, request.scope)?;
+            let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
             let entry = registry.add_from_export(
                 &request.name,
                 scope,
                 export,
-                &format!("workflow-registry:{}", request.name),
+                node_path.to_string_lossy().as_ref(),
                 &limits,
             )?;
             app.durable_state_store().append_event(
@@ -1493,8 +1494,9 @@ fn workflow_registry_apply_result(
 > {
     let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
     let limits = app.config().workflow_code_limits();
+    let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
     let compile = crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
-        &entry.node_path,
+        &node_path,
         &entry.source,
         crate::workflow_code::WorkflowCodeLanguage::JavaScript,
         &limits,

@@ -339,6 +339,15 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ExportWorkflowCodePackage(request) => request.session_id.clone(),
         LocalDaemonRequest::ImportWorkflowCodePackage(request) => request.session_id.clone(),
         LocalDaemonRequest::ExportWorkflowCodeSource(request) => request.session_id.clone(),
+        LocalDaemonRequest::ListWorkflowRegistry(request) => request.session_id.clone(),
+        LocalDaemonRequest::GetWorkflowRegistryEntry(request) => request.session_id.clone(),
+        LocalDaemonRequest::AddWorkflowRegistryEntry(request) => request.session_id.clone(),
+        LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(request) => {
+            request.session_id.clone()
+        }
+        LocalDaemonRequest::DeleteWorkflowRegistryEntry(request) => request.session_id.clone(),
+        LocalDaemonRequest::LoadWorkflowRegistryEntry(request) => request.session_id.clone(),
+        LocalDaemonRequest::RunWorkflowRegistryEntry(request) => request.session_id.clone(),
         LocalDaemonRequest::ApplyWorkflowDesignOp(request) => request.session_id.clone(),
         LocalDaemonRequest::AliasWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflows(request) => request.session_id.clone(),
@@ -405,8 +414,11 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::local::{
-        ApplyWorkflowDesignOpRequest, CreateWorkflowRequest, LocalDaemonRequest,
-        LocalDaemonResponse, WorkflowDesignOp, WorkflowDesignWorkflow,
+        AddWorkflowRegistryEntryFromWorkflowRequest, AddWorkflowRegistryEntryRequest,
+        ApplyWorkflowDesignOpRequest, CreateWorkflowRequest, DeleteWorkflowRegistryEntryRequest,
+        GetWorkflowRegistryEntryRequest, ListWorkflowRegistryRequest,
+        LoadWorkflowRegistryEntryRequest, LocalDaemonRequest, LocalDaemonResponse,
+        RunWorkflowRegistryEntryRequest, WorkflowDesignOp, WorkflowDesignWorkflow,
     };
     use crate::runtime::command::KernelCommand;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
@@ -442,6 +454,65 @@ mod tests {
             app_locked.metaagent_event_store(),
             app_locked.workspace_coordinator(),
         )
+    }
+
+    #[test]
+    fn workflow_registry_requests_are_routed_to_workflow_actor() {
+        let session_id = "session-registry".to_string();
+        let requests = vec![
+            LocalDaemonRequest::ListWorkflowRegistry(ListWorkflowRegistryRequest {
+                session_id: session_id.clone(),
+            }),
+            LocalDaemonRequest::GetWorkflowRegistryEntry(GetWorkflowRegistryEntryRequest {
+                session_id: session_id.clone(),
+                name: "prompt-chaining".to_string(),
+            }),
+            LocalDaemonRequest::AddWorkflowRegistryEntry(AddWorkflowRegistryEntryRequest {
+                session_id: session_id.clone(),
+                name: "copy".to_string(),
+                scope: None,
+                source: crate::workflow_code::WorkflowRegistrySourceInput::SingleFile {
+                    source: "workflow.define({ alias: 'copy' })".to_string(),
+                    source_path: None,
+                },
+                node_path: "node".to_string(),
+            }),
+            LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(
+                AddWorkflowRegistryEntryFromWorkflowRequest {
+                    session_id: session_id.clone(),
+                    name: "copy".to_string(),
+                    workflow_ref: "workflow-1".to_string(),
+                    scope: None,
+                    agent_mode:
+                        crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
+                },
+            ),
+            LocalDaemonRequest::DeleteWorkflowRegistryEntry(DeleteWorkflowRegistryEntryRequest {
+                session_id: session_id.clone(),
+                name: "copy".to_string(),
+                scope: None,
+            }),
+            LocalDaemonRequest::LoadWorkflowRegistryEntry(LoadWorkflowRegistryEntryRequest {
+                session_id: session_id.clone(),
+                name: "prompt-chaining".to_string(),
+                provider_rebindings: Vec::new(),
+            }),
+            LocalDaemonRequest::RunWorkflowRegistryEntry(RunWorkflowRegistryEntryRequest {
+                session_id: session_id.clone(),
+                name: "prompt-chaining".to_string(),
+                provider_rebindings: Vec::new(),
+                endpoint: Some("entry".to_string()),
+                queue_ref: None,
+                prompt: "run".to_string(),
+            }),
+        ];
+
+        for request in requests {
+            assert!(
+                super::is_workflow_command(&request),
+                "registry request should route through workflow actor: {request:?}"
+            );
+        }
     }
 
     #[tokio::test]

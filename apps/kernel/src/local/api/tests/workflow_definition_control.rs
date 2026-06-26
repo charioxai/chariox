@@ -2182,6 +2182,16 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 live_recompiled.definition.workflow.alias.as_deref(),
                 Some("artifact_flow_updated")
             );
+            assert!(live_recompiled
+                .definition
+                .nodes
+                .iter()
+                .any(|node| node.handle == "planner"));
+            assert!(live_recompiled
+                .definition
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint.handle == "entry" && endpoint.entry_node == "planner"));
             assert!(matches!(
                 &live_recompiled.definition.nodes[0].agent,
                 crate::workflow_code::WorkflowCodeAgentBinding::Create(agent)

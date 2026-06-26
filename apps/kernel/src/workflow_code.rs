@@ -3288,6 +3288,39 @@ fn workflow_code_definition_from_session_workflow(
     agent_mode: WorkflowCodeSourceExportAgentMode,
 ) -> Result<WorkflowCodeDefinition, crate::DaemonError> {
     let canvas = workflow.canvas_layout();
+    let mut node_handles = BTreeMap::new();
+    let mut used_node_handles = BTreeSet::new();
+    for node in workflow.nodes() {
+        let agent_alias = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == node.agent_id())
+            .and_then(|agent| agent.alias());
+        let handle = workflow_code_export_handle(agent_alias, node.id(), &mut used_node_handles);
+        node_handles.insert(node.id().to_string(), handle);
+    }
+    let mut endpoint_handles = BTreeMap::new();
+    let mut used_endpoint_handles = BTreeSet::new();
+    for endpoint in workflow.endpoints() {
+        let handle = workflow_code_export_handle(
+            endpoint.alias(),
+            endpoint.id(),
+            &mut used_endpoint_handles,
+        );
+        endpoint_handles.insert(endpoint.id().to_string(), handle);
+    }
+    let mut queue_handles = BTreeMap::new();
+    let mut used_queue_handles = BTreeSet::new();
+    for queue in session
+        .workflow_prompt_queues()
+        .iter()
+        .filter(|queue| queue.workflow_id() == workflow.id())
+    {
+        let handle =
+            workflow_code_export_handle(Some(queue.alias()), queue.id(), &mut used_queue_handles);
+        queue_handles.insert(queue.id().to_string(), handle);
+    }
+
     let mut nodes = Vec::new();
     for node in workflow.nodes() {
         let agent = session
@@ -3319,7 +3352,10 @@ fn workflow_code_definition_from_session_workflow(
             }
         };
         nodes.push(WorkflowCodeNodeDefinition {
-            handle: node.id().to_string(),
+            handle: node_handles
+                .get(node.id())
+                .cloned()
+                .unwrap_or_else(|| node.id().to_string()),
             agent: agent_binding,
             public_label: Some(node.public_label().to_string()),
             instructions: node.instructions().map(str::to_string),
@@ -3363,8 +3399,14 @@ fn workflow_code_definition_from_session_workflow(
             .iter()
             .map(|edge| WorkflowCodeEdgeDefinition {
                 handle: edge.id().to_string(),
-                from_node: edge.from_node_id().to_string(),
-                to_node: edge.to_node_id().to_string(),
+                from_node: node_handles
+                    .get(edge.from_node_id())
+                    .cloned()
+                    .unwrap_or_else(|| edge.from_node_id().to_string()),
+                to_node: node_handles
+                    .get(edge.to_node_id())
+                    .cloned()
+                    .unwrap_or_else(|| edge.to_node_id().to_string()),
                 source_side: edge.source_side(),
                 target_side: edge.target_side(),
                 handoff_schema: edge.handoff_schema_ref().map(str::to_string),
@@ -3384,8 +3426,14 @@ fn workflow_code_definition_from_session_workflow(
             .endpoints()
             .iter()
             .map(|endpoint| WorkflowCodeEndpointDefinition {
-                handle: endpoint.id().to_string(),
-                entry_node: endpoint.entry_node_id().to_string(),
+                handle: endpoint_handles
+                    .get(endpoint.id())
+                    .cloned()
+                    .unwrap_or_else(|| endpoint.id().to_string()),
+                entry_node: node_handles
+                    .get(endpoint.entry_node_id())
+                    .cloned()
+                    .unwrap_or_else(|| endpoint.entry_node_id().to_string()),
                 alias: endpoint.alias().map(str::to_string),
                 canvas: canvas
                     .and_then(|layout| layout.endpoints.get(endpoint.id()))
@@ -3397,7 +3445,10 @@ fn workflow_code_definition_from_session_workflow(
             .iter()
             .filter(|queue| queue.workflow_id() == workflow.id())
             .map(|queue| WorkflowCodeQueueDefinition {
-                handle: queue.id().to_string(),
+                handle: queue_handles
+                    .get(queue.id())
+                    .cloned()
+                    .unwrap_or_else(|| queue.id().to_string()),
                 alias: queue.alias().to_string(),
                 priority: queue.priority(),
                 enabled: queue.enabled(),
@@ -3409,8 +3460,16 @@ fn workflow_code_definition_from_session_workflow(
             .filter(|watchdog| watchdog.workflow_id() == workflow.id())
             .map(|watchdog| WorkflowCodeWatchdogDefinition {
                 handle: watchdog.id().to_string(),
-                endpoint: watchdog.endpoint_id().to_string(),
-                queue: watchdog.queue_id().map(str::to_string),
+                endpoint: endpoint_handles
+                    .get(watchdog.endpoint_id())
+                    .cloned()
+                    .unwrap_or_else(|| watchdog.endpoint_id().to_string()),
+                queue: watchdog.queue_id().map(|queue_id| {
+                    queue_handles
+                        .get(queue_id)
+                        .cloned()
+                        .unwrap_or_else(|| queue_id.to_string())
+                }),
                 enabled: Some(watchdog.enabled()),
                 interval_seconds: watchdog.interval_seconds(),
                 invocation_prompt: watchdog.invocation_prompt().to_string(),
@@ -3419,6 +3478,26 @@ fn workflow_code_definition_from_session_workflow(
             })
             .collect(),
     })
+}
+
+fn workflow_code_export_handle(
+    preferred: Option<&str>,
+    fallback: &str,
+    used: &mut BTreeSet<String>,
+) -> String {
+    if let Some(preferred) = preferred {
+        let normalized = preferred.trim().to_lowercase();
+        if !normalized.is_empty()
+            && normalized.chars().all(|char| {
+                char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_'
+            })
+            && used.insert(normalized.clone())
+        {
+            return normalized;
+        }
+    }
+    used.insert(fallback.to_string());
+    fallback.to_string()
 }
 
 fn workflow_code_canvas_point_from_layout(
