@@ -15,3 +15,12 @@ test("command center tree owns unique slash command nodes", () => {
   assert.equal(COMMAND_TREE.find((node) => node.id === "machine")?.children?.some((node) => node.value === "/machine approve "), true)
   assert.equal(COMMAND_TREE.find((node) => node.id === "misc")?.value, "/")
 })
+
+test("agent task command tree describes Meta mode task controls", () => {
+  const taskNode = collectCommandNodes(COMMAND_TREE).find((node) => node.id === "agent-task")
+
+  assert.equal(taskNode?.description, "View or control the focused agent's Meta mode task")
+  assert.equal(taskNode?.searchAliases?.includes("meta mode task"), true)
+  assert.equal(taskNode?.searchAliases?.includes("metaagent task"), true)
+  assert.equal(taskNode?.children?.find((node) => node.id === "agent-task-plan")?.description, "Edit the Meta mode plan document")
+})

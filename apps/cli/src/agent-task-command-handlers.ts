@@ -40,7 +40,7 @@ export async function handleAgentTaskCommand(
     case "status": {
       const target = resolveMetaagentTarget(deps, args[2])
       if (!target.agent) {
-        deps.flashFooter(target.error ?? "usage: /agent task show [metaagent-ref]", "error")
+        deps.flashFooter(target.error ?? "usage: /agent task show [agent-ref]", "error")
         return
       }
       deps.appendNotice(formatMetaagentTaskNotice(target.agent, findMetaagentTask(deps.sessionState(), target.agent.id)))
@@ -70,7 +70,7 @@ export async function handleAgentTaskCommand(
     }
     default:
       deps.flashFooter(
-        "usage: /agent task [show|edit|plan|pause|resume|abort] [metaagent-ref] [text]",
+        "usage: /agent task [show|edit|plan|pause|resume|abort] [agent-ref] [text]",
         "error",
       )
   }
@@ -83,16 +83,16 @@ async function updateTaskMarkdown(
 ) {
   const { agent, rest, error } = resolveOptionalTargetWithText(deps, args)
   if (!agent) {
-    deps.flashFooter(error ?? `usage: /agent task ${field === "task" ? "edit" : "plan"} [metaagent-ref] <text>`, "error")
+    deps.flashFooter(error ?? `usage: /agent task ${field === "task" ? "edit" : "plan"} [agent-ref] <text>`, "error")
     return
   }
   if (!deps.updateMetaagentTask) {
-    deps.flashFooter("metaagent task runtime is unavailable", "error")
+    deps.flashFooter("agent task runtime is unavailable", "error")
     return
   }
   const markdown = rest.join(" ").trim()
   if (!markdown) {
-    deps.flashFooter(`usage: /agent task ${field === "task" ? "edit" : "plan"} [metaagent-ref] <text>`, "error")
+    deps.flashFooter(`usage: /agent task ${field === "task" ? "edit" : "plan"} [agent-ref] <text>`, "error")
     return
   }
 
@@ -117,12 +117,12 @@ async function setTaskLifecycle(
 ) {
   const target = resolveMetaagentTarget(deps, reference)
   if (!target.agent) {
-    deps.flashFooter(target.error ?? `usage: /agent task ${action} [metaagent-ref]`, "error")
+    deps.flashFooter(target.error ?? `usage: /agent task ${action} [agent-ref]`, "error")
     return
   }
   const lifecycleRequest = action === "pause" ? deps.pauseMetaagentTask : deps.resumeMetaagentTask
   if (!lifecycleRequest) {
-    deps.flashFooter("metaagent task runtime is unavailable", "error")
+    deps.flashFooter("agent task runtime is unavailable", "error")
     return
   }
   if (!findMetaagentTask(deps.sessionState(), target.agent.id)) {
@@ -145,11 +145,11 @@ async function abortTask(
 ) {
   const { agent, rest, error } = resolveOptionalTargetWithText(deps, args)
   if (!agent) {
-    deps.flashFooter(error ?? "usage: /agent task abort [metaagent-ref] [reason]", "error")
+    deps.flashFooter(error ?? "usage: /agent task abort [agent-ref] [reason]", "error")
     return
   }
   if (!deps.abortMetaagentTask) {
-    deps.flashFooter("metaagent task runtime is unavailable", "error")
+    deps.flashFooter("agent task runtime is unavailable", "error")
     return
   }
   if (!findMetaagentTask(deps.sessionState(), agent.id)) {
@@ -184,7 +184,7 @@ function resolveOptionalTargetWithText(
       return {
         agent: null,
         rest: [],
-        error: `${deps.formatAgentLabel(resolved.agent)} is not a metaagent`,
+        error: `${deps.formatAgentLabel(resolved.agent)} is not in meta mode`,
       }
     }
   }
@@ -198,12 +198,12 @@ function resolveMetaagentTarget(
 ): { agent: AgentInstance | null; error?: string | null } {
   const resolved = deps.resolveSessionAgent(reference ?? deps.sessionState().focused_agent_id)
   if (resolved.error || !resolved.agent) {
-    return { agent: null, error: resolved.error ?? "no metaagent available" }
+    return { agent: null, error: resolved.error ?? "no agent in meta mode available" }
   }
   if (!isMetaModeAgent(resolved.agent)) {
     return {
       agent: null,
-      error: `${deps.formatAgentLabel(resolved.agent)} is not a metaagent`,
+      error: `${deps.formatAgentLabel(resolved.agent)} is not in meta mode`,
     }
   }
   return { agent: resolved.agent }
@@ -219,10 +219,10 @@ function findMetaagentTask(session: RuntimeSession, metaagentId: string): Metaag
 
 function formatMetaagentTaskNotice(agent: AgentInstance, task: MetaagentTask | null): string {
   if (!task) {
-    return `Metaagent task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}: none`
+    return `Meta mode task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}: none`
   }
   const lines = [
-    `Metaagent task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`,
+    `Meta mode task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`,
     `status: ${task.status}`,
     `revision: ${task.revision}`,
     "",

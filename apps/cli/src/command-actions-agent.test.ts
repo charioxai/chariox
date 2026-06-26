@@ -92,7 +92,7 @@ test("fork commands send optional refs and apply the forked provider run", async
   assert.match(notices.at(1) ?? "", /forked qa as agent-2/)
 })
 
-test("agent task command updates focused metaagent task", async () => {
+test("agent task command updates focused Meta mode task", async () => {
   const metaagent = makeAgent({ meta_mode: { activated_at_ms: 1 }, alias: "planner" })
   const nextSession = makeSession({
     agents: [metaagent],
@@ -146,7 +146,7 @@ test("agent task command rejects regular agents", async () => {
 
   await handlers.handleAgentCommand({ kind: "agent", raw: "/agent task pause", args: ["task", "pause"] })
 
-  assert.match(flashedMessage, /agent-1 is not a metaagent/)
+  assert.match(flashedMessage, /agent-1 is not in meta mode/)
 })
 
 test("agent spawn refreshes session state after launching the provider run", async () => {
