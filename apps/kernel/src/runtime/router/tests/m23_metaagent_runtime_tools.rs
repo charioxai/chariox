@@ -3528,19 +3528,45 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
         ))
         .expect("session should be created");
     let meta_a = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta-a")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
-        .expect("first metaagent should spawn");
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta-a"))
+        .expect("first regular agent should spawn");
     let meta_b = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta-b")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
-        .expect("second metaagent should spawn");
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta-b"))
+        .expect("second regular agent should spawn");
+    let task_a_id = app
+        .sessions_mut()
+        .ensure_metaagent_task(session.id(), meta_a.id(), "Coordinate alpha work.")
+        .expect("meta A task should start")
+        .metaagent_task(meta_a.id())
+        .expect("meta A task should be projected")
+        .task_id()
+        .to_string();
+    app.agents_mut()
+        .activate_agent_meta_mode(meta_a.id(), Some(task_a_id))
+        .expect("meta A should enter meta mode");
+    let task_b_id = app
+        .sessions_mut()
+        .ensure_metaagent_task(session.id(), meta_b.id(), "Coordinate beta work.")
+        .expect("meta B task should start")
+        .metaagent_task(meta_b.id())
+        .expect("meta B task should be projected")
+        .task_id()
+        .to_string();
+    app.agents_mut()
+        .activate_agent_meta_mode(meta_b.id(), Some(task_b_id))
+        .expect("meta B should enter meta mode");
+    let meta_a = app
+        .agents()
+        .get_agent(meta_a.id())
+        .expect("meta A should exist after activation");
+    let meta_b = app
+        .agents()
+        .get_agent(meta_b.id())
+        .expect("meta B should exist after activation");
+    assert!(meta_a.is_metaagent());
+    assert!(meta_b.is_metaagent());
+    assert_eq!(meta_a.role(), crate::agent::AgentRole::Standard);
+    assert_eq!(meta_b.role(), crate::agent::AgentRole::Standard);
     let meta_a_run = launch_test_provider(
         &mut app,
         session.id(),
