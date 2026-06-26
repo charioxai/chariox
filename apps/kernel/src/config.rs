@@ -158,7 +158,7 @@ impl DaemonConfig {
             relay_private_key,
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
-            accept_remote_leases: false,
+            accept_remote_leases: true,
             os_user: os_user.into(),
         }
     }
@@ -315,8 +315,9 @@ impl DaemonConfig {
         key_path: impl AsRef<str>,
         value: impl Into<String>,
     ) -> Result<(), DaemonError> {
-        self.user_config
-            .set_value(key_path.as_ref(), value.into())?;
+        let key_path = key_path.as_ref();
+        self.user_config.set_value(key_path, value.into())?;
+        self.apply_live_user_config_value(key_path);
         persist_user_config(&self.user_config_path, &self.user_config)?;
         Ok(())
     }
@@ -325,13 +326,21 @@ impl DaemonConfig {
         &mut self,
         key_path: impl AsRef<str>,
     ) -> Result<(), DaemonError> {
-        self.user_config.unset_value(key_path.as_ref())?;
+        let key_path = key_path.as_ref();
+        self.user_config.unset_value(key_path)?;
+        self.apply_live_user_config_value(key_path);
         persist_user_config(&self.user_config_path, &self.user_config)?;
         Ok(())
     }
 
     pub fn user_config_schema() -> Vec<UserConfigSchemaEntry> {
         user_config_schema::entries()
+    }
+
+    fn apply_live_user_config_value(&mut self, key_path: &str) {
+        if key_path == "relay.accept_remote_leases" {
+            self.accept_remote_leases = self.user_config.relay.accept_remote_leases.unwrap_or(true);
+        }
     }
 }
 
@@ -1315,6 +1324,38 @@ unlock_policy = "{unlock_policy}"
 
         assert!(encoded.contains("workspace_live_sync = \"off\""));
         assert!(!encoded.contains("workspace_live_sync = \"managed\""));
+    }
+
+    #[test]
+    fn remote_lease_acceptance_defaults_to_enabled_and_user_config_is_live() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-remote-lease-config-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config_path = path.clone();
+
+        assert!(config.accept_remote_leases);
+
+        config
+            .set_user_config_value("relay.accept_remote_leases", "false")
+            .expect("remote lease setting should persist");
+        assert!(!config.accept_remote_leases);
+        assert_eq!(config.user_config.relay.accept_remote_leases, Some(false));
+
+        config
+            .set_user_config_value("relay.accept_remote_leases", "true")
+            .expect("remote lease setting should update");
+        assert!(config.accept_remote_leases);
+
+        config
+            .unset_user_config_value("relay.accept_remote_leases")
+            .expect("remote lease setting should unset");
+        assert!(config.accept_remote_leases);
+        assert_eq!(config.user_config.relay.accept_remote_leases, None);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

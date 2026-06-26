@@ -137,11 +137,13 @@ impl DaemonApp {
         kernel_ref: &str,
     ) -> Result<AgentInstance, DaemonError> {
         let relay_override = self.slice_relay_config_for_kernel_ref(kernel_ref);
-        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
+        let relay_config = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
         let worker_kernel = self.select_remote_kernel_by_ref_with_config(
             kernel_ref,
             &request.provider,
-            relay_config,
+            &relay_config,
         )?;
         let worker_worktree_id = request.worktree_id.clone();
         let worktree_placement = request.worktree_placement.clone();
@@ -175,7 +177,9 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
         relay_override: Option<DaemonConfig>,
     ) -> Result<AgentInstance, DaemonError> {
-        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
+        let relay_config = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
         let session = self.sessions().get_session(agent.session_id())?;
         let effective_config =
             crate::session::effective_agent_execution_config(&session, Some(agent));
@@ -191,7 +195,7 @@ impl DaemonApp {
         };
         let (lease, relay_peer_protocol_version) =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                relay_config,
+                &relay_config,
                 target.clone(),
                 RelayPeerRequest::CreateExecutionLease {
                     home_kernel_id: self.config.daemon_id.clone(),
@@ -212,14 +216,31 @@ impl DaemonApp {
                     });
                 }
             };
+        let cleanup_remote_setup =
+            |app: &mut DaemonApp,
+             relay_config: &DaemonConfig,
+             target: &ClientTarget,
+             lease_id: &str,
+             leased_agent_id: Option<&str>| {
+                if let Some(leased_agent_id) = leased_agent_id {
+                    let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+                        relay_config,
+                        target.clone(),
+                        RelayPeerRequest::DestroyLeasedAgent {
+                            leased_agent_id: leased_agent_id.to_string(),
+                        },
+                    ));
+                }
+                let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+                    relay_config,
+                    target.clone(),
+                    RelayPeerRequest::DestroyExecutionLease {
+                        lease_id: lease_id.to_string(),
+                    },
+                ));
+            };
         if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
-            let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                relay_config,
-                target.clone(),
-                RelayPeerRequest::DestroyExecutionLease {
-                    lease_id: lease.id.clone(),
-                },
-            ));
+            cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
             return Err(DaemonError::LocalTransport {
                 operation: "create remote execution lease",
                 message: format!(
@@ -232,7 +253,7 @@ impl DaemonApp {
         }
         let leased_agent =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                relay_config,
+                &relay_config,
                 target.clone(),
                 RelayPeerRequest::SpawnLeasedAgent {
                     lease_id: lease.id.clone(),
@@ -249,30 +270,20 @@ impl DaemonApp {
             )) {
                 Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
                 Ok(other) => {
-                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        relay_config,
-                        target,
-                        RelayPeerRequest::DestroyExecutionLease {
-                            lease_id: lease.id.clone(),
-                        },
-                    ));
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                     return Err(DaemonError::LocalTransport {
                         operation: "spawn remote leased agent",
                         message: format!("unexpected peer response: {other:?}"),
                     });
                 }
                 Err(error) => {
-                    let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        relay_config,
-                        target,
-                        RelayPeerRequest::DestroyExecutionLease {
-                            lease_id: lease.id.clone(),
-                        },
-                    ));
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                     return Err(error);
                 }
             };
-        let bound = self.agents.bind_remote_execution(
+        let leased_agent_id = leased_agent.id.clone();
+        let lease_id = lease.id.clone();
+        let bound = match self.agents.bind_remote_execution(
             agent.id(),
             RemoteAgentBinding {
                 worker_kernel_id: worker_kernel.kernel_id.clone(),
@@ -287,8 +298,29 @@ impl DaemonApp {
                     .as_ref()
                     .and_then(|config| config.relay_token.clone()),
             },
-        )?;
-        self.ensure_remote_agent_skill_packages(&bound)?;
+        ) {
+            Ok(bound) => bound,
+            Err(error) => {
+                cleanup_remote_setup(
+                    self,
+                    &relay_config,
+                    &target,
+                    &lease_id,
+                    Some(&leased_agent_id),
+                );
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.ensure_remote_agent_skill_packages(&bound) {
+            cleanup_remote_setup(
+                self,
+                &relay_config,
+                &target,
+                &lease_id,
+                Some(&leased_agent_id),
+            );
+            return Err(error);
+        }
         Ok(bound)
     }
 

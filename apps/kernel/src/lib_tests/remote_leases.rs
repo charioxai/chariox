@@ -1,23 +1,12 @@
 use super::*;
 
 #[test]
-fn execution_leases_require_opt_in_and_can_be_destroyed() {
-    let mut disabled =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let error = RemoteLeaseRuntime::new(&mut disabled)
-        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
-        .expect_err("remote leases should require opt-in");
-    match error {
-        DaemonError::RemoteLeasesDisabled { .. } => {}
-        other => panic!("unexpected error: {other}"),
-    }
-
-    let mut config = DaemonConfig::for_tests();
-    config.accept_remote_leases = true;
+fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
+    let config = DaemonConfig::for_tests();
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
-        .expect("execution lease should be created");
+        .expect("execution lease should be created by default");
     assert_eq!(lease.worker_kernel_id, config.daemon_id);
     assert_eq!(lease.machine_id, config.host_machine_id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
@@ -27,6 +16,18 @@ fn execution_leases_require_opt_in_and_can_be_destroyed() {
         .expect("execution lease should be removed");
     assert_eq!(removed.id, lease.id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+
+    let mut disabled_config = DaemonConfig::for_tests();
+    disabled_config.accept_remote_leases = false;
+    let mut disabled =
+        DaemonApp::bootstrap(disabled_config).expect("daemon bootstrap should succeed");
+    let error = RemoteLeaseRuntime::new(&mut disabled)
+        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
+        .expect_err("remote leases should honor explicit disablement");
+    match error {
+        DaemonError::RemoteLeasesDisabled { .. } => {}
+        other => panic!("unexpected error: {other}"),
+    }
 }
 
 #[test]

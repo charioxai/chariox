@@ -65,6 +65,16 @@ impl DaemonConfig {
             host_machine_alias.as_deref(),
             daemon_alias.as_deref(),
         );
+        let accept_remote_leases = env::var("ARROBA_ACCEPT_REMOTE_LEASES")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .or(user_config.relay.accept_remote_leases)
+            .unwrap_or(true);
         Self {
             user_config_path,
             user_config,
@@ -149,15 +159,7 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
-            accept_remote_leases: env::var("ARROBA_ACCEPT_REMOTE_LEASES")
-                .ok()
-                .map(|value| {
-                    matches!(
-                        value.trim().to_ascii_lowercase().as_str(),
-                        "1" | "true" | "yes" | "on"
-                    )
-                })
-                .unwrap_or(false),
+            accept_remote_leases,
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),

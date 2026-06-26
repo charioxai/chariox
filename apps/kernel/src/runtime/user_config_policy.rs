@@ -52,6 +52,15 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
+    if path == "relay.accept_remote_leases" {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".to_string(),
+            path: path.to_string(),
+            message: "remote lease acceptance updated for this running kernel".to_string(),
+            provider_reload: None,
+        }]);
+    }
+
     if user_config_path_requires_daemon_restart(path) {
         return Ok(vec![UserConfigMutationEffect {
             kind: "restart_required".to_string(),
@@ -100,7 +109,6 @@ pub(crate) fn user_config_path_is_unwired(path: &str) -> bool {
             | "ui.multi_agent_response_layout"
             | "ui.max_agents_per_screen"
             | "relay.url"
-            | "relay.accept_remote_leases"
             | "history.operational.retention_days"
             | "history.operational.max_size_mb"
             | "history.operational.keep_pinned_sessions"
@@ -151,6 +159,7 @@ mod tests {
         assert!(user_config_path_is_unwired(
             "history.archive.archive_before_delete"
         ));
+        assert!(!user_config_path_is_unwired("relay.accept_remote_leases"));
         assert!(!user_config_path_is_unwired("mcp.servers"));
         assert!(!user_config_path_is_unwired("kernel.runtime_mcp_port"));
     }

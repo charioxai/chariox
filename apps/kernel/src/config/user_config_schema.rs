@@ -59,7 +59,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("ui.max_agents_per_screen", "u32", &[], true, true, "no_runtime_effect", "unwired", "Persisted pane-count value; terminal UI currently uses CLI preferences."),
         entry("ui.worktree_aliases.<alias>", "string", &[], true, true, "no_runtime_effect", "unwired", "Pattern key for a worktree alias entry."),
         entry("relay.url", "string|null", &[], true, true, "no_runtime_effect", "unwired", "Persisted user-config relay URL; daemon relay connection currently uses daemon config."),
-        entry("relay.accept_remote_leases", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Persisted remote-lease acceptance flag; daemon runtime currently uses daemon config."),
+        entry("relay.accept_remote_leases", "bool", &["true", "false"], true, true, "runtime_config", "live", "Allow this kernel to accept same-user remote execution leases."),
         entry("history.operational.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Operational history storage backend."),
         entry("history.operational.path", "string", &[], true, true, "restart_required", "boot", "Operational history SQLite database path."),
         entry("history.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Retention-days setting; no pruning job currently consumes it."),
