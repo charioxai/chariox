@@ -53,7 +53,9 @@ impl KernelRuntimeState {
         self.owned
             .agent_store
             .activate_agent_meta_mode(agent_id, task_id)?;
-        let _ = self.reload_agent_provider_if_idle(session_id, agent_id, "meta mode activation")?;
+        let _ = self
+            .reload_agent_provider_for_policy(session_id, agent_id, "meta mode activation")
+            .await?;
         Ok(self.project_metaagent_task_session(self.owned.session_store.get_session(session_id)?))
     }
 
@@ -70,7 +72,9 @@ impl KernelRuntimeState {
         self.owned
             .agent_store
             .deactivate_agent_meta_mode(agent_id)?;
-        let _ = self.reload_agent_provider_if_idle(session_id, agent_id, reason)?;
+        let _ = self
+            .reload_agent_provider_for_policy(session_id, agent_id, reason)
+            .await?;
         if let Err(error) = self
             .submit_meta_mode_exited_prompt(session_id, agent_id, reason)
             .await

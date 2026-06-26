@@ -1608,6 +1608,68 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
 }
 
 #[tokio::test]
+async fn meta_mode_activation_registers_pending_provider_reload_when_agent_busy() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-meta-reload",
+            "worktree-meta-reload",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-meta-reload",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "model",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "busy before meta mode\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .activate_meta_mode_for_prompt(session.id(), agent.id(), "delegate the queued task")
+        .await
+        .expect("meta mode should activate");
+
+    assert!(
+        runtime
+            .owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent.id()),
+        "busy meta mode activation must register a pending provider reload"
+    );
+    let agent = runtime
+        .owned
+        .agent_store
+        .get_agent(agent.id())
+        .expect("agent should still exist");
+    assert!(agent.is_metaagent());
+}
+
+#[tokio::test]
 async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
