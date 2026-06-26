@@ -247,8 +247,7 @@ impl<'a> KernelAgentService<'a> {
             return Ok(());
         }
 
-        let source_attachment_id =
-            self.ensure_metaagent_task_attachment(session_id, &metaagent)?;
+        let source_attachment_id = self.ensure_metaagent_task_attachment(session_id, &metaagent)?;
         let prompt_id = self.app.sessions_mut().reserve_prompt_id();
         let prompt_preview = completion
             .completed
@@ -361,6 +360,14 @@ impl<'a> KernelAgentService<'a> {
         if completion.started_next.is_some() {
             return Ok(());
         }
+        if self
+            .app
+            .providers
+            .get_run_for_agent(metaagent.session_id(), metaagent.id())
+            .is_some_and(|run| self.app.active_turns.snapshot().contains_key(run.id()))
+        {
+            return Ok(());
+        }
         let session_id = metaagent.session_id().to_string();
         let mut session = self.app.sessions.get_session(&session_id)?;
         let Some(task) = session.metaagent_task(metaagent.id()).cloned() else {
@@ -379,6 +386,13 @@ impl<'a> KernelAgentService<'a> {
         }
         session.set_agents(self.app.agents.get_session_agents(&session_id));
         if self.metaagent_has_active_owned_regular_agent_work(&session, &metaagent) {
+            return Ok(());
+        }
+        if self
+            .app
+            .metaagent_event_store()
+            .has_orphaned_task_event_for_revision(metaagent.id(), task.task_id(), task.revision())
+        {
             return Ok(());
         }
 

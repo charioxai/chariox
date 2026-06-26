@@ -190,6 +190,29 @@ impl MetaagentEventStore {
         records
     }
 
+    pub(crate) fn has_orphaned_task_event_for_revision(
+        &self,
+        metaagent_id: &str,
+        task_id: &str,
+        task_revision: u64,
+    ) -> bool {
+        let state = self.state.lock().expect("metaagent event store poisoned");
+        state.records.values().any(|record| {
+            record.metaagent_id == metaagent_id
+                && record.kind == "metaagent.task.orphaned"
+                && record
+                    .detail
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(task_id)
+                && record
+                    .detail
+                    .get("task_revision")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(task_revision)
+        })
+    }
+
     pub(crate) fn read(&self, metaagent_id: &str, event_id: &str) -> Option<MetaagentEventRecord> {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
         let record = state.records.get_mut(event_id)?;

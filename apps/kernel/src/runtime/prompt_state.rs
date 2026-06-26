@@ -400,6 +400,21 @@ impl PromptStateOwner {
         })
     }
 
+    pub(crate) fn remove_queued_prompts_for_agent(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+    ) -> usize {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        let removed = state.queued_prompts.len();
+        state.queued_prompts.clear();
+        removed
+    }
+
     pub(crate) fn remove_queued_prompt(
         &self,
         session: &RuntimeSession,

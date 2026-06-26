@@ -822,6 +822,108 @@ async fn provider_message_completion_without_prompt_completed_settles_after_quie
 }
 
 #[tokio::test]
+async fn metaagent_quiet_drain_settlement_without_prompt_completed_does_not_inject_orphaned_task() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let agent = app
+        .agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("agent should enter meta mode");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(
+            session.id(),
+            agent.id(),
+            "Verify quiet-drain settlement does not orphan an active Meta task.",
+        )
+        .expect("metaagent task should start");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-meta-completion-quiet-drain",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "continue the active task\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-final".to_string()),
+                    bytes: b"meta turn output".to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "assistant-final".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("completion batch with output should be accepted");
+    assert!(
+        runtime
+            .owned
+            .metaagent_events
+            .list(agent.id(), Some("metaagent.task.orphaned"), None, 10)
+            .is_empty(),
+        "fresh assistant output should not inject orphan recovery before provider completion"
+    );
+
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet drain should settle prompt");
+
+    assert!(
+        runtime
+            .owned
+            .metaagent_events
+            .list(agent.id(), Some("metaagent.task.orphaned"), None, 10)
+            .is_empty(),
+        "quiet-drain settlement without prompt_completed must not resuscitate a Meta task"
+    );
+}
+
+#[tokio::test]
 async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

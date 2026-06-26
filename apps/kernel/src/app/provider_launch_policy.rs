@@ -110,6 +110,7 @@ pub(crate) fn apply_metaagent_launch_policy(
     }
     request = request
         .with_execution_mode(AgentExecutionMode::Plan)
+        .with_provider_config_override("features.multi_agent", serde_json::json!(false))
         .with_mcp_servers(Vec::new())
         .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest::default());
     request

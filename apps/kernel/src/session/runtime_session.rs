@@ -15,13 +15,13 @@ use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
 use super::session_identity::{
-    CollaborationLevel, SessionAgentDefaults, SessionInvite, SessionMember,
-    default_session_members, default_session_owner_user_id,
+    default_session_members, default_session_owner_user_id, CollaborationLevel,
+    SessionAgentDefaults, SessionInvite, SessionMember,
 };
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{DEFAULT_SESSION_MAX_AGENTS, unix_epoch_ms};
+use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_publication::WorkflowPublicationDefinition;
@@ -496,7 +496,17 @@ impl RuntimeSession {
         {
             let task = &mut self.metaagent_tasks[index];
             if !task_markdown.trim().is_empty() {
-                task.update_task_markdown(task_markdown);
+                if task.status().is_terminal() {
+                    let task_id = format!(
+                        "metaagent-task-{}-{}-{}",
+                        metaagent_id,
+                        unix_epoch_ms(),
+                        task.revision().saturating_add(1)
+                    );
+                    task.restart(task_id, task_markdown);
+                } else {
+                    task.update_task_markdown(task_markdown);
+                }
             } else if task.status().is_terminal() {
                 task.set_status(MetaagentTaskStatus::Active);
             }
@@ -523,7 +533,13 @@ impl RuntimeSession {
         {
             let task = &mut self.metaagent_tasks[index];
             if task.status().is_terminal() {
-                task.update_task_markdown(task_markdown);
+                let task_id = format!(
+                    "metaagent-task-{}-{}-{}",
+                    metaagent_id,
+                    unix_epoch_ms(),
+                    task.revision().saturating_add(1)
+                );
+                task.restart(task_id, task_markdown);
                 return Some(&self.metaagent_tasks[index]);
             }
             return None;
@@ -544,6 +560,16 @@ impl RuntimeSession {
         {
             let task = &mut self.metaagent_tasks[index];
             if !task_markdown.trim().is_empty() {
+                if task.status().is_terminal() {
+                    let task_id = format!(
+                        "metaagent-task-{}-{}-{}",
+                        metaagent_id,
+                        unix_epoch_ms(),
+                        task.revision().saturating_add(1)
+                    );
+                    task.restart(task_id, task_markdown);
+                    return &self.metaagent_tasks[index];
+                }
                 task.update_task_markdown(task_markdown);
             }
             if task.status() != MetaagentTaskStatus::Active {
@@ -1330,5 +1356,35 @@ impl RuntimeSession {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_metaagent_task_restart_clears_stale_plan() {
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+
+        let first = session.start_or_update_metaagent_task("agent-1", "Fix todo test");
+        let first_task_id = first.task_id().to_string();
+        session.update_metaagent_plan_markdown("agent-1", "- Delegate todo fix");
+        session.complete_metaagent_task("agent-1", Some("done".to_string()));
+
+        let second = session.start_or_update_metaagent_task("agent-1", "Fix stats test");
+
+        assert_ne!(second.task_id(), first_task_id);
+        assert_eq!(second.task_markdown(), "Fix stats test");
+        assert_eq!(second.plan_markdown(), "");
+        assert_eq!(second.status(), MetaagentTaskStatus::Active);
+        assert_eq!(second.completion_summary(), None);
     }
 }

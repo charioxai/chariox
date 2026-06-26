@@ -158,6 +158,45 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         prompt_text: String,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.submit_metaagent_command_prompt_with_steering(
+            session_id,
+            metaagent,
+            source_attachment_id,
+            target_agent_id,
+            prompt_text,
+            true,
+        )
+        .await
+    }
+
+    pub(crate) async fn submit_metaagent_command_prompt_without_steering(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        prompt_text: String,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.submit_metaagent_command_prompt_with_steering(
+            session_id,
+            metaagent,
+            source_attachment_id,
+            target_agent_id,
+            prompt_text,
+            false,
+        )
+        .await
+    }
+
+    async fn submit_metaagent_command_prompt_with_steering(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        prompt_text: String,
+        allow_steer: bool,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let prompt_id = self.owned.session_store.reserve_prompt_id();
         let prompt = crate::session::PromptQueueItem::new(
             prompt_id.clone(),
@@ -168,27 +207,29 @@ impl KernelRuntimeState {
         );
         self.owned
             .ensure_metaagent_prompt_target_not_workflow_busy(session_id, target_agent_id)?;
-        if let Some(dispatches) = self
-            .owned
-            .steer_active_metaagent_prompt(session_id, &prompt)?
-        {
-            self.spawn_workflow_prompt_dispatches(dispatches);
-            self.persist_metaagent_prompt_submission(
-                session_id,
-                metaagent,
-                target_agent_id,
-                &prompt_id,
-                "steered",
-                None,
-            );
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "status": "steered",
-                    "prompt_id": prompt_id,
-                    "target_agent_id": target_agent_id,
-                }),
-            });
+        if allow_steer {
+            if let Some(dispatches) = self
+                .owned
+                .steer_active_metaagent_prompt(session_id, &prompt)?
+            {
+                self.spawn_workflow_prompt_dispatches(dispatches);
+                self.persist_metaagent_prompt_submission(
+                    session_id,
+                    metaagent,
+                    target_agent_id,
+                    &prompt_id,
+                    "steered",
+                    None,
+                );
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "status": "steered",
+                        "prompt_id": prompt_id,
+                        "target_agent_id": target_agent_id,
+                    }),
+                });
+            }
         }
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {

@@ -241,6 +241,13 @@ mod tests {
 
         assert_eq!(prepared.execution_mode, Some(AgentExecutionMode::Plan));
         assert_eq!(prepared.permission_level, Some(AgentPermissionLevel::Yolo));
+        assert_eq!(
+            prepared
+                .provider_config_overrides
+                .get("features.multi_agent"),
+            Some(&serde_json::json!(false)),
+            "Meta mode should disable provider-native Codex multi-agent tools"
+        );
         assert!(
             prepared.mcp_servers.is_empty(),
             "metaagent provider runs should not receive user MCP servers"

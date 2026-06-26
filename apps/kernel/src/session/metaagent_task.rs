@@ -115,6 +115,21 @@ impl MetaagentTask {
         self.touch();
     }
 
+    pub fn restart(&mut self, task_id: impl Into<String>, task_markdown: impl Into<String>) {
+        let now = unix_epoch_ms();
+        self.task_id = task_id.into();
+        self.status = MetaagentTaskStatus::Active;
+        self.task_markdown = task_markdown.into();
+        self.plan_markdown.clear();
+        self.revision = self.revision.saturating_add(1);
+        self.created_at_ms = now;
+        self.updated_at_ms = now;
+        self.completed_at_ms = None;
+        self.blocked_reason = None;
+        self.aborted_reason = None;
+        self.completion_summary = None;
+    }
+
     pub fn update_plan_markdown(&mut self, plan_markdown: impl Into<String>) {
         self.plan_markdown = plan_markdown.into();
         self.reopen_if_terminal();

@@ -321,6 +321,22 @@ function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
   }
 }
 
+function isMetaagentModeEndedError(error) {
+  return String(error?.message ?? error).includes('metaagent event access requires an owned session metaagent')
+}
+
+async function listMetaagentEventsIfAvailable(client, sessionId, metaagentId, limit = 100) {
+  try {
+    return unwrap(
+      await client.send(listMetaagentEventsRequest(sessionId, metaagentId, limit)),
+      'MetaagentEventsListed',
+    )
+  } catch (error) {
+    if (isMetaagentModeEndedError(error)) return null
+    throw error
+  }
+}
+
 async function getSession(client, requests, sessionId) {
   return unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded').session
 }
@@ -460,8 +476,8 @@ function createObserver({ client, requests, sessionId, metaagentId, workspace, h
       }
 
       if (metaagent?.meta_mode) {
-        const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
-        cachedEvents = eventsPayload.events ?? []
+        const eventsPayload = await listMetaagentEventsIfAvailable(client, sessionId, metaagentId, 100)
+        cachedEvents = eventsPayload?.events ?? cachedEvents
         for (const event of cachedEvents) {
           if (seenEvents.has(event.event_id)) continue
           seenEvents.add(event.event_id)

@@ -272,6 +272,14 @@ impl KernelRuntimeState {
         if completion.started_next.is_some() {
             return Ok(());
         }
+        if self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, metaagent.id())
+            .is_some_and(|run| self.owned.active_turns.snapshot().contains_key(run.id()))
+        {
+            return Ok(());
+        }
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(task) = session.metaagent_task(metaagent.id()) else {
             return Ok(());
@@ -288,6 +296,13 @@ impl KernelRuntimeState {
             return Ok(());
         }
         if self.metaagent_has_active_owned_regular_agent_work(&session, &metaagent) {
+            return Ok(());
+        }
+        if self
+            .owned
+            .metaagent_events
+            .has_orphaned_task_event_for_revision(metaagent.id(), task.task_id(), task.revision())
+        {
             return Ok(());
         }
 
@@ -393,6 +408,7 @@ impl KernelRuntimeState {
                     &session_id,
                     &metaagent,
                     metaagent_task_update_notification(task_updated, plan_updated),
+                    true,
                 )
                 .await;
                 let session = self.owned.session_store.get_session(&session_id)?;
@@ -431,6 +447,7 @@ impl KernelRuntimeState {
                     &request.session_id,
                     &metaagent,
                     "The user resumed your task. Re-read the task and plan, then continue from the current state.",
+                    false,
                 )
                 .await;
                 let session = self.owned.session_store.get_session(&request.session_id)?;
@@ -447,6 +464,12 @@ impl KernelRuntimeState {
                 )?;
                 drop(session);
                 self.cancel_active_metaagent_prompt_if_any(
+                    &request.session_id,
+                    &metaagent,
+                    "abort_metaagent_task",
+                )
+                .await?;
+                self.cancel_controlled_regular_agent_work(
                     &request.session_id,
                     &metaagent,
                     "abort_metaagent_task",
@@ -482,6 +505,65 @@ impl KernelRuntimeState {
             });
         }
         Ok(agent)
+    }
+
+    async fn cancel_controlled_regular_agent_work(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let controlled_agents = self
+            .owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter(|agent| !agent.is_metaagent())
+            .filter(|agent| agent.controlled_by_metaagent_id() == Some(metaagent.id()))
+            .collect::<Vec<_>>();
+        for agent in controlled_agents {
+            let _ = self
+                .owned
+                .remove_queued_prompts_for_agent(session_id, agent.id())?;
+            let session = self.owned.session_store.get_session(session_id)?;
+            let Some(active_prompt) = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id())
+            else {
+                continue;
+            };
+            if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+                continue;
+            }
+            let attachment_id = active_prompt.source_attachment_id().to_string();
+            match self
+                .cancel_agent_prompt(session_id, agent.id(), &attachment_id)
+                .await
+            {
+                Ok(cancellation) => {
+                    if let Some(dispatch) = cancellation.dispatch {
+                        self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
+                    }
+                }
+                Err(DaemonError::NoActivePrompt { .. }) => {}
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "metaagent.task",
+                        "failed to cancel controlled worker prompt",
+                        serde_json::json!({
+                            "operation": operation,
+                            "session_id": session_id,
+                            "metaagent_id": metaagent.id(),
+                            "worker_agent_id": agent.id(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn cancel_active_metaagent_prompt_if_any(
@@ -534,6 +616,7 @@ impl KernelRuntimeState {
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,
         prompt_text: &str,
+        allow_steer: bool,
     ) {
         let attachment_id = match self.ensure_metaagent_task_attachment(session_id, metaagent) {
             Ok(attachment_id) => attachment_id,
@@ -550,8 +633,8 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        if let Err(error) = self
-            .submit_metaagent_command_prompt(
+        let result = if allow_steer {
+            self.submit_metaagent_command_prompt(
                 session_id,
                 metaagent,
                 &attachment_id,
@@ -559,7 +642,17 @@ impl KernelRuntimeState {
                 prompt_text.to_string(),
             )
             .await
-        {
+        } else {
+            self.submit_metaagent_command_prompt_without_steering(
+                session_id,
+                metaagent,
+                &attachment_id,
+                metaagent.id(),
+                prompt_text.to_string(),
+            )
+            .await
+        };
+        if let Err(error) = result {
             crate::logging::warn_with_fields(
                 "metaagent.task",
                 "failed to notify metaagent about task change",

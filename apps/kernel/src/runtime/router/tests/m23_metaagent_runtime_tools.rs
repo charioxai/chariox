@@ -3160,11 +3160,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(
-        owned_agents.iter().any(|agent| {
-            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
-        })
-    );
+    assert!(owned_agents
+        .iter()
+        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -3299,22 +3297,20 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide list should dispatch");
     assert!(listed_guides.ok);
-    assert!(
-        listed_guides
-            .payload
-            .get("guides")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|guides| guides.iter().any(|guide| {
-                guide
-                    .get("commands")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|commands| {
-                        commands
-                            .iter()
-                            .any(|command| command.as_str() == Some("workflow run"))
-                    })
-            }))
-    );
+    assert!(listed_guides
+        .payload
+        .get("guides")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|guides| guides.iter().any(|guide| {
+            guide
+                .get("commands")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|commands| {
+                    commands
+                        .iter()
+                        .any(|command| command.as_str() == Some("workflow run"))
+                })
+        })));
 
     let guide = router
         .runtime_state
@@ -3328,13 +3324,11 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide read should dispatch");
     assert!(guide.ok);
-    assert!(
-        guide
-            .payload
-            .get("body")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|body| body.contains("Do not implement directly"))
-    );
+    assert!(guide
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|body| body.contains("Do not implement directly")));
 }
 
 #[test]
@@ -4409,13 +4403,11 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
             .and_then(serde_json::Value::as_str),
         Some("WorkflowRun")
     );
-    assert!(
-        run_status
-            .payload
-            .pointer("/response/workflow_run/node_run_counts_by_status")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|counts| !counts.is_empty())
-    );
+    assert!(run_status
+        .payload
+        .pointer("/response/workflow_run/node_run_counts_by_status")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|counts| !counts.is_empty()));
 }
 
 #[test]
@@ -4613,12 +4605,10 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(
-        session
-            .agents()
-            .iter()
-            .all(|agent| agent.id() != worker.id())
-    );
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
 }
 
 #[test]
@@ -4629,8 +4619,8 @@ fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_managemen
     );
 }
 
-async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner()
- {
+async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
+) {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -4769,12 +4759,11 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(
-        app.sessions()
-            .get_session(&session_id)
-            .expect("session should remain")
-            .has_member("user-2")
-    );
+    assert!(app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should remain")
+        .has_member("user-2"));
 
     let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-meta"))
@@ -5636,6 +5625,36 @@ async fn idle_metaagent_turn_with_active_task_injects_orphaned_task_event_inner(
     assert!(
         session.active_prompt_for_agent(metaagent.id()).is_some(),
         "orphan recovery prompt should leave the metaagent active"
+    );
+
+    let complete_again = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+        session_id: session.id().to_string(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("complete-meta-again", None, None, &complete_again),
+            complete_again,
+        )
+        .await
+        .expect("second idle metaagent completion should not inject duplicate orphan recovery");
+    let listed_again = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "metaagent.task.orphaned" }),
+        )
+        .await
+        .expect("meta list_events should dispatch");
+    assert!(listed_again.ok);
+    let duplicate_count = listed_again
+        .payload
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    assert_eq!(
+        duplicate_count, 1,
+        "same task revision should receive at most one orphan recovery event"
     );
 }
 

@@ -1,6 +1,8 @@
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::resolve_codex_executable;
@@ -42,6 +44,7 @@ pub struct CodexClient {
     runtime_mcp_auth_token: Option<String>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<ArrobaMcpServerConfig>,
+    provider_config_overrides: BTreeMap<String, Value>,
     write_access_mode: ProviderWriteAccessMode,
     workspace_live_sync_roots: Vec<PathBuf>,
 }
@@ -66,6 +69,7 @@ impl CodexClient {
             runtime_mcp_auth_token: None,
             native_interaction_bridge: None,
             mcp_servers: Vec::new(),
+            provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
         })
@@ -93,6 +97,11 @@ impl CodexClient {
 
     pub fn with_mcp_servers(mut self, mcp_servers: &[ArrobaMcpServerConfig]) -> Self {
         self.mcp_servers = mcp_servers.to_vec();
+        self
+    }
+
+    pub fn with_provider_config_overrides(mut self, overrides: &BTreeMap<String, Value>) -> Self {
+        self.provider_config_overrides = overrides.clone();
         self
     }
 
@@ -518,6 +527,25 @@ mod tests {
                 "scope": "turn"
             })
         );
+    }
+
+    #[test]
+    fn thread_config_overrides_include_provider_config_overrides() {
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_provider_config_overrides(&provider_overrides);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(overrides.get("tui.mode"), Some(&json!("plan")));
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
     }
 
     #[test]

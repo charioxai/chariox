@@ -55,6 +55,8 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
     )]
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    provider_config_overrides: BTreeMap<String, serde_json::Value>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -120,6 +122,7 @@ impl RuntimeProviderRun {
                 .map(|binding| binding.auth_token.clone()),
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
+            provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
@@ -184,6 +187,7 @@ impl RuntimeProviderRun {
                 .then(|| "inferred-managed-mcp".to_string()),
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
             execution_mode: AgentExecutionMode::default(),
@@ -318,6 +322,10 @@ impl RuntimeProviderRun {
 
     pub fn remote_extension_manifest(&self) -> &crate::extension::RemoteExtensionManifest {
         &self.remote_extension_manifest
+    }
+
+    pub fn provider_config_overrides(&self) -> &BTreeMap<String, serde_json::Value> {
+        &self.provider_config_overrides
     }
 
     pub fn set_remote_extension_manifest(

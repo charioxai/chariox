@@ -268,6 +268,7 @@ impl CodexClient {
         policy: &CodexPermissionPolicy,
     ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
+        overrides.extend(self.provider_config_overrides.clone());
         let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs(
             &self.mcp_servers,
             self.runtime_mcp_server_url.as_deref(),

@@ -3,6 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::DEFAULT_LOCAL_USER_ID;
@@ -205,6 +206,8 @@ pub struct LaunchProviderRequest {
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
     )]
     pub remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_config_overrides: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_env_remove: Vec<String>,
     #[serde(
@@ -353,6 +356,7 @@ impl LaunchProviderRequest {
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            provider_config_overrides: BTreeMap::new(),
             provider_env_remove: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
@@ -407,6 +411,16 @@ impl LaunchProviderRequest {
         manifest: crate::extension::RemoteExtensionManifest,
     ) -> Self {
         self.remote_extension_manifest = manifest;
+        self
+    }
+
+    pub fn with_provider_config_override(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.provider_config_overrides.insert(key.into(), value);
+        self
+    }
+
+    pub fn with_provider_config_overrides(mut self, overrides: BTreeMap<String, Value>) -> Self {
+        self.provider_config_overrides = overrides;
         self
     }
 
@@ -484,6 +498,7 @@ impl LaunchProviderRequest {
             && run.write_access_mode() == self.write_access_mode
             && run.execution_mode() == self.execution_mode.unwrap_or_default()
             && run.permission_level() == self.permission_level.unwrap_or_default()
+            && run.provider_config_overrides() == &self.provider_config_overrides
     }
 }
 
