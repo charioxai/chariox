@@ -49,6 +49,7 @@ import { createCommandCenterLayoutController } from "./command-center-layout-con
 import { createCommandCenterController } from "./command-center-controller.js"
 import type { CommandCenterWorkflowRegistryEntry } from "./command-center-context.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
+import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
@@ -1760,65 +1761,4 @@ function shouldInvalidateWorkflowRegistrySuggestions(command: string): boolean {
     || normalized.startsWith("/workflow registry add ")
     || normalized.startsWith("/workflow registry add-from-workflow ")
     || normalized.startsWith("/workflow registry delete ")
-}
-
-function workflowRegistrySuggestionEntriesFromResponse(
-  response: Record<string, unknown>,
-): CommandCenterWorkflowRegistryEntry[] {
-  const payload = response.WorkflowRegistryListed
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return []
-  }
-  const entries = (payload as Record<string, unknown>).entries
-  if (!Array.isArray(entries)) {
-    return []
-  }
-  return entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      return []
-    }
-    const record = entry as Record<string, unknown>
-    const name = stringField(record, "name")
-    const sourceScope = workflowRegistrySourceScope(record.source_scope)
-    const sourceKind = workflowRegistrySourceKind(record.source_kind)
-    if (!name || !sourceScope || !sourceKind) {
-      return []
-    }
-    const suggestion: CommandCenterWorkflowRegistryEntry = {
-      name,
-      sourceScope,
-      sourceKind,
-    }
-    const endpoints = stringArrayField(record, "endpoints")
-    const queues = stringArrayField(record, "queues")
-    if (endpoints) {
-      suggestion.endpoints = endpoints
-    }
-    if (queues) {
-      suggestion.queues = queues
-    }
-    return [suggestion]
-  })
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key]
-  return typeof value === "string" && value.length > 0 ? value : null
-}
-
-function stringArrayField(record: Record<string, unknown>, key: string): readonly string[] | undefined {
-  const value = record[key]
-  if (!Array.isArray(value)) {
-    return undefined
-  }
-  const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0)
-  return strings.length ? strings : undefined
-}
-
-function workflowRegistrySourceScope(value: unknown): CommandCenterWorkflowRegistryEntry["sourceScope"] | null {
-  return value === "workspace" || value === "user" || value === "builtin" ? value : null
-}
-
-function workflowRegistrySourceKind(value: unknown): CommandCenterWorkflowRegistryEntry["sourceKind"] | null {
-  return value === "single_file" || value === "source_directory" ? value : null
 }

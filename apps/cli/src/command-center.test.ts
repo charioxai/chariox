@@ -4,6 +4,7 @@ import test from "node:test"
 import { buildCommandCenterItems } from "./command-center.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
 
 test("buildCommandCenterItems shows root slash commands", () => {
   const items = buildCommandCenterItems("/", {
@@ -232,6 +233,46 @@ test("buildCommandCenterItems suggests registered workflow names and run endpoin
 
   const queueValues = new Set(buildCommandCenterItems("/workflow run dev-team-small --queue ", context).map((item) => item.value))
   assert.equal(queueValues.has('/workflow run dev-team-small --endpoint entry --queue urgent --prompt "" '), true)
+})
+
+test("workflow registry command center entries read endpoint and queue summary metadata", () => {
+  const entries = workflowRegistrySuggestionEntriesFromResponse({
+    WorkflowRegistryListed: {
+      entries: [{
+        name: "dev-team-small",
+        source_scope: "workspace",
+        source_kind: "source_directory",
+        source_path: "workflow.js",
+        source_sha256: "source",
+        source_bytes: 10,
+        created_at_ms: 1,
+        updated_at_ms: 2,
+        validation: { ok: true },
+        summary: {
+          endpoints: ["entry", "review"],
+          queues: ["urgent"],
+          nodes: ["planner", "reviewer"],
+          default_endpoint: "entry",
+        },
+      }],
+    },
+  })
+
+  const context = {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+    workflowRegistryEntries: entries,
+  }
+  const endpointValues = new Set(buildCommandCenterItems("/workflow run dev-team-small --endpoint ", context).map((item) => item.value))
+  const queueValues = new Set(buildCommandCenterItems("/workflow run dev-team-small --queue ", context).map((item) => item.value))
+
+  assert.equal(endpointValues.has("/workflow run dev-team-small --endpoint entry --prompt \"\" "), true)
+  assert.equal(endpointValues.has("/workflow run dev-team-small --endpoint review --prompt \"\" "), true)
+  assert.equal(queueValues.has("/workflow run dev-team-small --endpoint entry --queue urgent --prompt \"\" "), true)
 })
 
 test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {

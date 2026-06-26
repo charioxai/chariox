@@ -773,7 +773,29 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.with_app_side_effect(move |app| {
             let registry = workflow_registry_for_session(app, &request.session_id)?;
-            let entries = registry.list()?;
+            let limits = app.config().workflow_code_limits();
+            let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
+            let entries = registry
+                .list()?
+                .into_iter()
+                .map(|entry| {
+                    if entry.summary.is_some() {
+                        return entry;
+                    }
+                    match registry.resolve(&entry.name) {
+                        Ok(resolved) => {
+                            crate::workflow_code::enrich_workflow_registry_entry_summary(
+                                resolved, &node_path, &limits,
+                            )
+                        }
+                        Err(error) => {
+                            crate::workflow_code::workflow_registry_metadata_with_summary_failure(
+                                entry, error,
+                            )
+                        }
+                    }
+                })
+                .collect();
             Ok(LocalDaemonResponse::WorkflowRegistryListed { entries })
         })
         .await
@@ -785,7 +807,12 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.with_app_side_effect(move |app| {
             let registry = workflow_registry_for_session(app, &request.session_id)?;
-            let entry = registry.get(&request.name)?;
+            let limits = app.config().workflow_code_limits();
+            let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
+            let resolved = registry.resolve(&request.name)?;
+            let entry = crate::workflow_code::enrich_workflow_registry_entry_summary(
+                resolved, &node_path, &limits,
+            );
             Ok(LocalDaemonResponse::WorkflowRegistryEntry { entry })
         })
         .await

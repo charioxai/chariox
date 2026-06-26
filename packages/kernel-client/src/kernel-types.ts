@@ -1483,7 +1483,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 195
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 196
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2146,6 +2146,13 @@ export type WorkflowRegistryValidationSummary = {
   diagnostics?: string[]
 }
 
+export type WorkflowRegistryEntrySummary = {
+  endpoints?: string[]
+  queues?: string[]
+  nodes?: string[]
+  default_endpoint?: string | null
+}
+
 export type WorkflowRegistryEntryMetadata = {
   name: string
   source_scope: WorkflowRegistrySourceScope
@@ -2157,6 +2164,7 @@ export type WorkflowRegistryEntryMetadata = {
   created_at_ms: number
   updated_at_ms: number
   validation: WorkflowRegistryValidationSummary
+  summary?: WorkflowRegistryEntrySummary | null
 }
 
 export type WorkflowCodeSourceExport = {

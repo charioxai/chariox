@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -755,6 +756,49 @@ pub struct WorkflowRegistryValidationSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRegistryEntrySummary {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    #[serde(default)]
+    pub queues: Vec<String>,
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_endpoint: Option<String>,
+}
+
+impl WorkflowRegistryEntrySummary {
+    pub fn from_definition(definition: &WorkflowCodeDefinition) -> Self {
+        let endpoints = definition
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.handle.clone())
+            .collect::<Vec<_>>();
+        let queues = definition
+            .queues
+            .iter()
+            .map(|queue| queue.handle.clone())
+            .collect::<Vec<_>>();
+        let nodes = definition
+            .nodes
+            .iter()
+            .map(|node| node.handle.clone())
+            .collect::<Vec<_>>();
+        let default_endpoint = endpoints
+            .iter()
+            .find(|endpoint| endpoint.as_str() == "entry")
+            .cloned()
+            .or_else(|| endpoints.first().cloned());
+        Self {
+            endpoints,
+            queues,
+            nodes,
+            default_endpoint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRegistryEntryMetadata {
     pub name: String,
     pub source_scope: WorkflowRegistrySourceScope,
@@ -767,6 +811,8 @@ pub struct WorkflowRegistryEntryMetadata {
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub validation: WorkflowRegistryValidationSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<WorkflowRegistryEntrySummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -775,6 +821,13 @@ pub struct WorkflowRegistryResolvedEntry {
     pub source: String,
     pub node_path: String,
     pub schema_import_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkflowRegistrySummaryCacheEntry {
+    validation: WorkflowRegistryValidationSummary,
+    definition_sha256: Option<String>,
+    summary: Option<WorkflowRegistryEntrySummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -793,6 +846,8 @@ struct StoredWorkflowRegistryManifest {
     created_at_ms: u64,
     updated_at_ms: u64,
     validation: WorkflowRegistryValidationSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<WorkflowRegistryEntrySummary>,
 }
 
 pub struct WorkflowRegistry {
@@ -1376,6 +1431,9 @@ impl WorkflowRegistry {
             created_at_ms: now,
             updated_at_ms: now,
             validation: validation.clone(),
+            summary: Some(WorkflowRegistryEntrySummary::from_definition(
+                &compile.definition,
+            )),
         };
         write_workflow_registry_manifest(&entry_dir.join("manifest.json"), &manifest)?;
         Ok(manifest.into_metadata(scope))
@@ -1506,6 +1564,7 @@ impl StoredWorkflowRegistryManifest {
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
             validation: self.validation,
+            summary: self.summary,
         }
     }
 }
@@ -3120,6 +3179,7 @@ fn single_file_workflow_registry_metadata(
             ok: true,
             diagnostics: Vec::new(),
         },
+        summary: None,
     })
 }
 
@@ -3140,7 +3200,107 @@ fn builtin_workflow_registry_metadata(
             ok: true,
             diagnostics: Vec::new(),
         },
+        summary: None,
     }
+}
+
+pub fn enrich_workflow_registry_entry_summary(
+    resolved: WorkflowRegistryResolvedEntry,
+    node_path: impl AsRef<Path>,
+    limits: &WorkflowCodeLimitsConfig,
+) -> WorkflowRegistryEntryMetadata {
+    let mut metadata = resolved.metadata;
+    if metadata.summary.is_some() {
+        return metadata;
+    }
+    let cache_key = workflow_registry_summary_cache_key(&metadata);
+    if let Some(cached) = workflow_registry_summary_cache()
+        .lock()
+        .expect("workflow registry summary cache mutex poisoned")
+        .get(&cache_key)
+        .cloned()
+    {
+        metadata.validation = cached.validation;
+        metadata.definition_sha256 = metadata.definition_sha256.or(cached.definition_sha256);
+        metadata.summary = cached.summary;
+        return metadata;
+    }
+
+    let cached = match compile_workflow_code_source_with_schema_import_root(
+        node_path,
+        &resolved.source,
+        WorkflowCodeLanguage::JavaScript,
+        limits,
+        resolved.schema_import_root.as_deref(),
+    ) {
+        Ok(compile) => {
+            let validation = WorkflowRegistryValidationSummary {
+                ok: compile.validation.ok,
+                diagnostics: workflow_registry_validation_diagnostics(&compile.validation),
+            };
+            let definition_sha256 = Some(workflow_code_definition_sha256_hex(&compile.definition));
+            let summary = compile
+                .validation
+                .ok
+                .then(|| WorkflowRegistryEntrySummary::from_definition(&compile.definition));
+            WorkflowRegistrySummaryCacheEntry {
+                validation,
+                definition_sha256,
+                summary,
+            }
+        }
+        Err(error) => {
+            let mut diagnostics = metadata.validation.diagnostics.clone();
+            diagnostics.push(format!("summary_unavailable: {error}"));
+            WorkflowRegistrySummaryCacheEntry {
+                validation: WorkflowRegistryValidationSummary {
+                    ok: false,
+                    diagnostics,
+                },
+                definition_sha256: metadata.definition_sha256.clone(),
+                summary: None,
+            }
+        }
+    };
+    let mut cache = workflow_registry_summary_cache()
+        .lock()
+        .expect("workflow registry summary cache mutex poisoned");
+    cache.insert(cache_key, cached.clone());
+    if let Some(definition_sha256) = cached.definition_sha256.as_deref() {
+        cache.insert(definition_sha256.to_string(), cached.clone());
+    }
+    drop(cache);
+
+    metadata.validation = cached.validation;
+    metadata.definition_sha256 = metadata.definition_sha256.or(cached.definition_sha256);
+    metadata.summary = cached.summary;
+    metadata
+}
+
+pub fn workflow_registry_metadata_with_summary_failure(
+    mut metadata: WorkflowRegistryEntryMetadata,
+    error: impl std::fmt::Display,
+) -> WorkflowRegistryEntryMetadata {
+    metadata.validation.ok = false;
+    metadata
+        .validation
+        .diagnostics
+        .push(format!("summary_unavailable: {error}"));
+    metadata
+}
+
+fn workflow_registry_summary_cache_key(metadata: &WorkflowRegistryEntryMetadata) -> String {
+    metadata
+        .definition_sha256
+        .clone()
+        .unwrap_or_else(|| metadata.source_sha256.clone())
+}
+
+fn workflow_registry_summary_cache(
+) -> &'static Mutex<BTreeMap<String, WorkflowRegistrySummaryCacheEntry>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, WorkflowRegistrySummaryCacheEntry>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn workflow_code_artifact_history_entry(
@@ -4064,6 +4224,33 @@ mod tests {
             }],
             watchdogs: Vec::new(),
         }
+    }
+
+    fn multi_endpoint_definition() -> WorkflowCodeDefinition {
+        let mut definition = minimal_definition();
+        definition.endpoints.push(WorkflowCodeEndpointDefinition {
+            handle: "review".to_string(),
+            entry_node: "planner".to_string(),
+            alias: Some("review".to_string()),
+            canvas: None,
+        });
+        definition.queues.push(WorkflowCodeQueueDefinition {
+            handle: "urgent".to_string(),
+            alias: "urgent".to_string(),
+            priority: 10,
+            enabled: true,
+        });
+        definition
+    }
+
+    #[test]
+    fn workflow_registry_summary_uses_workflow_code_handles() {
+        let summary = WorkflowRegistryEntrySummary::from_definition(&multi_endpoint_definition());
+
+        assert_eq!(summary.endpoints, vec!["entry", "review"]);
+        assert_eq!(summary.queues, vec!["default", "urgent"]);
+        assert_eq!(summary.nodes, vec!["planner"]);
+        assert_eq!(summary.default_endpoint.as_deref(), Some("entry"));
     }
 
     #[test]
@@ -5233,6 +5420,66 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
     }
 
     #[test]
+    fn workflow_registry_enriches_builtin_summary_and_keeps_invalid_entry_metadata() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow registry summary test because node is not available");
+            return;
+        };
+        let example = WORKFLOW_CODE_PATTERN_EXAMPLES
+            .iter()
+            .find(|example| example.slug == "prompt-chaining")
+            .expect("prompt-chaining builtin should exist");
+        let enriched = enrich_workflow_registry_entry_summary(
+            WorkflowRegistryResolvedEntry {
+                metadata: builtin_workflow_registry_metadata(example),
+                source: example.source.to_string(),
+                node_path: example.path.to_string(),
+                schema_import_root: None,
+            },
+            &node,
+            &WorkflowCodeLimitsConfig::default(),
+        );
+        let summary = enriched.summary.expect("builtin summary should compile");
+        assert_eq!(summary.endpoints, vec!["entry"]);
+        assert_eq!(summary.default_endpoint.as_deref(), Some("entry"));
+        assert!(summary.nodes.contains(&"drafter".to_string()));
+
+        let invalid = enrich_workflow_registry_entry_summary(
+            WorkflowRegistryResolvedEntry {
+                metadata: WorkflowRegistryEntryMetadata {
+                    name: "broken".to_string(),
+                    source_scope: WorkflowRegistrySourceScope::Workspace,
+                    source_kind: WorkflowRegistrySourceKind::SingleFile,
+                    source_path: "broken.js".to_string(),
+                    source_sha256: sha256_hex(b"not valid workflow code"),
+                    source_bytes: 23,
+                    definition_sha256: None,
+                    created_at_ms: 0,
+                    updated_at_ms: 0,
+                    validation: WorkflowRegistryValidationSummary {
+                        ok: true,
+                        diagnostics: Vec::new(),
+                    },
+                    summary: None,
+                },
+                source: "not valid workflow code".to_string(),
+                node_path: "broken.js".to_string(),
+                schema_import_root: None,
+            },
+            &node,
+            &WorkflowCodeLimitsConfig::default(),
+        );
+        assert_eq!(invalid.name, "broken");
+        assert!(!invalid.validation.ok);
+        assert!(invalid.summary.is_none());
+        assert!(invalid
+            .validation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.starts_with("summary_unavailable:")));
+    }
+
+    #[test]
     fn workflow_registry_applies_workspace_user_builtin_precedence() {
         let Some(node) = find_node() else {
             eprintln!("skipping workflow registry precedence test because node is not available");
@@ -5328,7 +5575,7 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
         let node_path = node.to_string_lossy().to_string();
         let export = export_workflow_code_source_from_definition(
             "directory-flow",
-            &minimal_definition(),
+            &multi_endpoint_definition(),
             WorkflowCodeSourceExportFormat::Directory,
         )
         .expect("workflow-code source directory should export");
@@ -5347,10 +5594,15 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
             WorkflowRegistrySourceKind::SourceDirectory
         );
         assert!(added.definition_sha256.is_some());
+        let summary = added.summary.expect("added entry should include summary");
+        assert_eq!(summary.endpoints, vec!["entry", "review"]);
+        assert_eq!(summary.queues, vec!["default", "urgent"]);
+        assert_eq!(summary.default_endpoint.as_deref(), Some("entry"));
 
         let resolved = registry
             .resolve("directory-flow")
             .expect("source directory registry entry should resolve");
+        assert!(resolved.metadata.summary.is_some());
         assert!(resolved.schema_import_root.is_some());
         let recompiled = compile_workflow_code_source_with_schema_import_root(
             &node,
