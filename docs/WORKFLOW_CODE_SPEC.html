@@ -907,7 +907,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         <li>Runtime MCP endpoints exist under the metaagent bundle: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.import</code>, and <code>arroba.meta.workflow_code.export</code>.</li>
         <li>Nodes-first workflow scripts compile into existing workflow services atomically.</li>
         <li>Metaagent workflow-code authoring and pattern guides are built into the meta guide surface and searchable by workflow-code tool and pattern names.</li>
-        <li><code>metaagent:capabilities:drill</code> observes a plan-mode metaagent author, validate, apply, and run workflow code through its own runtime MCP tools.</li>
+        <li>Focused kernel/runtime tests cover Meta mode workflow-code authorization, validation, apply, and run policy; real-provider Meta mode drills provide behavior evidence.</li>
       </ol>
 
       <h2>Protocol Impact</h2>

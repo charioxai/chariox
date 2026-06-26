@@ -248,70 +248,31 @@ Metaagents may not resolve:
 - interactions for another metaagent;
 - interactions that would expose raw secret values to the metaagent.
 
-## Isolated Meta Capability Drill
+## Focused Capability Tests
 
-Add:
+Do not use `dev-stub` metaagent drills as behavior evidence. Capability-contract
+coverage belongs in focused kernel/runtime tests that assert the policy surfaces
+directly:
 
-```text
-apps/cli/scripts/live-metaagent-capabilities-drill.mjs
-```
-
-Add a package script, for example:
-
-```text
-metaagent:capabilities:drill
-```
-
-The drill should use a real local kernel, dev-stub providers, and an isolated
-temporary workspace. This drill is a deterministic capability-contract check,
-not evidence of independent metaagent behavior.
-
-### Drill Flow
-
-1. Bootstrap a temp git workspace and kernel.
-2. Create a regular session and submit a leading `/meta` prompt to the focused
+1. Create a regular session and submit a leading `/meta` prompt to the focused
    agent.
-3. Wait for the same agent to enter meta mode and launch its provider run.
-4. Launch at least one owned regular worker.
-5. Assert the meta-mode run is plan mode and permission level is inherited.
-6. Assert metaagent `tools/list` contains the allowed `arroba.meta.*` tools plus
-   read-only planning tools such as artifact and recall reads.
-7. Attempt guessed denied calls for mutation/execution surfaces: workspace live
-   sync writes, script, connector, raw credential use, unavailable slice tools,
-   workflow-node runtime tools, and user MCP tools.
-8. Use `arroba.meta.run_command` to spawn/prompt/focus/alias/delete owned
-   regular agents.
-9. Create a workflow with regular agents and verify the metaagent cannot be a
-   node.
-10. Register or install a fake MCP, grant it to a worker, and verify the worker
-    sees it while the metaagent does not.
-11. Grant a fake skill to a worker and verify self-grants are denied.
-12. Create/update a vault credential handle, inspect vault status, verify
-    secret-value command text is denied, and verify no tool output contains a
-    secret payload.
-13. Trigger a worker credential/capability-use interaction and resolve it from
-    the metaagent.
-14. Verify self and foreign interaction resolution attempts fail.
-15. Verify events, turn overview, and turn blob inspection still work.
-
-### Drill Artifacts
-
-On every run, write a manifest with:
-
-- session id
-- metaagent id
-- worker ids
-- workflow ids
-- provider run ids
-- metaagent runtime tool list
-- denied tool-call results
-- MCP/skill provisioning results
-- credential handle ids, without secret values
-- interaction ids and resolution choices
-- event ids
-- logs and failure diagnostics
-
-Preserve artifacts on failure using the existing drill artifact helpers.
+2. Assert the same agent enters meta mode and its provider launch policy forces
+   plan mode while preserving inherited permission semantics.
+3. Assert meta-mode `tools/list` contains the allowed `arroba.meta.*` tools plus
+   read-only planning surfaces such as artifact and recall reads.
+4. Assert guessed denied calls for mutation/execution surfaces fail at dispatch,
+   not just through hidden tool specs.
+5. Assert `arroba.meta.run_command` can spawn/prompt/focus/alias/delete owned
+   regular agents and cannot control foreign agents or self-target as a worker.
+6. Assert workflows created by one Meta mode agent are scoped to its controlled
+   agents and cannot include an agent currently in Meta mode as a node.
+7. Assert MCP/skill grants work for owned regular agents and self-grants fail.
+8. Assert vault credential handles and status commands never return raw secret
+   payloads.
+9. Assert worker interaction resolution works for owned regular agents and fails
+   for self or foreign targets.
+10. Assert events, trace polling, turn overview, and turn blob inspection remain
+    available for supervision.
 
 ## Real-Provider Code-Fix Behavior Drill
 
@@ -394,9 +355,10 @@ Kernel tests:
 Drill gate order:
 
 1. Existing focused unit/integration tests.
-2. Updated `live-metaagent-drill.mjs`.
-3. New isolated meta capability drill.
-4. New real-provider code-fix behavior drill.
+2. Real-provider code-fix behavior drill.
+3. Real-provider task lifecycle drill.
+4. Real-provider trace/supervision drill.
+5. Real-provider workflow/web-app drill.
 
 ## Acceptance Criteria
 
