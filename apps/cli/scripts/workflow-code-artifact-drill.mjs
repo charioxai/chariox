@@ -71,6 +71,27 @@ function parseArgs(argv) {
     exampleSuite: false,
     secondKernel: false,
     hetznerSecondKernel: false,
+    realProviderTopology: null,
+    providerModels: {
+      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.4-mini',
+      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_MODEL ?? process.env.ARROBA_OPENCODE_MODEL ?? 'opencode/gpt-5.2',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_MODEL ?? process.env.ARROBA_CLAUDE_MODEL ?? 'claude-sonnet-4-6',
+    },
+    providerIds: {
+      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_PROVIDER ?? 'codex',
+      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_PROVIDER ?? 'opencode',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_PROVIDER ?? 'claude-headless',
+    },
+    providerAccounts: {
+      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_ACCOUNT ?? 'default',
+      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_ACCOUNT ?? 'default',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_ACCOUNT ?? 'default',
+    },
+    providerEfforts: {
+      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_EFFORT ?? 'low',
+      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_EFFORT ?? 'low',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_EFFORT ?? '',
+    },
     hetznerHost: process.env.ARROBA_WORKFLOW_CODE_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
     hetznerKey: process.env.ARROBA_WORKFLOW_CODE_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
     hetznerRepo: process.env.ARROBA_WORKFLOW_CODE_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
@@ -95,6 +116,11 @@ function parseArgs(argv) {
     else if (arg === '--example-suite') options.exampleSuite = true
     else if (arg === '--second-kernel') options.secondKernel = true
     else if (arg === '--hetzner-second-kernel') options.hetznerSecondKernel = true
+    else if (arg === '--real-provider-topology') options.realProviderTopology = argv[++index]
+    else if (arg === '--provider-id') applyKeyValueOverride(options.providerIds, argv[++index], '--provider-id')
+    else if (arg === '--provider-model') applyKeyValueOverride(options.providerModels, argv[++index], '--provider-model')
+    else if (arg === '--provider-account') applyKeyValueOverride(options.providerAccounts, argv[++index], '--provider-account')
+    else if (arg === '--provider-effort') applyKeyValueOverride(options.providerEfforts, argv[++index], '--provider-effort')
     else if (arg === '--hetzner-host') options.hetznerHost = argv[++index]
     else if (arg === '--hetzner-key') options.hetznerKey = argv[++index]
     else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++index]
@@ -111,6 +137,17 @@ function parseArgs(argv) {
     throw new Error('--timeout-ms must be positive')
   }
   return options
+}
+
+function applyKeyValueOverride(target, value, flag) {
+  const separator = String(value ?? '').indexOf('=')
+  if (separator <= 0 || separator === String(value).length - 1) {
+    throw new Error(`${flag} must use provider=value`)
+  }
+  const key = String(value).slice(0, separator).trim()
+  const entryValue = String(value).slice(separator + 1).trim()
+  if (!key || !entryValue) throw new Error(`${flag} must use provider=value`)
+  target[key] = entryValue
 }
 
 function printHelp() {
@@ -136,6 +173,11 @@ function printHelp() {
     '  --example-suite',
     '  --second-kernel',
     '  --hetzner-second-kernel',
+    '  --real-provider-topology NAME.js',
+    '  --provider-id SOURCE_PROVIDER=LAUNCH_PROVIDER',
+    '  --provider-model PROVIDER=MODEL',
+    '  --provider-account PROVIDER=ACCOUNT_PROFILE',
+    '  --provider-effort PROVIDER=EFFORT',
     '  --hetzner-host HOST',
     '  --hetzner-key PATH',
     '  --hetzner-repo PATH',
@@ -148,6 +190,11 @@ function assert(condition, message, details) {
   if (!condition) {
     throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
   }
+}
+
+function stage(message, details = null) {
+  const suffix = details ? ` ${JSON.stringify(details)}` : ''
+  console.error(`[workflow-code-drill] ${message}${suffix}`)
 }
 
 function unwrap(response, key) {
@@ -195,6 +242,18 @@ function spawnedKernel(label = 'workflow-code-drill', rootDir = null) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer = null
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    }),
+  ])
+}
 
 async function waitForKernel(client, workspace, worktree, timeoutMs) {
   const deadline = Date.now() + timeoutMs
@@ -476,6 +535,46 @@ function topologyRuntimeRebindingsForDefinition(definition) {
   }))
 }
 
+function providerSetForDefinition(definition) {
+  return new Set((definition.nodes ?? []).map((node) => node.agent?.provider).filter(Boolean))
+}
+
+function realProviderRebindingsForDefinition(definition, options) {
+  return (definition.nodes ?? []).map((node) => {
+    const sourceProvider = node.agent?.provider
+    assert(sourceProvider && sourceProvider !== 'dev-stub', `real-provider topology node ${node.handle} must use a real provider`, node)
+    const provider = options.providerIds[sourceProvider] ?? sourceProvider
+    assert(provider && provider !== 'dev-stub', `real-provider topology node ${node.handle} must launch a real provider`, {
+      node,
+      sourceProvider,
+      providerIds: options.providerIds,
+    })
+    const model = options.providerModels[sourceProvider] ?? options.providerModels[provider] ?? node.agent?.model
+    assert(model && model !== 'default', `real-provider topology node ${node.handle} requires a concrete model for ${sourceProvider}`, {
+      node,
+      providerModels: options.providerModels,
+    })
+    const effort = options.providerEfforts[sourceProvider] ?? options.providerEfforts[provider] ?? node.agent?.effort ?? 'low'
+    const accountProfile = options.providerAccounts[sourceProvider] ?? options.providerAccounts[provider] ?? node.agent?.account_profile ?? 'default'
+    return {
+      node: node.handle,
+      provider,
+      model,
+      effort,
+      account_profile: accountProfile,
+    }
+  })
+}
+
+function rebindingByNode(rebindings) {
+  return new Map((rebindings ?? []).map((entry) => [entry.node, entry]))
+}
+
+function providerFamily(provider) {
+  if (provider === 'claude-headless' || provider === 'claude-p') return 'claude'
+  return provider
+}
+
 const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
   'adversarial-verification.js': {
     alias: 'pattern-adversarial-verification',
@@ -755,6 +854,32 @@ function parseWorkflowOutputMessage(output) {
   }
 }
 
+function compactWorkflowRunSummary(run) {
+  if (!run) return null
+  return {
+    id: run.id,
+    status: run.status,
+    active_node_run_id: run.active_node_run_id ?? null,
+    messages: run.messages?.length ?? 0,
+    intermediate_outputs: run.intermediate_outputs?.length ?? 0,
+    final_output_valid: run.final_output_valid ?? null,
+    node_runs: (run.node_runs ?? []).map((nodeRun) => ({
+      id: nodeRun.id,
+      node_id: nodeRun.node_id,
+      agent_id: nodeRun.agent_id,
+      status: nodeRun.status,
+      iteration_index: nodeRun.iteration_index,
+      failures: nodeRun.failures?.length ?? 0,
+      completed: Boolean(nodeRun.completed_at_ms),
+      summary: nodeRun.summary ?? nodeRun.completion?.summary ?? null,
+      recent_failure_events: (nodeRun.failure_events ?? []).slice(-3).map((event) => ({
+        kind: event.kind,
+        message: event.message,
+      })),
+    })),
+  }
+}
+
 function validateExampleRuntimeResult(exampleName, run) {
   assert(run?.status === 'Completed', `example ${exampleName} runtime should complete`, run)
   assert(run.final_output_valid !== false, `example ${exampleName} final output should be schema-valid`, run)
@@ -928,8 +1053,10 @@ function validateSessionProjection(session, apply, label, expected = defaultToyE
   for (const [handle, agentId] of Object.entries(apply.agent_ids ?? {})) {
     const agent = (session.agents ?? []).find((entry) => entry.id === agentId)
     assert(agent, `${label} node agent ${handle} should appear in session`, { agentId })
-    assert(agent.provider === 'dev-stub', `${label} node agent ${handle} should use dev-stub`, agent)
-    assert(agent.model === (expected.agentModel ?? 'default'), `${label} node agent ${handle} should use ${expected.agentModel ?? 'default'} model`, agent)
+    const expectedProvider = expected.providerByNode?.[handle] ?? 'dev-stub'
+    const expectedModel = expected.modelByNode?.[handle] ?? expected.agentModel ?? 'default'
+    assert(agent.provider === expectedProvider, `${label} node agent ${handle} should use ${expectedProvider}`, agent)
+    assert(agent.model === expectedModel, `${label} node agent ${handle} should use ${expectedModel} model`, agent)
     for (const extension of expected.nodeExtensions?.[handle] ?? []) {
       assert(
         (agent.extension_grants ?? []).some((grant) => (
@@ -1030,6 +1157,194 @@ async function completeAppliedTopologyWorkflow(client, sessionId, exampleName, d
     runtime: validateExampleRuntimeResult(exampleName, completedRun),
     tuiOutline,
   }
+}
+
+function validateRealProviderTopologyRuntimeResult(exampleName, run) {
+  assert(run?.status === 'Completed', `real-provider example ${exampleName} runtime should complete`, run)
+  assert(run.final_output_valid === true, `real-provider example ${exampleName} final output should be schema-valid`, run)
+  const finalOutput = parseWorkflowOutputMessage(run.final_output)
+  assert(
+    finalOutput && typeof finalOutput === 'object' && !Array.isArray(finalOutput),
+    `real-provider example ${exampleName} should produce structured final output`,
+    run.final_output,
+  )
+  assert(
+    (run.node_runs?.length ?? 0) >= 3,
+    `real-provider example ${exampleName} should execute at least three workflow nodes`,
+    run,
+  )
+  return {
+    status: run.status,
+    nodeRuns: run.node_runs?.length ?? 0,
+    finalOutput,
+  }
+}
+
+async function completeAppliedTopologyWorkflowWithRealProviders(client, sessionId, exampleName, definition, apply, rebindings, timeoutMs) {
+  const endpoint = (definition.endpoints ?? []).find((entry) => entry.handle === 'entry' || entry.alias === 'entry')
+    ?? definition.endpoints?.[0]
+  const entryNodeHandle = endpoint?.entry_node
+  assert(entryNodeHandle, `real-provider example ${exampleName} runtime should resolve entry node`, { definition, apply })
+  const rebindingsByNode = rebindingByNode(rebindings)
+  const runtimeAgentEntries = Object.entries(apply.agent_ids ?? {})
+    .sort(([left], [right]) => {
+      if (left === entryNodeHandle) return 1
+      if (right === entryNodeHandle) return -1
+      return left.localeCompare(right)
+    })
+  const launchedProviders = new Set()
+  const launchedProviderFamilies = new Set()
+  for (const [handle, agentId] of runtimeAgentEntries) {
+    const rebinding = rebindingsByNode.get(handle)
+    assert(rebinding, `real-provider example ${exampleName} missing rebinding for node ${handle}`, { handle, rebindings })
+    assert(rebinding.provider !== 'dev-stub', `real-provider example ${exampleName} must not launch dev-stub for node ${handle}`, rebinding)
+    stage(`real-provider ${exampleName}: launching node ${handle}`, {
+      provider: rebinding.provider,
+      model: rebinding.model,
+      account_profile: rebinding.account_profile ?? 'default',
+      effort: rebinding.effort ?? '',
+    })
+    const launchResponse = unwrap(
+      await client.send(launchProviderRunRequest(
+        sessionId,
+        rebinding.provider,
+        rebinding.account_profile ?? 'default',
+        rebinding.model,
+        rebinding.effort ?? 'low',
+        agentId,
+      )),
+      'ProviderRunLaunchAccepted',
+    )
+    assert(launchResponse?.provider_run?.id, `real-provider example ${exampleName} should launch provider for node ${handle}`, launchResponse)
+    try {
+      await waitForProviderRunReady(client, launchResponse.provider_run.id, timeoutMs)
+    } catch (error) {
+      throw new Error([
+        `real-provider example ${exampleName} provider launch failed for node ${handle}`,
+        `provider=${rebinding.provider}`,
+        `model=${rebinding.model}`,
+        `account_profile=${rebinding.account_profile ?? 'default'}`,
+        `effort=${rebinding.effort ?? 'low'}`,
+        `provider_run_id=${launchResponse.provider_run.id}`,
+        error?.message ?? String(error),
+      ].join('\n'))
+    }
+    stage(`real-provider ${exampleName}: provider ready for node ${handle}`, {
+      provider: rebinding.provider,
+      provider_run_id: launchResponse.provider_run.id,
+    })
+    launchedProviders.add(rebinding.provider)
+    launchedProviderFamilies.add(providerFamily(rebinding.provider))
+  }
+  assertSameSet(launchedProviderFamilies, ['claude', 'codex', 'opencode'], `real-provider example ${exampleName} launched provider families`)
+
+  const endpointId = apply.endpoint_ids?.[endpoint.handle]
+  assert(endpointId, `real-provider example ${exampleName} runtime should resolve entry endpoint`, { endpoint, apply })
+  const entryAgentId = apply.agent_ids?.[entryNodeHandle]
+  assert(entryAgentId, `real-provider example ${exampleName} runtime should resolve entry agent`, { entryNodeHandle, apply })
+  await client.send(focusAgentRequest(sessionId, entryAgentId))
+  stage(`real-provider ${exampleName}: invoking workflow endpoint`, {
+    workflow_id: apply.workflow_id,
+    endpoint_id: endpointId,
+    entry_node: entryNodeHandle,
+  })
+  const invokeResponse = unwrap(
+    await client.send(invokeWorkflowEndpointRequest(
+      sessionId,
+      apply.workflow_id,
+      endpointId,
+      [
+        `Run ${exampleName} as a short release-validation workflow.`,
+        'Use concise handoffs.',
+        'When you complete the workflow, submit final output that strictly matches the workflow final-output schema.',
+      ].join(' '),
+    )),
+    'WorkflowRunInvoked',
+  )
+  const runtimeRun = invokeResponse?.workflow_run
+  assert(runtimeRun?.id, `real-provider example ${exampleName} runtime should start a workflow run`, invokeResponse)
+  stage(`real-provider ${exampleName}: workflow run started`, { workflow_run_id: runtimeRun.id })
+  const completedRun = await waitForCompletedWorkflowRun(
+    client,
+    sessionId,
+    runtimeRun.id,
+    timeoutMs,
+    `real-provider ${exampleName}`,
+  )
+  const runtime = validateRealProviderTopologyRuntimeResult(exampleName, completedRun)
+  const tuiOutline = await validateTopologyTuiOutlineProjection(
+    client,
+    sessionId,
+    exampleName,
+    apply,
+    completedRun,
+  )
+  return {
+    workflowRunId: completedRun.id,
+    runtime,
+    tuiOutline,
+    launchedProviders: [...launchedProviders].sort(),
+    launchedProviderFamilies: [...launchedProviderFamilies].sort(),
+  }
+}
+
+async function applyRealProviderTopology(client, sessionId, nodePath, exampleName, source, options) {
+  const validated = unwrap(
+    await client.send(validateWorkflowCodeRequest(sessionId, nodePath, source)),
+    'WorkflowCodeValidated',
+  ).result
+  assert(validated?.validation?.ok, `real-provider example ${exampleName} should validate`, validated?.validation)
+  const topology = validateExampleTopologyDefinition(exampleName, validated.definition, validated.validation)
+  const providers = providerSetForDefinition(validated.definition)
+  assertSameSet(providers, ['claude', 'codex', 'opencode'], `real-provider example ${exampleName} provider mix`)
+  assert((validated.definition.nodes?.length ?? 0) >= 3, `real-provider example ${exampleName} must contain at least three nodes`, validated.definition)
+
+  const rebindings = realProviderRebindingsForDefinition(validated.definition, options)
+  const providerByNode = Object.fromEntries(rebindings.map((entry) => [entry.node, entry.provider]))
+  const modelByNode = Object.fromEntries(rebindings.map((entry) => [entry.node, entry.model]))
+  const appliedResponse = unwrap(
+    await client.send(applyWorkflowCodeRequest(sessionId, nodePath, source, rebindings)),
+    'WorkflowCodeApplied',
+  )
+  const expected = expectationFromDefinition(validated.definition)
+  const apply = validateApplyResult(appliedResponse.result, `real-provider example ${exampleName}`, expected)
+  validateSessionProjection(appliedResponse.session, apply, `real-provider example ${exampleName}`, {
+    ...expected,
+    providerByNode,
+    modelByNode,
+  })
+  const completed = await completeAppliedTopologyWorkflowWithRealProviders(
+    client,
+    sessionId,
+    exampleName,
+    validated.definition,
+    apply,
+    rebindings,
+    options.timeoutMs,
+  )
+  return {
+    example: exampleName,
+    topology,
+    workflowId: apply.workflow_id,
+    workflowRunId: completed.workflowRunId,
+    rebindings,
+    runtime: completed.runtime,
+    tuiOutline: completed.tuiOutline,
+    launchedProviders: completed.launchedProviders,
+    launchedProviderFamilies: completed.launchedProviderFamilies,
+  }
+}
+
+async function runRealProviderTopologyDrill(client, sessionId, nodePath, options) {
+  const examples = await workflowCodeExamples()
+  const requested = options.realProviderTopology
+  const exampleName = requested.endsWith('.js') ? requested : `${requested}.js`
+  const example = examples.find((entry) => entry.name === exampleName)
+  assert(example, `real-provider topology example not found: ${requested}`, {
+    requested,
+    available: examples.map((entry) => entry.name),
+  })
+  return await applyRealProviderTopology(client, sessionId, nodePath, example.name, example.source, options)
 }
 
 async function applyExampleSuite(client, sessionId, nodePath, workspace, timeoutMs) {
@@ -2307,23 +2622,51 @@ async function applyExistingAgentArtifact(client, session, nodePath, workspace) 
   }
 }
 
-async function waitForCompletedWorkflowRun(client, sessionId, workflowRunId, timeoutMs) {
+async function waitForCompletedWorkflowRun(client, sessionId, workflowRunId, timeoutMs, progressLabel = null) {
   const deadline = Date.now() + timeoutMs
   let lastRun = null
+  let lastProgressAt = 0
+  let lastProgressKey = null
   while (Date.now() < deadline) {
-    const stateResponse = await client.send(getSessionStateRequest(sessionId))
+    const stateResponse = await withTimeout(
+      client.send(getSessionStateRequest(sessionId)),
+      Math.min(30_000, timeoutMs),
+      `${progressLabel ?? 'workflow run'} status poll timed out for ${workflowRunId}`,
+    )
     const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
       ?? unwrap(stateResponse, 'SessionState')?.session
     const run = (state?.workflow_runs ?? []).find((entry) => entry.id === workflowRunId)
     if (run) {
       lastRun = run
+      if (progressLabel) {
+        const nodeStatuses = (run.node_runs ?? [])
+          .map((nodeRun) => `${nodeRun.node_id}:${nodeRun.status}`)
+          .join(',')
+        const progressKey = `${run.status}|${nodeStatuses}|${run.messages?.length ?? 0}|${run.intermediate_outputs?.length ?? 0}`
+        const now = Date.now()
+        if (progressKey !== lastProgressKey || now - lastProgressAt >= 10_000) {
+          stage(`${progressLabel}: workflow run status`, {
+            workflow_run_id: workflowRunId,
+            status: run.status,
+            node_runs: (run.node_runs ?? []).map((nodeRun) => ({
+              node_id: nodeRun.node_id,
+              status: nodeRun.status,
+              failures: nodeRun.failures?.length ?? 0,
+            })),
+            messages: run.messages?.length ?? 0,
+            intermediate_outputs: run.intermediate_outputs?.length ?? 0,
+          })
+          lastProgressKey = progressKey
+          lastProgressAt = now
+        }
+      }
       if (['Completed', 'Failed', 'Stopped'].includes(run.status)) {
         return run
       }
     }
     await sleep(500)
   }
-  throw new Error(`workflow run ${workflowRunId} did not complete before timeout${lastRun ? `\n${JSON.stringify(lastRun, null, 2)}` : ''}`)
+  throw new Error(`workflow run ${workflowRunId} did not complete before timeout${lastRun ? `\n${JSON.stringify(compactWorkflowRunSummary(lastRun), null, 2)}` : ''}`)
 }
 
 async function waitForProviderRunReady(client, providerRunId, timeoutMs) {
@@ -2441,6 +2784,11 @@ async function main() {
       exampleSuite: options.exampleSuite,
       secondKernel: options.secondKernel,
       hetznerSecondKernel: options.hetznerSecondKernel,
+      realProviderTopology: options.realProviderTopology,
+      providerIds: options.providerIds,
+      providerModels: options.providerModels,
+      providerAccounts: options.providerAccounts,
+      providerEfforts: options.providerEfforts,
       hetznerHost: options.hetznerHost,
       hetznerRepo: options.hetznerRepo,
       hetznerRemoteRoot: options.hetznerRemoteRoot,
@@ -2630,6 +2978,25 @@ async function main() {
         await client.send(endSessionRequest(exampleSession.id)).catch(() => {})
       }
     }
+    let realProviderTopology = null
+    if (options.realProviderTopology) {
+      const realProviderWorkspace = path.join(generatedRoot, 'real-provider-topology', 'workspace')
+      const realProviderWorktree = path.join(generatedRoot, 'real-provider-topology', 'worktree')
+      const realProviderSession = unwrap(
+        await client.send(createSessionRequest(realProviderWorkspace, realProviderWorktree, 'workflow-code-real-provider-topology-drill', undefined, null, 'off')),
+        'SessionCreated',
+      ).session
+      try {
+        realProviderTopology = await runRealProviderTopologyDrill(
+          client,
+          realProviderSession.id,
+          nodePath,
+          options,
+        )
+      } finally {
+        await client.send(endSessionRequest(realProviderSession.id)).catch(() => {})
+      }
+    }
     if ((options.secondKernel || options.hetznerSecondKernel) && installedSkill) {
       await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
       installedSkill = false
@@ -2683,6 +3050,7 @@ async function main() {
       existingAgentArtifact,
       outputSchemaArtifact,
       exampleSuite,
+      realProviderTopology,
       secondKernel,
       exampleSuiteSecondKernel,
       hetznerSecondKernel,
