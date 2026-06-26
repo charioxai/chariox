@@ -173,25 +173,26 @@
         <p class="eyebrow">Arroba implementation plan</p>
         <h1>Workflow Code Product Completion</h1>
         <p class="summary">
-          This plan completes workflow-code as a professional product feature: clear export naming,
-          source export from manually built workflows, source-directory export with JSON schema files,
-          always-on metaagent guides, a documented canvas contract, human-facing commands in
-          TUI/shell/web, and full end-to-end validation across local, web, TUI, real-provider, and
-          second-kernel distribution paths.
+          This plan completes workflow-code as a professional product feature: unambiguous export
+          families, source export from manually built workflows, source-directory export with JSON
+          schema files, always-on metaagent guides, a documented canvas contract, human-facing
+          commands in TUI/shell/web, and full end-to-end validation across local, web, TUI,
+          real-provider, and second-kernel distribution paths.
         </p>
         <div class="callout">
           <strong>Completion criterion:</strong> a workflow can be built manually or from JavaScript,
-          exported as a portable package, a single source file, and a source directory with external
-          JSON schemas, transferred to an isolated second kernel such as the Hetzner runner, imported
-          or validated there, rendered in the product surfaces, and run successfully with the intended
-          topology behavior.
+          exported as a portable workflow-code package, a generated single JavaScript source file,
+          and a generated source directory with external JSON schemas, transferred to an isolated
+          second kernel such as the Hetzner runner, imported or validated there, rendered in the
+          product surfaces, and run successfully with the intended topology behavior.
         </div>
       </section>
 
       <h2>Public Naming And Exports</h2>
       <p>
         Avoid the overloaded word <code>export</code> by making the object being exported explicit in
-        every command and UI label.
+        every command, API helper, confirmation message, and UI label. Do not add another generic
+        workflow export command.
       </p>
       <table>
         <thead>
@@ -218,19 +219,25 @@
             <td>One <code>.js</code> file with inline schemas by default.</td>
           </tr>
           <tr>
-            <td><code>workflow code source export-dir</code></td>
+            <td><code>workflow code source export-directory</code></td>
             <td>Readable JavaScript generator package-directory export with external JSON schema files.</td>
             <td>Directory containing <code>workflow.js</code>, <code>schemas/*.json</code>, and <code>manifest.json</code>.</td>
           </tr>
         </tbody>
       </table>
+      <p>
+        The source-directory form is the human-editable package form. It is not a publication package
+        and not the same as the single JSON workflow-code package. The shorter
+        <code>workflow code source export-dir</code> spelling may remain as a compatibility alias, but
+        docs and UI should prefer <code>source export-directory</code>.
+      </p>
 
       <h3>Protocol And Meta Tools</h3>
       <ul>
         <li>Add explicit package-named request/tool aliases for workflow-code package export/import while preserving existing <code>ExportWorkflowCodeArtifact</code> compatibility.</li>
         <li>Add source export requests for both saved artifact refs and existing workflow refs, including workflows originally built manually through slash commands or product UI.</li>
         <li>Because serialized protocol shapes change, bump the local daemon protocol version and update protocol snapshot/hash tests.</li>
-        <li>Expose metaagent tools under <code>arroba.meta.workflow_code.*</code>: <code>package_export</code>, <code>package_import</code>, <code>source_export</code>, <code>source_export_dir</code>, and keep older <code>export/import</code> as documented compatibility aliases.</li>
+        <li>Expose metaagent tools under <code>arroba.meta.workflow_code.*</code>: <code>package_export</code>, <code>package_import</code>, <code>source_export</code>, <code>source_export_directory</code>, and keep older <code>export/import</code> or <code>source_export_dir</code> as documented compatibility aliases.</li>
       </ul>
 
       <h3>Source Export From Existing Workflows</h3>
@@ -239,7 +246,7 @@
         <li>Include workflow settings, schemas, nodes, generated-agent definitions, edges, endpoints, queues, watchdogs, validation policies, edge sides, output schemas, and canvas coordinates.</li>
         <li>Default to portable generated agents by emitting <code>workflow.newAgent({ alias, provider, model, effort, accountProfile })</code>.</li>
         <li>Support a non-portable <code>--existing-agents</code> mode that emits <code>workflow.existingAgent(agent_id)</code>.</li>
-        <li>For <code>source export-dir</code>, write schemas to <code>schemas/&lt;handle&gt;.json</code> and emit <code>workflow.schemaFromFile(...)</code> calls; this is the required non-inline schema option for distribution.</li>
+        <li>For <code>source export-directory</code>, write schemas to <code>schemas/&lt;handle&gt;.json</code> and emit <code>workflow.schemaFromFile(...)</code> calls; this is the required non-inline schema option for distribution.</li>
         <li>Every exported source file or source directory must compile and apply as a new workflow with fresh runtime ids, independent of the ids in the original workflow.</li>
         <li>Hash the generated source and schema files in <code>manifest.json</code> so package-directory export can be validated before compilation.</li>
       </ul>
@@ -323,16 +330,21 @@
 /workflow code package export &lt;name&gt; --out &lt;file.workflow-code.json&gt;
 /workflow code package import &lt;file.workflow-code.json&gt; [--name &lt;name&gt;] [--overwrite]
 /workflow code source export &lt;workflow-ref|artifact-name&gt; --out &lt;file.js&gt; [--existing-agents]
-/workflow code source export-dir &lt;workflow-ref|artifact-name&gt; --out &lt;directory&gt; [--existing-agents]</code></pre>
+/workflow code source export-directory &lt;workflow-ref|artifact-name&gt; --out &lt;directory&gt; [--existing-agents]</code></pre>
+      <p>
+        <code>source export-directory</code> always writes external JSON schemas and a manifest.
+        <code>source export</code> writes one JavaScript file and may inline schemas for portability in
+        the single-file form.
+      </p>
 
       <h3>Web Terminal And Workflow UI</h3>
       <ul>
-        <li>Add the same workflow-code commands to the web terminal command parser and command center.</li>
-        <li>Add workflow UI actions beside existing publish/distribute actions: <strong>Export as code</strong>, <strong>Export code directory</strong>, and <strong>Export workflow-code package</strong>.</li>
+        <li>Add the same workflow-code commands to the web terminal command parser and command center, including command help, completions, validation errors, and downloadable artifact handling.</li>
+        <li>Add workflow UI actions beside existing publish/distribute actions: <strong>Export source file</strong>, <strong>Export source directory</strong>, and <strong>Export workflow-code package</strong>.</li>
         <li>Labels must distinguish package export, source export, source directory export, and publication export.</li>
         <li>The publish/distribute menu must expose the new code/package actions without changing the existing publication export behavior.</li>
         <li>The web export UI should download the returned file or directory archive and show the command-equivalent action in confirmation text.</li>
-        <li>For source directory export in web, download a zip containing <code>workflow.js</code>, <code>schemas/*.json</code>, and <code>manifest.json</code>; no inline-schema fallback is required for this mode.</li>
+        <li>For source directory export in web, download a zip containing <code>workflow.js</code>, <code>schemas/*.json</code>, and <code>manifest.json</code>; no inline-schema fallback is allowed for this mode.</li>
       </ul>
 
       <h2>Second-Kernel Distribution Validation</h2>
@@ -345,13 +357,13 @@
         <li>Export the applied workflow as a workflow-code package JSON.</li>
         <li>Export the same existing workflow as a single JavaScript source file generated from the live workflow graph.</li>
         <li>Export the same existing workflow as a source directory with external schema JSON files generated from the live workflow graph.</li>
-        <li>Copy all three export forms to the Hetzner machine or another isolated second-kernel workspace.</li>
+        <li>Copy all three export forms to the Hetzner machine or another isolated second-kernel workspace, preferably through the same distribution channel a user would use rather than sharing local artifact state.</li>
         <li>Start a clean second kernel with its own <code>ARROBA_HOME</code>, workspace, worktree, provider catalog, and relay/socket configuration.</li>
         <li>Import and run the package JSON on the second kernel.</li>
         <li>Validate, apply, and run the single JavaScript source on the second kernel.</li>
-        <li>Validate, apply, and run the source directory on the second kernel, proving <code>schemaFromFile</code> works with package-relative schema paths.</li>
+        <li>Validate, apply, and run the source directory on the second kernel, proving <code>schemaFromFile</code> works with package-relative <code>schemas/*.json</code> paths.</li>
         <li>Use provider/model rebindings where the second kernel lacks a provider/model from the source workflow.</li>
-        <li>Assert every second-kernel run creates a new workflow with fresh workflow graph ids and expected generated agents.</li>
+        <li>Assert every second-kernel run creates a new workflow with fresh workflow graph ids and expected generated agents, including exports generated from workflows originally built manually instead of from workflow-code.</li>
       </ol>
       <div class="warning">
         The second-kernel drill must not reuse the local artifact registry, local session ids, local agent ids
@@ -428,7 +440,7 @@
         <li>Assert <code>/workflow list</code> includes the generated workflow.</li>
         <li>Assert the workflow outline/list shows every node, edge, endpoint, queue, watchdog, schema reference, and run status expected for that topology.</li>
         <li>Run each workflow and assert final status/output appears in the TUI projection.</li>
-        <li>Do not validate canvas overlaps or collisions in TUI; TUI is only a list/outline projection for this acceptance path.</li>
+        <li>Do not validate canvas overlaps or collisions in TUI; TUI is only a list/outline projection for this acceptance path and has no canvas layout responsibility.</li>
       </ul>
 
       <h3>Web Terminal And Canvas</h3>
@@ -439,13 +451,13 @@
         <li>Assert no DOM overlaps between nodes, endpoints, or exit markers.</li>
         <li>Capture screenshots for every topology and include them in the drill artifact index.</li>
         <li>Run every topology and assert run status/final output appears in the web product UI.</li>
-        <li>Validate web command-center and terminal commands for package export/import, source export, and source directory export.</li>
-        <li>Validate the workflow UI export buttons in the publish/distribute area for package export, single-file code export, and source-directory zip export.</li>
+        <li>Validate web command-center and terminal commands for package export/import, source export, and source-directory export.</li>
+        <li>Validate the workflow UI export buttons in the publish/distribute area for package export, single-file source export, and source-directory zip export.</li>
       </ul>
 
       <h2>Implementation Steps</h2>
       <ol>
-        <li>Update protocol types, versioning, client request helpers, and meta tool aliases for explicit package/source export names.</li>
+        <li>Update protocol types, versioning, client request helpers, and meta tool aliases for explicit package/source/source-directory export names.</li>
         <li>Implement workflow-to-JS and workflow-to-source-directory serialization in the kernel/service layer.</li>
         <li>Add always-on guide seeding and layered lookup with source scopes.</li>
         <li>Add the canvas contract tool, documentation, overlap validation, and update canonical examples.</li>
