@@ -809,6 +809,9 @@ impl KernelRuntimeState {
                     crate::local::ExportWorkflowCodePackageRequest {
                         session_id: session.id().to_string(),
                         name: args.name,
+                        target: None,
+                        agent_mode:
+                            crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
                     },
                 ),
                 agent,

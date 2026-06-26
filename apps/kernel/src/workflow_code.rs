@@ -578,6 +578,49 @@ pub fn export_workflow_code_source_from_session_workflow(
     export_workflow_code_source_from_definition(name, &definition, format)
 }
 
+pub fn export_workflow_code_package_from_session_workflow(
+    session: &RuntimeSession,
+    workflow_ref: &str,
+    package_name: &str,
+    agent_mode: WorkflowCodeSourceExportAgentMode,
+) -> Result<WorkflowCodeArtifactPackage, crate::DaemonError> {
+    validate_registry_name(package_name, "workflow-code package name")?;
+    let workflow = session
+        .workflows()
+        .iter()
+        .find(|workflow| {
+            workflow.id() == workflow_ref
+                || workflow.alias().is_some_and(|alias| alias == workflow_ref)
+        })
+        .ok_or_else(|| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.package_export",
+            message: format!(
+                "workflow `{workflow_ref}` is not present in session `{}`",
+                session.id()
+            ),
+        })?;
+    let definition = workflow_code_definition_from_session_workflow(session, workflow, agent_mode)?;
+    let source_export = export_workflow_code_source_from_definition(
+        package_name,
+        &definition,
+        WorkflowCodeSourceExportFormat::Inline,
+    )?;
+    let validation =
+        definition.validate_with_limits(&crate::config::WorkflowCodeLimitsConfig::default());
+    Ok(WorkflowCodeArtifactPackage {
+        package_version: WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION,
+        name: package_name.to_string(),
+        language: source_export.language,
+        source: source_export.source,
+        source_sha256: source_export.source_sha256,
+        source_bytes: source_export.source_bytes,
+        definition_sha256: source_export.definition_sha256,
+        definition,
+        validation,
+        exported_at_ms: crate::session::unix_epoch_ms(),
+    })
+}
+
 impl Default for WorkflowCodeArtifactActor {
     fn default() -> Self {
         Self {

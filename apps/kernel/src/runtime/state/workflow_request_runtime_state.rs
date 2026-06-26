@@ -910,6 +910,8 @@ impl KernelRuntimeState {
         self.export_workflow_code_package_response(
             request.session_id,
             request.name,
+            None,
+            crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
             "workflow_code_artifact.exported",
             true,
         )
@@ -923,6 +925,8 @@ impl KernelRuntimeState {
         self.export_workflow_code_package_response(
             request.session_id,
             request.name,
+            request.target,
+            request.agent_mode,
             "workflow_code_package.exported",
             false,
         )
@@ -933,12 +937,34 @@ impl KernelRuntimeState {
         &self,
         session_id: String,
         name: String,
+        target: Option<crate::local::WorkflowCodePackageExportTarget>,
+        agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
         event_kind: &'static str,
         legacy_response: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.with_app_side_effect(move |app| {
-            let registry = workflow_code_registry_for_session(app, &session_id)?;
-            let package = registry.export_package(&name)?;
+            let package = match target {
+                None => {
+                    let registry = workflow_code_registry_for_session(app, &session_id)?;
+                    registry.export_package(&name)?
+                }
+                Some(crate::local::WorkflowCodePackageExportTarget::Artifact {
+                    name: artifact_name,
+                }) => {
+                    let registry = workflow_code_registry_for_session(app, &session_id)?;
+                    registry.export_package(&artifact_name)?
+                }
+                Some(crate::local::WorkflowCodePackageExportTarget::Workflow { workflow_ref }) => {
+                    let session = crate::app::KernelSessionReadService::new(app)
+                        .session_snapshot(&session_id)?;
+                    crate::workflow_code::export_workflow_code_package_from_session_workflow(
+                        &session,
+                        &workflow_ref,
+                        &name,
+                        agent_mode,
+                    )?
+                }
+            };
             app.durable_state_store().append_event(
                 event_kind,
                 Some(session_id),

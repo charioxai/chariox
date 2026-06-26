@@ -2107,6 +2107,10 @@ export type WorkflowCodeArtifactPackage = {
 export type WorkflowCodeSourceExportFormat = "inline" | "directory"
 export type WorkflowCodeSourceExportAgentMode = "portable_generated" | "existing_agents"
 
+export type WorkflowCodePackageExportTarget =
+  | { kind: "artifact"; name: string }
+  | { kind: "workflow"; workflow_ref: string }
+
 export type WorkflowCodeSourceExportTarget =
   | { kind: "artifact"; name: string }
   | { kind: "workflow"; workflow_ref: string }

@@ -560,6 +560,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         crate::local::ExportWorkflowCodePackageRequest {
             session_id: "session-1".to_string(),
             name: "toy-flow".to_string(),
+            target: Some(crate::local::WorkflowCodePackageExportTarget::Workflow {
+                workflow_ref: "workflow-1".to_string(),
+            }),
+            agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
         },
     );
     let package_import_request = LocalDaemonRequest::ImportWorkflowCodePackage(
@@ -809,6 +813,18 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/22/ExportWorkflowCodePackage/name"),
         Some(&serde_json::json!("toy-flow"))
+    );
+    assert_eq!(
+        snapshot.pointer("/22/ExportWorkflowCodePackage/target/kind"),
+        Some(&serde_json::json!("workflow"))
+    );
+    assert_eq!(
+        snapshot.pointer("/22/ExportWorkflowCodePackage/target/workflow_ref"),
+        Some(&serde_json::json!("workflow-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/22/ExportWorkflowCodePackage/agent_mode"),
+        Some(&serde_json::json!("portable_generated"))
     );
     assert_eq!(
         snapshot.pointer("/23/ImportWorkflowCodePackage/name"),

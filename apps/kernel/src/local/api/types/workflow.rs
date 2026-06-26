@@ -107,7 +107,22 @@ pub struct ExportWorkflowCodeArtifactRequest {
     pub name: String,
 }
 
-pub type ExportWorkflowCodePackageRequest = ExportWorkflowCodeArtifactRequest;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowCodePackageExportTarget {
+    Artifact { name: String },
+    Workflow { workflow_ref: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportWorkflowCodePackageRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<WorkflowCodePackageExportTarget>,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportWorkflowCodeArtifactRequest {

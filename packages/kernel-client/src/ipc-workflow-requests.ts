@@ -1,6 +1,7 @@
 import type {
   WorkflowCodeArtifactPackage,
   WorkflowCodeLanguage,
+  WorkflowCodePackageExportTarget,
   WorkflowCodeProviderRebinding,
   WorkflowCodeSourceExportAgentMode,
   WorkflowCodeSourceExportFormat,
@@ -294,17 +295,22 @@ export type ExportWorkflowCodePackageRequest = {
   ExportWorkflowCodePackage: {
     session_id: string
     name: string
+    target?: WorkflowCodePackageExportTarget
+    agent_mode?: WorkflowCodeSourceExportAgentMode
   }
 }
 
 export function exportWorkflowCodePackageRequest(
   sessionId: string,
   name: string,
+  target?: WorkflowCodePackageExportTarget,
+  agentMode: WorkflowCodeSourceExportAgentMode = "portable_generated",
 ): ExportWorkflowCodePackageRequest {
   return {
     ExportWorkflowCodePackage: {
       session_id: sessionId,
       name,
+      ...(target ? { target, agent_mode: agentMode } : {}),
     },
   }
 }

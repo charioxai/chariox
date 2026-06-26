@@ -7,6 +7,7 @@ import {
   createWorkflowCodeArtifactRequest,
   deleteWorkflowCodeArtifactRequest,
   exportWorkflowCodeArtifactRequest,
+  exportWorkflowCodePackageRequest,
   exportWorkflowCodeSourceRequest,
   exportWorkflowPublicationPackageRequest,
   importWorkflowCodeArtifactRequest,
@@ -232,6 +233,28 @@ test("workflow-code artifact requests match kernel shape", () => {
       name: "toy-flow",
     },
   })
+  assert.deepEqual(exportWorkflowCodePackageRequest("session-1", "toy-flow"), {
+    ExportWorkflowCodePackage: {
+      session_id: "session-1",
+      name: "toy-flow",
+    },
+  })
+  assert.deepEqual(
+    exportWorkflowCodePackageRequest(
+      "session-1",
+      "workflow-package",
+      { kind: "workflow", workflow_ref: "workflow-1" },
+      "portable_generated",
+    ),
+    {
+      ExportWorkflowCodePackage: {
+        session_id: "session-1",
+        name: "workflow-package",
+        target: { kind: "workflow", workflow_ref: "workflow-1" },
+        agent_mode: "portable_generated",
+      },
+    },
+  )
   assert.deepEqual(
     importWorkflowCodeArtifactRequest("session-1", workflowCodePackage, "/usr/local/bin/node", {
       name: "imported-toy-flow",

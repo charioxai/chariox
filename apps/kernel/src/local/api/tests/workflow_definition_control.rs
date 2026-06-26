@@ -1942,6 +1942,9 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             crate::local::ExportWorkflowCodePackageRequest {
                 session_id: session.id().to_string(),
                 name: name.clone(),
+                target: None,
+                agent_mode:
+                    crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
             },
         ))
         .expect("workflow-code package alias should export")
@@ -2184,6 +2187,46 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 crate::workflow_code::WorkflowCodeAgentBinding::Create(agent)
                     if agent.provider == "dev-stub"
             ));
+            let workflow_package = match harness
+                .dispatch(LocalDaemonRequest::ExportWorkflowCodePackage(
+                    crate::local::ExportWorkflowCodePackageRequest {
+                        session_id: session.id().to_string(),
+                        name: "workflow-package".to_string(),
+                        target: Some(crate::local::WorkflowCodePackageExportTarget::Workflow {
+                            workflow_ref: result.apply.workflow_id.clone(),
+                        }),
+                        agent_mode:
+                            crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
+                    },
+                ))
+                .expect("existing workflow should export as workflow-code package")
+            {
+                LocalDaemonResponse::WorkflowCodePackageExported { package } => package,
+                _ => panic!("unexpected local response"),
+            };
+            assert_eq!(workflow_package.name, "workflow-package");
+            assert!(workflow_package.source.contains("defineWorkflow"));
+            workflow_package
+                .validate_integrity()
+                .expect("workflow package integrity should validate");
+            let workflow_package_compile =
+                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+                    &node_path,
+                    &workflow_package.source,
+                    workflow_package.language,
+                    &crate::config::WorkflowCodeLimitsConfig::default(),
+                    None,
+                )
+                .expect("workflow package source should recompile");
+            assert!(workflow_package_compile.validation.ok);
+            assert_eq!(
+                workflow_package_compile
+                    .definition
+                    .workflow
+                    .alias
+                    .as_deref(),
+                Some("artifact_flow_updated")
+            );
             let live_existing_agent_source = match harness
                 .dispatch(LocalDaemonRequest::ExportWorkflowCodeSource(
                     crate::local::ExportWorkflowCodeSourceRequest {
