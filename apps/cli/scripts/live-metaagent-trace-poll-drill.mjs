@@ -300,6 +300,23 @@ async function waitForProviderRun(client, requests, providerRunId, timeoutMs, po
   throw new Error(`provider run did not become active: ${JSON.stringify(last)}`)
 }
 
+async function waitForAgentProviderRun(client, requests, sessionId, agentId, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastSession = null
+  while (Date.now() < deadline) {
+    lastSession = await getSession(client, requests, sessionId)
+    const providerRunId = lastSession.active_provider_run_id
+    if (providerRunId) {
+      const run = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
+      if (run?.agent_instance_id === agentId || run?.agent_id === agentId) {
+        return await waitForProviderRun(client, requests, providerRunId, timeoutMs, pollMs)
+      }
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for provider run for agent ${agentId}: ${JSON.stringify(lastSession)}`)
+}
+
 async function cleanupSession(kernelUrl, sessionId) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -380,7 +397,7 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     const session = await getSession(client, requests, sessionId)
     finalTask = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId) ?? null
     const metaagent = (session.agents ?? []).find((agent) => agent.id === metaagentId)
-    workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId && agent.role !== 'meta')
+    workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId)
     if (workers.length > 0) {
       log('workers-observed', workers.map((agent) => ({
         id: agent.id,
@@ -719,7 +736,7 @@ async function main() {
       `set provider ${options.provider}`,
       `set model ${options.model}`,
       `set effort ${options.effort}`,
-      'session new --meta $workspace as session',
+      'session new $workspace as session',
       'workspace sync off',
       'session mode build',
       'session permissions yolo',
@@ -748,31 +765,36 @@ async function main() {
       kernelMaxMissedPongs: Math.max(120, Math.ceil(options.timeoutMs / 5_000)),
     })
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(sessionId, `metaagent-trace-poll-drill-${Date.now()}`)), 'SessionAttached').attachment
-    const initialSession = await getSession(client, requests, sessionId)
-    const metaagent = (initialSession.agents ?? []).find((agent) => agent.role === 'meta')
-    assert(metaagent, 'session should contain a metaagent', initialSession)
+    let initialSession = await getSession(client, requests, sessionId)
+    let metaagent = (initialSession.agents ?? []).find((agent) => agent.id === initialSession.focused_agent_id) ?? (initialSession.agents ?? [])[0]
+    assert(metaagent, 'session should contain a default regular agent', initialSession)
+    assert(!metaagent.meta_mode, 'default agent must start outside meta mode', metaagent)
+    await client.send(requests.updateAgentProfileRequest({
+      sessionId,
+      agentId: metaagent.id,
+      provider: options.provider,
+      model: options.model,
+      effort: options.effort,
+    }))
+    initialSession = await getSession(client, requests, sessionId)
+    metaagent = (initialSession.agents ?? []).find((agent) => agent.id === metaagent.id)
+    assert(
+      metaagent?.provider === options.provider && metaagent?.model === options.model && metaagent?.effort === options.effort,
+      'default agent profile should match requested drill provider/model/effort before /meta',
+      { metaagent, expected: { provider: options.provider, model: options.model, effort: options.effort } },
+    )
     const beforeAgentIds = new Set((initialSession.agents ?? []).map((agent) => agent.id))
 
-    const launched = unwrapVariant(
-      await client.send(requests.launchProviderRunRequest(
-        sessionId,
-        options.provider,
-        options.accountProfile,
-        options.model,
-        options.effort,
-        metaagent.id,
-      )),
-      'ProviderRunLaunched',
-      'ProviderRunLaunchAccepted',
-    )
-    const metaRun = await waitForProviderRun(client, requests, launched.provider_run.id, options.timeoutMs, options.pollMs)
-    assert(metaRun.adapter_key !== 'dev-stub' && metaRun.provider !== 'dev-stub', 'metaagent must run on a real provider', metaRun)
-    assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be plan mode', metaRun)
-    log('metaagent-run-observed', { providerRunId: metaRun.id, executionMode: metaRun.execution_mode })
-
-    const userPrompt = buildUserPrompt(options)
+    const userPrompt = `/meta ${buildUserPrompt(options)}`
     await client.send(requests.submitPromptRequest(sessionId, attachment.id, metaagent.id, userPrompt, []))
     log('single-prompt-submitted', { metaagentId: metaagent.id, prompt: userPrompt })
+    const metaRun = await waitForAgentProviderRun(client, requests, sessionId, metaagent.id, options.timeoutMs, options.pollMs)
+    assert(metaRun.adapter_key !== 'dev-stub' && metaRun.provider !== 'dev-stub', 'metaagent must run on a real provider', metaRun)
+    assert(metaRun.execution_mode === 'plan', 'meta-mode provider run must be plan mode', metaRun)
+    const metaSession = await getSession(client, requests, sessionId)
+    const metaModeAgent = (metaSession.agents ?? []).find((agent) => agent.id === metaagent.id)
+    assert(metaModeAgent?.meta_mode, 'same regular agent should enter meta mode after /meta prompt', metaModeAgent)
+    log('metaagent-run-observed', { providerRunId: metaRun.id, executionMode: metaRun.execution_mode })
 
     const observed = await observe({
       client,
