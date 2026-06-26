@@ -285,7 +285,7 @@ apps/cli/scripts/live-metaagent-code-fix-drill.mjs
 Add a package script, for example:
 
 ```text
-metaagent:code-fix:drill
+meta-mode:code-fix:drill
 ```
 
 The drill creates a brand-new git repo under:
