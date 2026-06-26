@@ -118,21 +118,8 @@ impl KernelRuntimeState {
         let _ = self
             .reload_agent_provider_for_policy(session_id, agent_id, reason)
             .await?;
-        if let Err(error) = self
-            .submit_meta_mode_exited_prompt(session_id, agent_id, reason)
-            .await
-        {
-            crate::logging::warn_with_fields(
-                "metaagent.task",
-                "failed to submit meta mode exit continuation prompt",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "agent_id": agent_id,
-                    "reason": reason,
-                    "error": error.to_string(),
-                }),
-            );
-        }
+        self.submit_meta_mode_exited_prompt(session_id, agent_id, reason)
+            .await?;
         Ok(self.owned.session_store.get_session(session_id)?)
     }
 
