@@ -31,6 +31,14 @@ impl SessionService {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<RuntimeSession, DaemonError> {
+        if request.metaagent {
+            return Err(DaemonError::LocalTransport {
+                operation: "create session",
+                message:
+                    "creating separate metaagent sessions is deprecated; create a regular session and send `/meta <task>` to enter meta mode"
+                        .to_string(),
+            });
+        }
         let alias = match request.alias {
             Some(alias) if !alias.trim().is_empty() => normalize_session_alias(Some(alias))?,
             _ if !request.hidden => Some(self.default_session_alias(&request.workspace_id)),

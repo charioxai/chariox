@@ -54,6 +54,23 @@ fn create_session_uses_configured_default_agent_cap() {
 }
 
 #[test]
+fn create_session_rejects_deprecated_metaagent_request() {
+    let mut service = SessionService::new(&test_config());
+
+    let error = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_metaagent(true))
+        .expect_err("deprecated metaagent session creation should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("send `/meta <task>` to enter meta mode"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(service.active_session_count(), 0);
+}
+
+#[test]
 fn prompt_id_allocator_advances_past_observed_prompt_ids() {
     let service = SessionService::new(&test_config());
 
