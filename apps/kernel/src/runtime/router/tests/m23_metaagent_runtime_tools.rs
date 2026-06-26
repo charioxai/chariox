@@ -2667,6 +2667,14 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             .map(|prompt| prompt.status()),
         Some(crate::session::PromptStatus::Cancelling)
     );
+    assert!(
+        session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == metaagent.id())
+            .is_some_and(|agent| agent.is_metaagent()),
+        "pause must keep the agent in meta mode"
+    );
 
     let abort = LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
         session_id: session.id().to_string(),
@@ -2692,6 +2700,14 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             .active_prompt_for_agent(metaagent.id())
             .map(|prompt| prompt.status()),
         Some(crate::session::PromptStatus::Cancelling)
+    );
+    assert!(
+        session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == metaagent.id())
+            .is_some_and(|agent| !agent.is_metaagent()),
+        "abort must restore the agent to regular mode"
     );
 }
 
