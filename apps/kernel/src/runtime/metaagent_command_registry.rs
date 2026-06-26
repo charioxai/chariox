@@ -1045,7 +1045,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Deny,
         authority: "denied",
         routed: false,
-        description: "Denied for metaagents. Slice placement and management are execution-environment operations, not delegation commands.",
+        description: "Denied for Meta mode agents. Direct slice management is an execution-environment operation. To place a worker in a slice, spawn a regular agent with `agent spawn <alias> --slice <slice-ref|new|new:headless|new:headed>`.",
     },
     MetaCommandDoc {
         name: "credential list",
@@ -1457,7 +1457,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "slice" => Some(MetaCommandExecutionPolicy::Denied {
-            message: "metaagents cannot manage slices or choose slice placement; delegate environment work to regular agents",
+            message: "agents in Meta mode cannot manage slices directly; spawn regular agents with `agent spawn <alias> --slice <slice-ref|new|new:headless|new:headed>` when a worker needs slice placement",
         }),
         "credential" | "credentials" => match tokens.get(1).map(String::as_str) {
             Some("list" | "ls" | "get" | "show" | "upsert-json" | "remove") => {
