@@ -91,6 +91,12 @@ export interface AgentInstance {
   agentRef: string;
   sessionId: EntityId;
   role?: "standard" | "meta" | string;
+  metaMode?: {
+    taskId?: string | null;
+    activatedAtMs: number;
+    baselineExecutionModeOverride?: "build" | "plan" | null;
+    baselinePermissionLevelOverride?: "required" | "yolo" | null;
+  } | null;
   alias: string | null;
   provider: string;
   model: string | null;

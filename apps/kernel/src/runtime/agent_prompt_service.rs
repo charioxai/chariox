@@ -129,6 +129,21 @@ impl AgentPromptCommandService {
             .start_metaagent_task_for_prompt(session_id, metaagent_id, prompt)
     }
 
+    pub(crate) async fn activate_meta_mode_for_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        task_prompt: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.state
+            .activate_meta_mode_for_prompt(session_id, agent_id, task_prompt)
+            .await
+    }
+
+    pub(crate) fn meta_mode_entered_hidden_context(&self) -> &'static str {
+        crate::runtime::state::KernelRuntimeState::meta_mode_entered_hidden_context()
+    }
+
     pub(crate) fn start_active_turn_with_trace_id(
         &self,
         session_id: &str,

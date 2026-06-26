@@ -106,12 +106,6 @@ export function cycleWaitingRoomFocusedValue(
       workspaceLiveSyncMode: modes[modulo(index + delta, modes.length)] ?? "off",
     }
   }
-  if (state.focus === "metaagent") {
-    return {
-      ...state,
-      createMetaagent: !state.createMetaagent,
-    }
-  }
   if (state.focus === "slice") {
     return cycleWaitingRoomSliceSelection(
       state,

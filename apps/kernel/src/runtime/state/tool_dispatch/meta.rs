@@ -460,7 +460,13 @@ impl KernelRuntimeState {
                     agent.id(),
                     args.summary,
                 )?;
-                let projected = self.owned.session_snapshot(updated.id())?;
+                let projected = self
+                    .deactivate_meta_mode_for_terminal_task(
+                        updated.id(),
+                        agent.id(),
+                        "meta task completion",
+                    )
+                    .await?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),
@@ -474,7 +480,13 @@ impl KernelRuntimeState {
                     agent.id(),
                     args.reason,
                 )?;
-                let projected = self.owned.session_snapshot(updated.id())?;
+                let projected = self
+                    .deactivate_meta_mode_for_terminal_task(
+                        updated.id(),
+                        agent.id(),
+                        "meta task blocked",
+                    )
+                    .await?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),

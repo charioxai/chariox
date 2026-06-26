@@ -39,7 +39,7 @@ import {
 import { sessionContextAgentId } from "./shell-session-context.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
-const sessionCreateUsage = "usage: session new [directory] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new:headless|new:headed|<slice-ref>]"
+const sessionCreateUsage = "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new:headless|new:headed|<slice-ref>]"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -70,6 +70,9 @@ export async function executeSessionCommand(
     case "new":
     case "create": {
       const { metaagent, rest } = parseSessionCreateMetaagent(args)
+      if (metaagent) {
+        return { ok: false, message: "creating separate metaagents is deprecated; create a regular session and send /meta <task> to enter meta mode" }
+      }
       const placement = parsePlacementOptions(rest, true)
       if (placement.error) {
         return { ok: false, message: placement.error }
@@ -83,11 +86,8 @@ export async function executeSessionCommand(
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree
       const worktreePlacement = shellGitWorktreePlacement(placement.options)
-      if (metaagent && placement.options.sliceRef && placement.options.sliceRef !== "off") {
-        return { ok: false, message: "metaagents cannot be launched in a slice" }
-      }
       const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps, placement.options.sliceDisplayMode)
-      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, metaagent, worktreePlacement))
+      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, false, worktreePlacement))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session
       const attachmentId = await attachShellSession(session.id, deps)
@@ -99,7 +99,7 @@ export async function executeSessionCommand(
         worktree: session.worktree_id,
       }
       return resourceResult(
-        `created ${metaagent ? "metaagent " : ""}session ${session.alias ?? session.id} in ${session.worktree_id}\n${formatCreatedSessionWorkspaceLiveSync(session)}`,
+        `created session ${session.alias ?? session.id} in ${session.worktree_id}\n${formatCreatedSessionWorkspaceLiveSync(session)}`,
         parsed.assignment,
         session.id,
         contextUpdates,

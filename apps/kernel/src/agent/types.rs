@@ -43,6 +43,56 @@ pub enum AgentRole {
     Meta,
 }
 
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentOperatingMode {
+    #[default]
+    Regular,
+    Meta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaModeState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    activated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    baseline_execution_mode_override: Option<AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    baseline_permission_level_override: Option<AgentPermissionLevel>,
+}
+
+impl MetaModeState {
+    pub fn new(
+        task_id: Option<String>,
+        baseline_execution_mode_override: Option<AgentExecutionMode>,
+        baseline_permission_level_override: Option<AgentPermissionLevel>,
+    ) -> Self {
+        Self {
+            task_id,
+            activated_at_ms: crate::session::unix_epoch_ms(),
+            baseline_execution_mode_override,
+            baseline_permission_level_override,
+        }
+    }
+
+    pub fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
+    }
+
+    pub fn activated_at_ms(&self) -> u64 {
+        self.activated_at_ms
+    }
+
+    pub fn baseline_execution_mode_override(&self) -> Option<AgentExecutionMode> {
+        self.baseline_execution_mode_override
+    }
+
+    pub fn baseline_permission_level_override(&self) -> Option<AgentPermissionLevel> {
+        self.baseline_permission_level_override
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridPosition {
     pub row: u32,
@@ -118,6 +168,8 @@ pub struct AgentInstance {
     controlled_by_metaagent_id: Option<String>,
     #[serde(default)]
     role: AgentRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    meta_mode: Option<MetaModeState>,
     alias: Option<String>,
     provider: String,
     model: Option<String>,
@@ -191,6 +243,7 @@ impl AgentInstance {
             owner_user_id: default_agent_owner_user_id(),
             controlled_by_metaagent_id: None,
             role: AgentRole::Standard,
+            meta_mode: None,
             alias,
             provider: provider.into(),
             model,
@@ -246,8 +299,20 @@ impl AgentInstance {
         self.role
     }
 
+    pub fn operating_mode(&self) -> AgentOperatingMode {
+        if self.meta_mode.is_some() {
+            AgentOperatingMode::Meta
+        } else {
+            AgentOperatingMode::Regular
+        }
+    }
+
+    pub fn meta_mode(&self) -> Option<&MetaModeState> {
+        self.meta_mode.as_ref()
+    }
+
     pub fn is_metaagent(&self) -> bool {
-        self.role == AgentRole::Meta
+        self.meta_mode.is_some()
     }
 
     pub fn alias(&self) -> Option<&str> {
@@ -435,6 +500,7 @@ impl AgentInstance {
         self.execution_mode_override = None;
         self.permission_level_override = None;
         self.controlled_by_metaagent_id = None;
+        self.meta_mode = None;
         self.workspace_id = None;
         self.worktree_id = None;
         self.remote_execution = None;
@@ -476,6 +542,33 @@ impl AgentInstance {
 
     pub fn set_role(&mut self, role: AgentRole) {
         self.role = role;
+    }
+
+    pub fn activate_meta_mode(&mut self, task_id: Option<String>) {
+        if self.meta_mode.is_none() {
+            self.meta_mode = Some(MetaModeState::new(
+                task_id,
+                self.execution_mode_override,
+                self.permission_level_override,
+            ));
+        } else if let Some(meta_mode) = self.meta_mode.as_mut() {
+            if meta_mode.task_id.is_none() {
+                meta_mode.task_id = task_id;
+            }
+        }
+        self.role = AgentRole::Standard;
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn deactivate_meta_mode(&mut self) -> Option<MetaModeState> {
+        let previous = self.meta_mode.take();
+        self.role = AgentRole::Standard;
+        if let Some(meta_mode) = previous.as_ref() {
+            self.execution_mode_override = meta_mode.baseline_execution_mode_override();
+            self.permission_level_override = meta_mode.baseline_permission_level_override();
+            self.last_activity_at_ms = crate::session::unix_epoch_ms();
+        }
+        previous
     }
 
     pub fn set_model(&mut self, model: Option<String>) {

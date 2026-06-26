@@ -807,50 +807,24 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
   assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
-test("executeShellCommand spawns a metaagent", async () => {
+test("executeShellCommand rejects deprecated metaagent spawns", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
     worktree: "/repo",
     sessionId: "session-1",
   })
-  const fake = fakeClient((request) => {
-    assert.deepEqual(request, {
-      SpawnAgent: {
-        session_id: "session-1",
-        provider: "opencode",
-        alias: "meta",
-        model: "gpt-5.2",
-        effort: "medium",
-        execution_mode: null,
-        permission_level: null,
-        worktree_id: null,
-        kernel_ref: null,
-        slice_ref: null,
-        worktree_placement: null,
-        metaagent: true,
-      },
-    })
-    return {
-      AgentSpawned: {
-        agent: makeAgent({
-          id: "agent-meta",
-          agent_ref: "agent-meta",
-          alias: "meta",
-          role: "meta",
-        }),
-      },
-    }
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called for deprecated metaagent spawn")
   })
 
   const result = await executeShellCommand(parseShellCommand("agent spawn meta gpt-5.2 --meta"), context, { client: fake.client })
 
-  assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /spawned metaagent agent-meta \(meta\)/)
-  assert.deepEqual(result.contextUpdates, { agentId: "agent-meta" })
-  assert.equal(fake.requests.length, 1)
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /creating separate metaagents is deprecated/)
+  assert.equal(fake.requests.length, 0)
 })
 
-test("executeShellCommand rejects slice placement for metaagent spawns", async () => {
+test("executeShellCommand rejects deprecated metaagent spawns before slice handling", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
     worktree: "/repo",
@@ -863,7 +837,7 @@ test("executeShellCommand rejects slice placement for metaagent spawns", async (
   const result = await executeShellCommand(parseShellCommand("agent spawn meta --meta --slice new"), context, { client: fake.client })
 
   assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /metaagents cannot be launched in a slice/)
+  assert.match(result.message ?? "", /creating separate metaagents is deprecated/)
   assert.equal(fake.requests.length, 0)
 })
 
@@ -884,7 +858,8 @@ test("executeShellCommand marks metaagents in agent lists", async () => {
               id: "agent-meta",
               agent_ref: "agent-meta",
               alias: "meta",
-              role: "meta",
+              role: "standard",
+              meta_mode: { activated_at_ms: 1 },
             }),
           ],
         }),
@@ -1218,37 +1193,21 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
-test("executeShellCommand creates a session with a metaagent", async () => {
-  const session = makeSession({
-    id: "session-2",
-    worktree_id: "/repo/qa",
-    focused_agent_id: "agent-meta",
-    agents: [makeAgent({ id: "agent-meta", session_id: "session-2", role: "meta" })],
-  })
-  const fake = fakeClient((request) => {
-    assert.deepEqual(request, {
-      CreateSession: {
-        workspace_id: "/repo",
-        worktree_id: "/repo/qa",
-        alias: null,
-        slice_ref: null,
-        metaagent: true,
-      },
-    })
-    return { SessionCreated: { session } }
+test("executeShellCommand rejects deprecated metaagent session creation", async () => {
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called for deprecated metaagent session creation")
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --meta --dir qa as s"), context, {
     client: fake.client,
   })
 
-  assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /created metaagent session session-2/)
-  assert.deepEqual(result.bindings, { s: "session-2" })
-  assert.deepEqual(result.contextUpdates?.agentId, "agent-meta")
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /creating separate metaagents is deprecated/)
+  assert.equal(fake.requests.length, 0)
 })
 
-test("executeShellCommand rejects metaagent sessions in slices", async () => {
+test("executeShellCommand rejects deprecated metaagent sessions before slice handling", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const fake = fakeClient(() => {
     throw new Error("kernel should not be called for invalid metaagent slice placement")
@@ -1259,7 +1218,8 @@ test("executeShellCommand rejects metaagent sessions in slices", async () => {
   })
 
   assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /metaagents cannot be launched in a slice/)
+  assert.match(result.message ?? "", /creating separate metaagents is deprecated/)
+  assert.equal(fake.requests.length, 0)
 })
 
 test("executeShellCommand does not adopt stale focused agent ids from session payloads", async () => {

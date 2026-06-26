@@ -207,7 +207,7 @@ test("waiting room activation blocks stale reusable slice selections for new ses
   }
 })
 
-test("waiting room activation creates metaagent sessions and rejects metaagents in slices", () => {
+test("waiting room activation creates regular sessions for slice and non-slice launches", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",
     currentWorktreePath: "/workspace",
@@ -224,12 +224,9 @@ test("waiting room activation creates metaagent sessions and rejects metaagents 
   })
   const catalog = fallbackProviderCatalog()
   try {
-    const metaState = {
-      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
-      createMetaagent: true,
-    }
+    const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
     const decision = deriveWaitingRoomActivationDecision({
-      state: metaState,
+      state,
       sessions: [],
       catalog,
       currentProvider: "opencode",
@@ -238,22 +235,23 @@ test("waiting room activation creates metaagent sessions and rejects metaagents 
 
     assert.equal(decision.action, "create")
     if (decision.action === "create") {
-      assert.equal(decision.launch.metaagent, true)
+      assert.equal("metaagent" in decision.launch, false)
     }
 
     const sliceDecision = deriveWaitingRoomCreateSessionDecision({
       state: {
-        ...metaState,
+        ...state,
         sliceSelectionId: "new",
       },
       catalog,
       currentProvider: "opencode",
       currentModel: "opencode/gpt-5.4",
     })
-    assert.deepEqual(sliceDecision, {
-      action: "error",
-      message: "metaagents cannot be launched in a slice",
-    })
+    assert.equal(sliceDecision.action, "create")
+    if (sliceDecision.action === "create") {
+      assert.equal("metaagent" in sliceDecision.launch, false)
+      assert.deepEqual(sliceDecision.launch.sliceCreate, { displayMode: "headless" })
+    }
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }

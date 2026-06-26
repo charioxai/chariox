@@ -32,7 +32,6 @@ export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
   model: string
   effort: string
-  metaagent?: boolean
   machineRef?: string | null
   kernelRef?: string | null
   workspaceLiveSyncMode?: "off" | "managed" | "tracked"
@@ -259,7 +258,6 @@ export function deriveWaitingRoomActivationDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
-    ...(options.state.createMetaagent ? { metaagent: true } : {}),
     ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
@@ -290,10 +288,6 @@ export function deriveWaitingRoomActivationDecision(options: {
     const staleSlice = waitingRoomUnavailableSliceMessage(options.state, options.remote)
     if (staleSlice) {
       return { action: "error", message: staleSlice }
-    }
-    const metaagentSlice = waitingRoomMetaagentSliceMessage(launch)
-    if (metaagentSlice) {
-      return { action: "error", message: metaagentSlice }
     }
     return { action: "create", launch }
   }
@@ -331,26 +325,15 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
-    ...(options.state.createMetaagent ? { metaagent: true } : {}),
     ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
-  const metaagentSlice = waitingRoomMetaagentSliceMessage(launch)
-  if (metaagentSlice) {
-    return { action: "error", message: metaagentSlice }
-  }
   return {
     action: "create",
     launch,
   }
-}
-
-function waitingRoomMetaagentSliceMessage(launch: WaitingRoomLaunchConfig): string | null {
-  return launch.metaagent && (launch.sliceRef || launch.sliceCreate)
-    ? "metaagents cannot be launched in a slice"
-    : null
 }
 
 function waitingRoomUnavailableSliceMessage(

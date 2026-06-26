@@ -87,7 +87,11 @@ impl AgentService {
         );
         agent.set_owner_user_id(request.owner_user_id);
         agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
-        agent.set_role(request.role);
+        if request.role == crate::agent::AgentRole::Meta {
+            agent.activate_meta_mode(None);
+        } else {
+            agent.set_role(request.role);
+        }
         agent.set_account_profile(request.account_profile);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
@@ -695,6 +699,35 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub(crate) fn activate_agent_meta_mode(
+        &mut self,
+        agent_id: &str,
+        task_id: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.activate_meta_mode(task_id);
+        Ok(agent.clone())
+    }
+
+    pub(crate) fn deactivate_agent_meta_mode(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.deactivate_meta_mode();
+        Ok(agent.clone())
+    }
+
     pub fn list_agents(&self) -> Vec<AgentInstance> {
         self.store.list()
     }
@@ -1098,6 +1131,21 @@ impl AgentServiceStore {
 
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.read().get_agent(agent_id)
+    }
+
+    pub(crate) fn activate_agent_meta_mode(
+        &self,
+        agent_id: &str,
+        task_id: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().activate_agent_meta_mode(agent_id, task_id)
+    }
+
+    pub(crate) fn deactivate_agent_meta_mode(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().deactivate_agent_meta_mode(agent_id)
     }
 
     pub fn get_agent_by_ref(&self, agent_ref: &str) -> Result<AgentInstance, DaemonError> {

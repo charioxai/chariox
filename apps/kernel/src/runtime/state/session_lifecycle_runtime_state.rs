@@ -18,10 +18,10 @@ impl KernelRuntimeState {
                 message: "use either kernel_ref or slice_ref, not both".to_string(),
             });
         }
-        if request.metaagent && slice_ref.is_some() {
+        if request.metaagent {
             return Err(DaemonError::LocalTransport {
                 operation: "session.create",
-                message: "metaagents cannot be launched in a slice".to_string(),
+                message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
         let mut request = request;
@@ -94,7 +94,6 @@ impl KernelRuntimeState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
-        let metaagent = request.metaagent;
         let worktree_placement = request.worktree_placement.clone();
         request.kernel_ref = None;
         request.worktree_placement = None;
@@ -102,11 +101,6 @@ impl KernelRuntimeState {
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
         let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
-                .with_role(if metaagent {
-                    crate::agent::AgentRole::Meta
-                } else {
-                    crate::agent::AgentRole::Standard
-                })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
         if let Some(placement) = worktree_placement {
@@ -189,7 +183,6 @@ impl KernelRuntimeState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
-        let metaagent = request.metaagent;
         let worktree_placement = request.worktree_placement.clone();
         request.slice_ref = None;
         request.kernel_ref = None;
@@ -198,11 +191,6 @@ impl KernelRuntimeState {
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
         let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
-                .with_role(if metaagent {
-                    crate::agent::AgentRole::Meta
-                } else {
-                    crate::agent::AgentRole::Standard
-                })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
         if let Some(placement) = worktree_placement {

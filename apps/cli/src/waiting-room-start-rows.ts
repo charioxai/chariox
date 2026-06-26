@@ -29,7 +29,7 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "createMetaagent" | "selectedMachineRef" | "selectedKernelRef" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "sliceSelectionId" | "sliceDisplayMode">,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -176,16 +176,6 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "slice",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "metaagent",
-      title: "Metaagent",
-      value: state.createMetaagent ? "on" : "off",
-      titleWidth: options.titleWidth,
-      indent: 1,
-      focused: state.focus === "metaagent",
       selectable: true,
       scrollbar: "",
     },

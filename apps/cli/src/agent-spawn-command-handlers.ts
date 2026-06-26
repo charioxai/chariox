@@ -114,6 +114,9 @@ export async function handleAgentSpawnCommand(
     const provider = model ? deps.currentProviderId() : null
     const effectiveProvider = provider ?? deps.currentProviderId()
     const effort = model ? deps.currentVariantId() : null
+    if (parsed.metaagent) {
+      throw new Error("creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
+    }
     const remoteRef = parsed.kernelRef ?? parsed.machineRef
     const worktreePlacement = gitWorktreePlacementFromParse(parsed)
     if (parsed.machineRef) {
@@ -137,7 +140,7 @@ export async function handleAgentSpawnCommand(
       machineRef: sliceRef ? undefined : remoteRef,
       worktreePlacement,
       sliceRef,
-      metaagent: parsed.metaagent ?? false,
+      metaagent: false,
     })
     deps.flashFooter(formatSpawnedAgentFooter(payload.agent, {
       requestedAlias: alias,
@@ -313,7 +316,7 @@ function formatSpawnedAgentFooter(
       : "local"
   const worktree = options.resolvedWorktreeId || agent.worktree_id || null
   const parts = [
-    `spawned ${agent.role === "meta" ? "metaagent" : "agent"} ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
+    `spawned ${agent.meta_mode ? "meta-mode agent" : "agent"} ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
     placement,
     worktree ? `worktree ${worktree}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,

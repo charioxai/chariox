@@ -254,7 +254,7 @@ function renderFooter(
     !options.hasProjectedAgentActivity,
   )
   const focused = agent?.id === options.focusedAgentId
-  const task = agent?.role === "meta"
+  const task = agent?.meta_mode
     ? options.metaagentTasks.find((entry) => entry.metaagent_id === agent.id) ?? null
     : null
   renderTaskParts(state.taskParts, task)

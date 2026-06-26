@@ -24,7 +24,6 @@ export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
   execution_mode: "build"
   permission_level: "yolo"
-  metaagent?: boolean
 }
 
 export type WaitingRoomActivationControllerDeps = {
@@ -238,7 +237,6 @@ export function createWaitingRoomActivationController(
         execution_mode: "build",
         permission_level: "yolo",
         workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
-        ...(launch.metaagent === true ? { metaagent: true } : {}),
         ...(sliceRef ? { sliceRef } : {}),
       },
     )

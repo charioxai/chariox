@@ -426,6 +426,178 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
 }
 
 #[tokio::test]
+async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-meta-slash-submit",
+            "worktree-meta-slash-submit",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-meta-slash-submit",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
+    app.agents()
+        .update_agent_config(
+            agent.id(),
+            Some(Some(crate::provider::AgentExecutionMode::Build)),
+            Some(Some(crate::provider::AgentPermissionLevel::Yolo)),
+            None,
+            None,
+        )
+        .expect("baseline agent profile should update");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime_state = owned_runtime_state(&app).await;
+    let runtime = AgentRuntime::new(
+        runtime_state.clone(),
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+
+    let request = SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "/meta Inspect the repo by delegation.".to_string(),
+        attachments: Vec::new(),
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "meta-slash-prompt-submit",
+        None,
+        None,
+        &local_request,
+    );
+    let response = timeout(
+        Duration::from_secs(5),
+        runtime.dispatch_prompt_submit(&command, request),
+    )
+    .await
+    .expect("meta slash prompt submit should not hang")
+        .expect("meta slash prompt should submit");
+
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome, session, ..
+    } = response
+    else {
+        panic!("unexpected response");
+    };
+    let PromptSubmissionOutcome::Started { prompt } = outcome else {
+        panic!("meta slash prompt should start");
+    };
+    assert_eq!(prompt.prompt(), "Inspect the repo by delegation.");
+    assert!(
+        prompt
+            .hidden_system_context()
+            .contains("now operating in Arroba meta mode"),
+        "meta mode boundary context should be hidden on first meta turn"
+    );
+    assert_eq!(
+        session
+            .metaagent_task(&agent_id)
+            .map(|task| task.task_markdown()),
+        Some("Inspect the repo by delegation.")
+    );
+    let agent = runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.id() == agent_id)
+        .expect("agent should exist");
+    assert!(agent.is_metaagent());
+    assert_eq!(agent.role(), crate::agent::AgentRole::Standard);
+    let run = app
+        .lock()
+        .await
+        .providers()
+        .get_run_for_agent(&session_id, &agent_id)
+        .expect("provider run should be launched for meta prompt");
+    let auth_token = run
+        .runtime_mcp_auth_token()
+        .expect("provider run should have runtime MCP auth token")
+        .to_string();
+    let specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
+    assert!(specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+    }));
+    let completion = runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
+            serde_json::json!({ "summary": "delegation complete" }),
+        )
+        .await
+        .expect("complete_task should dispatch");
+    assert!(completion.ok);
+    let completed_agent = runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.id() == agent_id)
+        .expect("agent should still exist");
+    assert!(!completed_agent.is_metaagent());
+    assert_eq!(
+        completed_agent.operating_mode(),
+        crate::agent::AgentOperatingMode::Regular
+    );
+    assert_eq!(
+        completed_agent.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Build)
+    );
+    assert_eq!(
+        completed_agent.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Yolo)
+    );
+    let stale_specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
+    assert!(
+        stale_specs.iter().all(|spec| {
+            spec.name != crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+        }),
+        "stale provider auth token must not retain meta tools after mode exit"
+    );
+    let session_after_completion = runtime_state
+        .session_snapshot(&session_id)
+        .await
+        .expect("session should still exist");
+    assert_eq!(
+        session_after_completion
+            .metaagent_task(&agent_id)
+            .map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Completed)
+    );
+    assert!(
+        session_after_completion
+            .queued_prompts_for_agent(&agent_id)
+            .into_iter()
+            .flatten()
+            .any(|prompt| {
+                prompt
+                    .hidden_system_context()
+                    .contains("has left Arroba meta mode")
+            }),
+        "mode exit should queue a kernel continuation prompt"
+    );
+}
+
+#[tokio::test]
 async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)

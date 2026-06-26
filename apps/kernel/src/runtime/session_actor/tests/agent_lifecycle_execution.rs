@@ -204,113 +204,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
 }
 
 #[tokio::test]
-async fn local_spawn_agent_allows_multiple_metaagents_per_user() {
-    let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
-    ));
-    let (session_id, terminal_stream) = {
-        let mut app_locked = app.lock().await;
-        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
-            .expect("session should be created");
-        (session.id().to_string(), app_locked.terminal_stream_store())
-    };
-    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-        owned_runtime_state(&app).await,
-        1,
-        FocusedAgentProjection::default(),
-        SessionStateProjectionStore::default(),
-        AgentRuntimeProjectionStore::default(),
-        terminal_stream,
-    );
-
-    let first = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
-        session_id: session_id.clone(),
-        alias: Some("meta".to_string()),
-        provider: Some("dev-stub".to_string()),
-        model: Some("default".to_string()),
-        effort: None,
-        execution_mode: None,
-        permission_level: None,
-        worktree_id: Some("worktree".to_string()),
-        kernel_ref: None,
-        slice_ref: None,
-        worktree_placement: None,
-        metaagent: true,
-    });
-    let command = KernelCommand::from_local_request("spawn-meta-1", None, None, &first);
-    let response = runtime
-        .dispatch_session_command(command, first)
-        .await
-        .expect("first metaagent spawn should succeed");
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
-        panic!("unexpected response");
-    };
-    assert!(agent.is_metaagent());
-
-    let second = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
-        session_id: session_id.clone(),
-        alias: Some("second-meta".to_string()),
-        provider: Some("dev-stub".to_string()),
-        model: Some("default".to_string()),
-        effort: None,
-        execution_mode: None,
-        permission_level: None,
-        worktree_id: Some("worktree".to_string()),
-        kernel_ref: None,
-        slice_ref: None,
-        worktree_placement: None,
-        metaagent: true,
-    });
-    let command = KernelCommand::from_local_request("spawn-meta-2", None, None, &second);
-    let response = runtime
-        .dispatch_session_command(command, second)
-        .await
-        .expect("second metaagent spawn should be allowed");
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
-        panic!("unexpected response");
-    };
-    assert!(agent.is_metaagent());
-
-    let collaborator = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
-        session_id: session_id.clone(),
-        alias: Some("collaborator-meta".to_string()),
-        provider: Some("dev-stub".to_string()),
-        model: Some("default".to_string()),
-        effort: None,
-        execution_mode: None,
-        permission_level: None,
-        worktree_id: Some("worktree".to_string()),
-        kernel_ref: None,
-        slice_ref: None,
-        worktree_placement: None,
-        metaagent: true,
-    });
-    let mut collaborator_caller = crate::runtime::command::KernelCaller::for_source(
-        &crate::runtime::command::KernelCommandSource::RelayClient,
-    );
-    collaborator_caller.user_id = Some("user-2".to_string());
-    let command = KernelCommand::from_local_request_with_caller(
-        "spawn-collaborator-meta",
-        crate::runtime::command::KernelCommandSource::RelayClient,
-        collaborator_caller,
-        None,
-        None,
-        &collaborator,
-    );
-    let response = runtime
-        .dispatch_session_command(command, collaborator)
-        .await
-        .expect("a collaborator should be able to create their own metaagent");
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
-        panic!("unexpected response");
-    };
-    assert!(agent.is_metaagent());
-    assert_eq!(agent.owner_user_id(), "user-2");
-}
-
-#[tokio::test]
-async fn local_spawn_agent_rejects_metaagent_in_slice() {
+async fn local_spawn_agent_rejects_deprecated_metaagent_creation() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -331,8 +225,8 @@ async fn local_spawn_agent_rejects_metaagent_in_slice() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
-        session_id,
-        alias: Some("slice-meta".to_string()),
+        session_id: session_id.clone(),
+        alias: Some("meta".to_string()),
         provider: Some("dev-stub".to_string()),
         model: Some("default".to_string()),
         effort: None,
@@ -340,19 +234,19 @@ async fn local_spawn_agent_rejects_metaagent_in_slice() {
         permission_level: None,
         worktree_id: Some("worktree".to_string()),
         kernel_ref: None,
-        slice_ref: Some("slice-1".to_string()),
+        slice_ref: None,
         worktree_placement: None,
         metaagent: true,
     });
-    let command = KernelCommand::from_local_request("spawn-slice-meta", None, None, &request);
+    let command = KernelCommand::from_local_request("spawn-meta-deprecated", None, None, &request);
     let error = runtime
         .dispatch_session_command(command, request)
         .await
-        .expect_err("slice metaagent spawn should be rejected");
+        .expect_err("separate metaagent spawn should be rejected");
     assert!(
         error
             .to_string()
-            .contains("metaagents cannot be launched in slices"),
+            .contains("send `/meta <task>` to a regular agent"),
         "unexpected error: {error}"
     );
 }

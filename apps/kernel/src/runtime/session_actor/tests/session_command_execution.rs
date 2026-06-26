@@ -73,7 +73,7 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
-async fn create_session_can_create_metaagent_default_agent() {
+async fn create_session_rejects_deprecated_metaagent_default_agent() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -94,28 +94,20 @@ async fn create_session_can_create_metaagent_default_agent() {
         CreateSessionRequest::new("meta-workspace", "meta-worktree").with_metaagent(true),
     );
     let command = KernelCommand::from_local_request("meta-session-create", None, None, &request);
-    let response = runtime
+    let error = runtime
         .dispatch_session_command(command, request)
         .await
-        .expect("metaagent session creation should succeed");
-
-    let LocalDaemonResponse::SessionCreated { session, agent } = response else {
-        panic!("unexpected response");
-    };
-    assert_eq!(agent.role(), crate::agent::AgentRole::Meta);
-    assert_eq!(session.focused_agent_id(), Some(agent.id()));
-    assert_eq!(
-        session
-            .agents()
-            .iter()
-            .find(|candidate| candidate.id() == agent.id())
-            .map(|candidate| candidate.role()),
-        Some(crate::agent::AgentRole::Meta)
+        .expect_err("metaagent session creation should be deprecated");
+    assert!(
+        error
+            .to_string()
+            .contains("send `/meta <task>` to enter meta mode"),
+        "unexpected error: {error}"
     );
 }
 
 #[tokio::test]
-async fn create_session_rejects_metaagent_in_slice() {
+async fn create_session_rejects_deprecated_metaagent_in_slice_before_slice_setup() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -147,7 +139,7 @@ async fn create_session_rejects_metaagent_in_slice() {
     assert!(
         error
             .to_string()
-            .contains("metaagents cannot be launched in a slice"),
+            .contains("send `/meta <task>` to enter meta mode"),
         "unexpected error: {error}"
     );
 }

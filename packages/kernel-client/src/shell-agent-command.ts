@@ -110,6 +110,9 @@ export async function executeAgentCommand(
     }
     case "spawn": {
       const metaagent = args.includes("--meta") || args.includes("--metaagent")
+      if (metaagent) {
+        return { ok: false, message: "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode" }
+      }
       const spawnArgs = args.filter((arg) => arg !== "--meta" && arg !== "--metaagent")
       const parsedSpawn = parsePlacementOptions(spawnArgs, true)
       if (parsedSpawn.error) {
@@ -117,10 +120,7 @@ export async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
-      }
-      if (metaagent && parsedSpawn.options.sliceRef && parsedSpawn.options.sliceRef !== "off") {
-        return { ok: false, message: "metaagents cannot be launched in a slice" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
       }
       const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
       if (!resolvedMachineKernel.ok) {
@@ -158,7 +158,7 @@ export async function executeAgentCommand(
         sliceRef ? undefined : remoteKernelRef,
         worktreePlacement,
         sliceRef,
-        metaagent,
+        false,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution
@@ -167,7 +167,7 @@ export async function executeAgentCommand(
           : ` on ${remoteKernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
-        `spawned ${agent.role === "meta" ? "metaagent" : "agent"} ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
+        `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
         parsed.assignment,
         agent.id,
         { agentId: agent.id },

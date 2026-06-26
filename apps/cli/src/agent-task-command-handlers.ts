@@ -177,7 +177,7 @@ function resolveOptionalTargetWithText(
   const first = args[0]
   if (first) {
     const resolved = deps.resolveSessionAgent(first)
-    if (resolved.agent && resolved.agent.role === "meta") {
+    if (resolved.agent && isMetaModeAgent(resolved.agent)) {
       return { agent: resolved.agent, rest: args.slice(1) }
     }
     if (resolved.agent) {
@@ -200,13 +200,17 @@ function resolveMetaagentTarget(
   if (resolved.error || !resolved.agent) {
     return { agent: null, error: resolved.error ?? "no metaagent available" }
   }
-  if (resolved.agent.role !== "meta") {
+  if (!isMetaModeAgent(resolved.agent)) {
     return {
       agent: null,
       error: `${deps.formatAgentLabel(resolved.agent)} is not a metaagent`,
     }
   }
   return { agent: resolved.agent }
+}
+
+function isMetaModeAgent(agent: AgentInstance): boolean {
+  return Boolean(agent.meta_mode)
 }
 
 function findMetaagentTask(session: RuntimeSession, metaagentId: string): MetaagentTask | null {

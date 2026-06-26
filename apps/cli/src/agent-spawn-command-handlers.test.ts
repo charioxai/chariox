@@ -98,45 +98,25 @@ test("agent spawn command attaches an unattached agent as a new agent", async ()
   assert.equal(flashedMessage, "attached agent codex:thread-1 as provider-thread")
 })
 
-test("agent spawn command creates a metaagent with --meta", async () => {
+test("agent spawn command rejects deprecated metaagent creation", async () => {
   let currentSession = session()
-  const calls: string[] = []
-  let spawnedMetaagent: boolean | undefined
   let flashedMessage = ""
 
   await handleAgentSpawnCommand({
     ...baseSpawnDeps({
       currentSession: () => currentSession,
       setSession: (nextSession) => { currentSession = nextSession },
-      calls,
       flash: (message) => { flashedMessage = message },
     }),
-    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => {
-      calls.push(`launch:${agentId}`)
-      return providerRun({ agent_instance_id: agentId })
-    },
-    spawnAgent: async (_provider, alias, _model, _effort, _worktreeId, _machineRef, _worktreePlacement, _sliceRef, metaagent) => {
-      spawnedMetaagent = metaagent
-      const nextAgent = agent({
-        id: "agent-meta",
-        agent_ref: "agent-meta",
-        alias: alias ?? null,
-        role: "meta",
-        provider: "codex",
-        model: "codex/gpt-5.4",
-        effort: "high",
-      })
-      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
-      return { agent: nextAgent, session: currentSession }
+    spawnAgent: async () => {
+      throw new Error("kernel should not be called for deprecated metaagent spawn")
     },
   }, ["meta", "codex/gpt-5.4", "--meta"])
 
-  assert.equal(spawnedMetaagent, true)
-  assert.deepEqual(calls, ["launch:agent-meta", "run:run-1", "rebuild", "repaint"])
-  assert.equal(flashedMessage, "spawned metaagent agent-meta (meta) · local · worktree worktree-1")
+  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
 })
 
-test("agent spawn command rejects metaagents in slices", async () => {
+test("agent spawn command rejects deprecated metaagents before slice handling", async () => {
   let flashedMessage = ""
 
   await handleAgentSpawnCommand({
@@ -149,7 +129,7 @@ test("agent spawn command rejects metaagents in slices", async () => {
     },
   }, ["meta", "--meta", "--slice", "new"])
 
-  assert.equal(flashedMessage, "metaagents cannot be launched in a slice")
+  assert.equal(flashedMessage, "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode")
 })
 
 test("agent spawn command rejects external imports with placement options", async () => {

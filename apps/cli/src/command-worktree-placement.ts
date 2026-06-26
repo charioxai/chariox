@@ -209,14 +209,14 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(spawnArgs, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--unattached-agent <external-session-id>]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--unattached-agent <external-session-id>]"
   }
-  if (!error && metaagent && parsed.sliceRef) {
-    error = "metaagents cannot be launched in a slice"
+  if (!error && metaagent) {
+    error = "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode"
   }
   return {
     ...parsed,
-    metaagent,
+    metaagent: false,
     error,
   }
 }

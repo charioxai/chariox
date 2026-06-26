@@ -93,7 +93,7 @@ test("fork commands send optional refs and apply the forked provider run", async
 })
 
 test("agent task command updates focused metaagent task", async () => {
-  const metaagent = makeAgent({ role: "meta", alias: "planner" })
+  const metaagent = makeAgent({ meta_mode: { activated_at_ms: 1 }, alias: "planner" })
   const nextSession = makeSession({
     agents: [metaagent],
     metaagent_tasks: [{

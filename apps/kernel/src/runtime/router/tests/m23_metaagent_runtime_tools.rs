@@ -2423,30 +2423,25 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
             .and_then(serde_json::Value::as_str),
         Some("worker unavailable")
     );
-
-    let completed = router
+    let metaagent_after_block = router
         .runtime_state
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
-            serde_json::json!({ "summary": "done" }),
-        )
-        .await
-        .expect("metaagent should complete task");
-    assert!(completed.ok, "{:?}", completed.payload);
-    assert_eq!(
-        completed
-            .payload
-            .pointer("/task/status")
-            .and_then(serde_json::Value::as_str),
-        Some("completed")
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.id() == metaagent.id())
+        .expect("metaagent should still exist");
+    assert!(
+        !metaagent_after_block.is_metaagent(),
+        "terminal blocked state should exit meta mode"
     );
-    assert_eq!(
-        completed
-            .payload
-            .pointer("/task/completion_summary")
-            .and_then(serde_json::Value::as_str),
-        Some("done")
+    assert!(
+        router
+            .runtime_state
+            .runtime_tool_specs_for_auth_token(&meta_auth_token)
+            .iter()
+            .all(|spec| {
+                spec.name != crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+            }),
+        "stale meta provider token should lose meta tools after terminal task state"
     );
 
     let denied = router

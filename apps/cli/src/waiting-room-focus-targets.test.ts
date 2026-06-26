@@ -25,7 +25,6 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "live-sync",
     "collaborators",
     "slice",
-    "metaagent",
     "join-sessions",
     "session",
     "session",

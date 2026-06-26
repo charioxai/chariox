@@ -72,13 +72,33 @@ impl AgentRuntimeCommandExecutor {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "no target agent".to_string(),
                 })?;
+        let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
+        let consumed_meta_slash = meta_slash.is_some();
+        let (provider_prompt, hidden_system_context) = if let Some(meta_slash) = meta_slash {
+            self.prompt_commands
+                .activate_meta_mode_for_prompt(
+                    &request.session_id,
+                    &target_agent_id,
+                    &meta_slash.task_prompt,
+                )
+                .await?;
+            (
+                meta_slash.task_prompt,
+                self.prompt_commands
+                    .meta_mode_entered_hidden_context()
+                    .to_string(),
+            )
+        } else {
+            (request.prompt.clone(), String::new())
+        };
         let prompt = PromptQueueItem::new(
             self.prompt_id_allocator.next_prompt_id(),
             &request.attachment_id,
             &target_agent_id,
-            &request.prompt,
+            provider_prompt,
             PromptStatus::Queued,
         )
+        .with_hidden_system_context(hidden_system_context)
         .with_attachments(materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,
@@ -93,12 +113,14 @@ impl AgentRuntimeCommandExecutor {
             })
             .await?;
         let mut response_session = prepared.session.clone();
-        if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
-            &request.session_id,
-            &target_agent_id,
-            &request.prompt,
-        )? {
-            response_session = updated_session;
+        if !consumed_meta_slash {
+            if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
+                &request.session_id,
+                &target_agent_id,
+                &request.prompt,
+            )? {
+                response_session = updated_session;
+            }
         }
         self.session_projection.update(response_session.clone());
         self.agent_runtime_projection

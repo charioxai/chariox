@@ -1,6 +1,5 @@
 //! Agent-specific session-store request adapters.
 
-use crate::agent::AgentRole;
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
@@ -174,11 +173,11 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        if caller_metaagent_id.is_some() && request.metaagent {
+        if request.metaagent {
             return self
                 .with_session_projection_action_result(Err(DaemonError::LocalTransport {
                     operation: "agent.spawn",
-                    message: "metaagents cannot spawn another metaagent".to_string(),
+                    message: "creating separate metaagents is deprecated; send `/meta <task>` to a regular agent to enter meta mode".to_string(),
                 }))
                 .await;
         }
@@ -199,11 +198,7 @@ impl SessionRuntimeStore {
                 .unwrap_or_else(|| defaults.provider.clone()),
         )
         .with_owner_user_id(caller_user_id);
-        let create_request = if request.metaagent {
-            create_request.with_role(AgentRole::Meta)
-        } else {
-            create_request
-        };
+        let create_request = create_request;
         let create_request = match caller_metaagent_id.as_deref() {
             Some(metaagent_id) if !request.metaagent => {
                 create_request.with_controlled_by_metaagent_id(metaagent_id)
@@ -251,14 +246,6 @@ impl SessionRuntimeStore {
                 .with_session_projection_action_result(Err(DaemonError::LocalTransport {
                     operation: "agent.spawn",
                     message: "use either kernel_ref or slice_ref, not both".to_string(),
-                }))
-                .await;
-        }
-        if request.metaagent && request.slice_ref.is_some() {
-            return self
-                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
-                    operation: "agent.spawn",
-                    message: "metaagents cannot be launched in slices".to_string(),
                 }))
                 .await;
         }

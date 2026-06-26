@@ -22,7 +22,7 @@ export const COMMAND_TREE: CommandNode[] = [
       {
         id: "agent-spawn",
         label: "spawn",
-        description: "Spawn local, remote, slice, or meta agents; use --meta or --slice off, new, new:headed, or an existing slice",
+        description: "Spawn local, remote, or slice agents; use --slice off, new, new:headed, or an existing slice",
         value: "/agent spawn ",
         searchAliases: ["new agent", "remote agent", "slice agent", "spawn in slice", "spawn on machine", "different account", "provider account", "reuse slice"],
       },

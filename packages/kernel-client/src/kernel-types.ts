@@ -952,6 +952,12 @@ export type AgentInstance = {
   agent_ref: string
   session_id: string
   role?: "standard" | "meta" | string
+  meta_mode?: {
+    task_id?: string | null
+    activated_at_ms: number
+    baseline_execution_mode_override?: "build" | "plan" | null
+    baseline_permission_level_override?: "required" | "yolo" | null
+  } | null
   alias: string | null
   provider: string
   model: string | null
@@ -1477,7 +1483,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 192
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 194
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

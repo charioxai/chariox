@@ -78,13 +78,6 @@ test("waiting room focused value cycling updates local value selectors", () => {
   })
   assert.equal(liveSyncState.workspaceLiveSyncMode, "managed")
 
-  const metaagentState = cycleWaitingRoomFocusedValue({ ...state, focus: "metaagent" }, 1, {
-    catalog,
-    themeRegistry: DEFAULT_THEME_REGISTRY,
-    normalizeState: (next) => next,
-  })
-  assert.equal(metaagentState.createMetaagent, true)
-
   const sliceDisplayState = cycleWaitingRoomFocusedValue({ ...sliceState, focus: "slice" }, 1, {
     catalog,
     themeRegistry: DEFAULT_THEME_REGISTRY,
