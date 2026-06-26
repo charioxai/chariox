@@ -1155,7 +1155,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: META_SESSION_OVERVIEW_TOOL.to_string(),
-            description: "Return a compact overview of the current session for the metaagent: owned agents, agent status, workflow state, pending interactions, and event counts.".to_string(),
+            description: "Return a compact overview of the current session for this agent in Meta mode: owned agents, agent status, workflow state, pending interactions, and event counts.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1167,7 +1167,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_COMMANDS_TOOL.to_string(),
-            description: "Search Arroba commands available to this metaagent by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or metaagent policy.".to_string(),
+            description: "Search Arroba commands available to this agent in Meta mode by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or Meta mode policy.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1183,7 +1183,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_COMMANDS_TOOL.to_string(),
-            description: "List Arroba commands available to this metaagent, with optional filtering by tag, scope, mutation behavior, or policy.".to_string(),
+            description: "List Arroba commands available to this agent in Meta mode, with optional filtering by tag, scope, mutation behavior, or policy.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1249,7 +1249,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_RUN_COMMAND_TOOL.to_string(),
-            description: "Run one allowed Arroba command inside this session as the metaagent. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
+            description: "Run one allowed Arroba command inside this session as this agent in Meta mode. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["command"],
@@ -1261,7 +1261,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_EVENTS_TOOL.to_string(),
-            description: "List metaagent event inbox records. Event prompts are visible runtime prompts; this tool is for replay and detail lookup.".to_string(),
+            description: "List this agent's Meta mode event inbox records. Event prompts are visible runtime prompts; this tool is for replay and detail lookup.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1274,7 +1274,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_READ_EVENT_TOOL.to_string(),
-            description: "Read full detail for one metaagent event by event id.".to_string(),
+            description: "Read full detail for one Meta mode event by event id.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["event_id"],
@@ -1284,7 +1284,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_ACK_EVENT_TOOL.to_string(),
-            description: "Acknowledge one or more metaagent events for bookkeeping and replay control.".to_string(),
+            description: "Acknowledge one or more Meta mode events for bookkeeping and replay control.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1321,7 +1321,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SUBSCRIBE_TRACE_TOOL.to_string(),
-            description: "Attach this metaagent to the live terminal stream for one owned regular agent. Subscribe before prompting the worker so provider output is routed to the supervision stream.".to_string(),
+            description: "Attach this agent in Meta mode to the live terminal stream for one owned regular agent. Subscribe before prompting the worker so provider output is routed to the supervision stream.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent_ref"],
@@ -1334,7 +1334,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_POLL_TRACE_TOOL.to_string(),
-            description: "Drain currently buffered live trace records from a metaagent supervision stream without waiting. Compact mode returns summaries and short excerpts; verbose mode returns capped raw text. Use wait_trace for normal worker supervision.".to_string(),
+            description: "Drain currently buffered live trace records from a Meta mode supervision stream without waiting. Compact mode returns summaries and short excerpts; verbose mode returns capped raw text. Use wait_trace for normal worker supervision.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1364,7 +1364,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_UNSUBSCRIBE_TRACE_TOOL.to_string(),
-            description: "Detach a metaagent live trace subscription and discard any pending compact stream records for it.".to_string(),
+            description: "Detach a Meta mode live trace subscription and discard any pending compact stream records for it.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["subscription_id"],
@@ -1375,7 +1375,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         RuntimeToolSpec {
             name: META_SUBSCRIBE_EVENTS_TOOL.to_string(),
             description: format!(
-                "Subscribe the metaagent to an optional session event. Valid event kinds: {}.",
+                "Subscribe this agent in Meta mode to an optional session event. Valid event kinds: {}.",
                 META_EVENT_KINDS.join(", ")
             ),
             input_schema: serde_json::json!({
@@ -1390,7 +1390,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_UNSUBSCRIBE_EVENTS_TOOL.to_string(),
-            description: "Remove an optional metaagent event subscription. Required agent turn and interaction subscriptions cannot be removed.".to_string(),
+            description: "Remove an optional Meta mode event subscription. Required agent turn and interaction subscriptions cannot be removed.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["subscription_id"],
@@ -1400,7 +1400,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_SUBSCRIPTIONS_TOOL.to_string(),
-            description: "List required and optional event subscriptions for this metaagent.".to_string(),
+            description: "List required and optional event subscriptions for this agent in Meta mode.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -1409,7 +1409,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_READ_TASK_TOOL.to_string(),
-            description: "Read this metaagent's kernel-managed task document and status. Returns status none when no task exists.".to_string(),
+            description: "Read this agent's kernel-managed Meta mode task document and status. Returns status none when no task exists.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -1418,7 +1418,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_UPDATE_TASK_TOOL.to_string(),
-            description: "Update this metaagent's kernel-managed task markdown. Creates the task if it does not exist.".to_string(),
+            description: "Update this agent's kernel-managed Meta mode task markdown. Creates the task if it does not exist.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["markdown"],
@@ -1430,7 +1430,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_READ_PLAN_TOOL.to_string(),
-            description: "Read this metaagent's kernel-managed plan markdown and task status.".to_string(),
+            description: "Read this agent's kernel-managed Meta mode plan markdown and task status.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -1439,7 +1439,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_UPDATE_PLAN_TOOL.to_string(),
-            description: "Update this metaagent's kernel-managed plan markdown. Creates an empty active task if needed.".to_string(),
+            description: "Update this agent's kernel-managed Meta mode plan markdown. Creates an empty active task if needed.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["markdown"],
@@ -1451,7 +1451,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_COMPLETE_TASK_TOOL.to_string(),
-            description: "Mark this metaagent's active task completed with an optional summary.".to_string(),
+            description: "Mark this agent's active Meta mode task completed with an optional summary.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1462,7 +1462,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_MARK_BLOCKED_TOOL.to_string(),
-            description: "Mark this metaagent's task blocked with the concrete reason progress cannot continue.".to_string(),
+            description: "Mark this agent's Meta mode task blocked with the concrete reason progress cannot continue.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["reason"],
@@ -1864,7 +1864,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
-            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
+            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. An agent in Meta mode can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["interaction_id"],
