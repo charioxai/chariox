@@ -659,6 +659,89 @@ function validateExampleTopologyDefinition(exampleName, definition, validation) 
   }
 }
 
+function hasDirectedCycle(definition) {
+  const adjacency = new Map()
+  for (const node of definition.nodes ?? []) {
+    adjacency.set(node.handle, [])
+  }
+  for (const edge of definition.edges ?? []) {
+    const outgoing = adjacency.get(edge.from_node)
+    if (outgoing) outgoing.push(edge.to_node)
+  }
+  const visiting = new Set()
+  const visited = new Set()
+  const visit = (node) => {
+    if (visiting.has(node)) return true
+    if (visited.has(node)) return false
+    visiting.add(node)
+    for (const next of adjacency.get(node) ?? []) {
+      if (visit(next)) return true
+    }
+    visiting.delete(node)
+    visited.add(node)
+    return false
+  }
+  return [...adjacency.keys()].some(visit)
+}
+
+function validateLiveExportedTopologyDefinition(exampleName, definition, validation) {
+  const expectation = EXAMPLE_TOPOLOGY_EXPECTATIONS[exampleName]
+  assert(expectation, `missing workflow-code topology expectation for ${exampleName}`)
+
+  assert(definition?.workflow?.alias?.startsWith(expectation.alias), `${exampleName} live export alias should derive from original alias`, definition?.workflow)
+  assert(definition.workflow?.max_concurrent === 32, `${exampleName} live export should preserve maxConcurrent`, definition.workflow)
+  const schemaHandles = new Set((definition.schemas ?? []).map((schema) => schema.handle))
+  const nodeHandles = new Set((definition.nodes ?? []).map((node) => node.handle))
+  assert((definition.schemas ?? []).length === expectation.schemas.length, `${exampleName} live export schema count mismatch`, definition.schemas)
+  assert((definition.nodes ?? []).length === expectation.nodes.length, `${exampleName} live export node count mismatch`, definition.nodes)
+  assert((definition.edges ?? []).length === expectation.edges.length, `${exampleName} live export edge count mismatch`, definition.edges)
+  assert((definition.endpoints ?? []).length === expectation.endpoints.length, `${exampleName} live export endpoint count mismatch`, definition.endpoints)
+  assert(schemaHandles.has(definition.workflow?.run_output_schema), `${exampleName} live export run output schema should resolve to an exported schema`, definition.workflow)
+
+  for (const schema of definition.schemas ?? []) {
+    assert(schema.schema?.type === 'object', `${exampleName} live export schema ${schema.handle} should be an object schema`, schema)
+  }
+  for (const node of definition.nodes ?? []) {
+    assert(node.instructions, `${exampleName} live export node ${node.handle} should preserve instructions`, node)
+    assert(node.canvas && Number.isFinite(node.canvas.x) && Number.isFinite(node.canvas.y), `${exampleName} live export node ${node.handle} should include canvas coordinates`, node)
+    assert(node.agent?.kind === 'create', `${exampleName} live export node ${node.handle} should create an agent for portability`, node)
+    assert(node.agent?.provider === 'dev-stub', `${exampleName} live export node ${node.handle} should preserve provider rebinding`, node.agent)
+    assert(node.agent?.model === 'workflow-code-topology-node', `${exampleName} live export node ${node.handle} should preserve model rebinding`, node.agent)
+    if (node.intermediate_output_schema != null) {
+      assert(schemaHandles.has(node.intermediate_output_schema), `${exampleName} live export node ${node.handle} intermediate schema should resolve`, node)
+    }
+  }
+  for (const endpoint of definition.endpoints ?? []) {
+    assert(endpoint.canvas && Number.isFinite(endpoint.canvas.x) && Number.isFinite(endpoint.canvas.y), `${exampleName} live export endpoint ${endpoint.handle} should include canvas coordinates`, endpoint)
+    assert(nodeHandles.has(endpoint.entry_node), `${exampleName} live export endpoint ${endpoint.handle} should target an exported node`, endpoint)
+  }
+  for (const edge of definition.edges ?? []) {
+    assert(nodeHandles.has(edge.from_node), `${exampleName} live export edge ${edge.handle} should have an exported source node`, edge)
+    assert(nodeHandles.has(edge.to_node), `${exampleName} live export edge ${edge.handle} should have an exported target node`, edge)
+    if (edge.handoff_schema != null) {
+      assert(schemaHandles.has(edge.handoff_schema), `${exampleName} live export edge ${edge.handle} handoff schema should resolve`, edge)
+    }
+  }
+
+  const completers = (definition.nodes ?? []).filter((node) => node.can_complete_workflow_run === true)
+  assert(completers.length === expectation.completers.length, `${exampleName} live export completion node count mismatch`, completers)
+  const waiters = (definition.nodes ?? []).filter((node) => node.wait_for_all_inputs === true)
+  assert(waiters.length === (expectation.waitForAll ?? []).length, `${exampleName} live export wait-for-all node count mismatch`, waiters)
+  if (expectation.hasLoop) {
+    assert(hasDirectedCycle(definition), `${exampleName} live export should preserve a loop`, definition.edges)
+  }
+  if (expectation.multiEdgeRouter) {
+    const outgoingCounts = new Map()
+    for (const edge of definition.edges ?? []) {
+      outgoingCounts.set(edge.from_node, (outgoingCounts.get(edge.from_node) ?? 0) + 1)
+    }
+    assert([...outgoingCounts.values()].some((count) => count >= 2), `${exampleName} live export should preserve a multi-edge router`, definition.edges)
+  }
+
+  const diagnostics = validationDiagnostics(validation)
+  assert(!diagnostics.some((diagnostic) => diagnostic.code === 'canvas_overlap'), `${exampleName} live export should not have canvas overlap diagnostics`, diagnostics)
+}
+
 function parseWorkflowOutputMessage(output) {
   const message = output?.message
   if (message == null) return null
@@ -847,9 +930,59 @@ async function workflowCodeExamples() {
   })))
 }
 
+async function completeAppliedTopologyWorkflow(client, sessionId, exampleName, definition, apply, timeoutMs) {
+  const endpoint = (definition.endpoints ?? []).find((entry) => entry.handle === 'entry' || entry.alias === 'entry')
+    ?? definition.endpoints?.[0]
+  const entryNodeHandle = endpoint?.entry_node
+  assert(entryNodeHandle, `example ${exampleName} runtime should resolve entry node`, { definition, apply })
+  const runtimeAgentEntries = Object.entries(apply.agent_ids ?? {})
+    .sort(([left], [right]) => {
+      if (left === entryNodeHandle) return 1
+      if (right === entryNodeHandle) return -1
+      return left.localeCompare(right)
+    })
+  for (const [handle, agentId] of runtimeAgentEntries) {
+    const launchResponse = unwrap(
+      await client.send(launchProviderRunRequest(
+        sessionId,
+        'dev-stub',
+        'default',
+        'workflow-code-topology-node',
+        'low',
+        agentId,
+      )),
+      'ProviderRunLaunchAccepted',
+    )
+    assert(launchResponse?.provider_run?.id, `example ${exampleName} runtime should launch provider for node ${handle}`, launchResponse)
+    await waitForProviderRunReady(client, launchResponse.provider_run.id, timeoutMs)
+  }
+  const endpointId = apply.endpoint_ids?.[endpoint.handle]
+  assert(endpointId, `example ${exampleName} runtime should resolve entry endpoint`, { endpoint, apply })
+  const entryAgentId = apply.agent_ids?.[entryNodeHandle]
+  assert(entryAgentId, `example ${exampleName} runtime should resolve entry agent`, { entryNodeHandle, apply })
+  await client.send(focusAgentRequest(sessionId, entryAgentId))
+  const invokeResponse = unwrap(
+    await client.send(invokeWorkflowEndpointRequest(
+      sessionId,
+      apply.workflow_id,
+      endpointId,
+      `Run ${exampleName} topology runtime validation.`,
+    )),
+    'WorkflowRunInvoked',
+  )
+  const runtimeRun = invokeResponse?.workflow_run
+  assert(runtimeRun?.id, `example ${exampleName} runtime should start a workflow run`, invokeResponse)
+  const completedRun = await waitForCompletedWorkflowRun(client, sessionId, runtimeRun.id, timeoutMs)
+  return {
+    workflowRunId: completedRun.id,
+    runtime: validateExampleRuntimeResult(exampleName, completedRun),
+  }
+}
+
 async function applyExampleSuite(client, sessionId, nodePath, workspace, timeoutMs) {
   const examples = await workflowCodeExamples()
   const results = []
+  const liveExports = []
   for (const [index, example] of examples.entries()) {
     const slug = example.name.replace(/\.js$/, '')
     const artifactName = `pattern-${index + 1}-${slug}-${Date.now()}`
@@ -947,56 +1080,81 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace, timeout
     )
     const runtimeApply = validateApplyResult(runtimeAppliedResponse.result, `example ${example.name} runtime`, runtimeExpected)
     validateSessionProjection(runtimeAppliedResponse.session, runtimeApply, `example ${example.name} runtime`, runtimeExpected)
-    const entryNodeHandle = exported.definition.endpoints?.find((endpoint) => endpoint.handle === 'entry')?.entry_node
-    const runtimeAgentEntries = Object.entries(runtimeApply.agent_ids ?? {})
-      .sort(([left], [right]) => {
-        if (left === entryNodeHandle) return 1
-        if (right === entryNodeHandle) return -1
-        return left.localeCompare(right)
-      })
-    for (const [handle, agentId] of runtimeAgentEntries) {
-      const launchResponse = unwrap(
-        await client.send(launchProviderRunRequest(
-          sessionId,
-          'dev-stub',
-          'default',
-          'workflow-code-topology-node',
-          'low',
-          agentId,
-        )),
-        'ProviderRunLaunchAccepted',
-      )
-      assert(launchResponse?.provider_run?.id, `example ${example.name} runtime should launch provider for node ${handle}`, launchResponse)
-      await waitForProviderRunReady(client, launchResponse.provider_run.id, timeoutMs)
-    }
-    const endpointId = runtimeApply.endpoint_ids?.entry
-    assert(endpointId, `example ${example.name} runtime should resolve entry endpoint`, runtimeApply)
-    const entryAgentId = entryNodeHandle ? runtimeApply.agent_ids?.[entryNodeHandle] : null
-    assert(entryAgentId, `example ${example.name} runtime should resolve entry agent`, { entryNodeHandle, runtimeApply })
-    await client.send(focusAgentRequest(sessionId, entryAgentId))
-    const invokeResponse = unwrap(
-      await client.send(invokeWorkflowEndpointRequest(
+
+    const liveInlineSource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
         sessionId,
-        runtimeApply.workflow_id,
-        endpointId,
-        `Run ${example.name} topology runtime validation.`,
+        { kind: 'workflow', workflow_ref: runtimeApply.workflow_id },
+        'inline',
       )),
-      'WorkflowRunInvoked',
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(liveInlineSource?.source, `example ${example.name} live inline source export should include source`, liveInlineSource)
+    assert(
+      sha256Hex(liveInlineSource.source) === liveInlineSource.source_sha256,
+      `example ${example.name} live inline source hash should match contents`,
+      liveInlineSource,
     )
-    const runtimeRun = invokeResponse?.workflow_run
-    assert(runtimeRun?.id, `example ${example.name} runtime should start a workflow run`, invokeResponse)
-    const completedRun = await waitForCompletedWorkflowRun(client, sessionId, runtimeRun.id, timeoutMs)
-    const runtime = validateExampleRuntimeResult(example.name, completedRun)
+    const liveInlineRoundTripName = `${artifactName}-live-inline-source`
+    const liveInlineRoundTrip = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(sessionId, liveInlineRoundTripName, nodePath, liveInlineSource.source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(liveInlineRoundTrip?.metadata?.validation?.ok, `example ${example.name} live inline source should recompile`, liveInlineRoundTrip?.metadata?.validation)
+    validateLiveExportedTopologyDefinition(
+      example.name,
+      liveInlineRoundTrip.definition,
+      liveInlineRoundTrip.metadata.validation,
+    )
+
+    const liveDirectorySource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
+        sessionId,
+        { kind: 'workflow', workflow_ref: runtimeApply.workflow_id },
+        'directory',
+      )),
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(liveDirectorySource?.source_path === 'workflow.js', `example ${example.name} live source directory should export workflow.js`, liveDirectorySource)
+    const liveDirectoryManifest = await writeSourceDirectoryExport(workspace, liveDirectorySource, `example ${example.name} live source directory`)
+    assert(liveDirectoryManifest?.schema_paths, `example ${example.name} live source directory manifest should include schema_paths`, liveDirectoryManifest)
+    const liveDirectoryRoundTripName = `${artifactName}-live-directory-source`
+    const liveDirectoryRoundTrip = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(sessionId, liveDirectoryRoundTripName, nodePath, liveDirectorySource.source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(liveDirectoryRoundTrip?.metadata?.validation?.ok, `example ${example.name} live source directory should recompile`, liveDirectoryRoundTrip?.metadata?.validation)
+    validateLiveExportedTopologyDefinition(
+      example.name,
+      liveDirectoryRoundTrip.definition,
+      liveDirectoryRoundTrip.metadata.validation,
+    )
+
+    const completed = await completeAppliedTopologyWorkflow(
+      client,
+      sessionId,
+      example.name,
+      exported.definition,
+      runtimeApply,
+      timeoutMs,
+    )
+
+    liveExports.push({
+      exampleName: example.name,
+      sourceWorkflowId: runtimeApply.workflow_id,
+      inlineSource: liveInlineSource,
+      directorySource: liveDirectorySource,
+    })
 
     results.push({
       example: example.name,
       artifactName,
       topology,
-      runtime,
+      runtime: completed.runtime,
       packageImportedArtifactName: importedArtifactName,
       workflowId: apply.workflow_id,
       runtimeWorkflowId: runtimeApply.workflow_id,
-      runtimeWorkflowRunId: completedRun.id,
+      runtimeWorkflowRunId: completed.workflowRunId,
       nodes: expected.nodes,
       edges: expected.edges,
       endpoints: expected.endpoints,
@@ -1004,10 +1162,13 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace, timeout
       packageSha256: exported.source_sha256,
       inlineSourceSha256: inlineSource.source_sha256,
       directorySourceSha256: directorySource.source_sha256,
+      liveInlineSourceSha256: liveInlineSource.source_sha256,
+      liveDirectorySourceSha256: liveDirectorySource.source_sha256,
       directoryFiles: (directorySource.files ?? []).map((file) => file.path).sort(),
+      liveDirectoryFiles: (liveDirectorySource.files ?? []).map((file) => file.path).sort(),
     })
   }
-  return results
+  return { results, liveExports }
 }
 
 async function writeSourceDirectoryExport(workspace, exportResult, label) {
@@ -1211,6 +1372,127 @@ async function validateSecondKernelDistribution({
       if (installedSkill) {
         await client.send(uninstallSkillRequest(secondWorkspace, skillName)).catch(() => {})
       }
+      await client.send(endSessionRequest(sessionId)).catch(() => {})
+    }
+    await client.close().catch(() => {})
+    daemonChild.kill('SIGTERM')
+    await sleep(1000)
+  }
+}
+
+async function validateTopologySourceExportOnKernel(client, session, nodePath, workspace, exportResult, exampleName, label, timeoutMs) {
+  assert(exportResult?.source, `${label} should include source`, exportResult)
+  assert(
+    sha256Hex(exportResult.source) === exportResult.source_sha256,
+    `${label} source hash should match contents`,
+    exportResult,
+  )
+  const validated = unwrap(
+    await client.send(validateWorkflowCodeRequest(session.id, nodePath, exportResult.source)),
+    'WorkflowCodeValidated',
+  ).result
+  assert(validated?.validation?.ok, `${label} should validate on second kernel`, validated?.validation)
+  validateLiveExportedTopologyDefinition(exampleName, validated.definition, validated.validation)
+  const appliedResponse = unwrap(
+    await client.send(applyWorkflowCodeRequest(session.id, nodePath, exportResult.source)),
+    'WorkflowCodeApplied',
+  )
+  const expected = topologyRuntimeExpectation(validated.definition)
+  const apply = validateApplyResult(appliedResponse.result, `${label} apply`, expected)
+  validateSessionProjection(appliedResponse.session, apply, `${label} apply`, expected)
+  assert(apply.workflow_id !== exportResult.source_workflow_id, `${label} apply workflow id must be fresh`, apply)
+  const completed = await completeAppliedTopologyWorkflow(
+    client,
+    session.id,
+    exampleName,
+    validated.definition,
+    apply,
+    timeoutMs,
+  )
+  return {
+    applyWorkflowId: apply.workflow_id,
+    workflowRunId: completed.workflowRunId,
+    runtime: completed.runtime,
+    sourceSha256: exportResult.source_sha256,
+    directoryManifest: exportResult.format === 'directory'
+      ? await writeSourceDirectoryExport(workspace, exportResult, label)
+      : null,
+  }
+}
+
+async function validateSecondKernelExampleSuite({
+  liveExports,
+  generatedRoot,
+  nodePath,
+  timeoutMs,
+}) {
+  if ((liveExports ?? []).length === 0) return null
+  const secondRoot = path.join(generatedRoot, 'second-kernel-example-suite')
+  const secondWorkspace = path.join(secondRoot, 'workspace')
+  const secondWorktree = path.join(secondRoot, 'worktree')
+  const { client, daemonChild, kernelUrl } = await startIsolatedKernel(
+    'workflow-code-second-kernel-example-suite-drill',
+    secondRoot,
+    secondWorkspace,
+    secondWorktree,
+    timeoutMs,
+  )
+  let sessionId = null
+  try {
+    const session = unwrap(
+      await client.send(createSessionRequest(secondWorkspace, secondWorktree, 'workflow-code-second-kernel-example-suite-drill', undefined, null, 'off')),
+      'SessionCreated',
+    ).session
+    sessionId = session.id
+    const examples = []
+    for (const liveExport of liveExports) {
+      const inlineSource = {
+        ...liveExport.inlineSource,
+        source_workflow_id: liveExport.sourceWorkflowId,
+      }
+      const directorySource = {
+        ...liveExport.directorySource,
+        source_workflow_id: liveExport.sourceWorkflowId,
+      }
+      const inline = await validateTopologySourceExportOnKernel(
+        client,
+        session,
+        nodePath,
+        secondWorkspace,
+        inlineSource,
+        liveExport.exampleName,
+        `second kernel ${liveExport.exampleName} live inline source`,
+        timeoutMs,
+      )
+      await writeSourceDirectoryExport(
+        secondWorkspace,
+        directorySource,
+        `second kernel ${liveExport.exampleName} live source directory`,
+      )
+      const directory = await validateTopologySourceExportOnKernel(
+        client,
+        session,
+        nodePath,
+        secondWorkspace,
+        directorySource,
+        liveExport.exampleName,
+        `second kernel ${liveExport.exampleName} live source directory`,
+        timeoutMs,
+      )
+      examples.push({
+        example: liveExport.exampleName,
+        sourceWorkflowId: liveExport.sourceWorkflowId,
+        inline,
+        directory,
+      })
+    }
+    return {
+      kernelUrl,
+      sessionId: session.id,
+      examples,
+    }
+  } finally {
+    if (client && sessionId) {
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }
     await client.close().catch(() => {})
@@ -2067,6 +2349,7 @@ async function main() {
     assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
     const existingAgentArtifact = await applyExistingAgentArtifact(client, session, nodePath, workspace)
     let exampleSuite = []
+    let exampleSuiteLiveExports = []
     if (options.exampleSuite) {
       const exampleWorkspace = path.join(generatedRoot, 'example-suite', 'workspace')
       const exampleWorktree = path.join(generatedRoot, 'example-suite', 'worktree')
@@ -2075,7 +2358,9 @@ async function main() {
         'SessionCreated',
       ).session
       try {
-        exampleSuite = await applyExampleSuite(client, exampleSession.id, nodePath, exampleWorkspace, options.timeoutMs)
+        const exampleSuiteResult = await applyExampleSuite(client, exampleSession.id, nodePath, exampleWorkspace, options.timeoutMs)
+        exampleSuite = exampleSuiteResult.results
+        exampleSuiteLiveExports = exampleSuiteResult.liveExports
       } finally {
         await client.send(endSessionRequest(exampleSession.id)).catch(() => {})
       }
@@ -2092,6 +2377,14 @@ async function main() {
         sourceWorkflowId: firstApply.workflow_id,
         skillSourceDir,
         skillName,
+        generatedRoot,
+        nodePath,
+        timeoutMs: options.timeoutMs,
+      })
+      : null
+    const exampleSuiteSecondKernel = options.secondKernel && exampleSuiteLiveExports.length > 0
+      ? await validateSecondKernelExampleSuite({
+        liveExports: exampleSuiteLiveExports,
         generatedRoot,
         nodePath,
         timeoutMs: options.timeoutMs,
@@ -2125,6 +2418,7 @@ async function main() {
       outputSchemaArtifact,
       exampleSuite,
       secondKernel,
+      exampleSuiteSecondKernel,
       hetznerSecondKernel,
     }
     console.log(JSON.stringify(summary, null, 2))
