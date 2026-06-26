@@ -198,6 +198,22 @@ function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
   }
 }
 
+function isMetaagentModeEndedError(error) {
+  return String(error?.message ?? error).includes('metaagent event access requires an owned session metaagent')
+}
+
+async function listMetaagentEventsIfAvailable(client, sessionId, metaagentId, limit = 100) {
+  try {
+    return unwrap(
+      await client.send(listMetaagentEventsRequest(sessionId, metaagentId, limit)),
+      'MetaagentEventsListed',
+    )
+  } catch (error) {
+    if (isMetaagentModeEndedError(error)) return null
+    throw error
+  }
+}
+
 async function initGitWorktree(root) {
   await runChecked('git', ['init', '-b', 'main'], { cwd: root })
   await runChecked('git', ['config', 'user.email', 'metaagent-trace-poll-drill@example.com'], { cwd: root })
@@ -462,8 +478,8 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
           activePrompt: agentActivePrompt(session, metaagentId)?.id ?? null,
         })
       }
-      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
-      const events = eventsPayload.events ?? []
+      const eventsPayload = await listMetaagentEventsIfAvailable(client, sessionId, metaagentId, 100)
+      const events = eventsPayload?.events ?? []
       const workerIds = new Set(workers.map((agent) => agent.id))
       for (const event of events) {
         if (!seenEvents.has(event.event_id)) {
@@ -497,8 +513,8 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
           activePrompt: agentActivePrompt(session, metaagentId)?.id ?? null,
         })
       }
-      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
-      const events = eventsPayload.events ?? []
+      const eventsPayload = await listMetaagentEventsIfAvailable(client, sessionId, metaagentId, 100)
+      const events = eventsPayload?.events ?? []
       for (const event of events) {
         if (!seenEvents.has(event.event_id)) {
           seenEvents.add(event.event_id)

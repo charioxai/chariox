@@ -48,16 +48,19 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         };
         let completion_recorded =
             crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
-        let settlement_pending =
+        let mut settlement_pending =
             crate::transport::flow_control::prompt_completion_settlement_pending(
                 self.app,
                 provider_run_id,
             );
-        if !prompt_completed && completion_recorded && saw_settlement_blocking_activity {
+        if !prompt_completed && !settlement_pending && completion_recorded {
             self.note_prompt_settlement_requested(provider_run_id);
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            return Ok(());
+            if saw_settlement_blocking_activity {
+                return Ok(());
+            }
+            settlement_pending = true;
         }
         if active_prompt_status == PromptStatus::Cancelling {
             if (prompt_completed || settlement_pending) && !saw_settlement_blocking_activity {
