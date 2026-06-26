@@ -13,6 +13,7 @@ import { filterCommandCenterItems } from "./command-center-search.js"
 import type { CommandCenterContext } from "./command-center-context.js"
 import { buildCommandCenterRootItems } from "./command-center-root-items.js"
 import { buildScopedCommandCenterItems } from "./command-center-scoped-items.js"
+import { buildWorkflowRegistryItems } from "./command-center-workflow-registry-items.js"
 import { COMMAND_TREE } from "./command-center-tree.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 
@@ -53,6 +54,11 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
     if (normalized === providerNamespace(context.focusedProvider) || normalized.startsWith(namespace)) {
       return buildProviderNamespaceItems(normalized, context.focusedProvider, context.providerCommandCatalogs)
     }
+  }
+
+  const registryItems = buildWorkflowRegistryItems(normalized, context)
+  if (registryItems) {
+    return registryItems
   }
 
   const scoped = buildScopedCommandCenterItems(normalized, context)

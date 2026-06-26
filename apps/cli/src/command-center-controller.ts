@@ -7,6 +7,9 @@ import {
   shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
+import type {
+  CommandCenterWorkflowRegistryEntry,
+} from "./command-center-context.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -32,6 +35,8 @@ type CommandCenterControllerOptions<TBox = unknown> = {
   getFocusedProvider: () => BackendProviderId | null
   getCurrentModel: () => string
   getCurrentVariant: () => string
+  getWorkflowRegistryEntries?: () => readonly CommandCenterWorkflowRegistryEntry[]
+  refreshWorkflowRegistryEntries?: (input: string) => void
   getPromptText: () => string
   replacePromptText: (value: string) => void
   executeCommand: (value: string) => Promise<void>
@@ -80,6 +85,7 @@ export function createCommandCenterController<TBox = unknown>(
   const sync = (value = options.getPromptText()) => {
     const previousValue = query
     query = value
+    options.refreshWorkflowRegistryEntries?.(value)
     items = buildCommandCenterItems(value, {
       providerCatalog: options.getProviderCatalog(),
       providerCommandCatalogs: options.getProviderCommandCatalogs(),
@@ -87,6 +93,7 @@ export function createCommandCenterController<TBox = unknown>(
       focusedProvider: options.getFocusedProvider(),
       currentModel: options.getCurrentModel(),
       currentVariant: options.getCurrentVariant(),
+      ...(options.getWorkflowRegistryEntries ? { workflowRegistryEntries: options.getWorkflowRegistryEntries() } : {}),
     })
     selectedIndex = nextCommandCenterIndex(selectedIndex, items, value, previousValue)
     render()

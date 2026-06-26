@@ -189,6 +189,51 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(items.find((item) => item.value === "/workspace sync default ")?.description, "Set default live sync for new sessions without changing the current session")
 })
 
+test("buildCommandCenterItems suggests registered workflow names and run endpoints", () => {
+  const context = {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+    workflowRegistryEntries: [
+      {
+        name: "dev-team-small",
+        sourceScope: "workspace" as const,
+        sourceKind: "source_directory" as const,
+        endpoints: ["entry", "review"],
+        queues: ["urgent"],
+      },
+      {
+        name: "prompt-chaining",
+        sourceScope: "builtin" as const,
+        sourceKind: "single_file" as const,
+      },
+    ],
+  }
+
+  const loadValues = new Set(buildCommandCenterItems("/workflow load ", context).map((item) => item.value))
+  assert.equal(loadValues.has("/workflow load dev-team-small"), true)
+  assert.equal(loadValues.has("/workflow load prompt-chaining"), true)
+  assert.equal(buildCommandCenterItems("/workflow registry get dev", context)[0]?.description, "workspace · source_directory")
+
+  const deleteValues = new Set(buildCommandCenterItems("/workflow registry delete ", context).map((item) => item.value))
+  assert.equal(deleteValues.has("/workflow registry delete dev-team-small"), true)
+  assert.equal(deleteValues.has("/workflow registry delete prompt-chaining"), false)
+
+  const runValues = new Set(buildCommandCenterItems("/workflow run ", context).map((item) => item.value))
+  assert.equal(runValues.has('/workflow run dev-team-small --endpoint entry --prompt "" '), true)
+  assert.equal(runValues.has('/workflow run prompt-chaining --endpoint entry --prompt "" '), true)
+
+  const endpointValues = new Set(buildCommandCenterItems("/workflow run dev-team-small --endpoint ", context).map((item) => item.value))
+  assert.equal(endpointValues.has('/workflow run dev-team-small --endpoint entry --prompt "" '), true)
+  assert.equal(endpointValues.has('/workflow run dev-team-small --endpoint review --prompt "" '), true)
+
+  const queueValues = new Set(buildCommandCenterItems("/workflow run dev-team-small --queue ", context).map((item) => item.value))
+  assert.equal(queueValues.has('/workflow run dev-team-small --endpoint entry --queue urgent --prompt "" '), true)
+})
+
 test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {
   const items = buildCommandCenterItems("/slice", {
     providerCatalog: fallbackProviderCatalog(),

@@ -4,6 +4,9 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import {
+  listWorkflowRegistryRequest,
+} from "@arroba/kernel-client"
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect } from "solid-js"
@@ -44,6 +47,7 @@ import {
 } from "./cli-renderer-focus-controller.js"
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
+import type { CommandCenterWorkflowRegistryEntry } from "./command-center-context.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
@@ -611,6 +615,38 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptHeight: () => promptInputRefController.height(1),
   })
   const commandCenterVisibleRowCount = commandCenterLayoutController.visibleRowCount
+  let workflowRegistrySuggestionEntries: CommandCenterWorkflowRegistryEntry[] = []
+  let workflowRegistrySuggestionSessionId: string | null = null
+  let workflowRegistrySuggestionFetchedAtMs = 0
+  let workflowRegistrySuggestionFetchInFlight = false
+  let resyncWorkflowRegistrySuggestions: (() => void) | null = null
+  const refreshWorkflowRegistrySuggestions = (input: string) => {
+    if (!shouldRefreshWorkflowRegistrySuggestions(input)) {
+      return
+    }
+    const sessionId = sessionState().id
+    const nowMs = Date.now()
+    if (
+      workflowRegistrySuggestionFetchInFlight
+      || (workflowRegistrySuggestionSessionId === sessionId && nowMs - workflowRegistrySuggestionFetchedAtMs < 5000)
+    ) {
+      return
+    }
+    workflowRegistrySuggestionFetchInFlight = true
+    void client.send<Record<string, unknown>>(listWorkflowRegistryRequest(sessionId))
+      .then((response) => {
+        workflowRegistrySuggestionEntries = workflowRegistrySuggestionEntriesFromResponse(response)
+        workflowRegistrySuggestionSessionId = sessionId
+        workflowRegistrySuggestionFetchedAtMs = Date.now()
+        resyncWorkflowRegistrySuggestions?.()
+      })
+      .catch((error) => {
+        getLogger("workflow-registry-suggestions")?.debug("workflow registry suggestion refresh failed", { error: formatError(error) })
+      })
+      .finally(() => {
+        workflowRegistrySuggestionFetchInFlight = false
+      })
+  }
   const commandCenterController = createCommandCenterController<BoxRenderable>({
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
@@ -618,6 +654,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getFocusedProvider: focusedBackendProvider,
     getCurrentModel: currentModelId,
     getCurrentVariant: currentVariantId,
+    getWorkflowRegistryEntries: () => workflowRegistrySuggestionEntries,
+    refreshWorkflowRegistryEntries: refreshWorkflowRegistrySuggestions,
     getPromptText: promptTextController.currentText,
     replacePromptText: promptTextController.setText,
     executeCommand: (command) => executeCommandCenterCommand(command),
@@ -643,6 +681,11 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleCommandCenterKey = commandCenterController.handleKey
   const selectCommandCenterFromSubmit = commandCenterController.selectFromSubmit
   const renderCommandCenter = commandCenterController.render
+  resyncWorkflowRegistrySuggestions = () => {
+    if (commandCenterOpen() && shouldRefreshWorkflowRegistrySuggestions(promptTextController.currentText())) {
+      syncCommandCenter(promptTextController.currentText())
+    }
+  }
   const {
     addPendingPromptAttachments,
     appendPromptEchoToSharedHistory,
@@ -1690,4 +1733,73 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderHotkeysOverlay={renderHotkeysOverlay}
     />
   )
+}
+
+function shouldRefreshWorkflowRegistrySuggestions(input: string): boolean {
+  const normalized = input.trimStart()
+  return normalized.startsWith("/workflow load ")
+    || normalized.startsWith("/workflow run ")
+    || normalized.startsWith("/workflow registry get ")
+    || normalized.startsWith("/workflow registry delete ")
+}
+
+function workflowRegistrySuggestionEntriesFromResponse(
+  response: Record<string, unknown>,
+): CommandCenterWorkflowRegistryEntry[] {
+  const payload = response.WorkflowRegistryListed
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return []
+  }
+  const entries = (payload as Record<string, unknown>).entries
+  if (!Array.isArray(entries)) {
+    return []
+  }
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return []
+    }
+    const record = entry as Record<string, unknown>
+    const name = stringField(record, "name")
+    const sourceScope = workflowRegistrySourceScope(record.source_scope)
+    const sourceKind = workflowRegistrySourceKind(record.source_kind)
+    if (!name || !sourceScope || !sourceKind) {
+      return []
+    }
+    const suggestion: CommandCenterWorkflowRegistryEntry = {
+      name,
+      sourceScope,
+      sourceKind,
+    }
+    const endpoints = stringArrayField(record, "endpoints")
+    const queues = stringArrayField(record, "queues")
+    if (endpoints) {
+      suggestion.endpoints = endpoints
+    }
+    if (queues) {
+      suggestion.queues = queues
+    }
+    return [suggestion]
+  })
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key]
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): readonly string[] | undefined {
+  const value = record[key]
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0)
+  return strings.length ? strings : undefined
+}
+
+function workflowRegistrySourceScope(value: unknown): CommandCenterWorkflowRegistryEntry["sourceScope"] | null {
+  return value === "workspace" || value === "user" || value === "builtin" ? value : null
+}
+
+function workflowRegistrySourceKind(value: unknown): CommandCenterWorkflowRegistryEntry["sourceKind"] | null {
+  return value === "single_file" || value === "source_directory" ? value : null
 }
