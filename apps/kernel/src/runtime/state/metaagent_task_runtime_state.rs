@@ -45,6 +45,16 @@ impl KernelRuntimeState {
             let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
             return Err(error);
         }
+        if let Err(error) = self
+            .reload_agent_provider_for_policy(session_id, agent_id, "meta mode activation")
+            .await
+        {
+            let _ = self
+                .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
+                .await;
+            let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+            return Err(error);
+        }
         let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
             sessions.start_or_update_metaagent_task(session_id, agent_id, task_prompt)
@@ -56,6 +66,13 @@ impl KernelRuntimeState {
                     .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                     .await;
                 let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+                let _ = self
+                    .reload_agent_provider_for_policy(
+                        session_id,
+                        agent_id,
+                        "meta mode activation rollback",
+                    )
+                    .await;
                 return Err(error);
             }
         };
@@ -71,11 +88,15 @@ impl KernelRuntimeState {
                 .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                 .await;
             let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+            let _ = self
+                .reload_agent_provider_for_policy(
+                    session_id,
+                    agent_id,
+                    "meta mode activation rollback",
+                )
+                .await;
             return Err(error);
         }
-        let _ = self
-            .reload_agent_provider_for_policy(session_id, agent_id, "meta mode activation")
-            .await?;
         Ok(self.project_metaagent_task_session(self.owned.session_store.get_session(session_id)?))
     }
 
