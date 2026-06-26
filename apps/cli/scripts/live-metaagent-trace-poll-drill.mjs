@@ -296,8 +296,24 @@ function traceItems(tool) {
 
 function traceItemContainsWorkerPhrase(item) {
   if (!item || item.kind === 'prompt_echo') return false
-  const text = [item.text, item.summary, item.excerpt].filter(Boolean).join('\n')
+  const text = [item.text, item.excerpt, item.summary].filter(Boolean).join('\n')
   return text.includes(TRACE_PHRASE)
+}
+
+function traceItemsContainWorkerPhrase(items) {
+  const chunksByMessage = new Map()
+  let allWorkerText = ''
+  for (const [index, item] of items.entries()) {
+    if (!item || item.kind === 'prompt_echo') continue
+    const text = String(item.text ?? item.excerpt ?? item.summary ?? '')
+    if (!text) continue
+    allWorkerText += text
+    const key = item.merge_key ? String(item.merge_key) : `trace-item:${index}`
+    chunksByMessage.set(key, `${chunksByMessage.get(key) ?? ''}${text}`)
+    if (text.includes(TRACE_PHRASE)) return true
+  }
+  if (allWorkerText.includes(TRACE_PHRASE)) return true
+  return [...chunksByMessage.values()].some((messageText) => messageText.includes(TRACE_PHRASE))
 }
 
 async function getSession(client, requests, sessionId) {
@@ -442,7 +458,8 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
       if (tool.tool.includes('wait_trace') || tool.tool.includes('poll_trace')) {
         if (options.supervisionMode === 'event-continuation' || options.supervisionMode === 'orphan-recovery') sawForbiddenTraceTool = true
         if (tool.tool.includes('wait_trace')) sawTraceWait = true
-        if (traceItems(tool).some(traceItemContainsWorkerPhrase)) sawTracePhrase = true
+        const items = traceItems(tool)
+        if (items.some(traceItemContainsWorkerPhrase) || traceItemsContainWorkerPhrase(items)) sawTracePhrase = true
       }
       if (tool.tool.includes('run_command') && tool.input?.command?.trim().startsWith('prompt ')) {
         sawWorkerPrompt = true
