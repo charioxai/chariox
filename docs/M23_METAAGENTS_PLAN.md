@@ -545,44 +545,30 @@ TUI drills:
 
 Web product drills:
 
-- create session with metaagent through web Freeform/product UI.
-- spawn metaagent through web side panel/product UI.
-- verify web terminal can run metaagent command flows.
-- verify web workflow canvas excludes metaagents from node agent lists.
-- verify agent status surfaces mark metaagents.
+- create a regular session through web Freeform/product UI.
+- activate Meta mode by submitting a leading `/meta <task>` prompt to a regular
+  agent.
+- verify web terminal can run Meta mode command flows.
+- verify web workflow canvas excludes agents currently in Meta mode from node
+  agent lists.
+- verify agent status surfaces mark agents currently in Meta mode.
 - verify regular agent turn completion injects inline event prompt into the
-  metaagent.
+  agent in Meta mode.
 - verify workflow output from any collaborator notifies the current user's
-  metaagent.
-- verify permission/popup resolution through product UI and metaagent path.
+  agent in Meta mode.
+- verify permission/popup resolution through product UI and Meta mode path.
 
 Current web product drill coverage:
 
-- `pnpm --filter @arroba-cloud/web run drill:metaagent:web:staging` uses the
-  hosted product frontend against an isolated local kernel connected through the
-  staging relay.
-- The drill creates a regular session through the waiting-room product UI,
-  activates the focused agent with a leading `/meta` prompt, verifies the
-  terminal Freeform pane/footer marks the focused agent as `meta`,
-  opens the side-panel spawn dialog, verifies the metaagent control, verifies
-  metaagent/slice mutual exclusion, and verifies duplicate metaagent spawn is
-  rejected through the product flow. It then spawns a regular agent through the
-  side-panel product UI and verifies the workflow canvas add dock lists the
-  regular agent while excluding the metaagent.
-- The same drill has an opt-in `ARROBA_METAAGENT_WEB_DRILL_EVENT_PROMPT=1` path
-  that submits a prompt to the regular agent through the web terminal product
-  prompt, deterministically completes the local dev-stub provider turn, and
-  verifies the metaagent pane renders the inline `agent.turn.completed` event
-  prompt. This is only a UI/event-rendering contract check, not evidence of
-  independent metaagent behavior. This path is kept opt-in because repeated
-  hosted staging runs can hit Cloud rate limits while polling the browser relay.
-- `pnpm --filter @arroba-cloud/web run drill:metaagent:web:local` runs the
-  same event-prompt validation against a local relay, local kernel, and local
-  product web frontend. It creates a regular session, activates the focused
-  agent with `/meta`, creates a worker agent through product UI, sends the
-  worker prompt through the product terminal
-  prompt, verifies the event through the metaagent runtime MCP event list, and
-  verifies the product pane renders the inline `agent.turn.completed` prompt.
+- Obsolete web drills that created permanent metaagents or used `dev-stub`
+  provider turns were removed. Web coverage should be rebuilt around the same
+  `/meta <task>` activation semantics as TUI/OSS drills.
+- Current web UI tests assert the Meta mode sidebar label, Meta mode task panel,
+  pane task strip, and workflow agent lists that exclude agents currently in
+  Meta mode.
+- Future web product drills should use real provider-backed agents for behavior
+  evidence. Deterministic UI rendering checks may use synthetic projections, but
+  must not be presented as evidence of independent Meta mode agent behavior.
 
 Remote/slice drills:
 
