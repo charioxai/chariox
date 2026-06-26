@@ -115,10 +115,10 @@ test("formatSplitPaneFooter prefers an override variant when idle", () => {
   )
 })
 
-test("formatSplitPaneFooter marks metaagents", () => {
+test("formatSplitPaneFooter marks Meta mode agents", () => {
   assert.equal(
     formatSplitPaneFooter({ ...primaryAgent, meta_mode: { activated_at_ms: 1 } }, null, null),
-    "Planner • meta",
+    "Planner • Meta mode",
   )
 })
 

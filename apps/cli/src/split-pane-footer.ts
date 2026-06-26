@@ -135,7 +135,7 @@ export function formatSplitPaneFooterParts(
       text: aliasLabel,
       tone: toneForAgent(aliasLabel),
     },
-    ...(agent.meta_mode ? [{ kind: "role" as const, text: "meta", tone: "accent" as const }] : []),
+    ...(agent.meta_mode ? [{ kind: "role" as const, text: "Meta mode", tone: "accent" as const }] : []),
     ...(slicePart ? [slicePart] : []),
   ]
 }
