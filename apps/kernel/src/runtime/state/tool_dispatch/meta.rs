@@ -11,23 +11,29 @@ use crate::transport::runtime_tools::{
     MetaWorkflowCodeExportArgs, MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs,
     MetaWorkflowCodePackageExportArgs, MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs,
     MetaWorkflowCodeRunArgs, MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeSourceExportDirArgs,
-    MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs, RuntimeToolResult,
-    META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL, META_EVENT_KINDS,
-    META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
-    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
-    META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
-    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
-    META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
-    META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
-    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL,
-    META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL, META_WORKFLOW_CODE_CREATE_TOOL,
-    META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL, META_WORKFLOW_CODE_IMPORT_TOOL,
-    META_WORKFLOW_CODE_LIST_TOOL, META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
-    META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL, META_WORKFLOW_CODE_READ_TOOL,
-    META_WORKFLOW_CODE_RUN_TOOL, META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL,
-    META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL, META_WORKFLOW_CODE_UPDATE_TOOL,
-    META_WORKFLOW_CODE_VALIDATE_TOOL,
+    MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs, MetaWorkflowRegistryAddArgs,
+    MetaWorkflowRegistryAddFromWorkflowArgs, MetaWorkflowRegistryDeleteArgs,
+    MetaWorkflowRegistryGetArgs, MetaWorkflowRegistryListArgs, MetaWorkflowRegistryLoadArgs,
+    MetaWorkflowRegistryRunArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
+    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
+    META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
+    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
+    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
+    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
+    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
+    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
+    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
+    META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL,
+    META_WORKFLOW_CODE_IMPORT_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
+    META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL, META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
+    META_WORKFLOW_CODE_READ_TOOL, META_WORKFLOW_CODE_RUN_TOOL,
+    META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL, META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
+    META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
+    META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL, META_WORKFLOW_REGISTRY_ADD_TOOL,
+    META_WORKFLOW_REGISTRY_DELETE_TOOL, META_WORKFLOW_REGISTRY_GET_TOOL,
+    META_WORKFLOW_REGISTRY_LIST_TOOL, META_WORKFLOW_REGISTRY_LOAD_TOOL,
+    META_WORKFLOW_REGISTRY_RUN_TOOL,
 };
 
 const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
@@ -583,6 +589,44 @@ impl KernelRuntimeState {
                     }),
                 })
             }
+            META_WORKFLOW_REGISTRY_LIST_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryListArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_list(session, agent, args).await
+            }
+            META_WORKFLOW_REGISTRY_GET_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryGetArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_get(session, agent, args).await
+            }
+            META_WORKFLOW_REGISTRY_ADD_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryAddArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_add(session, agent, args).await
+            }
+            META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL => {
+                let args =
+                    serde_json::from_value::<MetaWorkflowRegistryAddFromWorkflowArgs>(arguments)
+                        .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_add_from_workflow(session, agent, args)
+                    .await
+            }
+            META_WORKFLOW_REGISTRY_DELETE_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryDeleteArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_delete(session, agent, args)
+                    .await
+            }
+            META_WORKFLOW_REGISTRY_LOAD_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryLoadArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_load(session, agent, args).await
+            }
+            META_WORKFLOW_REGISTRY_RUN_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowRegistryRunArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_registry_run(session, agent, args).await
+            }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -917,6 +961,212 @@ impl KernelRuntimeState {
                     "source_sha256": &export.source_sha256,
                     "source_bytes": export.source_bytes,
                     "definition_sha256": &export.definition_sha256,
+                }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_list(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        _args: MetaWorkflowRegistryListArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ListWorkflowRegistry(
+                    crate::local::ListWorkflowRegistryRequest {
+                        session_id: session.id().to_string(),
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_get(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryGetArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::GetWorkflowRegistryEntry(
+                    crate::local::GetWorkflowRegistryEntryRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_add(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryAddArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::AddWorkflowRegistryEntry(
+                    crate::local::AddWorkflowRegistryEntryRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        scope: args.scope,
+                        source: args.source,
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowRegistryEntryAdded { entry } = &response {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_registry.added",
+                session,
+                agent,
+                serde_json::json!({ "entry": entry }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_add_from_workflow(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryAddFromWorkflowArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(
+                    crate::local::AddWorkflowRegistryEntryFromWorkflowRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        workflow_ref: args.workflow_ref,
+                        scope: args.scope,
+                        agent_mode: args.agent_mode,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowRegistryEntryAdded { entry } = &response {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_registry.added_from_workflow",
+                session,
+                agent,
+                serde_json::json!({ "entry": entry }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_delete(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryDeleteArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::DeleteWorkflowRegistryEntry(
+                    crate::local::DeleteWorkflowRegistryEntryRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        scope: args.scope,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowRegistryEntryDeleted { name, path } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_registry.deleted",
+                session,
+                agent,
+                serde_json::json!({ "name": name, "path": path }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_load(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryLoadArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::LoadWorkflowRegistryEntry(
+                    crate::local::LoadWorkflowRegistryEntryRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        provider_rebindings: args.provider_rebindings,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowRegistryEntryLoaded {
+            entry,
+            result,
+            ..
+        } = &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_registry.loaded",
+                session,
+                agent,
+                serde_json::json!({ "entry": entry, "apply": &result.apply }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_registry_run(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowRegistryRunArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::RunWorkflowRegistryEntry(
+                    crate::local::RunWorkflowRegistryEntryRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        provider_rebindings: args.provider_rebindings,
+                        endpoint: args.endpoint,
+                        queue_ref: args.queue,
+                        prompt: args.prompt.unwrap_or_default(),
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowRegistryEntryRun {
+            entry, result, ..
+        } = &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_registry.run",
+                session,
+                agent,
+                serde_json::json!({
+                    "entry": entry,
+                    "run": meta_workflow_code_run_audit_payload(result),
                 }),
             );
         }

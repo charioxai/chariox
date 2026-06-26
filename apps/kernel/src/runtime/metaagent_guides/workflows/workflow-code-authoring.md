@@ -151,6 +151,19 @@ Exported workflow-code packages include `source_sha256` and `definition_sha256`.
 
 Generated runtime ids are never authored in the script. The script provides stable handles; the apply/run result returns the generated `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids` maps keyed by those handles.
 
+## Registered Workflows
+
+Use the workflow registry when the user asks for a known reusable workflow, a standard topology, or a workflow that should be shared by name. Registry lookup order is workspace, then user, then builtin. Builtin entries include the canonical dynamic workflow patterns such as `prompt-chaining`, `routing`, `fan-out-synthesize`, `parallelization`, `adversarial-verification`, `generate-filter`, `tournament`, `loop-until-done`, `orchestrator-workers`, and `evaluator-optimizer`.
+
+Preferred registry flow:
+
+1. Call `arroba.meta.workflow_registry.list` or `arroba.meta.workflow_registry.get` to check whether a suitable workflow already exists.
+2. If it fits, call `arroba.meta.workflow_registry.load` to add it to the current session, or `arroba.meta.workflow_registry.run` to load and invoke it in one step. Use `provider_rebindings` when the registered workflow names a provider/model/account profile unavailable in this kernel.
+3. If no entry fits, author workflow-code, validate it, and either apply/run it directly or register it with `arroba.meta.workflow_registry.add` for reuse.
+4. Use `arroba.meta.workflow_registry.add_from_workflow` only after a live workflow is already correct and should become reusable. It exports portable generated-agent bindings by default; use `agent_mode: "existing_agents"` only for intentionally non-portable local workflows.
+
+Registry scripts are still generators. Every load/run creates a fresh workflow with fresh graph ids and generated agents unless the registered source intentionally uses authorized existing-agent refs. Do not author runtime ids in registry source.
+
 ## Small Routing Example
 
 This script creates a 1-2-1 workflow: a router fans out to two workers, both converge into a synthesizer, and the synthesizer can loop back to the router or produce final output.

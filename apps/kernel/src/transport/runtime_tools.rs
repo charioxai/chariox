@@ -127,6 +127,14 @@ pub const META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_ALIAS_TOOL: &str =
     "arroba.meta.workflow_code.source_export_dir";
 pub const META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL: &str =
     "arroba.meta.workflow_code.canvas_contract";
+pub const META_WORKFLOW_REGISTRY_LIST_TOOL: &str = "arroba.meta.workflow_registry.list";
+pub const META_WORKFLOW_REGISTRY_GET_TOOL: &str = "arroba.meta.workflow_registry.get";
+pub const META_WORKFLOW_REGISTRY_ADD_TOOL: &str = "arroba.meta.workflow_registry.add";
+pub const META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL: &str =
+    "arroba.meta.workflow_registry.add_from_workflow";
+pub const META_WORKFLOW_REGISTRY_DELETE_TOOL: &str = "arroba.meta.workflow_registry.delete";
+pub const META_WORKFLOW_REGISTRY_LOAD_TOOL: &str = "arroba.meta.workflow_registry.load";
+pub const META_WORKFLOW_REGISTRY_RUN_TOOL: &str = "arroba.meta.workflow_registry.run";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -640,6 +648,61 @@ pub struct MetaWorkflowCodeSourceExportDirArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MetaWorkflowCodeCanvasContractArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowRegistryListArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowRegistryGetArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowRegistryAddArgs {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    pub source: crate::workflow_code::WorkflowRegistrySourceInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowRegistryAddFromWorkflowArgs {
+    pub name: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowRegistryDeleteArgs {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowRegistryLoadArgs {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowRegistryRunArgs {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
@@ -1647,6 +1710,159 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_LIST_TOOL.to_string(),
+            description: "List reusable workflow registry entries visible to this session. Precedence is workspace, then user, then builtin.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_GET_TOOL.to_string(),
+            description: "Read metadata for one reusable workflow registry entry by name.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_ADD_TOOL.to_string(),
+            description: "Register a reusable workflow from workflow-code source. Use kind single_file with source, or kind source_directory with files containing workflow.js, schemas/*.json, and optional manifest.json.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name", "source"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["workspace", "user"]},
+                    "node_path": {"type": "string"},
+                    "source": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["kind", "source"],
+                                "properties": {
+                                    "kind": {"const": "single_file"},
+                                    "source": {"type": "string"},
+                                    "source_path": {"type": "string"}
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["kind", "files"],
+                                "properties": {
+                                    "kind": {"const": "source_directory"},
+                                    "files": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "required": ["path", "contents", "sha256"],
+                                            "properties": {
+                                                "path": {"type": "string"},
+                                                "contents": {"type": "string"},
+                                                "sha256": {"type": "string"}
+                                            },
+                                            "additionalProperties": false
+                                        }
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL.to_string(),
+            description: "Register a reusable workflow from an existing live workflow. Portable generated-agent source is used by default; existing agent refs are preserved only with agent_mode existing_agents.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name", "workflow_ref"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "workflow_ref": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["workspace", "user"]},
+                    "agent_mode": {"type": "string", "enum": ["portable_generated", "existing_agents"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_DELETE_TOOL.to_string(),
+            description: "Delete a user or workspace workflow registry entry. Builtin registry entries cannot be deleted.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["workspace", "user"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_LOAD_TOOL.to_string(),
+            description: "Load a registered workflow into the current session. This validates and applies the workflow-code, creating fresh workflow/node/edge ids and generated agents as needed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "provider_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "provider"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                                "effort": {"type": "string"},
+                                "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_REGISTRY_RUN_TOOL.to_string(),
+            description: "Load a registered workflow into the current session and invoke one endpoint. endpoint and queue are workflow-code handles from the registered source.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "endpoint": {"type": "string"},
+                    "queue": {"type": "string"},
+                    "provider_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "provider"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                                "effort": {"type": "string"},
+                                "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1859,6 +2075,42 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__arroba__arroba_meta_workflow_code_canvas_contract" => {
             Some(META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL)
         }
+        META_WORKFLOW_REGISTRY_LIST_TOOL
+        | "arroba_meta_workflow_registry_list"
+        | "mcp__arroba__meta_workflow_registry_list"
+        | "mcp__arroba__arroba_meta_workflow_registry_list" => {
+            Some(META_WORKFLOW_REGISTRY_LIST_TOOL)
+        }
+        META_WORKFLOW_REGISTRY_GET_TOOL
+        | "arroba_meta_workflow_registry_get"
+        | "mcp__arroba__meta_workflow_registry_get"
+        | "mcp__arroba__arroba_meta_workflow_registry_get" => Some(META_WORKFLOW_REGISTRY_GET_TOOL),
+        META_WORKFLOW_REGISTRY_ADD_TOOL
+        | "arroba_meta_workflow_registry_add"
+        | "mcp__arroba__meta_workflow_registry_add"
+        | "mcp__arroba__arroba_meta_workflow_registry_add" => Some(META_WORKFLOW_REGISTRY_ADD_TOOL),
+        META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL
+        | "arroba_meta_workflow_registry_add_from_workflow"
+        | "mcp__arroba__meta_workflow_registry_add_from_workflow"
+        | "mcp__arroba__arroba_meta_workflow_registry_add_from_workflow" => {
+            Some(META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL)
+        }
+        META_WORKFLOW_REGISTRY_DELETE_TOOL
+        | "arroba_meta_workflow_registry_delete"
+        | "mcp__arroba__meta_workflow_registry_delete"
+        | "mcp__arroba__arroba_meta_workflow_registry_delete" => {
+            Some(META_WORKFLOW_REGISTRY_DELETE_TOOL)
+        }
+        META_WORKFLOW_REGISTRY_LOAD_TOOL
+        | "arroba_meta_workflow_registry_load"
+        | "mcp__arroba__meta_workflow_registry_load"
+        | "mcp__arroba__arroba_meta_workflow_registry_load" => {
+            Some(META_WORKFLOW_REGISTRY_LOAD_TOOL)
+        }
+        META_WORKFLOW_REGISTRY_RUN_TOOL
+        | "arroba_meta_workflow_registry_run"
+        | "mcp__arroba__meta_workflow_registry_run"
+        | "mcp__arroba__arroba_meta_workflow_registry_run" => Some(META_WORKFLOW_REGISTRY_RUN_TOOL),
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"

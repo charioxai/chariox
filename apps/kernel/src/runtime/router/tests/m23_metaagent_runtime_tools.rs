@@ -159,6 +159,22 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             "metaagents should see workflow-code runtime MCP tool `{workflow_code_tool}`"
         );
     }
+    for workflow_registry_tool in [
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_LIST_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_GET_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_ADD_FROM_WORKFLOW_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_DELETE_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_LOAD_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_REGISTRY_RUN_TOOL,
+    ] {
+        assert!(
+            meta_specs
+                .iter()
+                .any(|spec| spec.name == workflow_registry_tool),
+            "metaagents should see workflow registry runtime MCP tool `{workflow_registry_tool}`"
+        );
+    }
     assert!(
         meta_specs
             .iter()
