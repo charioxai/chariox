@@ -38,21 +38,46 @@ impl KernelRuntimeState {
         self.owned
             .agent_store
             .activate_agent_meta_mode(agent_id, None)?;
-        let session = {
+        if let Err(error) = self
+            .sync_remote_leased_agent_meta_mode(session_id, agent_id, true)
+            .await
+        {
+            let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+            return Err(error);
+        }
+        let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
             let session =
                 sessions.start_metaagent_task_if_needed(session_id, agent_id, task_prompt)?;
-            match session {
+            Ok::<_, DaemonError>(match session {
                 Some(session) => session,
                 None => sessions.get_session(session_id)?,
+            })
+        })();
+        let session = match session_result {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = self
+                    .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
+                    .await;
+                let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+                return Err(error);
             }
         };
         let task_id = session
             .metaagent_task(agent_id)
             .map(|task| task.task_id().to_string());
-        self.owned
+        if let Err(error) = self
+            .owned
             .agent_store
-            .activate_agent_meta_mode(agent_id, task_id)?;
+            .activate_agent_meta_mode(agent_id, task_id)
+        {
+            let _ = self
+                .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
+                .await;
+            let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
+            return Err(error);
+        }
         let _ = self
             .reload_agent_provider_for_policy(session_id, agent_id, "meta mode activation")
             .await?;
@@ -69,6 +94,8 @@ impl KernelRuntimeState {
         if agent.session_id() != session_id || !agent.is_metaagent() {
             return Ok(self.owned.session_store.get_session(session_id)?);
         }
+        self.sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
+            .await?;
         self.owned
             .agent_store
             .deactivate_agent_meta_mode(agent_id)?;
@@ -144,6 +171,62 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(())
+    }
+
+    async fn sync_remote_leased_agent_meta_mode(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active: bool,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "sync remote leased agent meta mode",
+                message: format!("agent `{agent_id}` is not in session `{session_id}`"),
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                &config,
+                arroba_relay::protocol::ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentMetaMode {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    active,
+                },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(
+                crate::transport::relay_peer::RelayPeerResponse::LeasedAgentMetaModeUpdated {
+                    ..
+                },
+            )) => Ok(()),
+            Ok(Ok(other)) => Err(DaemonError::LocalTransport {
+                operation: "sync remote leased agent meta mode",
+                message: format!("unexpected remote meta mode response: {other:?}"),
+            }),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(DaemonError::LocalTransport {
+                operation: "sync remote leased agent meta mode",
+                message: "timed out waiting for remote worker meta mode update".to_string(),
+            }),
+        }
     }
 
     pub(crate) fn start_metaagent_task_for_prompt(

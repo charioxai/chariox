@@ -203,6 +203,18 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn update_relay_leased_agent_meta_mode(
+        &self,
+        leased_agent_id: &str,
+        active: bool,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).update_leased_agent_meta_mode(&leased_agent_id, active)
+        })
+        .await
+    }
+
     pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
         &self,
         leased_agent_id: &str,

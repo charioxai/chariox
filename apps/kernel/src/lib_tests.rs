@@ -199,7 +199,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 3);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 4);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")

@@ -129,33 +129,41 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
         config_worker.host_machine_id
     );
 
-    let remote_metaagent = {
-        let mut app = app_home.lock().await;
-        crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(
-                CreateAgentRequest::new(&session_id, &provider)
-                    .with_alias("remote-meta")
-                    .with_model("default")
-                    .with_effort("medium")
-                    .with_role(crate::agent::AgentRole::Meta)
-                    .with_kernel(&config_worker.daemon_id),
-            )
-            .expect("remote metaagent should spawn")
-    };
-    assert!(remote_metaagent.is_metaagent());
-    let remote_meta_execution = remote_metaagent
-        .remote_execution()
-        .cloned()
-        .expect("remote meta binding should be present");
-    assert_eq!(
-        remote_meta_execution.worker_kernel_id,
-        config_worker.daemon_id
-    );
-
     {
         let mut app = app_worker.lock().await;
-        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 2);
-        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 2);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+        let worker_agents = app.agents().list_agents();
+        assert_eq!(
+            worker_agents
+                .iter()
+                .filter(|agent| agent.is_metaagent())
+                .count(),
+            0,
+            "remote agents start regular until /meta activates temporary meta mode"
+        );
+    }
+
+    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+        &config_home,
+        ClientTarget {
+            daemon_id: Some(config_worker.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::UpdateLeasedAgentMetaMode {
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            active: true,
+        },
+    )
+    .await
+    .expect("remote meta mode activation should be sent");
+    assert!(matches!(
+        response,
+        RelayPeerResponse::LeasedAgentMetaModeUpdated { .. }
+    ));
+
+    {
+        let app = app_worker.lock().await;
         let worker_agents = app.agents().list_agents();
         assert_eq!(
             worker_agents
@@ -163,16 +171,43 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
                 .filter(|agent| agent.is_metaagent())
                 .count(),
             1,
-            "only the remote metaagent should project a meta backing agent"
+            "remote meta mode update should activate the backing agent"
+        );
+    }
+
+    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+        &config_home,
+        ClientTarget {
+            daemon_id: Some(config_worker.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::UpdateLeasedAgentMetaMode {
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            active: false,
+        },
+    )
+    .await
+    .expect("remote meta mode deactivation should be sent");
+    assert!(matches!(
+        response,
+        RelayPeerResponse::LeasedAgentMetaModeUpdated { .. }
+    ));
+
+    {
+        let app = app_worker.lock().await;
+        let worker_agents = app.agents().list_agents();
+        assert_eq!(
+            worker_agents
+                .iter()
+                .filter(|agent| agent.is_metaagent())
+                .count(),
+            0,
+            "remote meta mode deactivation should restore the backing agent"
         );
     }
 
     {
         let mut app = app_home.lock().await;
-        let destroyed_meta = crate::app::KernelSessionService::new(&mut app)
-            .destroy_agent(remote_metaagent.id())
-            .expect("remote metaagent should destroy");
-        assert_eq!(destroyed_meta.id(), remote_metaagent.id());
         let destroyed = crate::app::KernelSessionService::new(&mut app)
             .destroy_agent(remote_agent.id())
             .expect("remote agent should destroy");

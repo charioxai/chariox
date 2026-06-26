@@ -128,6 +128,16 @@ pub(crate) async fn update_relay_leased_agent_config(
         .await
 }
 
+pub(crate) async fn update_relay_leased_agent_meta_mode(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    active: bool,
+) -> Result<LeasedAgent, DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_meta_mode(leased_agent_id, active)
+        .await
+}
+
 pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,

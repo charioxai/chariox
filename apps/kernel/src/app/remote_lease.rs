@@ -397,6 +397,54 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(updated.clone())
     }
 
+    pub(crate) fn update_leased_agent_meta_mode(
+        &mut self,
+        leased_agent_id: &str,
+        active: bool,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some()
+            || backing_agent.is_processing()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update leased agent meta mode",
+                message: format!(
+                    "leased agent `{leased_agent_id}` has an active turn; update meta mode after it finishes"
+                ),
+            });
+        }
+
+        let changed = backing_agent.is_metaagent() != active;
+        if changed {
+            if active {
+                self.app
+                    .agents_mut()
+                    .activate_agent_meta_mode(&leased_agent.backing_agent_id, None)?;
+            } else {
+                self.app
+                    .agents_mut()
+                    .deactivate_agent_meta_mode(&leased_agent.backing_agent_id)?;
+            }
+            self.terminate_backing_provider_runtime(&leased_agent);
+        }
+
+        Ok(leased_agent)
+    }
+
     pub(crate) fn update_leased_agent_remote_extension_manifest(
         &mut self,
         leased_agent_id: &str,
@@ -421,6 +469,36 @@ impl<'a> RemoteLeaseRuntime<'a> {
             self.app.update_provider_run_projection(updated);
         }
         Ok(())
+    }
+
+    fn terminate_backing_provider_runtime(&mut self, leased_agent: &LeasedAgent) {
+        let Some(run) = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        ) else {
+            return;
+        };
+        match run.state() {
+            ProviderRunState::Starting | ProviderRunState::Running | ProviderRunState::Parked => {
+                let run_id = run.id().to_string();
+                let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                    .remove_run(&run_id);
+                if let Ok(outcome) = self
+                    .app
+                    .providers
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    let _ = self
+                        .app
+                        .sessions
+                        .set_active_provider_run(outcome.run().session_id(), None);
+                    self.app.update_provider_run_projection(outcome.into_run());
+                }
+            }
+            ProviderRunState::Ended => {
+                self.app.providers.clear_runtime(run.id());
+            }
+        }
     }
 
     #[cfg(test)]

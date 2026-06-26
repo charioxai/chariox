@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutco
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 3;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -237,6 +237,10 @@ pub enum RelayPeerRequest {
         execution_mode: crate::provider::AgentExecutionMode,
         permission_level: crate::provider::AgentPermissionLevel,
     },
+    UpdateLeasedAgentMetaMode {
+        leased_agent_id: String,
+        active: bool,
+    },
     UpdateLeasedAgentRemoteExtensionManifest {
         leased_agent_id: String,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
@@ -404,6 +408,9 @@ pub enum RelayPeerResponse {
         leased_agent_id: String,
     },
     LeasedAgentConfigUpdated {
+        leased_agent: LeasedAgent,
+    },
+    LeasedAgentMetaModeUpdated {
         leased_agent: LeasedAgent,
     },
     LeasedAgentRemoteExtensionManifestUpdated {
