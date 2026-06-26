@@ -423,12 +423,14 @@ async function observeUntilComplete({
       })
     }
 
-    const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
-    finalEvents = eventsPayload.events ?? []
-    for (const event of finalEvents) {
-      if (seenEvents.has(event.event_id)) continue
-      seenEvents.add(event.event_id)
-      log('metaagent-event', summarizeEvent(event))
+    if (metaagent?.meta_mode) {
+      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
+      finalEvents = eventsPayload.events ?? []
+      for (const event of finalEvents) {
+        if (seenEvents.has(event.event_id)) continue
+        seenEvents.add(event.event_id)
+        log('metaagent-event', summarizeEvent(event))
+      }
     }
 
     const changedFiles = await gitChangedFiles(workspace)

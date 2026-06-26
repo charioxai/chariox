@@ -400,6 +400,7 @@ function createObserver({ client, requests, sessionId, metaagentId, workspace, h
   let lastTaskKey = null
   let lastWorkerKey = null
   let lastDiffKey = null
+  let cachedEvents = []
 
   return {
     async sample() {
@@ -458,12 +459,14 @@ function createObserver({ client, requests, sessionId, metaagentId, workspace, h
         })
       }
 
-      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
-      const events = eventsPayload.events ?? []
-      for (const event of events) {
-        if (seenEvents.has(event.event_id)) continue
-        seenEvents.add(event.event_id)
-        log('metaagent-event', summarizeEvent(event))
+      if (metaagent?.meta_mode) {
+        const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
+        cachedEvents = eventsPayload.events ?? []
+        for (const event of cachedEvents) {
+          if (seenEvents.has(event.event_id)) continue
+          seenEvents.add(event.event_id)
+          log('metaagent-event', summarizeEvent(event))
+        }
       }
 
       const changedFiles = await gitChangedFiles(workspace)
@@ -479,7 +482,7 @@ function createObserver({ client, requests, sessionId, metaagentId, workspace, h
         metaagent,
         workers,
         workerIds,
-        events,
+        events: cachedEvents,
         changedFiles,
         historyToolCount: seenHistoryTools.size,
         workerHistoryToolEvidenceCount: workerHistoryToolEvidence.size,
