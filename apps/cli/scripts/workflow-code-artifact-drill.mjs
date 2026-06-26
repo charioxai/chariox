@@ -2108,7 +2108,7 @@ async function main() {
   const topologyLiveExports = JSON.parse(await readFile(path.join(options.bundle, 'topology-live-exports.json'), 'utf8'))
   const metadata = JSON.parse(await readFile(path.join(options.bundle, 'metadata.json'), 'utf8'))
   const kernel = await startKernel(options.repo, options.bundle, options.timeoutMs, ipcModule.LocalIpcClient, requests)
-  let sessionId = null
+  const sessionIds = []
   let installedSkill = false
   try {
     const session = unwrap(
@@ -2119,7 +2119,7 @@ async function main() {
       ),
       'SessionCreated',
     ).session
-    sessionId = session.id
+    sessionIds.push(session.id)
     const skillRoot = path.join(options.bundle, 'skill')
     const skillDirs = await readdir(skillRoot)
     const skillSourceDir = path.join(skillRoot, skillDirs[0])
@@ -2170,12 +2170,26 @@ async function main() {
     const inline = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, inlineSource, 'Hetzner inline source')
     await writeSourceDirectoryExport(kernel.workspace, directorySource, 'Hetzner source directory')
     const directory = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, directorySource, 'Hetzner source directory')
+    await send(kernel.client, requests.endSessionRequest(session.id), 'end package/source validation session', 10_000)
+    const endedSessionIndex = sessionIds.indexOf(session.id)
+    if (endedSessionIndex !== -1) {
+      sessionIds.splice(endedSessionIndex, 1)
+    }
+    const topologySession = unwrap(
+      await send(
+        kernel.client,
+        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-hetzner-topology-suite', undefined, null, 'off'),
+        'create topology validation session',
+      ),
+      'SessionCreated',
+    ).session
+    sessionIds.push(topologySession.id)
     const topologySourceRuns = []
     for (const liveExport of topologyLiveExports ?? []) {
       const inlineTopology = await validateTopologySourceExportOnKernel(
         kernel.client,
         requests,
-        session,
+        topologySession,
         nodePath,
         kernel.workspace,
         { ...liveExport.inlineSource, source_workflow_id: liveExport.sourceWorkflowId },
@@ -2186,7 +2200,7 @@ async function main() {
       const directoryTopology = await validateTopologySourceExportOnKernel(
         kernel.client,
         requests,
-        session,
+        topologySession,
         nodePath,
         kernel.workspace,
         { ...liveExport.directorySource, source_workflow_id: liveExport.sourceWorkflowId },
@@ -2203,7 +2217,8 @@ async function main() {
     }
     console.log(JSON.stringify({
       kernelUrl: kernel.kernelUrl,
-      sessionId: session.id,
+      packageSourceSessionId: session.id,
+      topologySessionId: topologySession.id,
       packageImportedArtifact: importedName,
       packageApplyWorkflowId: packageApply.workflow_id,
       packageRunWorkflowId: packageRunApply.workflow_id,
@@ -2215,7 +2230,7 @@ async function main() {
     printKernelLogTail(kernel)
     throw error
   } finally {
-    if (sessionId) {
+    for (const sessionId of sessionIds) {
       if (installedSkill) {
         await send(
           kernel.client,
@@ -2223,6 +2238,7 @@ async function main() {
           'uninstall bundled drill skill',
           10_000,
         ).catch(() => {})
+        installedSkill = false
       }
       await send(kernel.client, requests.endSessionRequest(sessionId), 'end validation session', 10_000).catch(() => {})
     }
