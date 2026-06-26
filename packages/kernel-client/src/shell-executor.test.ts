@@ -841,7 +841,7 @@ test("executeShellCommand rejects deprecated metaagent spawns before slice handl
   assert.equal(fake.requests.length, 0)
 })
 
-test("executeShellCommand marks metaagents in agent lists", async () => {
+test("executeShellCommand marks agents in Meta mode in agent lists", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
     worktree: "/repo",
@@ -870,7 +870,7 @@ test("executeShellCommand marks metaagents in agent lists", async () => {
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /agent-meta \(meta\) \[meta\] \[/)
+  assert.match(result.message ?? "", /agent-meta \(meta\) \[Meta mode\] \[/)
   assert.equal(fake.requests.length, 1)
 })
 

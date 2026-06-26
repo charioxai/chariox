@@ -8,6 +8,13 @@ test("formatAgentLabel includes alias when present", () => {
   assert.equal(formatAgentLabel(agent({ alias: "Builder" })), "agent-a (Builder)")
 })
 
+test("formatAgentLabel marks agents in Meta mode", () => {
+  assert.equal(
+    formatAgentLabel(agent({ alias: "Planner", meta_mode: { activated_at_ms: 1 } })),
+    "agent-a (Planner) [Meta mode]",
+  )
+})
+
 test("formatAgentLabel falls back to an empty label without an agent", () => {
   assert.equal(formatAgentLabel(null), "")
 })

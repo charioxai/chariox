@@ -33,7 +33,7 @@ export type ShellAgentSessionContext = {
 
 export function formatAgentRef(agent: AgentInstance): string {
   const meta = Boolean(agent.meta_mode)
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${meta ? " [meta]" : ""}`
+  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${meta ? " [Meta mode]" : ""}`
 }
 
 export function formatAgentListSummary(
@@ -84,7 +84,7 @@ function formatAgentListEntry(
     formatAgentListRemoteExtensionSync(agent),
   ].filter(Boolean)
   const meta = Boolean(agent.meta_mode)
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${meta ? " [meta]" : ""} [${parts.join("; ")}]`
+  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${meta ? " [Meta mode]" : ""} [${parts.join("; ")}]`
 }
 
 function formatAgentListSliceAuth(slice: SliceRecord | null): string | null {
