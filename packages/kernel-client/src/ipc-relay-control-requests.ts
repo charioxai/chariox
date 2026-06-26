@@ -82,6 +82,22 @@ export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, cli
   }
 }
 
+export function resolveKernelClientConnectionRequest(input: {
+  kernelRef: string
+  machineRef?: string | null
+  clientId?: string | null
+  sessionId?: string | null
+}) {
+  return {
+    ResolveKernelClientConnection: {
+      kernel_ref: input.kernelRef,
+      machine_ref: input.machineRef ?? null,
+      client_id: input.clientId ?? null,
+      session_id: input.sessionId ?? null,
+    },
+  }
+}
+
 export function createCloudSessionInviteRequest(
   sessionId: string,
   options: {

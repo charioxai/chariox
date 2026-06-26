@@ -63,6 +63,7 @@ export type WaitingRoomActivationControllerDeps = {
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   updateSlices?: (slice: SliceRecord) => void
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   attachBinding: (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
@@ -225,6 +226,7 @@ export function createWaitingRoomActivationController(
   }
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
+    await deps.prepareSessionOwnerClient?.(launch)
     const sliceRef = await prepareSliceForLaunch(launch)
     const session = await deps.createSession(
       deps.getWorkspaceTarget(),
@@ -267,7 +269,7 @@ export function createWaitingRoomActivationController(
       workspaceId: workspacePath,
       worktreeId: worktreePath,
       workspaceMount: worktreePath,
-      ...(launch.kernelRef && launch.kernelRef !== "local" ? { workerKernelRef: launch.kernelRef } : {}),
+      ...(launch.workerKernelRef && launch.workerKernelRef !== "local" ? { workerKernelRef: launch.workerKernelRef } : {}),
     })
     deps.updateSlices?.(slice)
     const started = await deps.startSlice(slice.id)

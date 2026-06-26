@@ -95,3 +95,65 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     );
     assert!(kernels[0].accepting_remote_leases);
 }
+
+#[test]
+fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventory() {
+    let mut config = DaemonConfig::for_tests();
+    let host_machine_id = config.host_machine_id.clone();
+    config.relay_url = Some("ws://relay.local".to_string());
+    config.relay_token = Some("shared-token".to_string());
+    let harness = LocalRouterTestHarness::with_config(config);
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::provider_requests::remote_machine_records(
+                vec![RelayMachinePresence {
+                    machine_id: "machine-1".to_string(),
+                    machine_alias: Some("workstation".to_string()),
+                    kernel_count: 1,
+                    available_providers: vec!["opencode".to_string()],
+                    provider_accounts: vec![],
+                }],
+                &host_machine_id,
+            ),
+            vec![RelayKernelPresence {
+                kernel_id: "daemon-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
+                relay_alias: Some("builder-kernel".to_string()),
+                kernel_alias: Some("default".to_string()),
+                available_providers: vec!["opencode".to_string()],
+                provider_accounts: vec![],
+                capabilities: vec!["kernel_ws".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "public-key".to_string(),
+            }],
+        );
+    });
+
+    let connection = match harness
+        .dispatch(LocalDaemonRequest::ResolveKernelClientConnection(
+            ResolveKernelClientConnectionRequest {
+                kernel_ref: "daemon-1".to_string(),
+                machine_ref: Some("machine-1".to_string()),
+                client_id: Some("cli-1".to_string()),
+                session_id: None,
+            },
+        ))
+        .expect("kernel client connection resolve should succeed")
+    {
+        LocalDaemonResponse::KernelClientConnectionResolved { connection } => connection,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(connection.relay_url, "ws://relay.local");
+    assert_eq!(connection.relay_token, "shared-token");
+    assert_eq!(connection.target_daemon_id.as_deref(), Some("daemon-1"));
+    assert_eq!(
+        connection.target_daemon_alias.as_deref(),
+        Some("builder-kernel")
+    );
+    assert_eq!(connection.machine_id.as_deref(), Some("machine-1"));
+    assert_eq!(connection.kernel_id.as_deref(), Some("daemon-1"));
+    assert_eq!(connection.token_expires_at, None);
+}

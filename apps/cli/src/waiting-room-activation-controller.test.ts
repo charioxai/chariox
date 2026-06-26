@@ -95,6 +95,30 @@ test("waiting room activation creates and attaches sessions with launch defaults
   ])
 })
 
+test("waiting room activation prepares a selected remote owner before creating the session", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "high",
+    ownerMachineRef: "machine-1",
+    ownerKernelRef: "kernel-1",
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch },
+    prepareSessionOwnerClient: async () => {},
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.calls.slice(0, 3), [
+    "prepareSessionOwnerClient:kernel-1",
+    "createSession",
+    "attachBinding",
+  ])
+  assert.equal(harness.createdLaunches[0]?.launch.workerKernelRef ?? null, null)
+})
+
 test("waiting room activation creates and starts new headed slices before session creation", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -296,6 +320,7 @@ function createHarness(options: {
   sessionOverrides?: Partial<RuntimeSession>
   importSession?: RuntimeSession
   loadOlderExternalProviderSessions?: () => Promise<number>
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -386,6 +411,14 @@ function createHarness(options: {
     updateSlices: (slice) => {
       calls.push(`updateSlice:${slice.id}`)
     },
+    ...(options.prepareSessionOwnerClient
+      ? {
+        prepareSessionOwnerClient: async (launch: WaitingRoomLaunchConfig) => {
+          calls.push(`prepareSessionOwnerClient:${launch.ownerKernelRef ?? "local"}`)
+          await options.prepareSessionOwnerClient?.(launch)
+        },
+      }
+      : {}),
     attachBinding: async (session, createdSession, launch) => {
       calls.push("attachBinding")
       attachedSessions.push({ sessionId: session.id, createdSession, launch })

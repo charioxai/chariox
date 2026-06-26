@@ -74,7 +74,7 @@ export function waitingRoomLaunchPlacement(
   return {
     machineRef,
     kernelRef,
-    workerKernelRef: kernelRef && kernelRef !== "local" ? kernelRef : null,
+    workerKernelRef: null,
   }
 }
 

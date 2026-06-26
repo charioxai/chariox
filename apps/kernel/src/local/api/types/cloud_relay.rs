@@ -65,6 +65,33 @@ pub struct IssueCloudRelayClientTokenRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveKernelClientConnectionRequest {
+    pub kernel_ref: String,
+    #[serde(default)]
+    pub machine_ref: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelClientConnection {
+    pub relay_url: String,
+    pub relay_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_daemon_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_daemon_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateCloudSessionInviteRequest {
     pub session_id: String,
     #[serde(default)]

@@ -187,7 +187,7 @@ test("waiting room renders indented sections and only previews the last two acti
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 12)
+  state = moveWaitingRoomFocus(state, sessions, 11)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "launch-machine")
@@ -382,7 +382,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 14, remote)
+  state = moveWaitingRoomFocus(state, [], 13, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
@@ -424,7 +424,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 13, remote)
+  state = moveWaitingRoomFocus(state, [], 12, remote)
   assert.equal(state.focus, "machine")
   let rows = waitingRoomRows(state, [], catalog, remote)
   const machineRow = rows.find((row) => row.id === "machine:machine-offline")
@@ -435,7 +435,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
   assert.equal(state.focus, "remote-kernel")
   rows = waitingRoomRows(state, [], catalog, remote)
   const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-inactive")
-  assert.equal(kernelRow?.value, "blocked opencode · next: run /machine kernels offline-builder; enable remote leases on inactive-kernel or choose another worker")
+  assert.equal(kernelRow?.value, "blocked opencode · next: run /machine kernels offline-builder; enable remote access on inactive-kernel or choose another kernel")
   assert.equal(kernelRow?.selectable, true)
   assert.equal(kernelRow?.focused, true)
 })

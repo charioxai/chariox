@@ -33,6 +33,7 @@ import type {
   TerminalPairingLinkView,
   TerminalView,
 } from "./relay-api.js"
+import { createMutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
@@ -70,7 +71,8 @@ export function createCliAppState(options: {
   bootstrap: BootstrapState
   cwd: string
 }) {
-  const { client, options: cliOptions } = options.bootstrap
+  const { options: cliOptions } = options.bootstrap
+  const client = createMutableLocalIpcClient(options.bootstrap.client)
   const supportsKernelEventStream = client.supportsKernelEvents()
   const launchedDetached = Boolean(cliOptions.detached && !options.bootstrap.binding)
   const initialBinding = options.bootstrap.binding

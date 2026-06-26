@@ -74,6 +74,8 @@ test("waiting room activation stages existing worktree selections for session cr
         provider: "opencode",
         model: "opencode/gpt-5.4",
         effort: "high",
+        ownerMachineRef: "local",
+        ownerKernelRef: "local",
         workspaceLiveSyncMode: "off",
       },
     })
@@ -151,6 +153,65 @@ test("waiting room activation stages create-worktree selections for session crea
       }),
       "/workspace-created",
     )
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+test("waiting room remote kernel selection creates a remote owner launch without worker placement", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [{
+      id: "existing:/workspace",
+      kind: "existing",
+      label: "main",
+      path: "/workspace",
+      branch: "main",
+      isCurrent: true,
+    }],
+  })
+  const catalog = fallbackProviderCatalog()
+  try {
+    const decision = deriveWaitingRoomActivationDecision({
+      state: waitingRoomState({
+        selectedMachineRef: "machine-1",
+        selectedKernelRef: "kernel-1",
+      }),
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+      remote: {
+        machines: [{
+          machine_id: "machine-1",
+          machine_alias: "builder",
+          display_name: "builder",
+          trust_status: "approved",
+          online: true,
+          pending: false,
+          kernel_count: 1,
+          available_providers: ["opencode"],
+        }],
+        kernels: [{
+          kernel_id: "kernel-1",
+          machine_id: "machine-1",
+          relay_alias: "builder-kernel",
+          available_providers: ["opencode"],
+          accepting_remote_leases: true,
+          leased_agent_count: 0,
+          local_session_count: 0,
+        }],
+      },
+    })
+
+    assert.equal(decision.action, "create")
+    if (decision.action === "create") {
+      assert.equal(decision.launch.ownerMachineRef, "machine-1")
+      assert.equal(decision.launch.ownerKernelRef, "kernel-1")
+      assert.equal(decision.launch.workerKernelRef ?? null, null)
+      assert.equal(decision.launch.kernelRef ?? null, null)
+    }
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
@@ -297,6 +358,8 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
       provider: "opencode",
       model: "opencode/gpt-5.4",
       effort: "high",
+      ownerMachineRef: "local",
+      ownerKernelRef: "local",
       workspaceLiveSyncMode: "off",
     },
   })

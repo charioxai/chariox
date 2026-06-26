@@ -417,6 +417,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PairCloudRelayMachine(_) => "cloud_relay.machine.pair",
         LocalDaemonRequest::ConnectCloudRelay(_) => "cloud_relay.connect",
         LocalDaemonRequest::IssueCloudRelayClientToken(_) => "cloud_relay.client_token.issue",
+        LocalDaemonRequest::ResolveKernelClientConnection(_) => "kernel.client_connection.resolve",
         LocalDaemonRequest::CreateCloudSessionInvite(_) => "cloud_session.invite.create",
         LocalDaemonRequest::ShowCloudSessionInvite(_) => "cloud_session.invite.show",
         LocalDaemonRequest::AcceptCloudSessionInvite(_) => "cloud_session.invite.accept",

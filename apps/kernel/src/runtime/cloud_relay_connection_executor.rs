@@ -4,8 +4,9 @@ use tokio::sync::RwLock;
 
 use crate::error::DaemonError;
 use crate::local::{
-    CloudRelayRuntimeToken, ConnectCloudRelayRequest, IssueCloudRelayClientTokenRequest,
-    LocalDaemonResponse,
+    CloudRelayProfile, CloudRelayRuntimeToken, ConnectCloudRelayRequest,
+    IssueCloudRelayClientTokenRequest, KernelClientConnection, LocalDaemonResponse,
+    ResolveKernelClientConnectionRequest,
 };
 use crate::runtime::cloud_api_client::{
     cloud_profile_from_persisted, issue_cloud_runtime_token, post_cloud_json,
@@ -18,7 +19,10 @@ use crate::runtime::cloud_relay_control::{
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
 };
-use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use crate::runtime::projection::{
+    DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
+    RemoteRelayInventoryProjectionStore,
+};
 use crate::runtime::remote_relay_inventory::projected_relay_status;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
@@ -133,6 +137,71 @@ pub(crate) async fn execute_issue_cloud_relay_client_token_request(
     config_projection: &DaemonConfigProjectionStore,
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let (profile, token) =
+        issue_cloud_relay_client_token(runtime_state, config_projection, request).await?;
+    Ok(LocalDaemonResponse::CloudRelayClientTokenIssued { profile, token })
+}
+
+pub(crate) async fn execute_resolve_kernel_client_connection_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
+    request: ResolveKernelClientConnectionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let kernel = resolve_relay_kernel_presence(remote_relay_inventory_projection, &request)?;
+    let target_daemon_alias = relay_kernel_target_alias(&kernel);
+    let config = config_projection.snapshot();
+    let connection = if config.cloud_relay.is_some() {
+        let client_id = request
+            .client_id
+            .clone()
+            .unwrap_or_else(|| format!("arroba-cli-{}", std::process::id()));
+        let (_, token) = issue_cloud_relay_client_token(
+            runtime_state,
+            config_projection,
+            IssueCloudRelayClientTokenRequest {
+                target_daemon_alias: target_daemon_alias.clone(),
+                client_id,
+                session_id: request.session_id.clone(),
+            },
+        )
+        .await?;
+        KernelClientConnection {
+            relay_url: token.relay_url,
+            relay_token: token.relay_token,
+            target_daemon_id: Some(kernel.kernel_id.clone()),
+            target_daemon_alias: Some(target_daemon_alias),
+            token_expires_at: Some(token.token_expires_at),
+            machine_id: Some(kernel.machine_id.clone()),
+            kernel_id: Some(kernel.kernel_id.clone()),
+        }
+    } else {
+        let relay_url = config.relay_url.clone().ok_or_else(|| DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: "relay is not configured; connect the kernel to a relay before selecting another peer as session owner".to_string(),
+        })?;
+        let relay_token = config.relay_token.clone().ok_or_else(|| DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: "relay token is not configured; connect the kernel to a relay before selecting another peer as session owner".to_string(),
+        })?;
+        KernelClientConnection {
+            relay_url,
+            relay_token,
+            target_daemon_id: Some(kernel.kernel_id.clone()),
+            target_daemon_alias: Some(target_daemon_alias),
+            token_expires_at: None,
+            machine_id: Some(kernel.machine_id.clone()),
+            kernel_id: Some(kernel.kernel_id.clone()),
+        }
+    };
+    Ok(LocalDaemonResponse::KernelClientConnectionResolved { connection })
+}
+
+async fn issue_cloud_relay_client_token(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: IssueCloudRelayClientTokenRequest,
+) -> Result<(CloudRelayProfile, CloudRelayRuntimeToken), DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
     if profile.client_id.is_none() {
         let pairing: CloudPairingTokenResponse = match post_cloud_json(
@@ -199,8 +268,63 @@ pub(crate) async fn execute_issue_cloud_relay_client_token_request(
         relay_token: issued.token,
         token_expires_at: issued.expires_at,
     };
-    Ok(LocalDaemonResponse::CloudRelayClientTokenIssued {
-        profile: cloud_profile_from_persisted(&profile),
-        token,
-    })
+    Ok((cloud_profile_from_persisted(&profile), token))
+}
+
+fn resolve_relay_kernel_presence(
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
+    request: &ResolveKernelClientConnectionRequest,
+) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+    let kernel_ref = request.kernel_ref.trim();
+    if kernel_ref.is_empty() || kernel_ref == "local" {
+        return Err(DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: "remote kernel selection is empty".to_string(),
+        });
+    }
+    let machine_ref = request
+        .machine_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "local");
+    let (_, kernels) = remote_relay_inventory_projection.snapshot();
+    let mut matches: Vec<_> = kernels
+        .into_iter()
+        .filter(|kernel| {
+            kernel.kernel_id == kernel_ref
+                || kernel.relay_alias.as_deref() == Some(kernel_ref)
+                || kernel.kernel_alias.as_deref() == Some(kernel_ref)
+        })
+        .filter(|kernel| {
+            machine_ref.is_none_or(|machine_ref| {
+                kernel.machine_id == machine_ref
+                    || kernel.machine_alias.as_deref() == Some(machine_ref)
+                    || kernel.relay_alias.as_deref() == Some(machine_ref)
+                    || kernel.kernel_alias.as_deref() == Some(machine_ref)
+            })
+        })
+        .collect();
+    if matches.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: format!(
+                "kernel `{kernel_ref}` is not present in the reachable relay inventory"
+            ),
+        });
+    }
+    if matches.len() > 1 {
+        return Err(DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: format!("kernel `{kernel_ref}` is ambiguous in the reachable relay inventory"),
+        });
+    }
+    Ok(matches.remove(0))
+}
+
+fn relay_kernel_target_alias(kernel: &arroba_relay::protocol::RelayKernelPresence) -> String {
+    kernel
+        .relay_alias
+        .clone()
+        .or_else(|| kernel.kernel_alias.clone())
+        .unwrap_or_else(|| kernel.kernel_id.clone())
 }

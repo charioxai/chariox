@@ -32,8 +32,11 @@ export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
   model: string
   effort: string
+  ownerMachineRef?: string | null
+  ownerKernelRef?: string | null
   machineRef?: string | null
   kernelRef?: string | null
+  workerKernelRef?: string | null
   workspaceLiveSyncMode?: "off" | "managed" | "tracked"
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
@@ -258,7 +261,9 @@ export function deriveWaitingRoomActivationDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
-    ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
+    ownerMachineRef: choice.machineRef,
+    ownerKernelRef: choice.kernelRef,
+    ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
@@ -325,7 +330,9 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
-    ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
+    ownerMachineRef: choice.machineRef,
+    ownerKernelRef: choice.kernelRef,
+    ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),

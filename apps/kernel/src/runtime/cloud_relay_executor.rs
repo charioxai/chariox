@@ -7,6 +7,7 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::cloud_relay_connection_executor::{
     execute_cloud_relay_status_request, execute_connect_cloud_relay_request,
     execute_issue_cloud_relay_client_token_request,
+    execute_resolve_kernel_client_connection_request,
 };
 use crate::runtime::cloud_relay_login_executor::{
     execute_logout_cloud_relay_request, execute_poll_cloud_relay_login_request,
@@ -20,7 +21,10 @@ use crate::runtime::cloud_session_control_executor::{
     execute_list_cloud_collaborators_request, execute_list_cloud_session_members_request,
     execute_revoke_cloud_session_invite_request, execute_show_cloud_session_invite_request,
 };
-use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use crate::runtime::projection::{
+    DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
+    RemoteRelayInventoryProjectionStore,
+};
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
 
@@ -28,6 +32,7 @@ pub(crate) async fn execute_cloud_relay_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -70,6 +75,15 @@ pub(crate) async fn execute_cloud_relay_request(
             execute_issue_cloud_relay_client_token_request(
                 runtime_state,
                 config_projection,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::ResolveKernelClientConnection(request) => {
+            execute_resolve_kernel_client_connection_request(
+                runtime_state,
+                config_projection,
+                remote_relay_inventory_projection,
                 request,
             )
             .await

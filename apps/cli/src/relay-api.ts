@@ -14,6 +14,7 @@ import {
   pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
   relayStatusRequest,
+  resolveKernelClientConnectionRequest,
   startCloudRelayLoginRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -74,6 +75,26 @@ type KernelCloudRelayRuntimeToken = {
   relay_url: string
   relay_token: string
   token_expires_at: string
+}
+
+export type KernelClientConnectionView = {
+  relayUrl: string
+  relayToken: string
+  targetDaemonId?: string | null
+  targetDaemonAlias?: string | null
+  tokenExpiresAtMs?: number | null
+  machineId?: string | null
+  kernelId?: string | null
+}
+
+type KernelClientConnectionPayload = {
+  relay_url: string
+  relay_token: string
+  target_daemon_id?: string | null
+  target_daemon_alias?: string | null
+  token_expires_at?: string | null
+  machine_id?: string | null
+  kernel_id?: string | null
 }
 
 export async function getRelayStatus(client: LocalIpcClient): Promise<RelayStatusView> {
@@ -196,6 +217,32 @@ export async function issueKernelCloudRelayClientToken(
     relayToken: payload.token.relay_token,
     tokenExpiresAtMs: Date.parse(payload.token.token_expires_at),
     profile: relayCloudProfileFromKernel(payload.profile),
+  }
+}
+
+export async function resolveKernelClientConnection(
+  client: LocalIpcClient,
+  input: {
+    kernelRef: string
+    machineRef?: string | null
+    clientId?: string | null
+    sessionId?: string | null
+  },
+): Promise<KernelClientConnectionView> {
+  const response = await client.send<Record<string, unknown>>(
+    resolveKernelClientConnectionRequest(input),
+  )
+  const payload = expectVariant<{
+    connection: KernelClientConnectionPayload
+  }>(response, "KernelClientConnectionResolved").connection
+  return {
+    relayUrl: payload.relay_url,
+    relayToken: payload.relay_token,
+    targetDaemonId: payload.target_daemon_id ?? null,
+    targetDaemonAlias: payload.target_daemon_alias ?? null,
+    tokenExpiresAtMs: payload.token_expires_at ? Date.parse(payload.token_expires_at) : null,
+    machineId: payload.machine_id ?? null,
+    kernelId: payload.kernel_id ?? null,
   }
 }
 

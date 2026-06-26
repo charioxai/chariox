@@ -228,6 +228,7 @@ impl CommandRouter {
             | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
+            | LocalDaemonRequest::ResolveKernelClientConnection(_)
             | LocalDaemonRequest::CreateCloudSessionInvite(_)
             | LocalDaemonRequest::ShowCloudSessionInvite(_)
             | LocalDaemonRequest::AcceptCloudSessionInvite(_)
@@ -238,6 +239,7 @@ impl CommandRouter {
                     &self.runtime_state,
                     &self.config_projection,
                     &self.provider_catalog_projection,
+                    &self.remote_relay_inventory_projection,
                     Arc::clone(&self.relay_state),
                     request,
                 )

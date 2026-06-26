@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 197;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 198;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -218,6 +218,7 @@ pub enum LocalDaemonRequest {
     PairCloudRelayMachine(PairCloudRelayMachineRequest),
     ConnectCloudRelay(ConnectCloudRelayRequest),
     IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest),
+    ResolveKernelClientConnection(ResolveKernelClientConnectionRequest),
     CreateCloudSessionInvite(CreateCloudSessionInviteRequest),
     ShowCloudSessionInvite(ShowCloudSessionInviteRequest),
     AcceptCloudSessionInvite(AcceptCloudSessionInviteRequest),
@@ -696,6 +697,9 @@ pub enum LocalDaemonResponse {
     CloudRelayClientTokenIssued {
         profile: CloudRelayProfile,
         token: CloudRelayRuntimeToken,
+    },
+    KernelClientConnectionResolved {
+        connection: KernelClientConnection,
     },
     CloudSessionInviteCreated {
         invite: CloudSessionInvite,

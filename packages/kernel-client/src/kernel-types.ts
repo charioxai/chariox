@@ -1131,6 +1131,16 @@ export type CloudRelayRuntimeToken = {
   token_expires_at: string
 }
 
+export type KernelClientConnection = {
+  relay_url: string
+  relay_token: string
+  target_daemon_id?: string | null
+  target_daemon_alias?: string | null
+  token_expires_at?: string | null
+  machine_id?: string | null
+  kernel_id?: string | null
+}
+
 export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null
@@ -1485,7 +1495,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 197
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 198
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

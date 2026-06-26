@@ -8,6 +8,7 @@ import {
   mergeUiPreferences,
   relayCloudProfile,
 } from "./preferences.js"
+import { LocalIpcClient } from "./ipc.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -17,6 +18,7 @@ import { createProviderPromptProjectionController } from "./provider-prompt-proj
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { forgetRemoteMachine } from "./remote-machine-api.js"
+import { resolveKernelClientConnection } from "./relay-api.js"
 import {
   archiveSessionById,
   createSession,
@@ -239,7 +241,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       account_profile: launch.account_profile,
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : launch.kernelRef),
+    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null)),
     importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
     loadOlderExternalProviderSessions: async () => {
       const pageState = deps.externalProviderSessionsPageState()
@@ -275,6 +277,30 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         slice,
         ...current.filter((candidate) => candidate.id !== slice.id),
       ])
+    },
+    prepareSessionOwnerClient: async (launch) => {
+      const ownerKernelRef = launch.ownerKernelRef?.trim()
+      if (!ownerKernelRef || ownerKernelRef === "local") {
+        return
+      }
+      const connection = await resolveKernelClientConnection(deps.client, {
+        kernelRef: ownerKernelRef,
+        machineRef: launch.ownerMachineRef ?? null,
+        clientId: deps.options.clientId,
+      })
+      const nextClient = new LocalIpcClient(connection.relayUrl, {
+        relayAuthToken: connection.relayToken,
+        targetDaemonId: connection.targetDaemonId ?? undefined,
+        targetDaemonAlias: connection.targetDaemonAlias ?? undefined,
+      })
+      if (typeof deps.client.replaceClient !== "function") {
+        await nextClient.close()
+        throw new Error("kernel client pivot is unavailable in this build")
+      }
+      await deps.client.replaceClient(nextClient)
+      deps.setKernelConnected(true)
+      deps.setDaemonDisconnected(false)
+      deps.flashFooter(`connected to kernel ${connection.targetDaemonAlias ?? connection.kernelId ?? ownerKernelRef}`, "info")
     },
     attachBinding: deps.attachBinding,
     flashFooter: (message, tone) => deps.flashFooter(message, tone),
