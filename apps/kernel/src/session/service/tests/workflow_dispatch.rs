@@ -791,6 +791,103 @@ fn selected_edge_schema_validation_ignores_unselected_edge_schema() {
 }
 
 #[test]
+fn routed_edge_accepts_inline_schema_payload_fields() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["router", "worker"]);
+    let workflow = service
+        .create_workflow(session.id(), Some("inline-routed-schema".to_string()))
+        .expect("workflow should be created");
+    let router = service
+        .add_workflow_node(session.id(), workflow.id(), "router")
+        .expect("router node should be added");
+    let worker = service
+        .add_workflow_node(session.id(), workflow.id(), "worker")
+        .expect("worker node should be added");
+    let schema = std::env::temp_dir().join(format!(
+        "arroba-inline-routed-schema-{}-{}.json",
+        std::process::id(),
+        unix_epoch_ms()
+    ));
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","required":["question","angle"],"properties":{"question":{"type":"string"},"angle":{"type":"string"}},"additionalProperties":false}"#,
+    )
+    .expect("schema should write");
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            router.id(),
+            worker.id(),
+            Some(schema.to_string_lossy().to_string()),
+            Some(crate::session::WorkflowHandoffValidationPolicy::Halt),
+        )
+        .expect("router should connect to worker");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            router.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("go".to_string()),
+        )
+        .expect("workflow run should be created");
+    service
+        .start_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+        )
+        .expect("router should start");
+    let routed = serde_json::json!({
+        "workflow_handoffs": [{
+            "edge_id": edge.id(),
+            "angle": "release-validation path",
+            "question": "Inspect the release path and return concise findings."
+        }]
+    });
+
+    let completion = service
+        .complete_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+            Some(completion_with_message(routed.to_string())),
+            None,
+        )
+        .expect("inline routed payload should route and validate");
+
+    assert_eq!(completion.validation_warnings.len(), 0);
+    assert_eq!(completion.dispatches.len(), 1);
+    assert_eq!(completion.dispatches[0].node_run.node_id(), worker.id());
+    let payload: WorkflowHandoffPayload =
+        serde_json::from_str(completion.dispatches[0].messages[0].handoff_payload())
+            .expect("handoff payload should deserialize");
+    let output = payload
+        .completion()
+        .and_then(|snapshot| snapshot.output())
+        .expect("payload should include routed output");
+    let routed_output: serde_json::Value =
+        serde_json::from_str(output.message()).expect("inline payload should stay JSON");
+    assert_eq!(routed_output["angle"], "release-validation path");
+    assert_eq!(
+        routed_output["question"],
+        "Inspect the release path and return concise findings."
+    );
+    std::fs::remove_file(schema).ok();
+}
+
+#[test]
 fn selected_edge_schema_validation_halts_or_warns_by_policy() {
     let mut service = SessionService::new(&test_config());
     let session = service

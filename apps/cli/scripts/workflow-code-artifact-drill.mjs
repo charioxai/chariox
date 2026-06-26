@@ -981,7 +981,8 @@ async function validateTopologyTuiOutlineProjection(client, sessionId, exampleNa
   assert(rendered.includes(`workflow: ${workflow.id}`), `example ${exampleName} TUI outline should include workflow id`, rendered)
   assert(rendered.includes(`status ${String(completedRun.status).toLowerCase()}`), `example ${exampleName} TUI outline should include run status`, rendered)
   const finalMessage = completedRun.final_output?.message
-  assert(finalMessage && rendered.includes(finalMessage), `example ${exampleName} TUI outline should include final output`, {
+  const finalOutputVisible = Boolean(finalMessage && renderedIncludesWorkflowFinalOutput(rendered, finalMessage))
+  assert(finalOutputVisible, `example ${exampleName} TUI outline should include final output`, {
     rendered,
     finalMessage,
   })
@@ -1000,11 +1001,19 @@ async function validateTopologyTuiOutlineProjection(client, sessionId, exampleNa
     workflowId: workflow.id,
     workflowRunId: completedRun.id,
     statusVisible: rendered.includes(`status ${String(completedRun.status).toLowerCase()}`),
-    finalOutputVisible: Boolean(finalMessage && rendered.includes(finalMessage)),
+    finalOutputVisible,
     nodes: workflow.nodes?.length ?? 0,
     edges: workflow.edges?.length ?? 0,
     endpoints: workflow.endpoints?.length ?? 0,
   }
+}
+
+function renderedIncludesWorkflowFinalOutput(rendered, message) {
+  const singleLine = String(message).replace(/\s+/g, ' ').trim()
+  if (singleLine.length <= 180) {
+    return rendered.includes(`final output: ${singleLine}`)
+  }
+  return rendered.includes(`final output: ${singleLine.slice(0, 177)}...`)
 }
 
 function validateApplyResult(result, label, expected = defaultToyExpectation()) {

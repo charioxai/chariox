@@ -1087,6 +1087,7 @@ impl SessionService {
             .and_then(|output| output.get("message"))
             .or_else(|| handoff.get("message"))
             .cloned()
+            .or_else(|| Self::workflow_handoff_inline_message(handoff))
             .unwrap_or(Value::Null);
         if message_value.is_null() {
             return None;
@@ -1109,6 +1110,25 @@ impl SessionService {
             summary,
             Some(WorkflowOutputPayload::new(message, artifacts)),
         )))
+    }
+
+    fn workflow_handoff_inline_message(handoff: &Value) -> Option<Value> {
+        let object = handoff.as_object()?;
+        let mut message = serde_json::Map::new();
+        for (key, value) in object {
+            if matches!(
+                key.as_str(),
+                "edge_id" | "to_node_id" | "summary" | "output" | "message"
+            ) {
+                continue;
+            }
+            message.insert(key.clone(), value.clone());
+        }
+        if message.is_empty() {
+            None
+        } else {
+            Some(Value::Object(message))
+        }
     }
 
     fn take_pending_workflow_turn_outputs(
