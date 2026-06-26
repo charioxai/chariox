@@ -15,13 +15,13 @@ use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
 use super::session_identity::{
-    default_session_members, default_session_owner_user_id, CollaborationLevel,
-    SessionAgentDefaults, SessionInvite, SessionMember,
+    CollaborationLevel, SessionAgentDefaults, SessionInvite, SessionMember,
+    default_session_members, default_session_owner_user_id,
 };
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
+use super::types::{DEFAULT_SESSION_MAX_AGENTS, unix_epoch_ms};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_publication::WorkflowPublicationDefinition;
@@ -529,6 +529,29 @@ impl RuntimeSession {
             return None;
         }
         Some(self.ensure_metaagent_task(metaagent_id, task_markdown))
+    }
+
+    pub fn start_or_update_metaagent_task(
+        &mut self,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> &MetaagentTask {
+        let task_markdown = task_markdown.into();
+        if let Some(index) = self
+            .metaagent_tasks
+            .iter()
+            .position(|task| task.metaagent_id() == metaagent_id)
+        {
+            let task = &mut self.metaagent_tasks[index];
+            if !task_markdown.trim().is_empty() {
+                task.update_task_markdown(task_markdown);
+            }
+            if task.status() != MetaagentTaskStatus::Active {
+                task.set_status(MetaagentTaskStatus::Active);
+            }
+            return &self.metaagent_tasks[index];
+        }
+        self.ensure_metaagent_task(metaagent_id, task_markdown)
     }
 
     pub fn update_metaagent_task_markdown(

@@ -288,6 +288,19 @@ impl SessionService {
         Ok(Some(session.clone()))
     }
 
+    pub fn start_or_update_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "start or update metaagent task")?;
+        session.start_or_update_metaagent_task(metaagent_id, task_markdown);
+        session.touch();
+        Ok(session.clone())
+    }
+
     pub fn update_metaagent_task_markdown(
         &mut self,
         session_id: &str,

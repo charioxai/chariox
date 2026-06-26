@@ -47,12 +47,7 @@ impl KernelRuntimeState {
         }
         let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
-            let session =
-                sessions.start_metaagent_task_if_needed(session_id, agent_id, task_prompt)?;
-            Ok::<_, DaemonError>(match session {
-                Some(session) => session,
-                None => sessions.get_session(session_id)?,
-            })
+            sessions.start_or_update_metaagent_task(session_id, agent_id, task_prompt)
         })();
         let session = match session_result {
             Ok(session) => session,

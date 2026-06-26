@@ -476,7 +476,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
 
     let request = SubmitPromptRequest {
         session_id: session_id.clone(),
-        attachment_id,
+        attachment_id: attachment_id.clone(),
         target_agent_id: Some(agent_id.clone()),
         prompt: "/meta Inspect the repo by delegation.".to_string(),
         attachments: Vec::new(),
@@ -518,6 +518,45 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
             .map(|task| task.task_markdown()),
         Some("Inspect the repo by delegation.")
     );
+    let replacement_request = SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "/meta Expand the delegation plan.".to_string(),
+        attachments: Vec::new(),
+    };
+    let replacement_local_request = LocalDaemonRequest::SubmitPrompt(replacement_request.clone());
+    let replacement_command = crate::runtime::command::KernelCommand::from_local_request(
+        "meta-slash-prompt-replace",
+        None,
+        None,
+        &replacement_local_request,
+    );
+    let replacement_response = timeout(
+        Duration::from_secs(5),
+        runtime.dispatch_prompt_submit(&replacement_command, replacement_request),
+    )
+    .await
+    .expect("replacement meta slash prompt submit should not hang")
+    .expect("replacement meta slash prompt should submit");
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome,
+        session: replacement_session,
+        ..
+    } = replacement_response
+    else {
+        panic!("unexpected replacement response");
+    };
+    let PromptSubmissionOutcome::Queued { prompt } = outcome else {
+        panic!("replacement meta slash prompt should queue behind active meta turn");
+    };
+    assert_eq!(prompt.prompt(), "Expand the delegation plan.");
+    assert_eq!(
+        replacement_session
+            .metaagent_task(&agent_id)
+            .map(|task| task.task_markdown()),
+        Some("Expand the delegation plan.")
+    );
     let agent = runtime_state
         .list_agents()
         .into_iter()
@@ -536,9 +575,11 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .expect("provider run should have runtime MCP auth token")
         .to_string();
     let specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
-    assert!(specs
-        .iter()
-        .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL));
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL)
+    );
     let completion = runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &auth_token,
@@ -685,10 +726,12 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
             .map(|prompt| prompt.id()),
         Some(prompt.id())
     );
-    assert!(agent_activity
-        .get(&agent_id)
-        .map(|activity| activity.busy)
-        .unwrap_or(false));
+    assert!(
+        agent_activity
+            .get(&agent_id)
+            .map(|activity| activity.busy)
+            .unwrap_or(false)
+    );
 }
 
 #[tokio::test]
