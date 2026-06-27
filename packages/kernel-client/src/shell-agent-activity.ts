@@ -12,11 +12,11 @@ export function sessionAgentIsBusy(session: RuntimeSession | null | undefined, a
   if (projected) {
     return agentRuntimeActivityIsBusy(projected)
   }
-  const promptState = session.prompt_states?.[agentId]
-  return Boolean(promptState?.active_prompt)
-    || Boolean(promptState?.queued_prompts?.length)
-    || Boolean(session.active_prompt?.target_agent_id === agentId)
-    || Boolean(session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId))
+  const promptState = promptStateForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+  }
+  return legacyTopLevelSessionHasPromptWork(session, agentId)
 }
 
 export function sessionHasActivePrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
@@ -47,18 +47,36 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
 }
 
 function legacySessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
-  const promptState = session.prompt_states?.[agentId]
-  return promptState?.active_prompt?.id === promptId
-    || Boolean(promptState?.queued_prompts?.some((prompt) => prompt.id === promptId))
-    || Boolean(session.active_prompt?.target_agent_id === agentId && session.active_prompt.id === promptId)
+  const promptState = promptStateForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptState?.active_prompt?.id === promptId
+      || Boolean(promptState?.queued_prompts?.some((prompt) => prompt.id === promptId))
+  }
+  return Boolean(session.active_prompt?.target_agent_id === agentId && session.active_prompt.id === promptId)
     || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId && prompt.id === promptId)
 }
 
 function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  const promptState = session.prompt_states?.[agentId]
-  return promptState?.active_prompt
-    ?? promptState?.queued_prompts?.[promptState.queued_prompts.length - 1]
-    ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+  const promptState = promptStateForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptState?.active_prompt
+      ?? promptState?.queued_prompts?.[promptState.queued_prompts.length - 1]
+      ?? null
+  }
+  return (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
     ?? [...session.queued_prompts].reverse().find((prompt) => prompt.target_agent_id === agentId)
     ?? null
+}
+
+function promptStateForAgent(session: RuntimeSession, agentId: string) {
+  const promptStates = session.prompt_states
+  if (!promptStates || !Object.prototype.hasOwnProperty.call(promptStates, agentId)) {
+    return undefined
+  }
+  return promptStates[agentId] ?? null
+}
+
+function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: string): boolean {
+  return Boolean(session.active_prompt?.target_agent_id === agentId)
+    || Boolean(session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId))
 }

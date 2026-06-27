@@ -220,6 +220,50 @@ test("sessionHasActivePrompt falls back to legacy fields when projection is unav
   assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "prompt-1")
 })
 
+test("session prompt helpers prefer explicit empty prompt state over stale top-level active prompt", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
+test("session prompt helpers prefer explicit empty prompt state over stale top-level queued prompts", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale queued",
+      status: "Queued",
+    }],
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-stale"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
 test("session prompt helpers ignore top-level prompts for other agents", () => {
   const session = makeSession({
     active_prompt: {
