@@ -1,5 +1,7 @@
 import type {
   SessionHistoryBlobContent,
+  SessionHistoryCursorState,
+  SessionHistoryOutline,
   SessionHistoryOutlineAgent,
   SessionHistoryOutlineBlob,
   SessionHistoryOutlineTurn,
@@ -44,6 +46,17 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   })
 
   return applyTranscriptDisplayState(entries, [])
+}
+
+export function historyCursorStateForVisibleAgent(
+  outline: SessionHistoryOutline,
+  visibleAgentId: string | null,
+): SessionHistoryCursorState {
+  if (!visibleAgentId) {
+    return null
+  }
+  const cursor = outline.agents.find((agent) => agent.agent_id === visibleAgentId)?.next_cursor
+  return cursor ? { agentId: visibleAgentId, cursor } : null
 }
 
 export function replaceHistoryBlobPlaceholder(

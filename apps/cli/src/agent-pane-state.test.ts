@@ -87,7 +87,7 @@ test("shouldRefreshAgentPanesForSessionChange refreshes on agent shape or focuse
   }), false)
 })
 
-test("refreshAgentPaneState backfills older history until a user turn and keeps only valid expanded turns", async () => {
+test("refreshAgentPaneState loads the latest page and keeps only valid expanded turns", async () => {
   const pages = new Map<string, Array<{ entries: Array<{ role: string; turnId?: number; text: string }>; nextCursor: string | null }>>([
     ["agent-a:head", [{ entries: [{ role: "assistant", turnId: 2, text: "answer" }], nextCursor: "older" }]],
     ["agent-a:older", [{ entries: [{ role: "user", turnId: 2, text: "question" }], nextCursor: null }]],
@@ -128,7 +128,6 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
       return page
     },
     hydrateEntries: (entries: Array<{ role: string; text: string }>) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => [...entries, { role: "turn_toggle", turnId: 2, text: "toggle" }],
     applyExpandedTurns: (entries, expandedTurnIds) =>
       expandedTurnIds.includes(2)
@@ -141,9 +140,9 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
   assert.ok(result.paneEntries["agent-a"])
   assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [2] })
   assert.equal(result.visibleAgentId, "agent-b")
-  assert.deepEqual(result.paneEntries["agent-a"]!.map((entry) => entry.text), ["question", "answer"])
+  assert.deepEqual(result.paneEntries["agent-a"]!.map((entry) => entry.text), ["answer"])
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["other", "toggle"])
-  assert.equal(result.previews["agent-a"], "question | answer")
+  assert.equal(result.previews["agent-a"], "answer")
   assert.equal(result.visibleCursor, null)
 })
 
@@ -200,7 +199,6 @@ test("refreshAgentPaneState does not preserve current entries from another agent
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -256,7 +254,6 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -328,7 +325,6 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -379,7 +375,6 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -427,7 +422,6 @@ test("refreshAgentPaneState ignores stray external ids without observed source w
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -451,7 +445,6 @@ test("refreshAgentPaneState ignores stale focused agent ids", async () => {
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -482,7 +475,6 @@ test("refreshAgentPaneState can preserve expanded turn ids during refresh", asyn
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -551,7 +543,6 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -584,7 +575,6 @@ test("refreshAgentPaneState preserves completed turns when collapse is disabled"
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -645,18 +635,18 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
       }
     },
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
 
-  assert.deepEqual(requestedCursors, [null, "older"])
+  assert.deepEqual(requestedCursors, [null])
   assert.deepEqual(
     result.visibleEntries.map((entry) => entry.text),
-    ["first question", "first answer", "second question", "second answer"],
+    ["second question", "second answer"],
   )
+  assert.equal(result.visibleCursor, "older")
 })
 
 test("refreshAgentPaneState preserves richer live pane entries while prompt work is active", async () => {
@@ -687,7 +677,6 @@ test("refreshAgentPaneState preserves richer live pane entries while prompt work
       nextCursor: null,
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
     applyExpandedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),

@@ -1,6 +1,8 @@
 import type {
   AgentInstance,
   RuntimeSession,
+  SessionHistoryCursorState,
+  SessionHistoryOutlineCursor,
   TranscriptEntry,
 } from "./cli-types.js"
 import {
@@ -12,9 +14,6 @@ import {
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
 import { focusedAgentIdForSession, sessionHasPromptWork } from "./session-state.js"
-import {
-  stitchPrependedHistory,
-} from "./transcript-history.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
 
@@ -28,13 +27,13 @@ type AgentPaneRefreshControllerDeps = {
   loadHistoryPage: (
     sessionId: string,
     agentId: string,
-    cursor: null,
-  ) => Promise<{ entries: TranscriptEntry[]; nextCursor: null }>
+    cursor: SessionHistoryOutlineCursor | null,
+  ) => Promise<{ entries: TranscriptEntry[]; nextCursor: SessionHistoryOutlineCursor | null }>
   pruneAuxiliaryAgentPanes: (session: RuntimeSession) => void
   setExpandedTurnIdsByAgent: (expandedTurnIdsByAgent: Record<string, number[]>) => void
   setAgentPanePreviews: (previews: Record<string, string>) => void
   setAgentPaneEntries: (entries: Record<string, TranscriptEntry[]>) => void
-  setNextHistoryCursor: (cursor: null) => void
+  setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
   applyExpandedTurns: (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => TranscriptEntry[]
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   applyResponseLayout: () => void
@@ -55,7 +54,12 @@ export function createAgentPaneRefreshController(
   }
 
   const refresh = async (session: RuntimeSession) => {
-    const nextPaneState = await refreshAgentPaneState<AgentInstance, TranscriptEntry, TranscriptEntry, null>({
+    const nextPaneState = await refreshAgentPaneState<
+      AgentInstance,
+      TranscriptEntry,
+      TranscriptEntry,
+      SessionHistoryOutlineCursor
+    >({
       session,
       hasPromptWork: sessionHasPromptWork(session),
       expandedTurnIdsByAgent: deps.getExpandedTurnIdsByAgent(),
@@ -71,7 +75,6 @@ export function createAgentPaneRefreshController(
         ).visibleTranscriptAgentId,
       loadHistoryPage: (agentId, cursor) => deps.loadHistoryPage(session.id, agentId, cursor),
       hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
-      stitchPrependedHistory,
       collapseHistoricalTurns: (entries) => entries,
       applyExpandedTurns: deps.applyExpandedTurns,
       reindexEntries: reindexTranscriptEntries,
@@ -83,7 +86,11 @@ export function createAgentPaneRefreshController(
     deps.setExpandedTurnIdsByAgent(nextPaneState.expandedTurnIdsByAgent)
     deps.setAgentPanePreviews(nextPaneState.previews)
     deps.setAgentPaneEntries(nextPaneState.paneEntries)
-    deps.setNextHistoryCursor(nextPaneState.visibleCursor)
+    deps.setNextHistoryCursor(
+      nextPaneState.visibleAgentId && nextPaneState.visibleCursor
+        ? { agentId: nextPaneState.visibleAgentId, cursor: nextPaneState.visibleCursor }
+        : null,
+    )
     const visibleEntries = nextPaneState.visibleAgentId
       ? nextPaneState.paneEntries[nextPaneState.visibleAgentId]
       : nextPaneState.visibleEntries

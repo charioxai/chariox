@@ -984,6 +984,11 @@ export type SessionHistoryOutlineCursor = {
   before_sequence: number
 }
 
+export type SessionHistoryCursorState = {
+  agentId: string
+  cursor: SessionHistoryOutlineCursor
+} | null
+
 export type SessionHistoryOutlineTurn = {
   turn_id: string
   prompt_id?: string | null
@@ -1306,7 +1311,7 @@ export type SessionBinding = {
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]
-  nextHistoryCursor: null
+  nextHistoryCursor: SessionHistoryCursorState
 }
 
 export type BootstrapDeferredState = {
@@ -1318,7 +1323,7 @@ export type BootstrapDeferredState = {
     agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
-    nextHistoryCursor: null
+    nextHistoryCursor: SessionHistoryCursorState
   }>
 }
 

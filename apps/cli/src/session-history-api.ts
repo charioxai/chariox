@@ -2,6 +2,7 @@ import type {
   PromptInputHistoryEntry,
   PromptInputHistoryPage,
   SessionHistoryBlobContent,
+  SessionHistoryOutlineCursor,
   SessionHistoryOutline,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -18,9 +19,10 @@ export async function getSessionHistoryOutline(
   sessionId: string,
   agentIds: readonly string[],
   latestPromptCount = 4,
+  cursor: SessionHistoryOutlineCursor | null = null,
 ): Promise<SessionHistoryOutline> {
   const response = await client.send<Record<string, unknown>>(
-    getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount),
+    getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount, cursor),
   )
   return expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
 }

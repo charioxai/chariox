@@ -236,17 +236,11 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadHistoryPage: async (sessionId, agentId, cursor) => {
-      if (cursor !== null) {
-        return {
-          entries: [],
-          nextCursor: null,
-        }
-      }
-      const outline = await getSessionHistoryOutline(deps.client, sessionId, [agentId], 4)
+      const outline = await getSessionHistoryOutline(deps.client, sessionId, [agentId], 4, cursor)
       const outlineAgent = outline.agents.find((agent) => agent.agent_id === agentId)
       return {
         entries: outlineAgent ? hydrateOutlineAgentEntries(outlineAgent) : [],
-        nextCursor: null,
+        nextCursor: outlineAgent?.next_cursor ?? null,
       }
     },
     pruneAuxiliaryAgentPanes,

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type {
   BootstrapDeferredState,
+  SessionHistoryCursorState,
   TranscriptEntry,
 } from "./cli-types.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
@@ -123,7 +124,7 @@ function bootstrapHarness(options: {
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
-    nextHistoryCursor: undefined as null | undefined,
+    nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,

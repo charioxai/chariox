@@ -5,6 +5,7 @@ import { createAttachedSessionPrimeController } from "./attached-session-prime-c
 import type {
   AgentInstance,
   RuntimeSession,
+  SessionHistoryCursorState,
   SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
@@ -42,6 +43,19 @@ test("attached session prime seeds the visible agent transcript and pane preview
   assert.notEqual(harness.agentPaneEntries["agent-1"]?.[0], harness.replacedEntries[0]?.[0])
 })
 
+test("attached session prime preserves the visible agent history cursor", async () => {
+  const harness = primeHarness({
+    outline: outlineForAgents(["agent-1"], "hello\n", "world", { before_sequence: 12 }),
+  })
+
+  await harness.controller.prime(session())
+
+  assert.deepEqual(harness.nextHistoryCursor, {
+    agentId: "agent-1",
+    cursor: { before_sequence: 12 },
+  })
+})
+
 test("attached session prime selects the visible split-pane screen", async () => {
   const harness = primeHarness({ split: true, maxAgentsPerScreen: 2 })
 
@@ -63,7 +77,7 @@ function primeHarness(options: {
     promptGeneration: 0,
     historyCalls: [] as Array<{ sessionId: string; agentIds: string[] }>,
     promptHistoryCalls: [] as Array<{ sessionId: string; generation: number }>,
-    nextHistoryCursor: undefined as null | undefined,
+    nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
     replaceCalls: [] as Array<{
@@ -173,6 +187,7 @@ function outlineForAgents(
   agentIds: string[],
   prompt = "hello\n",
   summaryPrefix = "history for",
+  nextCursor: SessionHistoryOutline["agents"][number]["next_cursor"] = null,
 ): SessionHistoryOutline {
   return {
     agents: agentIds.map((agentId, index) => ({
@@ -186,7 +201,7 @@ function outlineForAgents(
         summary: historyEntry(index * 2 + 1, "provider_output", summaryPrefix === "world" ? "world" : `${summaryPrefix} ${agentId}`, agentId),
         blobs: [],
       }],
-      next_cursor: null,
+      next_cursor: nextCursor,
     })),
   }
 }

@@ -3,6 +3,7 @@ import type {
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
+  SessionHistoryCursorState,
 } from "./cli-types.js"
 import type {
   AttachedCliTransitionState,
@@ -71,7 +72,7 @@ type SessionLifecycleDeps = {
   setWorking: (value: boolean) => void
   setFatalError: (value: string | null) => void
   setDaemonDisconnected: (value: boolean) => void
-  setNextHistoryCursor: (value: null) => void
+  setNextHistoryCursor: (value: SessionHistoryCursorState) => void
   setSessionHydratingState: (value: boolean) => void
   setHistoryLoadingState: (value: boolean) => void
   setStatusLine: (value: string) => void

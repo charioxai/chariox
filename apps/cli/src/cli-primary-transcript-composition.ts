@@ -5,8 +5,10 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import { clampScrollTop } from "./history-viewport.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
+import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
+import { reindexTranscriptEntries } from "./transcript-text.js"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,
@@ -204,6 +206,57 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   const replaceTranscriptEntries = primaryTranscriptEntryController.replaceEntries
   const prependTranscriptEntries = primaryTranscriptEntryController.prependEntries
 
+  const hasMoreVisibleHistory = () => {
+    const cursorState = deps.nextHistoryCursor()
+    const visibleAgentId = deps.visibleTranscriptAgentId()
+    return Boolean(
+      cursorState
+        && visibleAgentId
+        && cursorState.agentId === visibleAgentId,
+    )
+  }
+
+  const loadOlderVisibleHistory = async () => {
+    const cursorState = deps.nextHistoryCursor()
+    const visibleAgentId = deps.visibleTranscriptAgentId()
+    const session = deps.sessionState()
+    if (!cursorState || !visibleAgentId || cursorState.agentId !== visibleAgentId || !session?.id) {
+      return false
+    }
+
+    deps.setHistoryLoadingState(true)
+    try {
+      const outline = await getSessionHistoryOutline(
+        deps.client,
+        session.id,
+        [visibleAgentId],
+        4,
+        cursorState.cursor,
+      )
+      const outlineAgent = outline.agents.find((agent) => agent.agent_id === visibleAgentId)
+      deps.setNextHistoryCursor(
+        outlineAgent?.next_cursor
+          ? { agentId: visibleAgentId, cursor: outlineAgent.next_cursor }
+          : null,
+      )
+      const olderEntries = outlineAgent ? hydrateOutlineAgentEntries(outlineAgent) : []
+      if (olderEntries.length === 0) {
+        return false
+      }
+      await prependTranscriptEntries(reindexTranscriptEntries(olderEntries, deps.entryCounter()))
+      return true
+    } catch (error) {
+      deps.appLogger?.warn("failed to load older transcript history", {
+        error: deps.formatError(error),
+        sessionId: session.id,
+        agentId: visibleAgentId,
+      })
+      return false
+    } finally {
+      deps.setHistoryLoadingState(false)
+    }
+  }
+
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
     promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
@@ -261,10 +314,10 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     isScrollRestoring: () => deps.historyScrollRestoreController.isRestoring(),
     isAttached: deps.isAttached,
     isLoadingHistory: deps.loadingHistory,
-    hasMoreHistory: () => false,
     getLastScrollTop: deps.primaryTranscriptRuntimeStore.getLastScrollTop,
     setLastScrollTop: deps.primaryTranscriptRuntimeStore.setLastScrollTop,
-    loadOlderHistory: async () => false,
+    hasMoreHistory: hasMoreVisibleHistory,
+    loadOlderHistory: loadOlderVisibleHistory,
   })
 
   return {

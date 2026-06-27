@@ -130,7 +130,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
       getSessionHistoryOutline: async (_client, _sessionId, agentIds) => {
         calls.push(`outline:${agentIds.join(",")}`)
         return {
-          agents: [outlineAgent("agent-a", "hi", "done")],
+          agents: [outlineAgent("agent-a", "hi", "done", { before_sequence: 9 })],
         }
       },
       getPromptInputHistory: async () => {
@@ -160,6 +160,10 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
+  assert.deepEqual(deferredHistory?.nextHistoryCursor, {
+    agentId: "agent-a",
+    cursor: { before_sequence: 9 },
+  })
 })
 
 test("bootstrapSession reattaches and hydrates missed output from history catch-up", async () => {
@@ -342,7 +346,12 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
   }])
 })
 
-function outlineAgent(agentId: string, prompt: string, summary: string) {
+function outlineAgent(
+  agentId: string,
+  prompt: string,
+  summary: string,
+  nextCursor: { before_sequence: number } | null = null,
+) {
   return {
     agent_id: agentId,
     turns: [{
@@ -366,6 +375,6 @@ function outlineAgent(agentId: string, prompt: string, summary: string) {
       },
       blobs: [],
     }],
-    next_cursor: null,
+    next_cursor: nextCursor,
   }
 }

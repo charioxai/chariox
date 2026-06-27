@@ -1,5 +1,6 @@
 import type {
   BootstrapDeferredState,
+  SessionHistoryCursorState,
   TranscriptEntry,
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
@@ -17,7 +18,7 @@ export type DeferredBootstrapControllerDeps = {
   updateSessionChrome: () => void
   setPromptHistoryEntries: (entries: string[]) => void
   resetPromptHistoryNavigation: () => void
-  setNextHistoryCursor: (cursor: null) => void
+  setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
   setAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
   setAgentPanePreview: (agentId: string, preview: string) => void
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void

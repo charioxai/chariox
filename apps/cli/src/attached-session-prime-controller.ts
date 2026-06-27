@@ -1,11 +1,15 @@
 import type {
   RuntimeSession,
+  SessionHistoryCursorState,
   SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
 import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { selectResponsePaneAgents } from "./response-panes.js"
-import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
+import {
+  historyCursorStateForVisibleAgent,
+  hydrateOutlineAgentEntries,
+} from "./session-history-outline.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
 
@@ -17,7 +21,7 @@ export type AttachedSessionPrimeControllerDeps = {
   setAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
   setAgentPanePreview: (agentId: string, preview: string) => void
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
-  setNextHistoryCursor: (cursor: null) => void
+  setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
 }
 
 export function createAttachedSessionPrimeController(
@@ -55,7 +59,7 @@ export function createAttachedSessionPrimeController(
     const preparedEntries = entriesByAgent.get(visibleAgentId) ?? []
 
     deps.replaceTranscriptEntries(cloneTranscriptEntries(preparedEntries), visibleAgentId)
-    deps.setNextHistoryCursor(null)
+    deps.setNextHistoryCursor(historyCursorStateForVisibleAgent(outline, visibleAgentId))
   }
 
   return {

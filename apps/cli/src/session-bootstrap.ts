@@ -13,10 +13,12 @@ import type {
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
+  SessionHistoryOutline,
   SessionHistoryOutlineAgent,
   TranscriptEntry,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import { historyCursorStateForVisibleAgent } from "./session-history-outline.js"
 
 type BootstrapDeps = {
   logger?: ArrobaLogger | null
@@ -52,7 +54,7 @@ type BootstrapDeps = {
     client: LocalIpcClient,
     sessionId: string,
     agentIds: readonly string[],
-  ) => Promise<{ agents: SessionHistoryOutlineAgent[] }>
+  ) => Promise<SessionHistoryOutline>
   getPromptInputHistory?: (
     client: LocalIpcClient,
     sessionId: string,
@@ -229,7 +231,7 @@ async function hydrateAttachedHistory(
     agentEntries,
     historyEntries,
     promptHistoryEntries,
-    nextHistoryCursor: null,
+    nextHistoryCursor: historyCursorStateForVisibleAgent(outline, visibleAgentId),
   }
 }
 

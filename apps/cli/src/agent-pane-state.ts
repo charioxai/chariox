@@ -260,7 +260,6 @@ export async function refreshAgentPaneState<
   resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
   loadHistoryPage: (agentId: string, cursor: TCursor | null) => Promise<{ entries: THistoryEntry[]; nextCursor: TCursor | null }>
   hydrateEntries: (entries: THistoryEntry[]) => TEntry[]
-  stitchPrependedHistory: (olderEntries: TEntry[], currentEntries: TEntry[]) => TEntry[]
   collapseHistoricalTurns: (entries: TEntry[], keepLatestExpanded: boolean) => TEntry[]
   applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
   reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
@@ -281,16 +280,7 @@ export async function refreshAgentPaneState<
     const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
       .filter((entry) => entryBelongsToAgent(agent, entry))
     const historyPage = await options.loadHistoryPage(agent.id, null)
-    let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
-    let nextResolvedCursor = historyPage.nextCursor
-    while (nextResolvedCursor !== null) {
-      const olderPage = await options.loadHistoryPage(agent.id, nextResolvedCursor)
-      resolvedHistoryEntries = options.stitchPrependedHistory(
-        options.hydrateEntries(olderPage.entries),
-        resolvedHistoryEntries,
-      )
-      nextResolvedCursor = olderPage.nextCursor
-    }
+    const resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
 
     const availableTurnIds = new Set(
       resolvedHistoryEntries
@@ -329,7 +319,7 @@ export async function refreshAgentPaneState<
 
     if (agent.id === visibleAgentId) {
       visibleEntries = nextPaneEntries
-      visibleCursor = null
+      visibleCursor = historyPage.nextCursor
     }
   }
 
