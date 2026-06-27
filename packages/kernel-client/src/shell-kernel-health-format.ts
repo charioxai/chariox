@@ -628,7 +628,7 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
   const providerRunsSummary = providerRunIssues === 0 && providerRunActor.enqueue_rejections === 0
     ? "ok"
     : `attention duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${providerRunActor.enqueue_rejections}`
-  return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
+  return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}; audit=durable-transitions-required`
 }
 
 function workspaceLiveSyncScopeDetail(affectedRoots: readonly string[]): string {
