@@ -18,20 +18,15 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   const entries: TranscriptEntry[] = []
   let nextId = 0
 
-  agent.turns.forEach((turn, turnIndex) => {
+  orderedOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
     const turnId = turnIndex + 1
     const externalMetadata = outlineTurnExternalMetadata(turn)
     const promptEntries = hydratePageEntries([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
       entries.push(applyOutlineTurnExternalMetadata({ ...entry, id: ++nextId }, externalMetadata))
     }
-    const turnItems = [
-      ...turn.entries.map((entry) => ({ sequence: entry.entry_index, entry })),
-      ...turn.blobs.map((blob) => ({ sequence: blob.sequence_start, blob })),
-      ...(turn.summary ? [{ sequence: turn.summary.entry_index, entry: turn.summary }] : []),
-    ].sort((left, right) => left.sequence - right.sequence)
-    for (const item of turnItems) {
-      if ("blob" in item) {
+    for (const item of orderedOutlineItems(turn)) {
+      if (item.kind === "blob") {
         entries.push(applyOutlineTurnExternalMetadata(
           outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
           externalMetadata,
@@ -46,6 +41,53 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   })
 
   return applyTranscriptDisplayState(entries, [])
+}
+
+type OutlineTurnItem =
+  | {
+    kind: "entry"
+    sequence: number
+    entry: SessionHistoryPageEntry
+  }
+  | {
+    kind: "blob"
+    sequence: number
+    blob: SessionHistoryOutlineBlob
+  }
+
+function orderedOutlineTurns(
+  turns: readonly SessionHistoryOutlineTurn[],
+): readonly SessionHistoryOutlineTurn[] {
+  return [...turns].sort((left, right) =>
+    historyPageEntryIndex(left.user_prompt) - historyPageEntryIndex(right.user_prompt))
+}
+
+function orderedOutlineItems(turn: SessionHistoryOutlineTurn): readonly OutlineTurnItem[] {
+  return [
+    ...turn.entries.map((entry): OutlineTurnItem => ({
+      kind: "entry",
+      sequence: historyPageEntryIndex(entry),
+      entry,
+    })),
+    ...turn.blobs.map((blob): OutlineTurnItem => ({
+      kind: "blob",
+      sequence: historyBlobSequenceStart(blob),
+      blob,
+    })),
+    ...(turn.summary ? [{
+      kind: "entry" as const,
+      sequence: historyPageEntryIndex(turn.summary),
+      entry: turn.summary,
+    }] : []),
+  ].sort((left, right) => left.sequence - right.sequence)
+}
+
+function historyPageEntryIndex(pageEntry: SessionHistoryPageEntry): number {
+  return Number.isFinite(pageEntry.entry_index) ? pageEntry.entry_index : Number.MAX_SAFE_INTEGER
+}
+
+function historyBlobSequenceStart(blob: SessionHistoryOutlineBlob): number {
+  return Number.isFinite(blob.sequence_start) ? blob.sequence_start : Number.MAX_SAFE_INTEGER
 }
 
 export function historyCursorStateForVisibleAgent(

@@ -50,6 +50,70 @@ test("hydrateOutlineAgentEntries carries turn prompt identity into entries and b
   assert.equal(blob?.externalProviderTurnId, "user-1")
 })
 
+test("hydrateOutlineAgentEntries orders turns and turn items by history sequence", () => {
+  const entries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-late",
+      prompt_id: "prompt-late",
+      started_at_ms: 20,
+      user_prompt: pageEntry(20, "user_prompt", "late prompt\n"),
+      entries: [pageEntry(22, "provider_output", "late reply\n")],
+      summary: pageEntry(24, "provider_output", "late summary\n"),
+      blobs: [{
+        blob_id: "blob-late-tool",
+        kind: "provider_tool",
+        title: "late tool",
+        summary: "tool after reply",
+        sequence_start: 23,
+        sequence_end: 23,
+        entry_count: 1,
+        total_chars: 20,
+        timestamp_ms: 23,
+      }],
+    }, {
+      turn_id: "turn-early",
+      prompt_id: "prompt-early",
+      started_at_ms: 10,
+      user_prompt: pageEntry(10, "user_prompt", "early prompt\n"),
+      entries: [pageEntry(12, "provider_output", "early reply\n")],
+      summary: null,
+      blobs: [{
+        blob_id: "blob-early-reasoning",
+        kind: "provider_reasoning",
+        title: "early thinking",
+        summary: "reasoning before reply",
+        sequence_start: 11,
+        sequence_end: 11,
+        entry_count: 1,
+        total_chars: 20,
+        timestamp_ms: 11,
+      }],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const semanticEntries = entries.filter((entry) => entry.text !== "click to collapse")
+  assert.deepEqual(semanticEntries.map((entry) => (entry.text || entry.blobTitle)?.trim()), [
+    "early prompt",
+    "early thinking",
+    "early reply",
+    "late prompt",
+    "late reply",
+    "late tool",
+    "late summary",
+  ])
+  assert.deepEqual(semanticEntries.map((entry) => entry.promptId), [
+    "prompt-early",
+    "prompt-early",
+    "prompt-early",
+    "prompt-late",
+    "prompt-late",
+    "prompt-late",
+    "prompt-late",
+  ])
+})
+
 test("hydrateOutlineAgentEntries preserves prompt attachments and external observation metadata", () => {
   const entries = hydrateOutlineAgentEntries({
     agent_id: "agent-1",
