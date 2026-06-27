@@ -32,8 +32,37 @@ test("formatAgentListSummary uses projected idle activity over stale legacy work
     },
   })
 
-  assert.match(rendered, /agent-remote \[Working;/)
+  assert.match(rendered, /agent-remote \[Idle;/)
   assert.doesNotMatch(rendered, /provider blocked/)
+})
+
+test("formatAgentInspectSummary uses projected idle activity over stale legacy worker state", () => {
+  const remoteAgent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_kernel_id: "slice:slice-1",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+
+  const rendered = formatAgentInspectSummary(remoteAgent, [], null, {}, {
+    agentActivity: {
+      "agent-remote": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_turn: null,
+      },
+    },
+  })
+
+  assert.match(rendered, /^agent-remote \[Idle\]/)
+  assert.doesNotMatch(rendered, /provider run next:/)
 })
 
 test("formatAgentInspectSummary uses projected busy activity for provider run recovery", () => {
@@ -66,5 +95,6 @@ test("formatAgentInspectSummary uses projected busy activity for provider run re
   })
 
   assert.match(rendered, /provider run: none/)
+  assert.match(rendered, /^agent-remote \[Working\]/)
   assert.match(rendered, /provider run next: run \/kernel remote-runtime and \/machine kernels worker-machine/)
 })

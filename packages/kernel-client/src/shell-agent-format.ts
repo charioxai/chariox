@@ -80,8 +80,9 @@ function formatAgentListEntry(
   providerRunContext: ShellAgentProviderRunContext,
   sessionContext: ShellAgentSessionContext,
 ): string {
+  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
   const parts = [
-    agent.state,
+    runtimeState,
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
     formatAgentListPlacement(agent, slice),
@@ -196,8 +197,9 @@ export function formatAgentInspectSummary(
   sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
+  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
   const lines = [
-    `${formatAgentRef(agent)} [${agent.state}]`,
+    `${formatAgentRef(agent)} [${runtimeState}]`,
     `id: ${agent.id}`,
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
@@ -346,18 +348,33 @@ function agentIsBusyForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
 ): boolean {
+  return agentRuntimeStateForSessionContext(agent, sessionContext) === "Working"
+}
+
+function agentRuntimeStateForSessionContext(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): AgentInstance["state"] {
   if (sessionContext.agentActivity && !(agent.id in sessionContext.agentActivity)) {
-    return false
+    return agent.state === "Error" ? "Error" : "Idle"
   }
   const activity = sessionContext.agentActivity?.[agent.id]
   if (activity) {
-    return agentRuntimeActivityIsBusy(activity)
+    if (activity.status === "error") {
+      return "Error"
+    }
+    return agentRuntimeActivityIsBusy(activity) ? "Working" : "Idle"
   }
   const promptState = sessionContext.promptStates?.[agent.id]
   if (promptState !== undefined) {
+    if (agent.state === "Error") {
+      return "Error"
+    }
     return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+      ? "Working"
+      : "Idle"
   }
-  return agent.state === "Working" || agent.is_processing
+  return agent.is_processing && agent.state !== "Error" ? "Working" : agent.state
 }
 
 function agentProviderRunId(
