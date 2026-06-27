@@ -674,6 +674,7 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.equal(auditResult.ok, true)
   assert.match(auditResult.message ?? "", /home_extension\.invoke\.denied lookup denied/)
   assert.match(auditResult.message ?? "", /actor: home=alice caller=bob agent=A1 lease=lease-1 leased=leased-agent-1 worker=worker-1 machine=machine-1 run=run-1/)
+  assert.match(auditResult.message ?? "", /boundary: home grants, validates, and executes; worker receives projected tools only; credentials stay home/)
   assert.match(auditResult.message ?? "", /tool: script:lookup as=lookup safety=read timeout=30s hash=hash-tool-1/)
   assert.match(auditResult.message ?? "", /invocation: id=invoke-1 call=call-1 attempt=2 idempotency=idem-1/)
   assert.match(auditResult.message ?? "", /result: executor=script ok=false bytes=0 duration=24ms/)

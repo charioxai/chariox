@@ -82,6 +82,7 @@ test("extension slash command renders remote sync status, retry, and audit count
   assert.match(harness.notices[1] ?? "", /agent-1 remote extension sync: synced/)
   assert.match(harness.notices[1] ?? "", /manifest hash: fedcba9876543210/)
   assert.match(harness.notices[2] ?? "", /home_extension\.invoke\.denied lookup denied/)
+  assert.match(harness.notices[2] ?? "", /boundary: home grants, validates, and executes; worker receives projected tools only; credentials stay home/)
   assert.match(harness.notices[2] ?? "", /tool: script:lookup as=lookup safety=read/)
   assert.match(harness.notices[2] ?? "", /error: worker mismatch/)
   assert.deepEqual(harness.footers, [

@@ -22,6 +22,8 @@ import {
   homeExtensionAuditRecoveryAction,
 } from "./home-extension-audit-policy.js"
 
+const HOME_EXTENSION_AUDIT_BOUNDARY = "home grants, validates, and executes; worker receives projected tools only; credentials stay home"
+
 export type RemoteExtensionSyncNextActionStatus = {
   state?: string | null
   manifest_hash?: string | null
@@ -242,6 +244,7 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
       fieldPart("run", payload.worker_provider_run_id ?? payload.active_worker_provider_run_id),
     ].filter(Boolean)
     if (actor.length > 0) rows.push(`  actor: ${actor.join(" ")}`)
+    rows.push(`  boundary: ${HOME_EXTENSION_AUDIT_BOUNDARY}`)
     if (Object.keys(tool).length > 0) {
       const details = [
         typeof tool.kind === "string" && typeof tool.name === "string" ? `${tool.kind}:${tool.name}` : null,
