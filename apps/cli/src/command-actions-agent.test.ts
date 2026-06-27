@@ -747,6 +747,69 @@ test("agent spawn with machine names workers without provider CLIs", async () =>
   assert.equal(flashedMessage, "remote machine worker has no accepting kernel with provider CLIs; next: configure provider CLIs on kernel kernel-worker or choose another worker")
 })
 
+test("agent spawn with machine blocks workers without authenticated provider accounts", async () => {
+  let spawnCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    currentProviderId: () => "opencode",
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-worker",
+      machine_id: "machine-worker",
+      accepting_remote_leases: true,
+      available_providers: ["opencode"],
+      provider_accounts: [{ provider: "opencode", state: "not_configured", alias: "daily" }],
+    }],
+    spawnAgent: async () => {
+      spawnCount += 1
+      throw new Error("should not spawn")
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --machine worker --dir /srv/project",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
+  })
+
+  assert.equal(spawnCount, 0)
+  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with authenticated provider accounts; next: configure/import or refresh provider accounts on kernel kernel-worker or choose another worker")
+})
+
+test("agent spawn with machine prefers account recovery when selected provider is present but unauthenticated", async () => {
+  let spawnCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    currentProviderId: () => "opencode",
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-codex",
+      machine_id: "machine-worker",
+      accepting_remote_leases: true,
+      available_providers: ["codex"],
+    }, {
+      kernel_id: "kernel-opencode",
+      machine_id: "machine-worker",
+      accepting_remote_leases: true,
+      available_providers: ["opencode"],
+      provider_accounts: [{ provider: "opencode", state: "not_configured", alias: "daily" }],
+    }],
+    spawnAgent: async () => {
+      spawnCount += 1
+      throw new Error("should not spawn")
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --machine worker --dir /srv/project",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
+  })
+
+  assert.equal(spawnCount, 0)
+  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with an authenticated opencode account; next: configure/import or refresh the opencode account on kernel kernel-opencode or choose another worker")
+})
+
 test("agent spawn with machine blocks unknown worker readiness", async () => {
   let spawnCount = 0
   let flashedMessage = ""

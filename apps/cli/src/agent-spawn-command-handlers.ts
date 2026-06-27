@@ -172,6 +172,10 @@ async function validateRemoteMachineSpawnTarget(
     const kernelTargets = formatKernelTargets(kernels)
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on ${kernelTargets} or choose another worker`)
   }
+  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")) {
+    const kernelTargets = formatKernelTargets(kernels)
+    throw new Error(`remote machine ${machineRef} has no ready worker kernel with authenticated provider accounts; next: configure/import or refresh provider accounts on ${kernelTargets} or choose another worker`)
+  }
   if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
     throw new Error(`remote machine ${machineRef} has no kernel with known remote readiness; next: run /machine kernels ${machineRef}, refresh relay inventory, or choose another worker`)
   }
@@ -179,6 +183,17 @@ async function validateRemoteMachineSpawnTarget(
     throw new Error(`remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker`)
   }
   if (!ready.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
+    const providerCandidates = kernels.filter((kernel) => (
+      kernel.accepting_remote_leases === true
+      && (kernel.available_providers ?? []).includes(provider)
+    ))
+    if (
+      providerCandidates.length > 0
+      && providerCandidates.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")
+    ) {
+      const kernelTargets = formatKernelTargets(providerCandidates)
+      throw new Error(`remote machine ${machineRef} has no ready worker kernel with an authenticated ${provider} account; next: configure/import or refresh the ${provider} account on ${kernelTargets} or choose another worker`)
+    }
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider`)
   }
 }

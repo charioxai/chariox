@@ -149,6 +149,36 @@ test("waiting room remote rows distinguish provider and unknown readiness", () =
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-unknown")?.value, "unknown no providers · next: run /machine kernels machine-1; refresh unknown-kernel readiness or reconnect that kernel before launching agents")
 })
 
+test("waiting room remote rows flag kernels with missing provider accounts", () => {
+  const rows = waitingRoomRemoteRows(
+    { focus: "remote-kernel", machineIndex: 0, remoteKernelIndex: 0 },
+    {
+      relay: { configured: true, connected: true },
+      machines: [{
+        machine_id: "machine-1",
+        display_name: "Worker",
+        trust_status: "approved" as const,
+        online: true,
+        pending: false,
+        kernel_count: 1,
+        available_providers: ["codex"],
+      }],
+      kernels: [{
+        kernel_id: "kernel-account",
+        machine_id: "machine-1",
+        relay_alias: "account-kernel",
+        accepting_remote_leases: true,
+        available_providers: ["codex"],
+        provider_accounts: [{ provider: "codex", state: "not_configured", alias: "daily" }],
+      }],
+    },
+    24,
+  )
+
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 needs-account=1 leased=0 · next: run /machine kernels Worker; configure/import or refresh provider accounts on Worker")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-account")?.value, "needs-account codex · next: run /machine kernels machine-1; configure/import or refresh provider accounts on account-kernel")
+})
+
 test("waiting room remote helpers classify deletable and attachable inventory", () => {
   assert.deepEqual(waitingRoomRemoteKernels({}), [])
   assert.equal(waitingRoomRemoteMachineCanDelete({
@@ -161,6 +191,20 @@ test("waiting room remote helpers classify deletable and attachable inventory", 
     machine_id: "machine-1",
     accepting_remote_leases: false,
   }), false)
+  assert.equal(waitingRoomRemoteKernelIsAttachable({
+    kernel_id: "kernel-1",
+    machine_id: "machine-1",
+    accepting_remote_leases: true,
+    available_providers: ["codex"],
+    provider_accounts: [{ provider: "codex", state: "not_configured" }],
+  }), false)
+  assert.equal(waitingRoomRemoteKernelIsAttachable({
+    kernel_id: "kernel-1",
+    machine_id: "machine-1",
+    accepting_remote_leases: true,
+    available_providers: ["codex"],
+    provider_accounts: [{ provider: "codex", state: "authenticated" }],
+  }), true)
   assert.equal(waitingRoomRemoteKernelCanDelete({
     kernel_id: "kernel-1",
     machine_id: "machine-1",

@@ -185,7 +185,7 @@ export function waitingRoomRemoteMachineCanDelete(machine: WaitingRoomRemoteMach
 }
 
 export function waitingRoomRemoteKernelIsAttachable(kernel: WaitingRoomRemoteKernel) {
-  return kernel.accepting_remote_leases !== false
+  return remoteKernelReadiness(kernel) === "ready"
 }
 
 export function waitingRoomRemoteKernelCanDelete(kernel: WaitingRoomRemoteKernel) {
@@ -202,6 +202,7 @@ function waitingRoomMachineReadinessSummary(machine: WaitingRoomRemoteMachine, k
   const leased = kernels.reduce((sum, kernel) => sum + (kernel.leased_agent_count ?? 0), 0)
   const parts = [`ready=${counts.ready}/${kernels.length}`]
   if (counts["needs-provider"] > 0) parts.push(`needs-provider=${counts["needs-provider"]}`)
+  if (counts["needs-account"] > 0) parts.push(`needs-account=${counts["needs-account"]}`)
   if (counts.blocked > 0) parts.push(`blocked=${counts.blocked}`)
   if (counts.unknown > 0) parts.push(`unknown=${counts.unknown}`)
   parts.push(`leased=${leased}`)
@@ -229,6 +230,9 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
     return `run /machine kernels ${machineLabel}; configure provider CLIs on ${machineLabel}`
   }
+  if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")) {
+    return `run /machine kernels ${machineLabel}; configure/import or refresh provider accounts on ${machineLabel}`
+  }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
     return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
   }
@@ -254,6 +258,9 @@ function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): str
   }
   if (readiness === "needs-provider") {
     return `${inspect}configure provider CLIs on ${kernelLabel}`
+  }
+  if (readiness === "needs-account") {
+    return `${inspect}configure/import or refresh provider accounts on ${kernelLabel}`
   }
   return ""
 }
