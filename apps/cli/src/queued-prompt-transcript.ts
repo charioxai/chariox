@@ -3,7 +3,6 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
-import { promptOriginFromRecord, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
@@ -13,8 +12,6 @@ export type QueuedPromptTranscriptSyncResult = {
   changed: boolean
 }
 
-export const QUEUED_PROMPT_STEER_EXTERNAL_REASON =
-  "Steering is unavailable while the active provider turn was started outside Arroba."
 export const QUEUED_PROMPT_STALE_REASON =
   "This prompt is no longer waiting in the queue."
 
@@ -53,7 +50,6 @@ export function syncQueuedPromptEntriesForAgent(
   }
   const queuedById = new Map(queuedPrompts.map((prompt) => [prompt.id, prompt]))
   const queuedIds = new Set(queuedById.keys())
-  const steerDisabled = promptOriginIsExternal(activePromptOrigin(session, agentId))
   let changed = false
   const retained = entries.flatMap((entry) => {
     if (!entry.queuedPrompt) {
@@ -66,8 +62,8 @@ export function syncQueuedPromptEntriesForAgent(
     }
     const prompt = queuedById.get(entry.queuedPrompt.promptId)
     const actionability = prompt
-      ? queuedPromptActionabilityForPrompt(session, agentId, prompt, steerDisabled)
-      : queuedPromptActionability(entry.queuedPrompt.status, steerDisabled)
+      ? queuedPromptActionabilityForPrompt(session, agentId, prompt)
+      : queuedPromptActionability(entry.queuedPrompt.status)
     if (!queuedPromptActionabilityMatches(entry.queuedPrompt, actionability)) {
       changed = true
       return [{
@@ -93,7 +89,7 @@ export function syncQueuedPromptEntriesForAgent(
     changed = true
     nextEntries = [
       ...nextEntries,
-      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), session, steerDisabled),
+      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), session),
     ]
   }
   if (!changed) {
@@ -140,9 +136,8 @@ function queuedPromptTranscriptEntry(
   agentId: string,
   id: number,
   session: RuntimeSession,
-  steerDisabled: boolean,
 ): TranscriptEntry {
-  const actionability = queuedPromptActionabilityForPrompt(session, agentId, prompt, steerDisabled)
+  const actionability = queuedPromptActionabilityForPrompt(session, agentId, prompt)
   return {
     id,
     role: "user",
@@ -157,17 +152,16 @@ function queuedPromptTranscriptEntry(
 
 export function queuedPromptActionability(
   status: string | null | undefined,
-  steerDisabled: boolean,
 ): QueuedPromptActionability {
   const normalizedStatus = normalizeQueuedPromptStatus(status)
   const queued = normalizedStatus === "queued"
   return {
     status: normalizedStatus,
-    steerDisabled,
-    canSteer: queued && !steerDisabled,
+    steerDisabled: !queued,
+    canSteer: queued,
     canCancel: queued,
     steerDisabledReason: queued
-      ? steerDisabled ? QUEUED_PROMPT_STEER_EXTERNAL_REASON : null
+      ? null
       : QUEUED_PROMPT_STALE_REASON,
     cancelDisabledReason: queued ? null : QUEUED_PROMPT_STALE_REASON,
   }
@@ -177,11 +171,10 @@ function queuedPromptActionabilityForPrompt(
   session: RuntimeSession,
   agentId: string,
   prompt: PromptQueueItem,
-  fallbackSteerDisabled: boolean,
 ): QueuedPromptActionability {
   const projected = session.agent_activity?.[agentId]?.queued_prompt_controls?.[prompt.id]
   if (!projected) {
-    return queuedPromptActionability(prompt.status, fallbackSteerDisabled)
+    return queuedPromptActionability(prompt.status)
   }
   return {
     status: normalizeQueuedPromptStatus(projected.status),
@@ -207,30 +200,6 @@ function queuedPromptActionabilityMatches(
     && current.canCancel === next.canCancel
     && current.steerDisabledReason === next.steerDisabledReason
     && current.cancelDisabledReason === next.cancelDisabledReason
-}
-
-function activePromptOrigin(session: RuntimeSession, agentId: string): string | null {
-  if (session.agent_activity) {
-    const projectedActivity = session.agent_activity[agentId]
-    const activeTurnOrigin = promptOriginFromRecord(projectedActivity?.active_turn)
-    if (activeTurnOrigin) {
-      return activeTurnOrigin
-    }
-    if (projectedActivity && !agentRuntimeActivityIsBusy(projectedActivity)) {
-      return null
-    }
-  }
-  const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
-  if (stateActivePrompt) {
-    return promptOriginFromRecord(stateActivePrompt, "arroba")
-  }
-  if (session.agent_activity) {
-    return null
-  }
-  if (session.active_prompt?.target_agent_id === agentId) {
-    return promptOriginFromRecord(session.active_prompt, "arroba")
-  }
-  return null
 }
 
 function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {

@@ -3,7 +3,6 @@ import test from "node:test"
 
 import type { RuntimeSession, TranscriptEntry } from "./cli-types.js"
 import {
-  QUEUED_PROMPT_STEER_EXTERNAL_REASON,
   syncQueuedPromptEntriesByAgent,
   syncQueuedPromptEntriesForAgent,
 } from "./queued-prompt-transcript.js"
@@ -28,7 +27,7 @@ test("syncQueuedPromptEntriesForAgent appends queued prompts and removes settled
   assert.equal(synced.entries.at(-1)?.text, "new queued")
 })
 
-test("syncQueuedPromptEntriesForAgent disables steering behind external active prompts", () => {
+test("syncQueuedPromptEntriesForAgent does not infer steering controls from external active prompts", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({
@@ -45,10 +44,11 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active p
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent normalizes legacy external active prompt origins", () => {
+test("syncQueuedPromptEntriesForAgent ignores legacy external active prompt origins for steering", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({
@@ -65,10 +65,11 @@ test("syncQueuedPromptEntriesForAgent normalizes legacy external active prompt o
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent disables steering behind external active turns", () => {
+test("syncQueuedPromptEntriesForAgent does not infer steering controls from external active turns", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({}, {
@@ -92,10 +93,11 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active t
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent normalizes projected external active turn origins", () => {
+test("syncQueuedPromptEntriesForAgent ignores projected external active turn origins for steering", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({}, {
@@ -119,10 +121,11 @@ test("syncQueuedPromptEntriesForAgent normalizes projected external active turn 
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent infers external ownership from active turn metadata", () => {
+test("syncQueuedPromptEntriesForAgent ignores active turn external metadata for steering", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({}, {
@@ -147,10 +150,11 @@ test("syncQueuedPromptEntriesForAgent infers external ownership from active turn
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent infers external ownership from prompt state metadata", () => {
+test("syncQueuedPromptEntriesForAgent ignores prompt state external metadata for steering", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({
@@ -160,10 +164,11 @@ test("syncQueuedPromptEntriesForAgent infers external ownership from prompt stat
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
-test("syncQueuedPromptEntriesForAgent infers external ownership from top-level active prompt metadata", () => {
+test("syncQueuedPromptEntriesForAgent ignores top-level active prompt external metadata for steering", () => {
   const session = sessionWithoutPromptStates({
     active_prompt: activePromptWithExternalMetadata(),
     queued_prompts: [{
@@ -177,7 +182,8 @@ test("syncQueuedPromptEntriesForAgent infers external ownership from top-level a
   const synced = syncQueuedPromptEntriesForAgent([], session, "agent-1")
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
 test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when projected activity exists", () => {
@@ -278,7 +284,53 @@ test("syncQueuedPromptEntriesForAgent prefers projected queued prompt controls",
   })
 })
 
-test("syncQueuedPromptEntriesForAgent uses prompt state origin when projected activity is busy without active turn", () => {
+test("syncQueuedPromptEntriesForAgent uses projected queue controls to disable steering behind external turns", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          queued_prompt_controls: {
+            "prompt-1": {
+              prompt_id: "prompt-1",
+              status: "queued",
+              can_steer: false,
+              can_cancel: true,
+              steer_disabled_reason: "Kernel projected external turn reason.",
+              cancel_disabled_reason: null,
+            },
+          },
+          active_turn: {
+            prompt_id: "prompt-external",
+            provider_run_id: "run-external",
+            prompt_origin: "external",
+            status: "running",
+            phase: "streaming",
+            started_at_ms: 2,
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
+    agentId: "agent-1",
+    promptId: "prompt-1",
+    status: "queued",
+    steerDisabled: true,
+    canSteer: false,
+    canCancel: true,
+    steerDisabledReason: "Kernel projected external turn reason.",
+    cancelDisabledReason: null,
+  })
+})
+
+test("syncQueuedPromptEntriesForAgent ignores prompt state origin when projected activity is busy without active turn", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
     sessionWithQueuedPrompt({
@@ -303,7 +355,8 @@ test("syncQueuedPromptEntriesForAgent uses prompt state origin when projected ac
   )
 
   assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
+  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
 })
 
 test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projected activity is idle", () => {
@@ -515,7 +568,7 @@ function queuedPrompt(agentId: string, promptId: string, steerDisabled = false):
     steerDisabled,
     canSteer: !steerDisabled,
     canCancel: true,
-    steerDisabledReason: steerDisabled ? QUEUED_PROMPT_STEER_EXTERNAL_REASON : null,
+    steerDisabledReason: steerDisabled ? "disabled by test" : null,
     cancelDisabledReason: null,
   }
 }
