@@ -13,6 +13,7 @@ import {
   sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
+import { sessionPromptWorkSummary } from "./shell-agent-activity.js"
 
 export type SessionRuntimeStatusFormatOptions = {
   readonly slices?: readonly SliceRecord[]
@@ -180,10 +181,8 @@ function sliceForRemoteAgent(
 }
 
 function formatPromptSummary(session: RuntimeSession): string {
-  const active = session.active_prompt ? "active=1" : "active=0"
-  const queued = `queued=${session.queued_prompts.length}`
-  const busyAgents = session.agents.filter((agent) => agent.is_processing || agent.state === "Working").length
-  return `${active}, ${queued}, busy_agents=${busyAgents}`
+  const summary = sessionPromptWorkSummary(session)
+  return `active=${summary.active}, queued=${summary.queued}, busy_agents=${summary.busyAgents}`
 }
 
 function formatAgentSummary(session: RuntimeSession): string {

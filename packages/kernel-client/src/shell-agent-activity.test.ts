@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { sessionAgentIsBusy, sessionHasActivePrompt, sessionPromptForAgent } from "./shell-agent-activity.js"
+import {
+  sessionAgentIsBusy,
+  sessionHasActivePrompt,
+  sessionPromptForAgent,
+  sessionPromptWorkSummary,
+} from "./shell-agent-activity.js"
 import { makeSession } from "./shell-executor.test-support.js"
 
 test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", () => {
@@ -31,6 +36,11 @@ test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", ()
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 0,
+    queued: 0,
+    busyAgents: 0,
+  })
 })
 
 test("sessionAgentIsBusy treats missing projected agent activity as idle", () => {
@@ -53,6 +63,73 @@ test("sessionAgentIsBusy treats missing projected agent activity as idle", () =>
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 0,
+    queued: 0,
+    busyAgents: 0,
+  })
+})
+
+test("sessionPromptWorkSummary counts projected active turns and prompt state queues", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale queued",
+      status: "Queued",
+    }],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+      "agent-2": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-2",
+          provider_run_id: "run-2",
+          prompt_origin: "arroba",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 1,
+    busyAgents: 1,
+  })
 })
 
 test("sessionHasActivePrompt follows projected active turn identity", () => {

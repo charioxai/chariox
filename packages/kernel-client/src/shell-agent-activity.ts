@@ -1,6 +1,42 @@
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
 
+export type SessionPromptWorkSummary = {
+  readonly active: number
+  readonly queued: number
+  readonly busyAgents: number
+}
+
+export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
+  const promptStates = session.prompt_states
+  const queued = promptStates
+    ? Object.values(promptStates).reduce((count, state) => count + (state?.queued_prompts?.length ?? 0), 0)
+    : session.queued_prompts.length
+
+  if (session.agent_activity) {
+    const activities = Object.values(session.agent_activity)
+    return {
+      active: activities.filter(agentRuntimeActivityHasActivePrompt).length,
+      queued,
+      busyAgents: activities.filter(agentRuntimeActivityIsBusy).length,
+    }
+  }
+
+  if (promptStates) {
+    return {
+      active: Object.values(promptStates).filter((state) => Boolean(state?.active_prompt)).length,
+      queued,
+      busyAgents: legacyBusyAgentCount(session),
+    }
+  }
+
+  return {
+    active: session.active_prompt ? 1 : 0,
+    queued,
+    busyAgents: legacyBusyAgentCount(session),
+  }
+}
+
 export function sessionAgentIsBusy(session: RuntimeSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) {
     return false
@@ -79,4 +115,19 @@ function promptStateForAgent(session: RuntimeSession, agentId: string) {
 function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: string): boolean {
   return Boolean(session.active_prompt?.target_agent_id === agentId)
     || Boolean(session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId))
+}
+
+function agentRuntimeActivityHasActivePrompt(
+  activity: NonNullable<RuntimeSession["agent_activity"]>[string],
+): boolean {
+  if (activity.active_turn) {
+    return activity.active_turn.status !== "none" && activity.active_turn.status !== "queued"
+  }
+  return activity.prompt_status === "running"
+    || activity.prompt_status === "cancelling"
+    || activity.prompt_status === "settling"
+}
+
+function legacyBusyAgentCount(session: RuntimeSession): number {
+  return session.agents.filter((agent) => agent.is_processing || agent.state === "Working").length
 }

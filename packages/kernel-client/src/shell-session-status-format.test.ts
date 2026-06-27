@@ -129,3 +129,34 @@ test("formatSessionRuntimeStatus renders slice provider auth recovery", () => {
   assert.match(rendered, /slice_auth=missing codex/)
   assert.match(rendered, /next: run \/slice doctor linux-dev; configure missing provider account codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex before sending prompts to agents in that slice/)
 })
+
+test("formatSessionRuntimeStatus uses projected activity over stale legacy prompt state", () => {
+  const session = makeSession({
+    active_prompt: { id: "prompt-stale" } as never,
+    queued_prompts: [{ id: "queued-stale" } as never],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({
+      id: "agent-1",
+      agent_ref: "agent-1",
+      state: "Working",
+      is_processing: true,
+    })],
+  })
+
+  const rendered = formatSessionRuntimeStatus(session)
+
+  assert.match(rendered, /prompts: active=0, queued=0, busy_agents=0/)
+})
