@@ -343,11 +343,23 @@ async function resolveMachineSpawnKernelRef(
   if (ready.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}; fix the listed readiness/account issue or choose another worker` }
   }
-  const providerReady = ready.find((kernel) => (kernel.available_providers ?? []).includes(provider))
-  if (!providerReady) {
+  const providerCandidates = ready.filter((kernel) => (kernel.available_providers ?? []).includes(provider))
+  if (providerCandidates.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: run /machine kernels ${machineRef}; choose a ready worker with ${provider}, configure/import its provider account, or change the agent provider` }
   }
+  const providerReady = providerCandidates.find((kernel) => remoteKernelHasAuthenticatedProviderAccount(kernel, provider))
+  if (!providerReady) {
+    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel with an authenticated ${provider} account; next: run /machine kernels ${machineRef}; configure/import or refresh the ${provider} account, or choose another worker` }
+  }
   return { ok: true, kernelRef: providerReady.kernel_id }
+}
+
+function remoteKernelHasAuthenticatedProviderAccount(kernel: RelayKernelPresence, provider: string): boolean {
+  if (!("provider_accounts" in kernel)) {
+    return true
+  }
+  const account = (kernel.provider_accounts ?? []).find((entry) => entry.provider === provider)
+  return account?.state === "authenticated"
 }
 
 async function listAgentInspectSlices(deps: ShellAgentCommandDeps): Promise<{

@@ -834,6 +834,43 @@ test("executeShellCommand rejects machine spawn when no ready kernel supports th
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
 
+test("executeShellCommand rejects machine spawn when provider account is not authenticated", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    return {
+      RemoteMachineKernelsListed: {
+        kernels: [{
+          kernel_id: "worker-codex",
+          machine_id: "machine-1",
+          accepting_remote_leases: true,
+          available_providers: ["codex"],
+          provider_accounts: [{
+            provider: "codex",
+            state: "not_configured",
+            auth_type: "api",
+          }],
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /no ready worker kernel with an authenticated codex account/)
+  assert.match(result.message ?? "", /next: run \/machine kernels machine-1; configure\/import or refresh the codex account, or choose another worker/)
+  assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
+})
+
 test("executeShellCommand forwards machine spawn directory placement after resolving kernels", async () => {
   const requests: Record<string, unknown>[] = []
   const agent = makeAgent({
