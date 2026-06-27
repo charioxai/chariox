@@ -66,20 +66,12 @@ pub(crate) fn waiting_room_session_activity_summary(
         .filter(|(_, state)| state.active_prompt().is_some())
         .map(|(agent_id, _)| agent_id.as_str())
         .collect();
-    let active_prompt_count = if active_prompt_agent_ids.is_empty() && session.has_active_prompt() {
-        1
-    } else {
-        active_prompt_agent_ids.len()
-    };
-    let queued_prompt_count = if session.prompt_states().is_empty() {
-        session.queued_prompts().len()
-    } else {
-        session
-            .prompt_states()
-            .values()
-            .map(|state| state.queued_prompts().len())
-            .sum()
-    };
+    let active_prompt_count = active_prompt_agent_ids.len();
+    let queued_prompt_count = session
+        .prompt_states()
+        .values()
+        .map(|state| state.queued_prompts().len())
+        .sum();
     let mut working_agent_count = session
         .agents()
         .iter()
@@ -200,7 +192,9 @@ mod tests {
         waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
         waiting_room_workflow_activity_summary,
     };
-    use crate::session::{RuntimeSession, WorkflowRun, WorkflowRunStatus};
+    use crate::session::{
+        PromptQueueItem, PromptStatus, RuntimeSession, WorkflowRun, WorkflowRunStatus,
+    };
 
     fn session_with_agents(agents: Vec<AgentInstance>) -> RuntimeSession {
         let mut session =
@@ -355,6 +349,45 @@ mod tests {
         assert_eq!(summary.agent_count, 3);
         assert_eq!(summary.working_agent_count, 2);
         assert_eq!(summary.error_agent_count, 1);
+        assert_eq!(summary.active_prompt_count, 0);
+        assert_eq!(summary.queued_prompt_count, 0);
+    }
+
+    #[test]
+    fn session_activity_ignores_legacy_top_level_prompt_without_agent_state() {
+        let session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
+        let mut serialized = serde_json::to_value(&session).expect("session should serialize");
+        serialized["active_prompt"] = serde_json::to_value(PromptQueueItem::new(
+            "legacy-prompt",
+            "attachment-1",
+            "agent-1",
+            "legacy prompt",
+            PromptStatus::Running,
+        ))
+        .expect("prompt should serialize");
+        let restored: RuntimeSession =
+            serde_json::from_value(serialized).expect("legacy session should deserialize");
+
+        assert!(restored.has_active_prompt());
+        assert!(restored.active_prompt_for_agent("agent-1").is_none());
+        let agent = restored
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+        assert_eq!(
+            waiting_room_agent_activity_summary(
+                &restored,
+                agent,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .active_prompt_count,
+            0
+        );
+
+        let summary =
+            waiting_room_session_activity_summary(&restored, crate::session::DEFAULT_LOCAL_USER_ID);
+        assert_eq!(summary.working_agent_count, 0);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
     }
