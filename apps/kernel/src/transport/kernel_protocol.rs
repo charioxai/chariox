@@ -726,6 +726,7 @@ mod tests {
                 recipient_attachment_ids: vec!["attachment-1".to_string()],
                 pending_recipient_attachment_ids: vec!["attachment-1".to_string()],
                 bytes: vec![b'x'; 16 * 1024],
+                external_observation_metadata: None,
             })
             .collect::<Vec<_>>();
 

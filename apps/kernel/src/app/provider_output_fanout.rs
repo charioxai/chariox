@@ -138,6 +138,7 @@ impl ProviderOutputFanout {
                 recipient_attachment_ids: Vec::new(),
                 pending_recipient_attachment_ids: Vec::new(),
                 bytes: Vec::new(),
+                external_observation_metadata: None,
             };
         }
         let recipient_attachment_ids =

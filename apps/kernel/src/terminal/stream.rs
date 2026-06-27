@@ -5,6 +5,8 @@ use std::sync::Mutex as StdMutex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
+use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
+
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
 const DEFAULT_OUTPUT_DRAIN_JSON_LIMIT: usize = 128 * 1024;
@@ -44,6 +46,23 @@ pub struct TerminalOutputRecord {
     pub recipient_attachment_ids: Vec<String>,
     pub pending_recipient_attachment_ids: Vec<String>,
     pub bytes: Vec<u8>,
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    pub external_observation_metadata: Option<TerminalOutputExternalObservationMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOutputExternalObservationMetadata {
+    pub source: SessionHistoryEntrySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_observation: Option<SessionHistoryExternalObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +196,36 @@ impl TerminalStreamStore {
                 merge_key,
                 recipient_attachment_ids,
                 bytes,
+            );
+        self.record_change();
+        record
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_external_observed_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+        external_observation_metadata: TerminalOutputExternalObservationMetadata,
+    ) -> TerminalOutputRecord {
+        let record = self
+            .inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .fan_out_external_observed_output(
+                session_id,
+                provider_run_id,
+                agent_id,
+                kind,
+                merge_key,
+                recipient_attachment_ids,
+                bytes,
+                external_observation_metadata,
             );
         self.record_change();
         record
@@ -445,11 +494,44 @@ impl TerminalStreamService {
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
+            external_observation_metadata: None,
         };
 
         if !self.try_coalesce_output_record(&record) {
             self.output_records.push(record.clone());
         }
+        self.enforce_pending_output_record_limits();
+        self.refresh_health();
+        record
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_external_observed_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+        external_observation_metadata: TerminalOutputExternalObservationMetadata,
+    ) -> TerminalOutputRecord {
+        let record = TerminalOutputRecord {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.map(str::to_string),
+            prompt_id: None,
+            source_attachment_id: None,
+            kind,
+            merge_key,
+            pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
+            recipient_attachment_ids,
+            bytes: bytes.to_vec(),
+            external_observation_metadata: Some(external_observation_metadata),
+        };
+
+        self.output_records.push(record.clone());
         self.enforce_pending_output_record_limits();
         self.refresh_health();
         record
@@ -477,6 +559,7 @@ impl TerminalStreamService {
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
+            external_observation_metadata: None,
         };
 
         if !self.try_coalesce_output_record(&record) {
@@ -829,7 +912,11 @@ fn terminal_output_record_json_bytes(record: &TerminalOutputRecord) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalOutputKind, TerminalStreamService, TerminalStreamStore};
+    use super::{
+        TerminalOutputExternalObservationMetadata, TerminalOutputKind, TerminalStreamService,
+        TerminalStreamStore,
+    };
+    use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
 
     #[test]
     fn records_terminal_input_and_fans_out_output() {
@@ -897,6 +984,55 @@ mod tests {
             vec!["attachment-2"]
         );
         assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn external_observed_output_records_carry_metadata() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderStatus,
+            Some("external:codex:thread-1:done".to_string()),
+            vec!["attachment-1".to_string()],
+            b"external_provider_history_updated",
+            TerminalOutputExternalObservationMetadata {
+                source: SessionHistoryEntrySource::ExternalProviderObserved,
+                external_provider: Some("codex".to_string()),
+                external_provider_session_id: Some("thread-1".to_string()),
+                external_provider_turn_id: Some("done".to_string()),
+                observed_at_ms: Some(1_234),
+                external_observation: Some(SessionHistoryExternalObservation {
+                    settles_active_prompt: true,
+                    passive_telemetry: false,
+                }),
+            },
+        );
+
+        let drained = terminal.drain_output_records("session-1", "attachment-1");
+        let metadata = drained[0]
+            .external_observation_metadata
+            .as_ref()
+            .expect("external observed metadata should survive drain");
+        assert_eq!(
+            metadata.source,
+            SessionHistoryEntrySource::ExternalProviderObserved
+        );
+        assert_eq!(metadata.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            metadata.external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(metadata.external_provider_turn_id.as_deref(), Some("done"));
+        assert_eq!(metadata.observed_at_ms, Some(1_234));
+        assert_eq!(
+            metadata
+                .external_observation
+                .as_ref()
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
+        );
     }
 
     #[test]

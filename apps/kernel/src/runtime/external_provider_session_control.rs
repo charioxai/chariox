@@ -10,7 +10,10 @@ use crate::app::{
     AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
 };
 use crate::error::DaemonError;
-use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry};
+use crate::history::{
+    ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntrySource,
+    SessionHistoryExternalObservation,
+};
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
@@ -21,10 +24,9 @@ use crate::provider::{
     ProviderResumeState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::{
-    CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession,
-    SessionAgentDefaults,
-};
+use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
+#[cfg(test)]
+use crate::session::{PromptOrigin, PromptStatus};
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
@@ -1009,15 +1011,24 @@ fn emit_observed_external_history_signal(
     let provider_run_id = provider_run_id
         .map(str::to_string)
         .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
-    app.terminal_stream_store().fan_out_output(
-        &target.session_id,
-        &provider_run_id,
-        Some(&target.agent_id),
-        crate::terminal::TerminalOutputKind::ProviderStatus,
-        entry.merge_key.clone(),
-        recipient_attachment_ids,
-        b"external_provider_history_updated",
-    );
+    app.terminal_stream_store()
+        .fan_out_external_observed_output(
+            &target.session_id,
+            &provider_run_id,
+            Some(&target.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderStatus,
+            entry.merge_key.clone(),
+            recipient_attachment_ids,
+            b"external_provider_history_updated",
+            crate::terminal::TerminalOutputExternalObservationMetadata {
+                source: SessionHistoryEntrySource::ExternalProviderObserved,
+                external_provider: entry.external_provider.clone(),
+                external_provider_session_id: entry.external_provider_session_id.clone(),
+                external_provider_turn_id: entry.external_provider_turn_id.clone(),
+                observed_at_ms: entry.observed_at_ms,
+                external_observation: entry.external_observation.clone(),
+            },
+        );
 }
 
 fn emit_observed_external_state_signal(
@@ -1040,20 +1051,34 @@ fn emit_observed_external_state_signal(
         .map(str::to_string)
         .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
     let latest_merge_key = latest_merge_key.unwrap_or("none");
-    app.terminal_stream_store().fan_out_output(
-        &target.session_id,
-        &provider_run_id,
-        Some(&target.agent_id),
-        crate::terminal::TerminalOutputKind::ProviderStatus,
-        Some(crate::history::external_provider_observed_state_merge_key(
-            &target.provider,
-            &target.provider_session_id,
-            reason,
-            latest_merge_key,
-        )),
-        recipient_attachment_ids,
-        b"external_provider_history_updated",
-    );
+    app.terminal_stream_store()
+        .fan_out_external_observed_output(
+            &target.session_id,
+            &provider_run_id,
+            Some(&target.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderStatus,
+            Some(crate::history::external_provider_observed_state_merge_key(
+                &target.provider,
+                &target.provider_session_id,
+                reason,
+                latest_merge_key,
+            )),
+            recipient_attachment_ids,
+            b"external_provider_history_updated",
+            crate::terminal::TerminalOutputExternalObservationMetadata {
+                source: SessionHistoryEntrySource::ExternalProviderObserved,
+                external_provider: Some(target.provider.clone()),
+                external_provider_session_id: Some(target.provider_session_id.clone()),
+                external_provider_turn_id: Some(reason.to_string()),
+                observed_at_ms: None,
+                external_observation: (reason == "active_prompt_settled").then_some(
+                    SessionHistoryExternalObservation {
+                        settles_active_prompt: reason == "active_prompt_settled",
+                        passive_telemetry: false,
+                    },
+                ),
+            },
+        );
 }
 
 fn attached_external_observer_targets(app: &DaemonApp) -> Vec<AttachedExternalObserverTarget> {
@@ -4096,6 +4121,24 @@ mod tests {
             crate::terminal::TerminalOutputKind::ProviderStatus
         );
         assert_eq!(records[0].bytes, b"external_provider_history_updated");
+        let metadata = records[0]
+            .external_observation_metadata
+            .as_ref()
+            .expect("external history refresh should carry observed metadata");
+        assert_eq!(
+            metadata.source,
+            SessionHistoryEntrySource::ExternalProviderObserved
+        );
+        assert_eq!(metadata.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            metadata.external_provider_session_id.as_deref(),
+            Some("thread-observed")
+        );
+        assert_eq!(
+            metadata.external_provider_turn_id.as_deref(),
+            Some("item-1")
+        );
+        assert_eq!(metadata.observed_at_ms, Some(42));
     }
 
     #[test]
@@ -4171,10 +4214,41 @@ mod tests {
         assert_eq!(records[0].bytes, b"external_provider_history_updated");
         assert_eq!(records[1].bytes, b"external_provider_history_updated");
         assert_eq!(
+            records[0]
+                .external_observation_metadata
+                .as_ref()
+                .map(|metadata| metadata.source),
+            Some(SessionHistoryEntrySource::ExternalProviderObserved)
+        );
+        assert_eq!(
             records[1].merge_key.as_deref(),
             Some(
                 "external:codex:thread-observed:state:active_prompt_settled:external:codex:thread-observed:task-complete-1"
             )
+        );
+        let state_metadata = records[1]
+            .external_observation_metadata
+            .as_ref()
+            .expect("state refresh should carry observed metadata");
+        assert_eq!(
+            state_metadata.source,
+            SessionHistoryEntrySource::ExternalProviderObserved
+        );
+        assert_eq!(state_metadata.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            state_metadata.external_provider_session_id.as_deref(),
+            Some("thread-observed")
+        );
+        assert_eq!(
+            state_metadata.external_provider_turn_id.as_deref(),
+            Some("active_prompt_settled")
+        );
+        assert_eq!(
+            state_metadata
+                .external_observation
+                .as_ref()
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
         );
     }
 
