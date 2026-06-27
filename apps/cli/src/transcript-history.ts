@@ -1,5 +1,6 @@
 import {
   historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
@@ -216,7 +217,7 @@ export function hydrateTranscriptEntries(
           if (options.externalProviderTurnId !== undefined) candidate.externalProviderTurnId = options.externalProviderTurnId
           if (options.observedAtMs !== undefined) candidate.observedAtMs = options.observedAtMs
           if (options.externalObservation !== undefined) {
-            const externalObservation = mergeTranscriptExternalObservation(
+            const externalObservation = mergeExternalProviderObservation(
               candidate.externalObservation,
               options.externalObservation,
             )
@@ -254,7 +255,7 @@ export function hydrateTranscriptEntries(
     if (options.externalProviderTurnId !== undefined) nextEntry.externalProviderTurnId = options.externalProviderTurnId
     if (options.observedAtMs !== undefined) nextEntry.observedAtMs = options.observedAtMs
     if (options.externalObservation !== undefined) {
-      const externalObservation = mergeTranscriptExternalObservation(
+      const externalObservation = mergeExternalProviderObservation(
         nextEntry.externalObservation,
         options.externalObservation,
       )
@@ -381,7 +382,7 @@ function applyEntryMetadata(
   if (options.externalProviderTurnId !== undefined) entry.externalProviderTurnId = options.externalProviderTurnId
   if (options.observedAtMs !== undefined) entry.observedAtMs = options.observedAtMs
   if (options.externalObservation !== undefined) {
-    const externalObservation = mergeTranscriptExternalObservation(
+    const externalObservation = mergeExternalProviderObservation(
       entry.externalObservation,
       options.externalObservation,
     )
@@ -451,7 +452,7 @@ function mergeStitchedHistoryMetadata(
       target.observedAtMs = older.observedAtMs
     }
     if (older.externalObservation !== undefined || newer.externalObservation !== undefined) {
-      const externalObservation = mergeTranscriptExternalObservation(
+      const externalObservation = mergeExternalProviderObservation(
         older.externalObservation,
         newer.externalObservation,
       )
@@ -498,30 +499,11 @@ function mergeHistoryExternalObservation(
   if (target.observed_at_ms === undefined && incoming.observed_at_ms !== undefined) {
     target.observed_at_ms = incoming.observed_at_ms
   }
-  const externalObservation = mergeTranscriptExternalObservation(
+  const externalObservation = mergeExternalProviderObservation(
     target.external_observation,
     incoming.external_observation,
   )
   if (externalObservation !== undefined) target.external_observation = externalObservation
-}
-
-function mergeTranscriptExternalObservation(
-  existing: TranscriptEntry["externalObservation"] | undefined,
-  incoming: TranscriptEntry["externalObservation"] | undefined,
-): TranscriptEntry["externalObservation"] | undefined {
-  if (!existing) {
-    return incoming
-  }
-  if (!incoming) {
-    return existing
-  }
-  const settlesActivePrompt = existing.settles_active_prompt || incoming.settles_active_prompt
-  return {
-    settles_active_prompt: settlesActivePrompt,
-    passive_telemetry: settlesActivePrompt
-      ? false
-      : existing.passive_telemetry === true || incoming.passive_telemetry === true,
-  }
 }
 
 function historyEntryIdentityOptions(

@@ -33,6 +33,25 @@ export function historyEntryExternalProviderObservedMetadata(
   }
 }
 
+export function mergeExternalProviderObservation(
+  existing: SessionHistoryExternalObservation | null | undefined,
+  incoming: SessionHistoryExternalObservation | null | undefined,
+): SessionHistoryExternalObservation | null | undefined {
+  if (!existing) {
+    return incoming
+  }
+  if (!incoming) {
+    return existing
+  }
+  const settlesActivePrompt = existing.settles_active_prompt || incoming.settles_active_prompt
+  return {
+    settles_active_prompt: settlesActivePrompt,
+    passive_telemetry: settlesActivePrompt
+      ? false
+      : existing.passive_telemetry === true || incoming.passive_telemetry === true,
+  }
+}
+
 export type ExternalProviderObservedKernelFields = {
   readonly source?: string | null | undefined
   readonly external_provider?: string | null | undefined

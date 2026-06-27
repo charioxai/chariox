@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
 
@@ -74,6 +75,36 @@ test("external provider observed metadata treats settlement as non-passive", () 
   })?.externalObservation, {
     settles_active_prompt: true,
     passive_telemetry: false,
+  })
+})
+
+test("external provider observation merge preserves settlement over passive telemetry", () => {
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  }), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  }, {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation(null, {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }), {
+    settles_active_prompt: false,
+    passive_telemetry: true,
   })
 })
 
