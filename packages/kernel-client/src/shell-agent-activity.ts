@@ -5,6 +5,7 @@ import {
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityStatus,
   normalizeAgentRuntimePromptStatus,
+  projectAgentRuntimeActivity,
 } from "./agent-activity.js"
 import type { AgentRuntimeActivityBusyInput } from "./agent-activity.js"
 
@@ -224,31 +225,23 @@ function agentRuntimeActivityHasActivePrompt(
   activity: NonNullable<RuntimeSession["agent_activity"]>[string],
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): boolean {
-  if (activity.active_turn) {
-    const activeTurnStatus = normalizeAgentRuntimePromptStatus(activity.active_turn.status)
-    if (
-      activeTurnStatus === "none"
-      || activeTurnStatus === "queued"
-      || activeTurnStatus === "completed"
-      || activeTurnStatus === "cancelled"
-    ) {
-      return false
-    }
-    return agentRuntimePromptStatusIsActivePrompt(activeTurnStatus) || activeTurnStatus === null
+  const projection = projectAgentRuntimeActivity(activity)
+  if (projection.activeTurn) {
+    return projection.activePromptCount > 0
   }
   if (agentRuntimeActivityIsBusy(activity) && promptState?.active_prompt) {
     return true
   }
-  return agentRuntimePromptStatusIsActivePrompt(normalizeAgentRuntimePromptStatus(activity.prompt_status))
+  return agentRuntimePromptStatusIsActivePrompt(projection.promptStatus)
 }
 
 function projectedActivePromptCount(
   activity: NonNullable<RuntimeSession["agent_activity"]>[string],
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): number {
-  const projectedCount = nonNegativeInteger(activity.active_prompt_count)
-  if (projectedCount !== null) {
-    return projectedCount
+  const projection = projectAgentRuntimeActivity(activity)
+  if (activity.active_prompt_count !== undefined && activity.active_prompt_count !== null) {
+    return projection.activePromptCount
   }
   return agentRuntimeActivityHasActivePrompt(activity, promptState) ? 1 : 0
 }
