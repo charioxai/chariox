@@ -13,32 +13,38 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Self { provider }
     }
 
+    fn provider_is(self, expected: &str) -> bool {
+        self.provider.trim().eq_ignore_ascii_case(expected)
+    }
+
     pub(crate) fn uses_explicit_completion(self) -> bool {
-        matches!(self.provider, "codex" | "opencode")
+        self.provider_is("codex") || self.provider_is("opencode")
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
-        match self.provider {
-            "codex" => {
-                text.starts_with("codex task_complete")
-                    || text.starts_with("codex event turn_aborted")
-                    || text.contains("\"type\":\"turn_aborted\"")
-                    || text.contains("\"type\": \"turn_aborted\"")
-            }
-            "claude" => text.starts_with("claude message completed"),
-            "opencode" => text.starts_with("opencode message completed"),
-            _ => false,
+        if self.provider_is("codex") {
+            return text.starts_with("codex task_complete")
+                || text.starts_with("codex event turn_aborted")
+                || text.contains("\"type\":\"turn_aborted\"")
+                || text.contains("\"type\": \"turn_aborted\"");
         }
+        if self.provider_is("claude") {
+            return text.starts_with("claude message completed");
+        }
+        if self.provider_is("opencode") {
+            return text.starts_with("opencode message completed");
+        }
+        false
     }
 
     pub(crate) fn status_is_passive_telemetry(self, text: &str) -> bool {
-        match self.provider {
-            "codex" => text.starts_with("codex token_count"),
-            "claude" => {
-                text.starts_with("claude last-prompt") || text.starts_with("claude ai-title")
-            }
-            _ => false,
+        if self.provider_is("codex") {
+            return text.starts_with("codex token_count");
         }
+        if self.provider_is("claude") {
+            return text.starts_with("claude last-prompt") || text.starts_with("claude ai-title");
+        }
+        false
     }
 
     pub(crate) fn turn_is_passive_telemetry(self, turn: &ObservedExternalProviderTurn) -> bool {
@@ -170,6 +176,9 @@ mod tests {
         assert!(
             !ExternalProviderObservationPolicy::for_provider("claude").uses_explicit_completion()
         );
+        assert!(
+            ExternalProviderObservationPolicy::for_provider(" Codex ").uses_explicit_completion()
+        );
     }
 
     #[test]
@@ -245,6 +254,22 @@ mod tests {
                 "{provider} policy must not settle from foreign marker {foreign_text:?}"
             );
         }
+    }
+
+    #[test]
+    fn provider_policy_tolerates_legacy_provider_casing_and_whitespace() {
+        let codex = ExternalProviderObservationPolicy::for_provider(" Codex ");
+        assert!(codex.status_settles("codex task_complete\n{}"));
+        assert!(codex.status_is_passive_telemetry("codex token_count\n{}"));
+
+        let claude = ExternalProviderObservationPolicy::for_provider(" CLAUDE ");
+        assert!(claude.status_settles("claude message completed\n{}"));
+        assert!(
+            claude.status_is_passive_telemetry("claude last-prompt {\"lastPrompt\":\"prompt\"}")
+        );
+
+        let opencode = ExternalProviderObservationPolicy::for_provider(" OpenCode ");
+        assert!(opencode.status_settles("opencode message completed\n{}"));
     }
 
     #[test]

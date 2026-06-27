@@ -159,10 +159,20 @@ impl ExternalProviderImportMetadata {
         external_provider: impl Into<String>,
         external_provider_session_provider_id: impl Into<String>,
     ) -> Self {
+        let external_provider = external_provider.into().trim().to_ascii_lowercase();
+        let external_provider_session_provider_id = external_provider_session_provider_id
+            .into()
+            .trim()
+            .to_string();
+        let external_provider_session_id = external_provider_session_id.into().trim().to_string();
+        let external_provider_session_id = (!external_provider_session_provider_id.is_empty()
+            && matches!(external_provider.as_str(), "codex" | "opencode" | "claude"))
+        .then(|| format!("{external_provider}:{external_provider_session_provider_id}"))
+        .unwrap_or(external_provider_session_id);
         Self {
-            external_provider_session_id: external_provider_session_id.into(),
-            external_provider: external_provider.into(),
-            external_provider_session_provider_id: external_provider_session_provider_id.into(),
+            external_provider_session_id,
+            external_provider,
+            external_provider_session_provider_id,
             observed_cursor: ExternalProviderObservedCursor::default(),
             last_observed_turn_id: None,
             last_observed_at_ms: None,
@@ -585,5 +595,18 @@ mod tests {
         assert!(first.same_observed_provider_session(&second));
         assert!(!first.same_observed_provider_session(&different));
         assert_eq!(first.import_order_key(), (1, "codex:thread-1"));
+    }
+
+    #[test]
+    fn external_provider_import_identity_is_canonicalized() {
+        let import = ExternalProviderImportMetadata::observed_history(
+            " Codex : stale-thread ",
+            " Codex ",
+            " thread-1 ",
+        );
+
+        assert_eq!(import.external_provider_session_id, "codex:thread-1");
+        assert_eq!(import.external_provider, "codex");
+        assert_eq!(import.external_provider_session_provider_id, "thread-1");
     }
 }

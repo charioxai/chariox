@@ -330,8 +330,11 @@ pub(crate) fn external_session_id_for_provider_session(
     provider: &str,
     provider_session_id: &str,
 ) -> Option<String> {
-    matches!(provider, "codex" | "opencode" | "claude")
-        .then(|| format!("{provider}:{provider_session_id}"))
+    let provider = provider.trim().to_ascii_lowercase();
+    let provider_session_id = provider_session_id.trim();
+    (!provider_session_id.is_empty()
+        && matches!(provider.as_str(), "codex" | "opencode" | "claude"))
+    .then(|| format!("{provider}:{provider_session_id}"))
 }
 
 fn apply_attachment_marker(
@@ -451,6 +454,22 @@ mod tests {
         assert!(attached.is_attached_to_arroba());
         assert_eq!(attached.first_attached_session_id(), Some("session-1"));
         assert_eq!(attached.first_attached_agent_id(), Some("agent-1"));
+    }
+
+    #[test]
+    fn external_session_id_for_provider_session_canonicalizes_known_providers() {
+        assert_eq!(
+            external_session_id_for_provider_session(" Codex ", " thread-1 ").as_deref(),
+            Some("codex:thread-1")
+        );
+        assert_eq!(
+            external_session_id_for_provider_session("unknown", "thread-1"),
+            None
+        );
+        assert_eq!(
+            external_session_id_for_provider_session("codex", "   "),
+            None
+        );
     }
 
     #[test]
