@@ -5,6 +5,7 @@ mod agent_runtime_projection;
 mod config_projection;
 mod daemon_health_model;
 mod provider_projection;
+mod queued_prompt_controls;
 mod remote_relay_inventory_projection;
 mod session_snapshot_projection;
 mod session_state_projection;
@@ -27,11 +28,15 @@ pub use daemon_health_model::{
 pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
 };
+pub(crate) use queued_prompt_controls::queued_prompt_controls_projection;
+pub use queued_prompt_controls::AgentQueuedPromptControlProjection;
+#[cfg(test)]
+pub(crate) use queued_prompt_controls::QUEUED_PROMPT_STEER_EXTERNAL_REASON;
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
 pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
 pub use session_snapshot_projection::{
-    AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentQueuedPromptControlProjection,
-    AgentRuntimeActivity, AgentRuntimeStatus, AgentTurnRuntimePhase, SessionSnapshotProjection,
+    AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,
+    AgentTurnRuntimePhase, SessionSnapshotProjection,
 };
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 pub(crate) use transport_health::{TransportHealthSnapshot, TransportHealthStore};

@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::ProjectionMetadata;
+use super::{
+    queued_prompt_controls_projection, AgentQueuedPromptControlProjection, ProjectionMetadata,
+};
 use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};
 use crate::error::DaemonError;
@@ -59,18 +61,6 @@ pub struct AgentRuntimeActivity {
     pub active_turn: Option<AgentActiveTurnProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_completed_turn: Option<crate::git_observer::CompletedGitTurnActionProjection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentQueuedPromptControlProjection {
-    pub prompt_id: String,
-    pub status: String,
-    pub can_steer: bool,
-    pub can_cancel: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub steer_disabled_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cancel_disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,7 +252,7 @@ pub(crate) fn agent_activity_for_session_projection(
                     }),
                 queued_prompt_controls: queued_prompt_controls_projection(
                     prompt_state,
-                    active_turn.as_ref(),
+                    active_turn.as_ref().and_then(|turn| turn.prompt_origin),
                 ),
                 status,
                 prompt_status,
@@ -282,63 +272,6 @@ fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatu
             | AgentPromptRuntimeStatus::Cancelling
             | AgentPromptRuntimeStatus::Settling
     )
-}
-
-const QUEUED_PROMPT_STEER_EXTERNAL_REASON: &str =
-    "Steering is unavailable while the active provider turn was started outside Arroba.";
-const QUEUED_PROMPT_STALE_REASON: &str = "This prompt is no longer waiting in the queue.";
-
-fn queued_prompt_controls_projection(
-    prompt_state: Option<&crate::session::AgentPromptState>,
-    active_turn: Option<&AgentActiveTurnProjection>,
-) -> BTreeMap<String, AgentQueuedPromptControlProjection> {
-    let Some(prompt_state) = prompt_state else {
-        return BTreeMap::new();
-    };
-    let active_prompt_is_external = active_turn
-        .and_then(|turn| turn.prompt_origin)
-        .is_some_and(|origin| origin == PromptOrigin::External)
-        || prompt_state
-            .active_prompt()
-            .is_some_and(|prompt| prompt.prompt_origin() == PromptOrigin::External);
-    prompt_state
-        .queued_prompts()
-        .iter()
-        .map(|prompt| {
-            let queued = prompt.status() == PromptStatus::Queued;
-            let can_steer = queued && !active_prompt_is_external;
-            let can_cancel = queued;
-            let steer_disabled_reason = if !queued {
-                Some(QUEUED_PROMPT_STALE_REASON.to_string())
-            } else if active_prompt_is_external {
-                Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON.to_string())
-            } else {
-                None
-            };
-            let cancel_disabled_reason = (!queued).then(|| QUEUED_PROMPT_STALE_REASON.to_string());
-            (
-                prompt.id().to_string(),
-                AgentQueuedPromptControlProjection {
-                    prompt_id: prompt.id().to_string(),
-                    status: queued_prompt_status_label(prompt.status()).to_string(),
-                    can_steer,
-                    can_cancel,
-                    steer_disabled_reason,
-                    cancel_disabled_reason,
-                },
-            )
-        })
-        .collect()
-}
-
-fn queued_prompt_status_label(status: PromptStatus) -> &'static str {
-    match status {
-        PromptStatus::Queued => "queued",
-        PromptStatus::Running => "running",
-        PromptStatus::Cancelling => "cancelling",
-        PromptStatus::Completed => "completed",
-        PromptStatus::Cancelled => "cancelled",
-    }
 }
 
 fn active_turn_projection(
@@ -388,10 +321,11 @@ mod tests {
 
     use super::{
         AgentPromptRuntimeStatus, AgentRuntimeStatus, AgentTurnRuntimePhase,
-        SessionSnapshotProjection, QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+        SessionSnapshotProjection,
     };
-    use crate::runtime::projection::test_support::{
-        attach_cli, launch_dev_stub_provider, submit_prompt,
+    use crate::runtime::projection::{
+        test_support::{attach_cli, launch_dev_stub_provider, submit_prompt},
+        QUEUED_PROMPT_STEER_EXTERNAL_REASON,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
