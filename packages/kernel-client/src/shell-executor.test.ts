@@ -550,6 +550,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /session: session-1/)
   assert.match(contextResult.message ?? "", /home kernel: home-kernel-1@home-machine-1/)
   assert.match(contextResult.message ?? "", /session owner: user-1/)
+  assert.match(contextResult.message ?? "", /runtime authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools/)
   assert.match(contextResult.message ?? "", /workspace live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
@@ -683,6 +684,7 @@ test("executeShellCommand context keeps home machine visible without daemon id",
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /home kernel: home-machine-1/)
   assert.match(result.message ?? "", /session owner: -/)
+  assert.match(result.message ?? "", /runtime authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools/)
 })
 
 test("executeShellCommand does not infer provider run ownership from focused agent", async () => {
