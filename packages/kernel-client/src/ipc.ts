@@ -69,6 +69,8 @@ export class LocalIpcClient {
   private readonly relayTarget: RelayTarget | null
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
+  private connectingControlWebsocket: WebSocket | null = null
+  private connectingEventWebsocket: WebSocket | null = null
   private controlWebsocketConnectPromise: Promise<WebSocket> | null = null
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
@@ -431,19 +433,39 @@ export class LocalIpcClient {
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
       const socket = new WebSocket(this.socketPath)
       let settled = false
+      this.setConnectingWebSocket(lane, socket)
 
       const fail = (operation: string, error: unknown, code: string | null = null, retryable = false) => {
         if (settled) {
           return
         }
         settled = true
+        if (this.getConnectingWebSocket(lane) === socket) {
+          this.setConnectingWebSocket(lane, null)
+        }
         this.setWebSocketConnectPromise(lane, null)
         reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath), code, retryable))
+      }
+
+      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error, "connection_closed", true)
+      const handleConnectClose = (code: number, reason: Buffer) => {
+        const closeMessage = reason.length > 0
+          ? reason.toString("utf8")
+          : `kernel websocket closed before opening${code ? ` (${code})` : ""}`
+        fail("connect kernel websocket", closeMessage, "connection_closed", true)
+      }
+      const clearConnectListeners = () => {
+        socket.off("error", handleConnectError)
+        socket.off("close", handleConnectClose)
       }
 
       socket.once("open", () => {
         const finalizeOpen = () => {
           settled = true
+          clearConnectListeners()
+          if (this.getConnectingWebSocket(lane) === socket) {
+            this.setConnectingWebSocket(lane, null)
+          }
           this.setWebSocket(lane, socket)
           this.setWebSocketConnectPromise(lane, null)
           this.setSuppressNextCloseEvent(lane, false)
@@ -496,7 +518,6 @@ export class LocalIpcClient {
         }
 
         if (!this.isRelayMode()) {
-          socket.off("error", handleConnectError)
           finalizeOpen()
           return
         }
@@ -516,7 +537,6 @@ export class LocalIpcClient {
             }
             this.setRelayDaemonPublicKey(lane, frame.daemon_public_key)
             socket.off("message", handleRelayHandshakeMessage)
-            socket.off("error", handleConnectError)
             finalizeOpen()
             return
           }
@@ -536,8 +556,8 @@ export class LocalIpcClient {
         }
       })
 
-      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error, "connection_closed", true)
       socket.on("error", handleConnectError)
+      socket.on("close", handleConnectClose)
     })
 
     this.setWebSocketConnectPromise(lane, nextConnectPromise)
@@ -816,6 +836,18 @@ export class LocalIpcClient {
     }
   }
 
+  private getConnectingWebSocket(lane: KernelSocketLane) {
+    return lane === "control" ? this.connectingControlWebsocket : this.connectingEventWebsocket
+  }
+
+  private setConnectingWebSocket(lane: KernelSocketLane, socket: WebSocket | null) {
+    if (lane === "control") {
+      this.connectingControlWebsocket = socket
+    } else {
+      this.connectingEventWebsocket = socket
+    }
+  }
+
   private getWebSocketConnectPromise(lane: KernelSocketLane) {
     return lane === "control" ? this.controlWebsocketConnectPromise : this.eventWebsocketConnectPromise
   }
@@ -865,8 +897,9 @@ export class LocalIpcClient {
   }
 
   private async closeWebSocket(lane: KernelSocketLane): Promise<void> {
-    const socket = this.getWebSocket(lane)
+    const socket = this.getWebSocket(lane) ?? this.getConnectingWebSocket(lane)
     this.setWebSocket(lane, null)
+    this.setConnectingWebSocket(lane, null)
     this.setWebSocketConnectPromise(lane, null)
     this.setRelayDaemonPublicKey(lane, null)
     if (!socket || socket.readyState === WebSocket.CLOSED) {
@@ -892,13 +925,18 @@ export class LocalIpcClient {
       }, IPC_WEBSOCKET_CLOSE_TIMEOUT_MS)
       this.setSuppressNextCloseEvent(lane, true)
       socket.once("close", finish)
-      socket.close()
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate()
+      } else {
+        socket.close()
+      }
     })
   }
 
   private destroyWebSocket(lane: KernelSocketLane): void {
-    const socket = this.getWebSocket(lane)
+    const socket = this.getWebSocket(lane) ?? this.getConnectingWebSocket(lane)
     this.setWebSocket(lane, null)
+    this.setConnectingWebSocket(lane, null)
     this.setWebSocketConnectPromise(lane, null)
     this.setRelayDaemonPublicKey(lane, null)
     if (socket && socket.readyState !== WebSocket.CLOSED) {

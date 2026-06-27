@@ -300,6 +300,47 @@ test("LocalIpcClient close force-terminates stalled websocket close handshakes",
   }
 })
 
+test("LocalIpcClient close cancels websocket handshakes that are still connecting", async (t) => {
+  let verifyClientCalls = 0
+  const server = new WebSocketServer({
+    port: 0,
+    verifyClient: (_info, done) => {
+      verifyClientCalls += 1
+      setTimeout(() => done(true), 500)
+    },
+  })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+  const client = new LocalIpcClient(endpoint)
+
+  t.after(async () => {
+    client.destroy()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  const subscriptionPromise = client.subscribeToKernelEvents("session-1", "attachment-1")
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  await client.close()
+
+  const outcome = await Promise.race([
+    subscriptionPromise.then(
+      () => "resolved",
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    ),
+    new Promise<string>((resolve) => {
+      setTimeout(() => resolve("timed out"), 1_000)
+    }),
+  ])
+
+  assert.equal(verifyClientCalls, 1)
+  assert.notEqual(outcome, "resolved")
+  assert.notEqual(outcome, "timed out")
+})
+
 test("LocalIpcClient applies jitter to reconnect backoff without delaying forced restarts", () => {
   const client = new LocalIpcClient("ws://127.0.0.1:1", {
     reconnectJitterMs: 200,
