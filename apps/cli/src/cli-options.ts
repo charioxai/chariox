@@ -224,6 +224,7 @@ function printUsage() {
     "  /session create [d]   alias for /session new",
     "  /session <a>          alias the current session",
     "  /session attach <r>   attach to a session by id or alias",
+    "  /session status       show owner, placement, live sync, extensions, and blockers",
     "  /session delete [r]   delete the current or referenced session",
     "  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r|--kernel k|--slice off|new|s] [--slice-display headless|headed] spawn a local, remote, or slice agent",
     "  /agent delete [r]     delete the focused or referenced agent",
