@@ -134,6 +134,7 @@ impl KernelRuntimeState {
                 session_id: continuation.session_id,
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             })
             .await?;
         if let Some(dispatch) = submission.dispatch.take() {

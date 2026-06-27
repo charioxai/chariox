@@ -103,6 +103,7 @@ impl KernelRuntimeOwnedState {
                 session_id: retry.session_id.clone(),
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             },
             &retry.workflow_run_id,
             &retry.workflow_node_run_id,

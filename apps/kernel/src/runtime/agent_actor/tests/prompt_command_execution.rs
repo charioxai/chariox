@@ -859,6 +859,168 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
 }
 
 #[tokio::test]
+async fn prompt_submit_batch_projects_final_queued_prompt_state() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-owned-submit-batch-queued",
+            "worktree-owned-submit-batch-queued",
+        ))
+        .expect("session should be created");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("batch-queued-agent")
+                .with_worktree("worktree-owned-submit-batch-queued"),
+        )
+        .expect("second agent should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-owned-submit-batch-queued",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let first_active = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        default_agent.id(),
+        "active prompt one",
+        PromptStatus::Queued,
+    );
+    let PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), first_active, false)
+        .expect("first active prompt should start")
+    else {
+        panic!("first prompt should start");
+    };
+    let second_active = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        second_agent.id(),
+        "active prompt two",
+        PromptStatus::Queued,
+    );
+    let PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), second_active, false)
+        .expect("second active prompt should start")
+    else {
+        panic!("second prompt should start");
+    };
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let first_agent_id = default_agent.id().to_string();
+    let second_agent_id = second_agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let projection_sequence_before_batch = session_projection.change_sequence();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = AgentRuntime::new(
+        owned_runtime_state(&app).await,
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+
+    let request = crate::local::SubmitPromptsRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        max_concurrency: Some(2),
+        prompts: vec![
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: first_agent_id.clone(),
+                prompt: "queued batch prompt one".to_string(),
+                attachments: Vec::new(),
+            },
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: second_agent_id.clone(),
+                prompt: "queued batch prompt two".to_string(),
+                attachments: Vec::new(),
+            },
+        ],
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompts(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "owned-local-batch-prompt-submit-queued",
+        None,
+        None,
+        &local_request,
+    );
+    let response = runtime
+        .dispatch_prompt_submit_batch(&command, request)
+        .await
+        .expect("batch prompt submit should succeed");
+
+    let LocalDaemonResponse::PromptsSubmitted {
+        results,
+        failures,
+        session,
+        ..
+    } = response
+    else {
+        panic!("unexpected response");
+    };
+    assert!(failures.is_empty());
+    assert_eq!(results.len(), 2);
+    assert!(matches!(
+        results[0].outcome,
+        PromptSubmissionOutcome::Queued { .. }
+    ));
+    assert!(matches!(
+        results[1].outcome,
+        PromptSubmissionOutcome::Queued { .. }
+    ));
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(&first_agent_id)
+            .map(|prompts| prompts.len())
+            .unwrap_or_default(),
+        1,
+        "first agent should have exactly one queued batch prompt"
+    );
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(&second_agent_id)
+            .map(|prompts| prompts.len())
+            .unwrap_or_default(),
+        1,
+        "second agent should have exactly one queued batch prompt"
+    );
+    let projected = session_projection
+        .get(&session_id)
+        .expect("batch prompt submit should publish final session projection");
+    assert!(
+        session_projection.change_sequence() > projection_sequence_before_batch,
+        "batch prompt submit should publish a final session projection revision"
+    );
+    assert_eq!(
+        projected
+            .queued_prompts_for_agent(&first_agent_id)
+            .map(|prompts| prompts.len())
+            .unwrap_or_default(),
+        1,
+        "first projected agent should have exactly one queued batch prompt"
+    );
+    assert_eq!(
+        projected
+            .queued_prompts_for_agent(&second_agent_id)
+            .map(|prompts| prompts.len())
+            .unwrap_or_default(),
+        1,
+        "second projected agent should have exactly one queued batch prompt"
+    );
+}
+
+#[tokio::test]
 async fn prompt_cancel_uses_owned_runtime_state_for_pty_prompt_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

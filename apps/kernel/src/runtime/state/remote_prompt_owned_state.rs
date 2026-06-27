@@ -87,7 +87,11 @@ impl KernelRuntimeOwnedState {
             } else {
                 None
             };
-        let session = self.session_snapshot(&session_id)?;
+        let session = if prepared.refresh_projection {
+            self.session_snapshot(&session_id)?
+        } else {
+            self.session_snapshot_without_projection_update(&session_id)?
+        };
         Ok(Some(crate::app::KernelPromptSubmission {
             outcome,
             session,

@@ -236,6 +236,7 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             })
             .await?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
@@ -541,6 +542,7 @@ impl KernelRuntimeOwnedState {
             session_id: session_id.to_string(),
             prompt,
             force_queue: false,
+            refresh_projection: true,
         };
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
             Some(submission) => submission,

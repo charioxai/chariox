@@ -7,6 +7,7 @@ use crate::runtime::agent_prompt_service::AgentPromptCommandService;
 use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
 use crate::session::{PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus};
 
+use super::command_lane::PromptSubmitResponseMode;
 use super::prompt_attachment_materialization::materialize_inline_prompt_attachments;
 use super::AgentCommand;
 
@@ -38,9 +39,11 @@ impl AgentRuntimeCommandExecutor {
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match command {
-            AgentCommand::SubmitPrompt { request, trace_id } => {
-                self.submit_prompt(request, trace_id).await
-            }
+            AgentCommand::SubmitPrompt {
+                request,
+                trace_id,
+                response_mode,
+            } => self.submit_prompt(request, trace_id, response_mode).await,
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id,
@@ -64,6 +67,7 @@ impl AgentRuntimeCommandExecutor {
         &self,
         request: crate::local::SubmitPromptRequest,
         trace_id: String,
+        response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let target_agent_id =
             request
@@ -108,6 +112,7 @@ impl AgentRuntimeCommandExecutor {
                 session_id: request.session_id.clone(),
                 prompt,
                 force_queue: false,
+                refresh_projection: response_mode == PromptSubmitResponseMode::Full,
             })
             .await?;
         let mut response_session = prepared.session.clone();
@@ -120,9 +125,11 @@ impl AgentRuntimeCommandExecutor {
                 response_session = updated_session;
             }
         }
-        self.session_projection.update(response_session.clone());
-        self.agent_runtime_projection
-            .update_session(&response_session);
+        if response_mode == PromptSubmitResponseMode::Full {
+            self.session_projection.update(response_session.clone());
+            self.agent_runtime_projection
+                .update_session(&response_session);
+        }
 
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
@@ -135,9 +142,12 @@ impl AgentRuntimeCommandExecutor {
                 &trace_id,
             );
         }
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&response_session);
+        let agent_activity = if response_mode == PromptSubmitResponseMode::Full {
+            self.prompt_commands
+                .agent_activity_for_session(&response_session)
+        } else {
+            Default::default()
+        };
 
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
@@ -150,7 +160,11 @@ impl AgentRuntimeCommandExecutor {
             outcome: prepared.outcome,
             session: response_session,
             agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
+                self.session_projection.change_sequence()
+            } else {
+                0
+            },
         })
     }
 

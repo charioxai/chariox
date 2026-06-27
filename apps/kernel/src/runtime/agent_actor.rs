@@ -22,7 +22,7 @@ mod command_executor;
 mod command_lane;
 mod prompt_attachment_materialization;
 
-use command_lane::{AgentCommand, AgentCommandEnvelope};
+use command_lane::{AgentCommand, AgentCommandEnvelope, PromptSubmitResponseMode};
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -84,7 +84,21 @@ impl AgentRuntime {
     pub(crate) async fn dispatch_prompt_submit(
         &self,
         command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SubmitPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.dispatch_prompt_submit_with_response_mode(
+            command,
+            request,
+            PromptSubmitResponseMode::Full,
+        )
+        .await
+    }
+
+    async fn dispatch_prompt_submit_with_response_mode(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
         mut request: crate::local::SubmitPromptRequest,
+        response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller_user_id = command_agent_actor_user_id(command);
         let agent_id = self
@@ -101,6 +115,7 @@ impl AgentRuntime {
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id: command_trace.trace_id().to_string(),
+                response_mode,
             },
         )
         .await
@@ -138,7 +153,11 @@ impl AgentRuntime {
                 async move {
                     let submit_request = item.into_submit_prompt_request(session_id, attachment_id);
                     let result = runtime
-                        .dispatch_prompt_submit(&command, submit_request)
+                        .dispatch_prompt_submit_with_response_mode(
+                            &command,
+                            submit_request,
+                            PromptSubmitResponseMode::BatchItem,
+                        )
                         .await;
                     (index, agent_id, result)
                 }
@@ -150,25 +169,14 @@ impl AgentRuntime {
 
         let mut results = Vec::new();
         let mut failures = Vec::new();
-        let mut latest_session = None;
-        let mut latest_agent_activity = None;
-        let mut latest_agent_activity_revision = self.session_projection.change_sequence();
         for (index, agent_id, outcome) in outcomes {
             match outcome {
-                Ok(LocalDaemonResponse::PromptSubmitted {
-                    outcome,
-                    session,
-                    agent_activity,
-                    agent_activity_revision,
-                }) => {
+                Ok(LocalDaemonResponse::PromptSubmitted { outcome, .. }) => {
                     results.push(PromptBatchSubmissionResult {
                         index,
                         agent_id,
                         outcome,
                     });
-                    latest_session = Some(session);
-                    latest_agent_activity = Some(agent_activity);
-                    latest_agent_activity_revision = agent_activity_revision;
                 }
                 Ok(other) => failures.push(BatchOperationFailure {
                     index,
@@ -183,19 +191,17 @@ impl AgentRuntime {
             }
         }
 
-        let session = match latest_session {
-            Some(session) => session,
-            None => self.store.session_snapshot(&session_id).await?,
-        };
-        let agent_activity = latest_agent_activity
-            .unwrap_or_else(|| self.store.agent_activity_for_session_sync(&session));
+        let session = self.store.session_snapshot(&session_id).await?;
+        self.session_projection.update(session.clone());
+        self.agent_runtime_projection.update_session(&session);
+        let agent_activity = self.store.agent_activity_for_session_sync(&session);
 
         Ok(LocalDaemonResponse::PromptsSubmitted {
             results,
             failures,
             session,
             agent_activity,
-            agent_activity_revision: latest_agent_activity_revision,
+            agent_activity_revision: self.session_projection.change_sequence(),
         })
     }
 
