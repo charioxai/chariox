@@ -60,7 +60,6 @@ impl CommandRouter {
                 app: &self.app,
                 session_projection: &self.session_projection,
                 agent_runtime_projection: &self.agent_runtime_projection,
-                history_projection: &self.history_projection,
                 focus_projection: &self.focus_projection,
                 provider_process_projection: &self.provider_process_projection,
                 provider_launch_pending: &self.provider_launch_pending,

@@ -43,8 +43,6 @@ impl KernelRuntimeOwnedState {
                 return None;
             }
         };
-        self.history_projection
-            .update_entries(session_id, history.clone());
         crate::scheduler::runtime::build_workflow_completion_snapshot_from_history(
             &session,
             history,

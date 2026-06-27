@@ -59,6 +59,5 @@ impl KernelRuntimeOwnedState {
             );
         }
         self.append_operational_history_entry(&entry, None, None, None);
-        self.history_projection.append(entry);
     }
 }

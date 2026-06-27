@@ -114,7 +114,6 @@ impl CommandRouter {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
-                    self.history_projection.clone(),
                     &self.runtime_state,
                     &self.config_projection,
                     request,
@@ -423,7 +422,6 @@ impl CommandRouter {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
-                    self.history_projection.clone(),
                     &self.runtime_state,
                     &self.config_projection,
                     request,

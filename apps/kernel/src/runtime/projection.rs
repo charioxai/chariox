@@ -6,7 +6,6 @@ mod config_projection;
 mod daemon_health_model;
 mod provider_projection;
 mod remote_relay_inventory_projection;
-mod session_history_projection;
 mod session_snapshot_projection;
 mod session_state_projection;
 #[cfg(test)]
@@ -29,7 +28,6 @@ pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
 };
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
-pub(crate) use session_history_projection::SessionHistoryProjectionStore;
 pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
 pub use session_snapshot_projection::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,

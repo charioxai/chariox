@@ -1434,11 +1434,7 @@ impl<'a> KernelSessionReadService<'a> {
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         let session =
             SessionStateReader::new(self.app.session_state_store()).get_session(session_id)?;
-        let entries = self.app.load_session_history_entries(&session, None)?;
-        self.app
-            .session_history_projection_store()
-            .update_entries(session.id(), entries.clone());
-        Ok(entries)
+        self.app.load_session_history_entries(&session, None)
     }
 }
 

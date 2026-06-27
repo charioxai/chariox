@@ -8,7 +8,7 @@ use crate::local::LocalDaemonResponse;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore,
+    SessionStateProjectionStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::provider_run_control::refresh_provider_run_projection_from_response;
@@ -24,7 +24,6 @@ pub(crate) struct CommandResponseRefreshContext<'a> {
     pub(crate) app: &'a Arc<Mutex<DaemonApp>>,
     pub(crate) session_projection: &'a SessionStateProjectionStore,
     pub(crate) agent_runtime_projection: &'a AgentRuntimeProjectionStore,
-    pub(crate) history_projection: &'a SessionHistoryProjectionStore,
     pub(crate) focus_projection: &'a FocusedAgentProjection,
     pub(crate) provider_process_projection: &'a ProviderProcessProjectionStore,
     pub(crate) provider_launch_pending: &'a ProviderLaunchPendingTracker,
@@ -44,7 +43,6 @@ pub(crate) async fn refresh_command_response_state(
             app: context.app,
             session_projection: context.session_projection,
             agent_runtime_projection: context.agent_runtime_projection,
-            history_projection: context.history_projection,
             provider_process_projection: context.provider_process_projection,
             provider_launch_pending: context.provider_launch_pending,
             provider_run_projection: context.provider_run_projection,

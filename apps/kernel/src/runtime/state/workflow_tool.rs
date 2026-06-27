@@ -760,7 +760,6 @@ mod tests {
         let history_store = app.history_store();
         let operational_history_store = app.operational_history_store();
         let durable_state_store = app.durable_state_store();
-        let history_projection = app.session_history_projection_store();
         let prompt_state_owner = app.prompt_state_owner();
         let active_turns = app.active_turn_store();
         let prompt_activity = app.prompt_activity_store();
@@ -784,7 +783,6 @@ mod tests {
             history_store,
             operational_history_store,
             durable_state_store,
-            history_projection,
             prompt_state_owner,
             active_turns,
             prompt_activity,

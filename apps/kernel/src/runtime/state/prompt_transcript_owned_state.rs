@@ -171,7 +171,6 @@ impl KernelRuntimeOwnedState {
             );
         }
         self.append_operational_history_entry(&entry, None, None, None);
-        self.history_projection.append(entry);
     }
 
     pub(super) fn append_operational_history_entry(
@@ -330,7 +329,6 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         );
-        self.history_projection.append(entry);
         Ok(())
     }
 

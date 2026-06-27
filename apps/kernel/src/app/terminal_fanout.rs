@@ -182,7 +182,6 @@ impl DaemonApp {
             );
         }
         self.append_operational_history_entry(&entry);
-        self.history_projection.append(entry);
     }
 
     pub(crate) fn replace_history_entry_by_merge_key_or_append(
@@ -249,13 +248,9 @@ impl DaemonApp {
                 if self.history_archive_enabled() {
                     self.enqueue_history_archive_event(&event);
                 }
-                self.history_projection
-                    .replace_by_merge_key_or_append(entry);
             }
             Ok(None) => {
                 self.append_operational_history_entry(&entry);
-                self.history_projection
-                    .replace_by_merge_key_or_append(entry);
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -267,8 +262,6 @@ impl DaemonApp {
                         "error": error.to_string(),
                     }),
                 );
-                self.history_projection
-                    .replace_by_merge_key_or_append(entry);
             }
         }
     }
@@ -374,7 +367,6 @@ impl DaemonApp {
         let history = self.history.clone();
         let operational_history = self.operational_history.clone();
         let archive_enabled = self.history_archive_enabled();
-        let history_projection = self.history_projection.clone();
         let context = self.history_event_context(&entry);
         let session_id = session.id().to_string();
         let append = move || {
@@ -414,7 +406,6 @@ impl DaemonApp {
                     );
                 }
             }
-            history_projection.append(entry);
         };
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::spawn_blocking(append);

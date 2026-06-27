@@ -11,8 +11,7 @@ use crate::runtime::capability_executor::{CapabilityExecutorHealthStore, Capabil
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
@@ -51,7 +50,6 @@ pub(crate) struct CommandRouter {
     agent_runtime_projection: AgentRuntimeProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
-    history_projection: SessionHistoryProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,

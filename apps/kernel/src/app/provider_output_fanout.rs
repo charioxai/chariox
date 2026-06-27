@@ -9,7 +9,6 @@ use crate::history::{
     SessionHistoryStore,
 };
 use crate::provider::ProviderProcessServiceStore;
-use crate::runtime::projection::SessionHistoryProjectionStore;
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 use crate::terminal::{
@@ -36,7 +35,6 @@ pub(crate) struct ProviderOutputFanout {
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     archive_enabled: bool,
-    history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
 }
@@ -52,7 +50,6 @@ impl ProviderOutputFanout {
             history_store: app.history_store(),
             operational_history_store: app.operational_history_store(),
             archive_enabled: app.history_archive_enabled(),
-            history_projection: app.session_history_projection_store(),
             terminal: app.terminal.clone(),
             metaagent_trace_subscriptions: app.metaagent_trace_subscription_store(),
         }
@@ -476,7 +473,6 @@ impl ProviderOutputFanout {
                 );
             }
         }
-        self.history_projection.append(entry);
     }
 }
 

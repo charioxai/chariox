@@ -15,13 +15,12 @@ use crate::runtime::history_requests::{
     knn_semantic_recall_search, recall_query_from_request, recall_query_from_search_request,
     semantic_recall_utility_input_from_search_request,
 };
-use crate::runtime::projection::{DaemonConfigProjectionStore, SessionHistoryProjectionStore};
+use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_history_request(
     _history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
-    _history_projection: SessionHistoryProjectionStore,
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: LocalDaemonRequest,

@@ -86,8 +86,7 @@ use crate::pty::PtyManager;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
@@ -139,7 +138,6 @@ pub struct DaemonApp {
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-    history_projection: SessionHistoryProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
@@ -237,7 +235,6 @@ impl DaemonApp {
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
-            history_projection: SessionHistoryProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
@@ -363,10 +360,6 @@ impl DaemonApp {
     pub(crate) fn update_session_projection(&self, session: RuntimeSession) {
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);
-    }
-
-    pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
-        self.history_projection.clone()
     }
 
     pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {

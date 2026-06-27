@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{
     AgentRuntimeActivity, AgentRuntimeProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
+    ProviderRunProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::session_actor::FocusedAgentProjection;
@@ -145,7 +145,6 @@ pub(crate) struct SessionProjectionRefreshContext<'a> {
     pub(crate) app: &'a Arc<Mutex<DaemonApp>>,
     pub(crate) session_projection: &'a SessionStateProjectionStore,
     pub(crate) agent_runtime_projection: &'a AgentRuntimeProjectionStore,
-    pub(crate) history_projection: &'a SessionHistoryProjectionStore,
     pub(crate) provider_process_projection: &'a ProviderProcessProjectionStore,
     pub(crate) provider_launch_pending: &'a ProviderLaunchPendingTracker,
     pub(crate) provider_run_projection: &'a ProviderRunProjectionStore,
@@ -178,7 +177,6 @@ pub(crate) async fn apply_session_projection_refresh(
     for session_id in response_removed_session_ids(response) {
         context.agent_runtime_projection.remove_session(session_id);
         context.session_projection.remove(session_id);
-        context.history_projection.remove(session_id);
         refreshed_session_ids.push(session_id.to_string());
     }
 

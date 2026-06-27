@@ -306,9 +306,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if !backing_session_still_used {
             let _ = self.app.sessions.end_session(&agent.backing_session_id);
             let _ = self.app.sessions.delete_session(&agent.backing_session_id);
-            self.app
-                .history_projection
-                .remove(&agent.backing_session_id);
         }
         Ok(agent)
     }

@@ -327,7 +327,6 @@ impl KernelRuntimeOwnedState {
             };
         let mut deleted = self.session_store.delete_session(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
-        self.history_projection.remove(deleted.id());
         self.session_projection.remove(deleted.id());
         self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(

@@ -14,8 +14,7 @@ use crate::runtime::native_interaction_bridge::install_provider_native_interacti
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    RemoteRelayInventoryProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
@@ -119,7 +118,6 @@ pub(super) struct RouterProjectionStores {
     pub(super) history_store: SessionHistoryStore,
     pub(super) operational_history_store: OperationalHistoryStore,
     pub(super) session_projection: SessionStateProjectionStore,
-    pub(super) history_projection: SessionHistoryProjectionStore,
     pub(super) provider_catalog_projection: ProviderCatalogProjectionStore,
     pub(super) provider_run_projection: ProviderRunProjectionStore,
     pub(super) provider_process_projection: ProviderProcessProjectionStore,
@@ -165,7 +163,6 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         history_store: app.history_store(),
         operational_history_store: app.operational_history_store(),
         session_projection: app.session_state_projection_store(),
-        history_projection: app.session_history_projection_store(),
         provider_catalog_projection: app.provider_catalog_projection_store(),
         provider_run_projection: app.provider_run_projection_store(),
         provider_process_projection: app.provider_process_projection_store(),
@@ -207,7 +204,6 @@ pub(super) fn compose_command_router(
         history_store,
         operational_history_store,
         session_projection,
-        history_projection,
         provider_catalog_projection,
         provider_run_projection,
         provider_process_projection,
@@ -252,7 +248,6 @@ pub(super) fn compose_command_router(
         history_store.clone(),
         operational_history_store.clone(),
         durable_state_store.clone(),
-        history_projection.clone(),
         prompt_state_owner.clone(),
         active_turns.clone(),
         prompt_activity.clone(),
@@ -309,7 +304,6 @@ pub(super) fn compose_command_router(
         agent_runtime_projection,
         history_store,
         operational_history_store,
-        history_projection,
         provider_catalog_projection,
         provider_run_projection,
         provider_process_projection,
