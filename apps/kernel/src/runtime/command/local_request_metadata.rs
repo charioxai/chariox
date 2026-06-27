@@ -527,6 +527,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
         LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
         LocalDaemonRequest::AppendNativeProviderOutput(_) => "terminal.output.append_native",
+        LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => {
+            "terminal.output.append_native_batch"
+        }
         LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
         LocalDaemonRequest::ReadFile(_) => "capability.file.read",

@@ -133,7 +133,8 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         }
         LocalDaemonRequest::PumpTerminalOutput(_)
         | LocalDaemonRequest::SendTerminalInput(_)
-        | LocalDaemonRequest::AppendNativeProviderOutput(_) => SessionProjectionRefresh::None,
+        | LocalDaemonRequest::AppendNativeProviderOutput(_)
+        | LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
             SessionProjectionRefresh::None
         }

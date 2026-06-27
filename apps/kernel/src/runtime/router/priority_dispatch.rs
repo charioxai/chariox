@@ -30,7 +30,10 @@ use crate::runtime::session_collaboration_executor::execute_session_collaboratio
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::workflow_publication_endpoint_runtime::execute_register_workflow_publication_endpoint_request;
-use crate::runtime::terminal_output_executor::execute_append_native_provider_output_request;
+use crate::runtime::terminal_output_executor::{
+    execute_append_native_provider_output_batch_request,
+    execute_append_native_provider_output_request,
+};
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::is_workflow_command;
@@ -435,6 +438,15 @@ impl CommandRouter {
             }
             LocalDaemonRequest::AppendNativeProviderOutput(request) => {
                 execute_append_native_provider_output_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    request,
+                )
+                .await
+            }
+            LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => {
+                execute_append_native_provider_output_batch_request(
                     &self.runtime_state,
                     &self.session_projection,
                     &self.agent_runtime_projection,

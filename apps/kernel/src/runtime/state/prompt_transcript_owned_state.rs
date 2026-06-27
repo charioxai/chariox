@@ -2,6 +2,14 @@
 
 use super::*;
 
+pub(super) struct TerminalOutputBatchAppend {
+    pub(super) provider_run_id: String,
+    pub(super) agent_id: Option<String>,
+    pub(super) kind: crate::terminal::TerminalOutputKind,
+    pub(super) merge_key: Option<String>,
+    pub(super) text: String,
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn other_attachment_ids(
         &self,
@@ -104,6 +112,61 @@ impl KernelRuntimeOwnedState {
         record
     }
 
+    pub(super) fn fan_out_terminal_outputs(
+        &self,
+        session_id: &str,
+        outputs: Vec<TerminalOutputBatchAppend>,
+    ) -> Vec<crate::terminal::TerminalOutputRecord> {
+        if outputs.is_empty() {
+            return Vec::new();
+        }
+        let recipient_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        let mut trace_agent_ids = std::collections::BTreeSet::new();
+        let terminal_outputs = outputs
+            .into_iter()
+            .map(|output| {
+                let mut scoped_recipient_attachment_ids = self.private_recipient_attachment_ids(
+                    output.agent_id.as_deref(),
+                    recipient_attachment_ids.clone(),
+                );
+                scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+                    session_id,
+                    output.agent_id.as_deref(),
+                    scoped_recipient_attachment_ids,
+                );
+                if let Some(agent_id) = output.agent_id.as_deref() {
+                    trace_agent_ids.insert(agent_id.to_string());
+                }
+                if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
+                    if let Some(agent_id) = output.agent_id.as_deref() {
+                        self.record_workflow_thinking_trace(
+                            session_id,
+                            &output.provider_run_id,
+                            agent_id,
+                            output.text.clone(),
+                        );
+                    }
+                }
+                crate::terminal::TerminalOutputAppend {
+                    session_id: session_id.to_string(),
+                    provider_run_id: output.provider_run_id,
+                    agent_id: output.agent_id,
+                    kind: output.kind,
+                    merge_key: output.merge_key,
+                    recipient_attachment_ids: scoped_recipient_attachment_ids,
+                    bytes: output.text.into_bytes(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let records = self.terminal_stream.fan_out_outputs(terminal_outputs);
+        for agent_id in trace_agent_ids {
+            self.notify_metaagent_trace_activity(session_id, Some(agent_id.as_str()));
+        }
+        records
+    }
+
     fn record_workflow_thinking_trace(
         &self,
         session_id: &str,
@@ -146,6 +209,17 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        self.append_history_entries(session_id, vec![entry]);
+    }
+
+    pub(super) fn append_history_entries(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -160,7 +234,7 @@ impl KernelRuntimeOwnedState {
                 return;
             }
         };
-        if let Err(error) = self.history_store.append(&session, &entry) {
+        if let Err(error) = self.history_store.append_many(&session, &entries) {
             crate::logging::warn_with_fields(
                 "daemon.history",
                 "failed to append provider-output session history",
@@ -170,8 +244,8 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         } else {
-            self.append_operational_history_entry(&entry, None, None, None);
-            self.history_projection.append(entry);
+            self.append_operational_history_entries(&entries);
+            self.history_projection.append_many(entries);
         }
     }
 
@@ -260,6 +334,98 @@ impl KernelRuntimeOwnedState {
                     "failed to append operational history",
                     serde_json::json!({
                         "session_id": entry.session_id.as_str(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
+    fn append_operational_history_entries(&self, entries: &[crate::history::SessionHistoryEntry]) {
+        if entries.is_empty() {
+            return;
+        }
+        let mut active_turns = self.active_turns.snapshot();
+        let mut prepared = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let provider_run = entry
+                .provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+            let agent_id = entry.agent_id.clone().or_else(|| {
+                provider_run
+                    .as_ref()
+                    .and_then(|run| run.agent_instance_id().map(str::to_string))
+            });
+            let session = self.session_store.get_session(&entry.session_id).ok();
+            let active_prompt = session.as_ref().and_then(|session| {
+                agent_id.as_deref().and_then(|agent_id| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(session, agent_id)
+                })
+            });
+            let active_turn = entry
+                .provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| active_turns.remove(provider_run_id));
+            let prompt_id = active_turn
+                .as_ref()
+                .map(|turn| turn.prompt_id.clone())
+                .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
+            let turn_id = active_turn
+                .as_ref()
+                .map(|turn| turn.trace_id.clone())
+                .or_else(|| prompt_id.clone());
+            let context = crate::history::HistoryEventTurnContext {
+                session_id: Some(entry.session_id.clone()),
+                agent_id,
+                provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+                model: provider_run.as_ref().map(|run| run.model().to_string()),
+                turn_id,
+                prompt_id,
+                provider_run_id: entry.provider_run_id.clone(),
+                provider_session_id: provider_run
+                    .as_ref()
+                    .and_then(|run| run.provider_session_id().map(str::to_string)),
+                workflow_run_id: active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
+                workflow_node_id: active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
+                worktree_path: provider_run.as_ref().and_then(|run| {
+                    run.working_directory()
+                        .map(|path| path.display().to_string())
+                }),
+                ..crate::history::HistoryEventTurnContext::default()
+            };
+            prepared.push((entry, context));
+        }
+        match self.operational_history_store.append_transcripts(prepared) {
+            Ok(events) => {
+                for (entry, event) in entries.iter().zip(events) {
+                    if is_unread_output_history_entry(entry) {
+                        if let Some(agent_id) = entry.agent_id.as_deref() {
+                            let _ = self.session_store.note_agent_output_sequence(
+                                entry.session_id.as_str(),
+                                agent_id,
+                                event.sequence,
+                            );
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                let session_id = entries
+                    .first()
+                    .map(|entry| entry.session_id.as_str())
+                    .unwrap_or_default();
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history batch",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "entry_count": entries.len(),
                         "error": error.to_string(),
                     }),
                 );

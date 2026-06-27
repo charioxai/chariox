@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AgentSubstituteAction,
     AliasAgentRequest, AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
+    AppendNativeProviderOutputBatchItem, AppendNativeProviderOutputBatchRequest,
     AppendNativeProviderOutputRequest, ApplyWorkflowDesignOpRequest, AttachToSessionRequest,
     AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
     CaptureScreenshotCapabilityRequest, CommitWorkspaceChangesRequest, CompletePromptRequest,

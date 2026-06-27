@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 198;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 199;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -313,6 +313,7 @@ pub enum LocalDaemonRequest {
     SendTerminalInput(SendTerminalInputRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     AppendNativeProviderOutput(AppendNativeProviderOutputRequest),
+    AppendNativeProviderOutputBatch(AppendNativeProviderOutputBatchRequest),
     RunShellCommand(RunShellCapabilityRequest),
     ReadDirectoryTree(ReadDirectoryTreeCapabilityRequest),
     ReadFile(ReadFileCapabilityRequest),

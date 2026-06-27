@@ -26,12 +26,18 @@ impl SessionHistoryProjectionStore {
     }
 
     pub(crate) fn append(&self, entry: SessionHistoryEntry) {
+        self.append_many(std::iter::once(entry));
+    }
+
+    pub(crate) fn append_many(&self, entries: impl IntoIterator<Item = SessionHistoryEntry>) {
         let mut entries_by_session = self
             .entries
             .lock()
             .expect("session history projection lock should not be poisoned");
-        if let Some(projection) = entries_by_session.get_mut(&entry.session_id) {
-            projection.push(entry);
+        for entry in entries {
+            if let Some(projection) = entries_by_session.get_mut(&entry.session_id) {
+                projection.push(entry);
+            }
         }
     }
 

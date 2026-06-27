@@ -452,15 +452,19 @@ impl SessionHistoryStore {
         session: &RuntimeSession,
         entry: &SessionHistoryEntry,
     ) -> Result<(), DaemonError> {
-        if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
-            && entry.source_attachment_id.is_none()
-            && !entry.is_external_provider_observed()
-        {
-            return Err(DaemonError::SessionHistoryFailed {
-                session_id: Some(session.id().to_string()),
-                operation: "append session history",
-                message: "user prompt history entry must include source attachment".to_string(),
-            });
+        self.append_many(session, std::slice::from_ref(entry))
+    }
+
+    pub fn append_many(
+        &self,
+        session: &RuntimeSession,
+        entries: &[SessionHistoryEntry],
+    ) -> Result<(), DaemonError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        for entry in entries {
+            validate_session_history_entry_for_append(session, entry)?;
         }
 
         let path = self.path_for_session(session);
@@ -488,23 +492,45 @@ impl SessionHistoryStore {
                 operation: "open session history for append",
                 message: error.to_string(),
             })?;
-        let encoded =
-            serde_json::to_string(entry).map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session.id().to_string()),
-                operation: "encode session history",
-                message: error.to_string(),
+        for entry in entries {
+            let encoded = serde_json::to_string(entry).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "encode session history",
+                    message: error.to_string(),
+                }
             })?;
-        file.write_all(encoded.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session.id().to_string()),
-                operation: "write session history",
-                message: error.to_string(),
-            })?;
+            file.write_all(encoded.as_bytes())
+                .and_then(|_| file.write_all(b"\n"))
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "write session history",
+                    message: error.to_string(),
+                })?;
+        }
         drop(file);
         self.enforce_size_budget(session, &path)
     }
+}
 
+fn validate_session_history_entry_for_append(
+    session: &RuntimeSession,
+    entry: &SessionHistoryEntry,
+) -> Result<(), DaemonError> {
+    if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
+        && entry.source_attachment_id.is_none()
+        && !entry.is_external_provider_observed()
+    {
+        return Err(DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "append session history",
+            message: "user prompt history entry must include source attachment".to_string(),
+        });
+    }
+    Ok(())
+}
+
+impl SessionHistoryStore {
     pub fn replace_by_merge_key(
         &self,
         session: &RuntimeSession,

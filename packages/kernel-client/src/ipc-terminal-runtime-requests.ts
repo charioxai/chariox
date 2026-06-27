@@ -87,6 +87,32 @@ export function appendNativeProviderOutputRequest(
   }
 }
 
+export type AppendNativeProviderOutputBatchItem = {
+  providerRunId: string
+  kind: "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
+  text: string
+  mergeKey?: string | null
+}
+
+export function appendNativeProviderOutputBatchRequest(
+  sessionId: string,
+  attachmentId: string,
+  outputs: AppendNativeProviderOutputBatchItem[],
+) {
+  return {
+    AppendNativeProviderOutputBatch: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      outputs: outputs.map((output) => ({
+        provider_run_id: output.providerRunId,
+        kind: output.kind,
+        merge_key: output.mergeKey ?? null,
+        text: output.text,
+      })),
+    },
+  }
+}
+
 export function submitPromptRequest(
   sessionId: string,
   attachmentId: string,

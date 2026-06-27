@@ -111,3 +111,19 @@ pub struct AppendNativeProviderOutputRequest {
     pub merge_key: Option<String>,
     pub text: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppendNativeProviderOutputBatchRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub outputs: Vec<AppendNativeProviderOutputBatchItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppendNativeProviderOutputBatchItem {
+    pub provider_run_id: String,
+    pub kind: TerminalOutputKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
+    pub text: String,
+}

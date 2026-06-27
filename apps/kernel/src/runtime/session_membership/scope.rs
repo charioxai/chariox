@@ -153,6 +153,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AppendNativeProviderOutput(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

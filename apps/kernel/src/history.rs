@@ -527,6 +527,24 @@ impl OperationalHistoryStore {
         Ok(event)
     }
 
+    pub fn append_transcripts(
+        &self,
+        entries: Vec<(&SessionHistoryEntry, HistoryEventTurnContext)>,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let events = entries
+            .into_iter()
+            .map(|(entry, context)| {
+                let sequence = self.reserve_sequence();
+                HistoryEvent::transcript(sequence, entry, context)
+            })
+            .collect::<Vec<_>>();
+        self.append_many(&events)?;
+        Ok(events)
+    }
+
     pub fn replace_transcript_by_merge_key(
         &self,
         session_id: &str,
@@ -686,26 +704,88 @@ impl OperationalHistoryStore {
     }
 
     pub fn append(&self, event: &HistoryEvent) -> Result<(), DaemonError> {
-        let event_json =
-            serde_json::to_string(event).map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: event.session_id.clone(),
-                operation: "encode operational history event",
-                message: error.to_string(),
+        self.append_many(std::slice::from_ref(event))
+    }
+
+    pub fn append_many(&self, events: &[HistoryEvent]) -> Result<(), DaemonError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut encoded_events = Vec::with_capacity(events.len());
+        let mut estimated_append_bytes = 0_u64;
+        for event in events {
+            let event_json = serde_json::to_string(event).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: event.session_id.clone(),
+                    operation: "encode operational history event",
+                    message: error.to_string(),
+                }
             })?;
-        let metadata_text = searchable_metadata(event);
-        let estimated_append_bytes =
-            estimate_history_event_storage_bytes(&event_json, &metadata_text);
-        let connection =
+            let metadata_text = searchable_metadata(event);
+            estimated_append_bytes = estimated_append_bytes.saturating_add(
+                estimate_history_event_storage_bytes(&event_json, &metadata_text),
+            );
+            encoded_events.push((event, event_json, metadata_text));
+        }
+        let mut connection =
             self.connection
                 .lock()
                 .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: event.session_id.clone(),
+                    session_id: events.first().and_then(|event| event.session_id.clone()),
                     operation: "lock operational history store",
                     message: error.to_string(),
                 })?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO history_events (
+        let transaction = connection.transaction().map_err(|error| {
+            operational_history_error("begin operational history append", error)
+        })?;
+        {
+            let mut statement = transaction
+                .prepare(OPERATIONAL_HISTORY_INSERT_SQL)
+                .map_err(|error| {
+                    operational_history_error("prepare operational history append", error)
+                })?;
+            for (event, event_json, metadata_text) in encoded_events {
+                statement
+                    .execute(params![
+                        event.event_id.as_str(),
+                        event.sequence as i64,
+                        event.timestamp_ms as i64,
+                        history_event_kind_key(event.kind),
+                        event.session_id.as_deref(),
+                        event.agent_id.as_deref(),
+                        event.provider.as_deref(),
+                        event.model.as_deref(),
+                        event.turn_id.as_deref(),
+                        event.prompt_id.as_deref(),
+                        event.provider_run_id.as_deref(),
+                        event.workflow_id.as_deref(),
+                        event.workflow_run_id.as_deref(),
+                        event.workflow_node_id.as_deref(),
+                        event.machine_id.as_deref(),
+                        event.repo_root.as_deref(),
+                        event.worktree_path.as_deref(),
+                        event.content.as_deref(),
+                        event.content_ref.as_deref(),
+                        metadata_text,
+                        event_json,
+                    ])
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: event.session_id.clone(),
+                        operation: "append operational history event",
+                        message: error.to_string(),
+                    })?;
+            }
+        }
+        transaction.commit().map_err(|error| {
+            operational_history_error("commit operational history append", error)
+        })?;
+        drop(connection);
+        self.enforce_size_budget_after_append(estimated_append_bytes)?;
+        Ok(())
+    }
+}
+
+const OPERATIONAL_HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO history_events (
                     event_id,
                     sequence,
                     timestamp_ms,
@@ -727,43 +807,9 @@ impl OperationalHistoryStore {
                     content_ref,
                     metadata_text,
                     event_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
-                params![
-                    event.event_id.as_str(),
-                    event.sequence as i64,
-                    event.timestamp_ms as i64,
-                    history_event_kind_key(event.kind),
-                    event.session_id.as_deref(),
-                    event.agent_id.as_deref(),
-                    event.provider.as_deref(),
-                    event.model.as_deref(),
-                    event.turn_id.as_deref(),
-                    event.prompt_id.as_deref(),
-                    event.provider_run_id.as_deref(),
-                    event.workflow_id.as_deref(),
-                    event.workflow_run_id.as_deref(),
-                    event.workflow_node_id.as_deref(),
-                    event.machine_id.as_deref(),
-                    event.repo_root.as_deref(),
-                    event.worktree_path.as_deref(),
-                    event.content.as_deref(),
-                    event.content_ref.as_deref(),
-                    metadata_text,
-                    event_json,
-                ],
-            )
-            .map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: event.session_id.clone(),
-                    operation: "append operational history event",
-                    message: error.to_string(),
-                }
-            })?;
-        drop(connection);
-        self.enforce_size_budget_after_append(estimated_append_bytes)?;
-        Ok(())
-    }
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)";
 
+impl OperationalHistoryStore {
     pub fn path(&self) -> &Path {
         &self.path
     }

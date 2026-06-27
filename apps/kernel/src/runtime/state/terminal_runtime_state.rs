@@ -125,30 +125,65 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::AppendNativeProviderOutputRequest,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        self.append_native_provider_output_batch(
+            crate::local::AppendNativeProviderOutputBatchRequest {
+                session_id: request.session_id,
+                attachment_id: request.attachment_id,
+                outputs: vec![crate::local::AppendNativeProviderOutputBatchItem {
+                    provider_run_id: request.provider_run_id,
+                    kind: request.kind,
+                    merge_key: request.merge_key,
+                    text: request.text,
+                }],
+            },
+        )
+    }
+
+    pub(crate) fn append_native_provider_output_batch(
+        &self,
+        request: crate::local::AppendNativeProviderOutputBatchRequest,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         self.owned
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-        let provider_run = self
-            .owned
-            .provider_store
-            .get_run(&request.provider_run_id)?;
-        if provider_run.session_id() != request.session_id {
-            return Err(DaemonError::ProviderRunNotInSession {
-                session_id: request.session_id,
-                provider_run_id: request.provider_run_id,
-            });
+        if request.outputs.is_empty() {
+            return Ok(Vec::new());
         }
-        let recipient_attachment_ids = self
+        let mut terminal_outputs = Vec::with_capacity(request.outputs.len());
+        let mut history_entries = Vec::new();
+        for output in request.outputs {
+            let provider_run = self.owned.provider_store.get_run(&output.provider_run_id)?;
+            if provider_run.session_id() != request.session_id {
+                return Err(DaemonError::ProviderRunNotInSession {
+                    session_id: request.session_id,
+                    provider_run_id: output.provider_run_id,
+                });
+            }
+            let agent_id = provider_run.agent_instance_id().map(str::to_string);
+            if output.kind != crate::terminal::TerminalOutputKind::PromptEcho {
+                history_entries.push(crate::history::SessionHistoryEntry::provider_output(
+                    &request.session_id,
+                    &output.provider_run_id,
+                    agent_id.as_deref(),
+                    output.kind.clone(),
+                    output.merge_key.clone(),
+                    output.text.clone(),
+                ));
+            }
+            terminal_outputs.push(
+                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                    provider_run_id: output.provider_run_id,
+                    agent_id,
+                    kind: output.kind,
+                    merge_key: output.merge_key,
+                    text: output.text,
+                },
+            );
+        }
+        let records = self
             .owned
-            .attachment_store
-            .list_session_attachment_ids(&request.session_id);
-        let record = self.owned.fan_out_terminal_output(
-            &request.session_id,
-            &request.provider_run_id,
-            request.kind,
-            request.merge_key,
-            recipient_attachment_ids,
-            request.text.as_bytes(),
-        );
-        Ok(vec![record])
+            .fan_out_terminal_outputs(&request.session_id, terminal_outputs);
+        self.owned
+            .append_history_entries(&request.session_id, history_entries);
+        Ok(records)
     }
 }

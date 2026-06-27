@@ -46,6 +46,17 @@ pub struct TerminalOutputRecord {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalOutputAppend {
+    pub session_id: String,
+    pub provider_run_id: String,
+    pub agent_id: Option<String>,
+    pub kind: TerminalOutputKind,
+    pub merge_key: Option<String>,
+    pub recipient_attachment_ids: Vec<String>,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNoticeRecord {
     pub session_id: String,
@@ -180,6 +191,21 @@ impl TerminalStreamStore {
             );
         self.record_change();
         record
+    }
+
+    pub fn fan_out_outputs(&self, outputs: Vec<TerminalOutputAppend>) -> Vec<TerminalOutputRecord> {
+        if outputs.is_empty() {
+            return Vec::new();
+        }
+        let records = self
+            .inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .fan_out_outputs(outputs);
+        if !records.is_empty() {
+            self.record_change();
+        }
+        records
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -453,6 +479,38 @@ impl TerminalStreamService {
         self.enforce_pending_output_record_limits();
         self.refresh_health();
         record
+    }
+
+    pub fn fan_out_outputs(
+        &mut self,
+        outputs: Vec<TerminalOutputAppend>,
+    ) -> Vec<TerminalOutputRecord> {
+        if outputs.is_empty() {
+            return Vec::new();
+        }
+        let mut records = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let record = TerminalOutputRecord {
+                session_id: output.session_id,
+                provider_run_id: output.provider_run_id,
+                agent_id: output.agent_id,
+                prompt_id: None,
+                source_attachment_id: None,
+                kind: output.kind,
+                merge_key: output.merge_key,
+                pending_recipient_attachment_ids: output.recipient_attachment_ids.clone(),
+                recipient_attachment_ids: output.recipient_attachment_ids,
+                bytes: output.bytes,
+            };
+
+            if !self.try_coalesce_output_record(&record) {
+                self.output_records.push(record.clone());
+            }
+            records.push(record);
+        }
+        self.enforce_pending_output_record_limits();
+        self.refresh_health();
+        records
     }
 
     #[allow(clippy::too_many_arguments)]
