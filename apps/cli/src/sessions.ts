@@ -112,12 +112,20 @@ function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
   if ((session.activity?.missing_worker_provider_run_count ?? 0) > 0) {
-    return ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}`
+    return ` - next: ${remoteWorkerProviderRunRecoveryAction(null, null)}`
   }
-  if ((session.activity?.remote_extension_sync_issue_count ?? 0) > 0) {
-    return " - next run /extension sync-status <agent>; use /extension sync-retry <agent> after worker connectivity is healthy"
+  const activity = session.activity
+  if (activity && (activity.remote_extension_sync_issue_count ?? 0) > 0) {
+    return ` - next: ${formatRemoteExtensionAggregateNextAction(activity)}`
   }
   return ""
+}
+
+function formatRemoteExtensionAggregateNextAction(activity: SessionActivitySummary): string {
+  if ((activity.remote_extension_pending_revoke_count ?? 0) > 0) {
+    return "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects"
+  }
+  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
