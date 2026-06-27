@@ -147,6 +147,53 @@ fn assert_external_active_prompt_and_queued_arroba_prompt(
 }
 
 #[tokio::test]
+async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-external-projection",
+            "worktree-owned-external-projection",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "external:codex:thread-owned:user-1",
+        "codex",
+        agent_id.clone(),
+        "external owned projection prompt",
+    );
+
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(
+            &session_id,
+            &agent_id,
+            Some(external_prompt),
+            VecDeque::new(),
+        )
+        .expect("owned prompt mirror should refresh projections");
+
+    let projected = runtime
+        .owned
+        .session_projection
+        .get(&session_id)
+        .expect("session projection should refresh");
+    assert_eq!(projected.agents().len(), 1);
+    let active_prompt = projected
+        .active_prompt_for_agent(&agent_id)
+        .expect("external active prompt should project");
+    assert_eq!(
+        active_prompt.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
+    assert_eq!(active_prompt.prompt(), "external owned projection prompt");
+}
+
+#[tokio::test]
 async fn provider_output_pump_ignores_projected_remote_active_run() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

@@ -20,6 +20,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
         self.provider_process_projection.invalidate();
+        let _ = self.session_snapshot(session_id)?;
         Ok(())
     }
 
