@@ -115,6 +115,7 @@ impl TerminalStreamHealthStore {
 pub struct TerminalStreamStore {
     inner: Arc<StdMutex<TerminalStreamService>>,
     changes: Arc<TerminalStreamChangeSignal>,
+    session_changes: Arc<StdMutex<BTreeMap<String, Arc<TerminalStreamChangeSignal>>>>,
     attachment_changes: Arc<StdMutex<BTreeMap<(String, String), Arc<TerminalStreamChangeSignal>>>>,
 }
 
@@ -129,6 +130,7 @@ impl TerminalStreamStore {
         Self {
             inner: Arc::new(StdMutex::new(TerminalStreamService::new())),
             changes: Arc::new(TerminalStreamChangeSignal::default()),
+            session_changes: Arc::new(StdMutex::new(BTreeMap::new())),
             attachment_changes: Arc::new(StdMutex::new(BTreeMap::new())),
         }
     }
@@ -143,6 +145,24 @@ impl TerminalStreamStore {
         }
         let notified = self.changes.notify.notified();
         if self.change_sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+
+    pub fn session_change_sequence(&self, session_id: &str) -> u64 {
+        self.session_signal(session_id)
+            .sequence
+            .load(Ordering::Acquire)
+    }
+
+    pub async fn wait_for_session_change_after(&self, session_id: &str, sequence: u64) {
+        let signal = self.session_signal(session_id);
+        if signal.sequence.load(Ordering::Acquire) != sequence {
+            return;
+        }
+        let notified = signal.notify.notified();
+        if signal.sequence.load(Ordering::Acquire) != sequence {
             return;
         }
         notified.await;
@@ -378,6 +398,10 @@ impl TerminalStreamStore {
             .lock()
             .expect("terminal attachment change lock should not be poisoned")
             .retain(|(signal_session_id, _), _| signal_session_id != session_id);
+        self.session_changes
+            .lock()
+            .expect("terminal session change lock should not be poisoned")
+            .remove(session_id);
         self.record_change();
     }
 
@@ -392,12 +416,12 @@ impl TerminalStreamStore {
                 .lock()
                 .expect("terminal attachment change lock should not be poisoned")
                 .remove(&(session_id.to_string(), attachment_id.to_string()));
-            self.record_change();
+            self.record_change_for_session(session_id);
         }
     }
 
-    pub fn notify_terminal_projection_change(&self) {
-        self.record_change();
+    pub fn notify_terminal_projection_change(&self, session_id: &str) {
+        self.record_change_for_session(session_id);
     }
 
     fn record_change(&self) {
@@ -406,15 +430,36 @@ impl TerminalStreamStore {
     }
 
     fn record_change_for_record(&self, record: &TerminalOutputRecord) {
-        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+        if record.recipient_attachment_ids.is_empty() {
+            self.record_change_for_session(&record.session_id);
+        } else {
+            self.record_change_for_attachment_ids(
+                &record.session_id,
+                &record.recipient_attachment_ids,
+            );
+        }
     }
 
     fn record_change_for_notice(&self, record: &RuntimeNoticeRecord) {
-        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+        if record.recipient_attachment_ids.is_empty() {
+            self.record_change_for_session(&record.session_id);
+        } else {
+            self.record_change_for_attachment_ids(
+                &record.session_id,
+                &record.recipient_attachment_ids,
+            );
+        }
     }
 
     fn record_change_for_completion(&self, record: &AssistantMessageCompletionRecord) {
-        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+        if record.recipient_attachment_ids.is_empty() {
+            self.record_change_for_session(&record.session_id);
+        } else {
+            self.record_change_for_attachment_ids(
+                &record.session_id,
+                &record.recipient_attachment_ids,
+            );
+        }
     }
 
     fn record_change_for_attachment_ids(&self, session_id: &str, attachment_ids: &[String]) {
@@ -435,6 +480,21 @@ impl TerminalStreamStore {
             signal.sequence.fetch_add(1, Ordering::AcqRel);
             signal.notify.notify_waiters();
         }
+    }
+
+    fn record_change_for_session(&self, session_id: &str) {
+        let signal = self.session_signal(session_id);
+        signal.sequence.fetch_add(1, Ordering::AcqRel);
+        signal.notify.notify_waiters();
+    }
+
+    fn session_signal(&self, session_id: &str) -> Arc<TerminalStreamChangeSignal> {
+        self.session_changes
+            .lock()
+            .expect("terminal session change lock should not be poisoned")
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
     }
 
     fn attachment_signal(
@@ -2199,6 +2259,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_stream_store_broadcast_notice_wakes_session_waiters() {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.session_change_sequence("session-1");
+        let waiter = {
+            let terminal = terminal.clone();
+            tokio::spawn(async move {
+                terminal
+                    .wait_for_session_change_after("session-1", sequence)
+                    .await;
+            })
+        };
+
+        terminal.record_notice("session-1", None, None, Vec::new(), "broadcast notice");
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .expect("terminal session waiter should wake")
+            .expect("terminal session waiter task should complete");
+        assert!(terminal.session_change_sequence("session-1") > sequence);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_session_waiters_ignore_unrelated_sessions() {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.session_change_sequence("session-2");
+
+        terminal.notify_terminal_projection_change("session-1");
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                terminal.wait_for_session_change_after("session-2", sequence),
+            )
+            .await
+            .is_err(),
+            "unrelated session waiter should not wake"
+        );
+    }
+
+    #[tokio::test]
     async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_once() {
         let terminal = TerminalStreamStore::new();
         let changed_sequence = terminal.attachment_change_sequence("session-1", "attachment-1");
@@ -2253,12 +2353,12 @@ mod tests {
     #[tokio::test]
     async fn terminal_stream_store_wait_returns_when_sequence_already_changed() {
         let terminal = TerminalStreamStore::new();
-        let sequence = terminal.change_sequence();
+        let sequence = terminal.session_change_sequence("session-1");
         terminal.record_notice("session-1", None, None, Vec::new(), "notice");
 
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            terminal.wait_for_change_after(sequence),
+            terminal.wait_for_session_change_after("session-1", sequence),
         )
         .await
         .expect("changed terminal sequence should not block");

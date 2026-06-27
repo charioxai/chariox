@@ -62,7 +62,8 @@ pub(super) async fn run_subscription_loop(
             &subscription.session_id,
             &subscription.attachment_id,
         );
-        let terminal_global_change_sequence = router.terminal_stream_change_sequence();
+        let terminal_session_change_sequence =
+            router.terminal_session_change_sequence(&subscription.session_id);
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&subscription.session_id);
         let should_check_snapshot = previous_snapshot.is_none()
@@ -291,23 +292,23 @@ pub(super) async fn run_subscription_loop(
             crate::session::unix_epoch_ms(),
         );
         let wait_started = Instant::now();
-        let _ = timeout(
-            Duration::from_millis(wait_ms),
-            async {
-                tokio::select! {
-                    _ = router.wait_for_terminal_attachment_change_after(
-                        &subscription.session_id,
-                        &subscription.attachment_id,
-                        terminal_attachment_change_sequence
-                    ) => {}
-                    _ = router.wait_for_terminal_stream_change_after(terminal_global_change_sequence) => {}
-                    _ = router.wait_for_session_projection_session_change_after(
-                        &subscription.session_id,
-                        session_projection_change_sequence
-                    ) => {}
-                }
-            },
-        )
+        let _ = timeout(Duration::from_millis(wait_ms), async {
+            tokio::select! {
+                _ = router.wait_for_terminal_attachment_change_after(
+                    &subscription.session_id,
+                    &subscription.attachment_id,
+                    terminal_attachment_change_sequence
+                ) => {}
+                _ = router.wait_for_terminal_session_change_after(
+                    &subscription.session_id,
+                    terminal_session_change_sequence
+                ) => {}
+                _ = router.wait_for_session_projection_session_change_after(
+                    &subscription.session_id,
+                    session_projection_change_sequence
+                ) => {}
+            }
+        })
         .await;
         let elapsed_ticks =
             ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);

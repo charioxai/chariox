@@ -55,7 +55,8 @@ impl KernelRuntimeOwnedState {
         }
         session.add_active_interaction(interaction.clone());
         self.restore_session_and_publish_projection(session)?;
-        self.terminal_stream.notify_terminal_projection_change();
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         self.pending_interactions.write().insert(
             interaction.id().to_string(),
             super::PendingInteraction {
@@ -174,7 +175,8 @@ impl KernelRuntimeOwnedState {
             })?;
         let _ = session.remove_active_interaction(interaction_id);
         self.restore_session_and_publish_projection(session)?;
-        self.terminal_stream.notify_terminal_projection_change();
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         if let Some(sender) = pending
             .responder
             .lock()
@@ -226,7 +228,8 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         };
         self.restore_session_and_publish_projection(session)?;
-        self.terminal_stream.notify_terminal_projection_change();
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         let resolution = if let Some(default_choice_id) = interaction.default_on_timeout() {
             if let Some(choice) = interaction.choice(default_choice_id) {
                 super::PendingInteractionResolution {

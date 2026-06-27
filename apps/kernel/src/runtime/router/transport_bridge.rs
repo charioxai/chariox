@@ -51,8 +51,9 @@ impl CommandRouter {
         self.runtime_state.pump_transport_runtime().await;
     }
 
-    pub(crate) fn terminal_stream_change_sequence(&self) -> u64 {
-        self.runtime_state.terminal_stream_change_sequence()
+    pub(crate) fn terminal_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.runtime_state
+            .terminal_session_change_sequence(session_id)
     }
 
     pub(crate) fn terminal_attachment_change_sequence(
@@ -64,9 +65,13 @@ impl CommandRouter {
             .terminal_attachment_change_sequence(session_id, attachment_id)
     }
 
-    pub(crate) async fn wait_for_terminal_stream_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_terminal_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
         self.runtime_state
-            .wait_for_terminal_stream_change_after(sequence)
+            .wait_for_terminal_session_change_after(session_id, sequence)
             .await;
     }
 

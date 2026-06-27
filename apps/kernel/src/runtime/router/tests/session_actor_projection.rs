@@ -707,7 +707,7 @@ async fn runtime_interaction_registration_and_resolution_wake_terminal_subscribe
     );
 
     let before_projection_sequence = router.session_projection_change_sequence();
-    let before_terminal_sequence = router.terminal_stream_change_sequence();
+    let before_terminal_session_sequence = router.terminal_session_change_sequence(&session_id);
     let receiver = router
         .runtime_state
         .create_runtime_interaction(&session_id, interaction)
@@ -719,18 +719,20 @@ async fn runtime_interaction_registration_and_resolution_wake_terminal_subscribe
         "runtime interaction registration should publish a projection change"
     );
     assert!(
-        router.terminal_stream_change_sequence() > before_terminal_sequence,
+        router.terminal_session_change_sequence(&session_id) > before_terminal_session_sequence,
         "runtime interaction registration should wake terminal subscription waiters"
     );
 
-    let before_resolve_terminal_sequence = router.terminal_stream_change_sequence();
+    let before_resolve_terminal_session_sequence =
+        router.terminal_session_change_sequence(&session_id);
     router
         .runtime_state
         .resolve_runtime_interaction(&session_id, "interaction-terminal-wake", "allow_once", None)
         .await
         .expect("interaction should resolve");
     assert!(
-        router.terminal_stream_change_sequence() > before_resolve_terminal_sequence,
+        router.terminal_session_change_sequence(&session_id)
+            > before_resolve_terminal_session_sequence,
         "runtime interaction resolution should wake terminal subscription waiters"
     );
     let resolution = receiver.await.expect("resolution should be delivered");
