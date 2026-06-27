@@ -159,6 +159,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0 relay_reconnects=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0 auth_missing=0 auth_unconfigured=0/)
+  assert.match(rendered, /remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools/)
   assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.doesNotMatch(rendered, /remote extension runtime:/)

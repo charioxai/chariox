@@ -185,6 +185,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const lines = [
     "remote runtime",
+    formatRemoteRuntimeAuthorityBoundary(),
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
     `provider run invariants: duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
@@ -232,6 +233,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const commandLanes = commandLaneHealthSummary(health)
   const lines = [
     "kernel health",
+    formatRemoteRuntimeAuthorityBoundary(),
     `command lanes: session=${commandLanes.session.lanes}/${commandLanes.session.queued} agent=${commandLanes.agent.lanes}/${commandLanes.agent.queued} workflow=${commandLanes.workflow.lanes}/${commandLanes.workflow.queued} provider=${commandLanes.provider.lanes}/${commandLanes.provider.queued} saturated=${commandLanes.saturated}`,
     `process: pid=${process.process_id} rss=${formatBytes(process.current_resident_set_bytes ?? null)} peak_rss=${formatBytes(process.peak_resident_set_bytes ?? null)}`,
     `provider catalog: cached=${providerCatalog.cached ? "yes" : "no"} expired=${providerCatalog.expired ? "yes" : "no"} age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`,
@@ -396,6 +398,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   }
 
   return lines.join("\n")
+}
+
+function formatRemoteRuntimeAuthorityBoundary(): string {
+  return "remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools"
 }
 
 function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjection): void {
