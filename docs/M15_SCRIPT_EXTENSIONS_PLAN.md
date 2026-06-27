@@ -12,7 +12,7 @@ The goal is to let users expose local Python and TypeScript functions to agents 
 - Script environments are external only. Arroba records and validates existing Python or Node environments; it does not install Python, Node, npm packages, or virtualenv dependencies in V1.
 - Runtime script environment is selected by the agent's script extension grant.
 - Script execution is owned by an Arroba runner/shim. The implemented V1 runner is per-call and captures stdout/stderr separately from the returned payload; the intended next refinement is a warm turn-scoped runner to avoid repeated imports for heavy SDKs.
-- Remote script extensions must exist on the worker machine hosting the agent. Arroba does not transfer scripts, install environments, or proxy script execution to the home kernel in V1.
+- Remote agents can use home-owned script extensions through the home-proxy extension path: the worker receives only the projected tool manifest, forwards invocations, and the home kernel validates the current grant/lease/provider-run binding before executing the script in the home script environment. Explicit worker-local script extensions still require the matching script and environment on the worker and must fail fast when missing.
 - Workflows keep the current node-agent relationship. Workflow nodes use the extensions granted to their bound agents. Workflow export portability is deferred.
 
 ## Script Authoring Contract
@@ -169,6 +169,8 @@ ExtensionGrant {
 - Schema enforcement follow-up: invalid arguments are rejected before script execution.
 - Output enforcement follow-up: JSON-serializable values succeed; non-serializable return and oversized output fail clearly.
 - Workflow script use: node's bound agent has script grant; workflow run calls script and completes.
-- Remote negative: worker lacks script/env and fails fast with remediation.
-- Remote positive: same script and env are installed on worker; remote agent calls script successfully and managed output confirms worker-side execution.
+- Home-proxy remote negative: grant is missing, revoked, stale, or bound to the wrong leased agent/provider run; home rejects the invocation and `/extension audit` reports the denial.
+- Home-proxy remote positive: worker lacks the script/env locally, receives only the projected manifest, remote agent invokes the script, and output proves execution happened on home with credentials/env kept home-local.
+- Worker-local remote negative: worker lacks script/env and fails fast with remediation before provider execution.
+- Worker-local remote positive: same script and env are installed on worker; remote agent calls script successfully and output confirms worker-side execution.
 - Alias coverage: `/mcp` and `/skill` aliases still work; `/extension grants` shows equivalent grants.
