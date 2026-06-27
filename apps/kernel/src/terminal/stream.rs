@@ -810,7 +810,7 @@ impl TerminalStreamService {
             self.pop_pending_output_queue_front(&key);
             drained_json_bytes = candidate_json_bytes;
             drained.push(scoped);
-            self.mark_output_record_drained_for_recipient(record_id);
+            self.mark_output_record_drained_for_recipient(record_id, attachment_id);
             self.remove_output_record_if_drained(record_id);
         }
 
@@ -844,30 +844,26 @@ impl TerminalStreamService {
         }
     }
 
-    fn mark_output_record_drained_for_recipient(&mut self, record_id: u64) {
-        if let Some(record) = self.output_records.get_mut(&record_id) {
-            record.pending_recipient_count = record.pending_recipient_count.saturating_sub(1);
+    fn mark_output_record_drained_for_recipient(&mut self, record_id: u64, attachment_id: &str) {
+        if let Some(stored) = self.output_records.get_mut(&record_id) {
+            let previous_len = stored.record.pending_recipient_attachment_ids.len();
+            stored
+                .record
+                .pending_recipient_attachment_ids
+                .retain(|id| id != attachment_id);
+            if stored.record.pending_recipient_attachment_ids.len() != previous_len {
+                stored.pending_recipient_count =
+                    stored.record.pending_recipient_attachment_ids.len();
+            }
         }
     }
 
     fn output_record_view(
         &self,
-        record_id: u64,
+        _record_id: u64,
         stored: &StoredTerminalOutputRecord,
     ) -> TerminalOutputRecord {
-        let mut record = stored.record.clone();
-        record.pending_recipient_attachment_ids = stored
-            .record
-            .recipient_attachment_ids
-            .iter()
-            .filter(|attachment_id| {
-                self.pending_output_by_attachment
-                    .get(&(stored.record.session_id.clone(), (*attachment_id).clone()))
-                    .is_some_and(|queue| queue.contains(&record_id))
-            })
-            .cloned()
-            .collect();
-        record
+        stored.record.clone()
     }
 
     fn enforce_pending_output_record_limits(&mut self) {
@@ -911,7 +907,7 @@ impl TerminalStreamService {
                     break;
                 };
                 trimmed = trimmed.saturating_add(1);
-                self.mark_output_record_drained_for_recipient(record_id);
+                self.mark_output_record_drained_for_recipient(record_id, &key.1);
                 self.remove_output_record_if_drained(record_id);
             }
         }
@@ -1118,7 +1114,7 @@ impl TerminalStreamService {
         if let Some(record_ids) = self.pending_output_by_attachment.remove(&key) {
             changed = true;
             for record_id in record_ids {
-                self.mark_output_record_drained_for_recipient(record_id);
+                self.mark_output_record_drained_for_recipient(record_id, attachment_id);
                 self.remove_output_record_if_drained(record_id);
             }
         }
@@ -1428,6 +1424,10 @@ mod tests {
             vec!["attachment-1"]
         );
         assert_eq!(terminal.output_records().len(), 1);
+        assert_eq!(
+            terminal.output_records()[0].pending_recipient_attachment_ids,
+            vec!["attachment-2".to_string()]
+        );
 
         let second = terminal.drain_output_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
