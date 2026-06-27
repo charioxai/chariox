@@ -111,14 +111,22 @@ function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">
 }
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
-  if ((session.activity?.missing_worker_provider_run_count ?? 0) > 0) {
-    return ` - next: ${remoteWorkerProviderRunRecoveryAction(null, null)}`
-  }
+  const action = formatSessionActivityNextAction(session)
+  return action ? ` - next: ${action}` : ""
+}
+
+export function formatSessionActivityNextAction(session: Pick<SessionListEntry, "activity">): string | null {
   const activity = session.activity
-  if (activity && (activity.remote_extension_sync_issue_count ?? 0) > 0) {
-    return ` - next: ${formatRemoteExtensionAggregateNextAction(activity)}`
+  if (!activity) {
+    return null
   }
-  return ""
+  if ((activity.missing_worker_provider_run_count ?? 0) > 0) {
+    return remoteWorkerProviderRunRecoveryAction(null, null)
+  }
+  if ((activity.remote_extension_sync_issue_count ?? 0) > 0) {
+    return formatRemoteExtensionAggregateNextAction(activity)
+  }
+  return null
 }
 
 function formatRemoteExtensionAggregateNextAction(activity: SessionActivitySummary): string {

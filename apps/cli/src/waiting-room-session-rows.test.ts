@@ -65,6 +65,38 @@ test("waiting room session rows render loading and empty states", () => {
   ).map((row) => row.id), ["no-sessions"])
 })
 
+test("waiting room session rows surface aggregate home-proxy recovery", () => {
+  const sessions = [
+    session({
+      id: "session-tools",
+      status: "Active",
+      workspace_live_sync_mode: "tracked",
+      activity: {
+        agent_count: 2,
+        working_agent_count: 0,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        error_agent_count: 0,
+        remote_agent_count: 1,
+        home_proxy_agent_count: 1,
+        remote_extension_sync_issue_count: 1,
+        remote_extension_pending_revoke_count: 1,
+      },
+    }),
+  ]
+
+  const rows = waitingRoomSessionRows(
+    { focus: "session", sessionIndex: 0 },
+    sessions,
+    { inventoryLoading: false, loadingText: "loading", titleWidth: 32 },
+  )
+
+  assert.equal(
+    rows[1]?.columns?.[3]?.trim(),
+    "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects",
+  )
+})
+
 test("waiting room session helpers filter, sort, and size preview rows", () => {
   const sessions = [
     session({ id: "ended", status: "Ended", last_used_at_ms: Date.UTC(2026, 0, 4) }),
