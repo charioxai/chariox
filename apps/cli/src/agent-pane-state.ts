@@ -279,8 +279,20 @@ export async function refreshAgentPaneState<
   for (const agent of options.session.agents) {
     const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
       .filter((entry) => entryBelongsToAgent(agent, entry))
-    const historyPage = await options.loadHistoryPage(agent.id, null)
-    const resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
+    let historyPage = await options.loadHistoryPage(agent.id, null)
+    let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
+    const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
+    while (
+      !options.hasPromptWork
+      && historyPage.nextCursor
+      && currentRenderableCount > countRenderablePaneEntries(resolvedHistoryEntries)
+    ) {
+      historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
+      resolvedHistoryEntries = [
+        ...options.hydrateEntries(historyPage.entries),
+        ...resolvedHistoryEntries,
+      ]
+    }
 
     const availableTurnIds = new Set(
       resolvedHistoryEntries

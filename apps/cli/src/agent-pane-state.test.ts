@@ -641,12 +641,12 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
 
-  assert.deepEqual(requestedCursors, [null])
+  assert.deepEqual(requestedCursors, [null, "older"])
   assert.deepEqual(
     result.visibleEntries.map((entry) => entry.text),
-    ["second question", "second answer"],
+    ["first question", "first answer", "second question", "second answer"],
   )
-  assert.equal(result.visibleCursor, "older")
+  assert.equal(result.visibleCursor, null)
 })
 
 test("refreshAgentPaneState preserves richer live pane entries while prompt work is active", async () => {
