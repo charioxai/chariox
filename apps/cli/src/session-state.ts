@@ -435,15 +435,25 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, activity] of Object.entries(session.agent_activity)) {
       const activeTurn = activity.active_turn
-      if (!activeTurn) {
+      if (activeTurn) {
+        records.push({
+          id: activeTurn.prompt_id,
+          status: activeTurn.status,
+          promptOrigin: activeTurn.prompt_origin ?? null,
+          target_agent_id: agentId,
+        })
         continue
       }
-      records.push({
-        id: activeTurn.prompt_id,
-        status: activeTurn.status,
-        promptOrigin: activeTurn.prompt_origin ?? null,
-        target_agent_id: agentId,
-      })
+      if (!agentRuntimeActivityIsBusy(activity)) {
+        continue
+      }
+      const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
+      if (stateActivePrompt) {
+        records.push({
+          ...stateActivePrompt,
+          promptOrigin: stateActivePrompt.prompt_origin ?? null,
+        })
+      }
     }
     return records.sort((left, right) => left.id.localeCompare(right.id))
   }

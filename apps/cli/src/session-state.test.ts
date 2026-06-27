@@ -169,6 +169,75 @@ test("activePromptIdForAgent prefers projected active turn and per-agent prompt 
   }), "agent-a"), null)
 })
 
+test("activePromptIdForAgent falls back to prompt state for session-wide sparse busy activity", () => {
+  const nextSession = session({
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+      },
+    },
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+
+  assert.equal(activePromptIdForAgent(nextSession, null), "state-prompt")
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), "state-prompt")
+})
+
+test("activePromptIdForAgent suppresses prompt state for session-wide idle or missing activity", () => {
+  const promptStates: NonNullable<RuntimeSession["prompt_states"]> = {
+    "agent-a": {
+      active_prompt: {
+        id: "stale-a",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "stale",
+        status: "running",
+      },
+      queued_prompts: [],
+    },
+    "agent-b": {
+      active_prompt: {
+        id: "stale-b",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-b",
+        prompt: "stale",
+        status: "running",
+      },
+      queued_prompts: [],
+    },
+  }
+
+  const nextSession = session({
+    agent_activity: {
+      "agent-a": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+    prompt_states: promptStates,
+    agents: [agent("agent-a"), agent("agent-b")],
+  })
+
+  assert.equal(activePromptIdForAgent(nextSession, null), null)
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), null)
+  assert.equal(activePromptIdForAgent(nextSession, "agent-b"), null)
+})
+
 test("focusedAgentIdForSession does not fall back when focused id is not in the session", () => {
   assert.equal(focusedAgentIdForSession(session({
     focused_agent_id: "stale-agent",
