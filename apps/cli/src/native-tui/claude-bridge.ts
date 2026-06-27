@@ -202,6 +202,8 @@ export function promptForAgent(session: RuntimeSession, agentId: string): Prompt
     ? Object.prototype.hasOwnProperty.call(promptStates, agentId)
       ? promptStates[agentId]?.active_prompt ?? null
       : null
+    : session.agent_activity
+      ? null
     : session.active_prompt?.target_agent_id === agentId
       ? session.active_prompt
       : null
