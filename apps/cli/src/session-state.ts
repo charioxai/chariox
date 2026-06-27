@@ -120,7 +120,7 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
   if (session.agent_activity) {
     return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
   }
-  if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
+  if (session.prompt_states) {
     return Object.values(session.prompt_states).some((state) => {
       return Boolean(state.active_prompt) || state.queued_prompts.length > 0
     })
@@ -212,9 +212,11 @@ export function agentPromptState(
   if (!agentId) {
     return null
   }
-  const promptState = session.prompt_states?.[agentId]
-  if (promptState) {
-    return normalizeAgentPromptState(promptState)
+  const promptStates = session.prompt_states
+  if (promptStates) {
+    return Object.prototype.hasOwnProperty.call(promptStates, agentId)
+      ? normalizeAgentPromptState(promptStates[agentId])
+      : null
   }
   if (session.active_prompt?.target_agent_id === agentId || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId)) {
     return {
@@ -258,6 +260,13 @@ export function sessionResponseLayout(
 export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
   if (session.agent_activity) {
     return session.agents.find((agent) => agentRuntimeActivityIsBusy(session.agent_activity?.[agent.id]))?.id ?? null
+  }
+  if (session.prompt_states) {
+    const activeAgents = session.agents.filter((agent) => {
+      const promptState = session.prompt_states?.[agent.id]
+      return Boolean(promptState?.active_prompt)
+    })
+    return activeAgents.length === 1 ? activeAgents[0]?.id ?? null : null
   }
   return session.active_prompt?.target_agent_id ?? null
 }
@@ -428,7 +437,7 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
     }
     return records.sort((left, right) => left.id.localeCompare(right.id))
   }
-  if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
+  if (session.prompt_states) {
     return Object.values(session.prompt_states)
       .map((state) => state.active_prompt)
       .map((stateActivePrompt) => stateActivePrompt ? {

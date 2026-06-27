@@ -85,6 +85,24 @@ test("native Claude bridge falls back to legacy prompt fields before projected a
   assert.equal(promptForAgent(session({ active_prompt: activePrompt }), "agent-1")?.id, "prompt-legacy")
 })
 
+test("native Claude bridge prefers explicit prompt state over stale top-level prompt", () => {
+  const activePrompt = prompt("prompt-stale", "agent-1")
+
+  assert.equal(promptForAgent(session({
+    active_prompt: activePrompt,
+    prompt_states: {},
+  }), "agent-1"), null)
+  assert.equal(promptForAgent(session({
+    active_prompt: activePrompt,
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+  }), "agent-1"), null)
+})
+
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",

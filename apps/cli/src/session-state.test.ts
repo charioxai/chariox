@@ -356,6 +356,68 @@ test("kernel agent activity suppresses stale legacy prompt activity", () => {
   })
 })
 
+test("prompt_states suppress stale legacy prompt activity even when empty", () => {
+  const nextSession = session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale top-level prompt",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale queued prompt",
+      status: "queued",
+    }],
+    prompt_states: {},
+    agents: [agent("agent-a")],
+  })
+
+  assert.equal(sessionHasPromptWork(nextSession), false)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), null)
+  assert.equal(projectedStreamingAgentIdForSession(nextSession), null)
+  assert.equal(agentPromptState(nextSession, "agent-a"), null)
+})
+
+test("explicit empty agent prompt state suppresses stale top-level prompts", () => {
+  const nextSession = session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale top-level prompt",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale queued prompt",
+      status: "queued",
+    }],
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+
+  assert.equal(sessionHasPromptWork(nextSession), false)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), null)
+  assert.equal(projectedStreamingAgentIdForSession(nextSession), null)
+  assert.deepEqual(agentPromptState(nextSession, "agent-a"), {
+    active_prompt: null,
+    queued_prompts: [],
+  })
+})
+
 test("projectedStreamingAgentIdForSession uses projected activity before legacy active prompts", () => {
   assert.equal(projectedStreamingAgentIdForSession(session({
     active_prompt: {

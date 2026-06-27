@@ -197,8 +197,14 @@ export function promptForAgent(session: RuntimeSession, agentId: string): Prompt
     return null
   }
 
-  const prompt = session.prompt_states?.[agentId]?.active_prompt
-    ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+  const promptStates = session.prompt_states
+  const prompt = promptStates
+    ? Object.prototype.hasOwnProperty.call(promptStates, agentId)
+      ? promptStates[agentId]?.active_prompt ?? null
+      : null
+    : session.active_prompt?.target_agent_id === agentId
+      ? session.active_prompt
+      : null
   const activeTurnPromptId = projectedActivity?.active_turn?.prompt_id
   if (activeTurnPromptId && prompt?.id !== activeTurnPromptId) {
     return null
