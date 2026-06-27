@@ -5,6 +5,7 @@ use rusqlite::params;
 use crate::error::DaemonError;
 use crate::session::prompt_id_number;
 
+use super::session_log::external_provider_observed_merge_key_with_prefix_is_state_signal;
 use super::{
     HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource,
@@ -346,7 +347,12 @@ impl OperationalHistoryStore {
                 }
             }
             for line in metadata_text.lines() {
-                if line.starts_with(external_merge_key_prefix) {
+                if line.starts_with(external_merge_key_prefix)
+                    && !external_provider_observed_merge_key_with_prefix_is_state_signal(
+                        external_merge_key_prefix,
+                        line,
+                    )
+                {
                     external_merge_keys.insert(line.to_string());
                 }
             }
@@ -450,7 +456,12 @@ impl OperationalHistoryStore {
                 continue;
             };
             for line in metadata_text.lines() {
-                if line.starts_with(external_merge_key_prefix) {
+                if line.starts_with(external_merge_key_prefix)
+                    && !external_provider_observed_merge_key_with_prefix_is_state_signal(
+                        external_merge_key_prefix,
+                        line,
+                    )
+                {
                     external_entries_by_merge_key.insert(
                         line.to_string(),
                         ExternalImportHistoryEntry {

@@ -243,6 +243,28 @@ pub fn external_provider_observed_state_merge_key(
     )
 }
 
+#[cfg(test)]
+pub fn external_provider_observed_merge_key_is_state_signal(
+    provider: &str,
+    provider_session_id: &str,
+    value: &str,
+) -> bool {
+    external_provider_observed_merge_key_with_prefix_is_state_signal(
+        &external_provider_observed_merge_key_prefix(provider, provider_session_id),
+        value,
+    )
+}
+
+pub fn external_provider_observed_merge_key_with_prefix_is_state_signal(
+    external_merge_key_prefix: &str,
+    value: &str,
+) -> bool {
+    let prefix = external_merge_key_prefix
+        .strip_suffix(':')
+        .unwrap_or(external_merge_key_prefix);
+    value.starts_with(&format!("{prefix}:state:"))
+}
+
 impl SessionHistoryEntry {
     pub fn is_external_provider_observed(&self) -> bool {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
@@ -742,5 +764,15 @@ mod tests {
             ),
             "external:codex:thread-1:state:settled:external:codex:thread-1:item-1"
         );
+        assert!(external_provider_observed_merge_key_is_state_signal(
+            "codex",
+            "thread-1",
+            "external:codex:thread-1:state:settled:external:codex:thread-1:item-1"
+        ));
+        assert!(!external_provider_observed_merge_key_is_state_signal(
+            "codex",
+            "thread-1",
+            "external:codex:thread-1:item-1"
+        ));
     }
 }

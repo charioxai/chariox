@@ -910,9 +910,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventRole,
-        HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
-        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
+        external_provider_observed_state_merge_key, HistoryEvent, HistoryEventKind,
+        HistoryEventQuery, HistoryEventRole, HistoryEventTurnContext, OperationalHistoryStore,
+        SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource,
+        SessionHistoryStore,
     };
 
     #[test]
@@ -1256,12 +1257,37 @@ mod tests {
                 settles_active_prompt: true,
                 passive_telemetry: false,
             });
+        let state_merge_key = external_provider_observed_state_merge_key(
+            "codex",
+            "thread-1",
+            "active_prompt_settled",
+            "external:codex:thread-1:turn-1:status",
+        );
+        let mut external_state_signal =
+            SessionHistoryEntry::external_provider_observed_with_merge_key(
+                "session-1",
+                None,
+                "agent-1",
+                SessionHistoryEntryKind::ProviderStatus,
+                "external provider state changed",
+                "codex",
+                "thread-1",
+                Some(state_merge_key.clone()),
+                Some("active_prompt_settled".to_string()),
+                Some(2_300),
+            );
+        external_state_signal.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: true,
+                passive_telemetry: false,
+            });
 
         for (sequence, entry) in [
             (1, arroba_prompt),
             (2, external_prompt),
             (3, external_output),
             (4, external_status),
+            (5, external_state_signal),
         ] {
             store
                 .append(&HistoryEvent::transcript(
@@ -1303,6 +1329,12 @@ mod tests {
                 .and_then(|entry| entry.external_observation.as_ref())
                 .map(|observation| observation.settles_active_prompt),
             Some(true)
+        );
+        assert!(
+            !index
+                .external_entries_by_merge_key
+                .contains_key(&state_merge_key),
+            "internal external-observer state signals must not pollute the provider transcript index"
         );
 
         drop(store);
