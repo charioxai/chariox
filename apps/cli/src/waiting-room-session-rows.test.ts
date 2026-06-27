@@ -51,6 +51,33 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.focused, true)
 })
 
+test("waiting room session rows render done status for unread idle output", () => {
+  const sessions = [
+    session({
+      id: "session-done",
+      status: "Active",
+      activity: {
+        agent_count: 1,
+        working_agent_count: 0,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        error_agent_count: 0,
+        unread_idle_agent_count: 1,
+      },
+    }),
+  ]
+
+  const rows = waitingRoomSessionRows(
+    { focus: "session", sessionIndex: 0 },
+    sessions,
+    { inventoryLoading: false, loadingText: "loading", titleWidth: 32 },
+  )
+
+  assert.equal(rows[1]?.title, "session-done")
+  assert.equal(rows[1]?.value, "Done")
+  assert.equal(rows[1]?.columns?.[0]?.trim(), "Done")
+})
+
 test("waiting room session rows render loading and empty states", () => {
   assert.deepEqual(waitingRoomSessionRows(
     { focus: "join-sessions", sessionIndex: 0 },

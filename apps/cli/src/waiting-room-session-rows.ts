@@ -215,7 +215,13 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionStatus(session: SessionListEntry) {
-  return sessionHasActiveWork(session) ? "Working" : formatSessionStatus(session.status)
+  if (sessionHasActiveWork(session)) {
+    return "Working"
+  }
+  if (sessionHasUnreadIdleOutput(session)) {
+    return "Done"
+  }
+  return formatSessionStatus(session.status)
 }
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
@@ -230,6 +236,10 @@ function sessionHasActiveWork(session: SessionListEntry) {
   return activity.working_agent_count > 0
     || activity.active_prompt_count > 0
     || activity.queued_prompt_count > 0
+}
+
+function sessionHasUnreadIdleOutput(session: SessionListEntry) {
+  return (session.activity?.unread_idle_agent_count ?? 0) > 0
 }
 
 function formatSessionStatus(value: string) {
