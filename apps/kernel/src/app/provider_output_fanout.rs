@@ -393,91 +393,90 @@ impl ProviderOutputFanout {
                     "error": error.to_string(),
                 }),
             );
-        } else {
-            let provider_run = entry
-                .provider_run_id
-                .as_deref()
-                .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
-            let agent_id = entry.agent_id.clone().or_else(|| {
-                provider_run
-                    .as_ref()
-                    .and_then(|run| run.agent_instance_id().map(str::to_string))
-            });
-            let active_prompt = agent_id.as_deref().and_then(|agent_id| {
-                self.prompt_state_owner
-                    .active_prompt_for_agent(&session, agent_id)
-            });
-            let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-            let external_turn_id = entry
-                .external_provider_observed_turn_id()
-                .map(str::to_string);
-            let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
-            let context = HistoryEventTurnContext {
-                session_id: Some(entry.session_id.clone()),
-                agent_id,
-                provider: provider_run.as_ref().map(|run| run.provider().to_string()),
-                model: provider_run.as_ref().map(|run| run.model().to_string()),
-                turn_id,
-                prompt_id,
-                provider_run_id: entry.provider_run_id.clone(),
-                provider_session_id: provider_run
-                    .as_ref()
-                    .and_then(|run| run.provider_session_id().map(str::to_string)),
-                workflow_run_id: active_prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
-                workflow_node_id: active_prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
-                worktree_path: provider_run.as_ref().and_then(|run| {
-                    run.working_directory()
-                        .map(|path| path.display().to_string())
-                }),
-                ..HistoryEventTurnContext::default()
-            };
-            match self
-                .operational_history_store
-                .append_transcript(&entry, context)
-            {
-                Ok(event) => {
-                    if is_unread_output_history_entry(&entry) {
-                        if let Some(agent_id) = entry.agent_id.as_deref() {
-                            let _ = self.session_store.note_agent_output_sequence(
-                                session_id,
-                                agent_id,
-                                event.sequence,
-                            );
-                        }
-                    }
-                    if self.archive_enabled {
-                        if let Err(error) = self
-                            .operational_history_store
-                            .enqueue_archive_events(std::slice::from_ref(&event))
-                        {
-                            crate::logging::warn_with_fields(
-                                "daemon.history",
-                                "failed to enqueue history archive event",
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
+        }
+        let provider_run = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+        let agent_id = entry.agent_id.clone().or_else(|| {
+            provider_run
+                .as_ref()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        let active_prompt = agent_id.as_deref().and_then(|agent_id| {
+            self.prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+        });
+        let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+        let external_turn_id = entry
+            .external_provider_observed_turn_id()
+            .map(str::to_string);
+        let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
+        let context = HistoryEventTurnContext {
+            session_id: Some(entry.session_id.clone()),
+            agent_id,
+            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+            model: provider_run.as_ref().map(|run| run.model().to_string()),
+            turn_id,
+            prompt_id,
+            provider_run_id: entry.provider_run_id.clone(),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id().map(str::to_string)),
+            workflow_run_id: active_prompt
+                .as_ref()
+                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
+            workflow_node_id: active_prompt
+                .as_ref()
+                .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
+            worktree_path: provider_run.as_ref().and_then(|run| {
+                run.working_directory()
+                    .map(|path| path.display().to_string())
+            }),
+            ..HistoryEventTurnContext::default()
+        };
+        match self
+            .operational_history_store
+            .append_transcript(&entry, context)
+        {
+            Ok(event) => {
+                if is_unread_output_history_entry(&entry) {
+                    if let Some(agent_id) = entry.agent_id.as_deref() {
+                        let _ = self.session_store.note_agent_output_sequence(
+                            session_id,
+                            agent_id,
+                            event.sequence,
+                        );
                     }
                 }
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.history",
-                        "failed to append operational history",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "error": error.to_string(),
-                        }),
-                    );
+                if self.archive_enabled {
+                    if let Err(error) = self
+                        .operational_history_store
+                        .enqueue_archive_events(std::slice::from_ref(&event))
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to enqueue history archive event",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
                 }
             }
-            self.history_projection.append(entry);
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
+        self.history_projection.append(entry);
     }
 }
 

@@ -1,6 +1,7 @@
 use super::provider_output_runtime::provider_run_ids_for_owned_output_pump;
 use super::*;
 use std::collections::VecDeque;
+use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -245,6 +246,56 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
         pending[0].event.content.as_deref().map(str::trim_end),
         Some("owned archive prompt")
     );
+}
+
+#[tokio::test]
+async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let legacy_history_root = config.session_history_root.clone();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-legacy-history-fail",
+            "worktree-owned-legacy-history-fail",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-owned-legacy-history-fail",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let _ = fs::remove_dir_all(&legacy_history_root);
+    fs::write(&legacy_history_root, b"not a directory")
+        .expect("fixture should block legacy history writes");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .append_user_prompt_history(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "owned reload me",
+            &[],
+            Some("prompt-owned-legacy-history-fail"),
+            None,
+            None,
+        )
+        .expect("owned prompt history should append");
+
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].text.trim_end(), "owned reload me");
+
+    let _ = fs::remove_file(&legacy_history_root);
 }
 
 #[tokio::test]

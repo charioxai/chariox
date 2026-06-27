@@ -180,10 +180,9 @@ impl DaemonApp {
                     "error": error.to_string(),
                 }),
             );
-        } else {
-            self.append_operational_history_entry(&entry);
-            self.history_projection.append(entry);
         }
+        self.append_operational_history_entry(&entry);
+        self.history_projection.append(entry);
     }
 
     pub(crate) fn replace_history_entry_by_merge_key_or_append(
@@ -388,36 +387,34 @@ impl DaemonApp {
                         "error": error.to_string(),
                     }),
                 );
-            } else {
-                match operational_history.append_transcript(&entry, context) {
-                    Ok(event) => {
-                        if archive_enabled {
-                            if let Err(error) = operational_history.enqueue_archive_events(&[event])
-                            {
-                                crate::logging::warn_with_fields(
-                                    "daemon.history",
-                                    "failed to enqueue history archive event",
-                                    serde_json::json!({
-                                        "session_id": session_id,
-                                        "error": error.to_string(),
-                                    }),
-                                );
-                            }
+            }
+            match operational_history.append_transcript(&entry, context) {
+                Ok(event) => {
+                    if archive_enabled {
+                        if let Err(error) = operational_history.enqueue_archive_events(&[event]) {
+                            crate::logging::warn_with_fields(
+                                "daemon.history",
+                                "failed to enqueue history archive event",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
                         }
                     }
-                    Err(error) => {
-                        crate::logging::warn_with_fields(
-                            "daemon.history",
-                            "failed to append operational history",
-                            serde_json::json!({
-                                "session_id": session_id,
-                                "error": error.to_string(),
-                            }),
-                        );
-                    }
                 }
-                history_projection.append(entry);
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to append operational history",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
+            history_projection.append(entry);
         };
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::spawn_blocking(append);
@@ -473,6 +470,8 @@ fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::HistoryArchiveMode;
     use crate::session::CreateSessionRequest;
@@ -514,5 +513,36 @@ mod tests {
             pending[0].event.content.as_deref().map(str::trim_end),
             Some("archive me")
         );
+    }
+
+    #[test]
+    fn user_prompt_history_persists_operational_when_legacy_append_fails() {
+        let config = DaemonConfig::for_tests();
+        let legacy_history_root = config.session_history_root.clone();
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-legacy-history-fail",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+
+        let _ = fs::remove_dir_all(&legacy_history_root);
+        fs::write(&legacy_history_root, b"not a directory")
+            .expect("fixture should block legacy history writes");
+
+        app.append_user_prompt_history(session.id(), attachment.id(), agent.id(), "reload me", &[]);
+
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("canonical operational history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text.trim_end(), "reload me");
+
+        let _ = fs::remove_file(&legacy_history_root);
     }
 }

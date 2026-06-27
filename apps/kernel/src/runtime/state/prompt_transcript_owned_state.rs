@@ -169,10 +169,9 @@ impl KernelRuntimeOwnedState {
                     "error": error.to_string(),
                 }),
             );
-        } else {
-            self.append_operational_history_entry(&entry, None, None, None);
-            self.history_projection.append(entry);
         }
+        self.append_operational_history_entry(&entry, None, None, None);
+        self.history_projection.append(entry);
     }
 
     pub(super) fn append_operational_history_entry(
@@ -315,7 +314,16 @@ impl KernelRuntimeOwnedState {
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
             attachments,
         );
-        self.history_store.append(&session, &entry)?;
+        if let Err(error) = self.history_store.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append prompt session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
         self.append_operational_history_entry(
             &entry,
             prompt_id,
