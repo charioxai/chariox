@@ -1,4 +1,6 @@
 use super::*;
+use crate::local::AppendNativeProviderOutputRequest;
+use crate::terminal::TerminalOutputKind;
 
 #[tokio::test]
 async fn missing_terminal_output_session_uses_warmed_projection_without_app_lock() {
@@ -159,6 +161,73 @@ async fn terminal_output_without_active_run_drains_store_without_app_lock() {
         }
         _ => panic!("unexpected pump response"),
     }
+}
+
+#[tokio::test]
+async fn append_native_provider_output_does_not_refresh_session_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "browser-output",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let provider_run_id = launch_test_provider(
+        &mut app,
+        &session_id,
+        agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    )
+    .id()
+    .to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+    let list_command =
+        KernelCommand::from_local_request("cmd-append-output-warm", None, None, &list_request);
+    router
+        .dispatch(list_command, list_request)
+        .await
+        .expect("initial list should warm session projection");
+    let before_sequence = router.session_projection.change_sequence();
+
+    let append_request =
+        LocalDaemonRequest::AppendNativeProviderOutput(AppendNativeProviderOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            provider_run_id,
+            kind: TerminalOutputKind::ProviderOutput,
+            merge_key: Some("native-output".to_string()),
+            text: "native output\n".to_string(),
+        });
+    let append_command =
+        KernelCommand::from_local_request("cmd-append-output", None, None, &append_request);
+    let response = router
+        .dispatch(append_command, append_request)
+        .await
+        .expect("native output append should succeed");
+
+    match response {
+        LocalDaemonResponse::TerminalOutput { records } => {
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].session_id, session_id);
+            assert_eq!(records[0].bytes, b"native output\n".to_vec());
+        }
+        _ => panic!("unexpected append response"),
+    }
+    assert_eq!(
+        router.session_projection.change_sequence(),
+        before_sequence,
+        "native output append should not wake session projection subscribers",
+    );
 }
 
 #[tokio::test]

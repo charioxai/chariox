@@ -240,12 +240,10 @@ impl TerminalOutputStore {
 
 pub(crate) async fn execute_append_native_provider_output_request(
     runtime_state: &KernelRuntimeState,
-    session_projection: &SessionStateProjectionStore,
-    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    _session_projection: &SessionStateProjectionStore,
+    _agent_runtime_projection: &AgentRuntimeProjectionStore,
     request: AppendNativeProviderOutputRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (records, session) = runtime_state.append_native_provider_output(request)?;
-    agent_runtime_projection.update_session(&session);
-    session_projection.update(session);
+    let records = runtime_state.append_native_provider_output(request)?;
     Ok(LocalDaemonResponse::TerminalOutput { records })
 }

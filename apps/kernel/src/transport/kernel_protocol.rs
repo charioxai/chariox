@@ -639,17 +639,23 @@ pub(crate) fn terminal_output_event_batches(
 ) -> Vec<Vec<TerminalOutputRecord>> {
     let mut batches = Vec::new();
     let mut current = Vec::new();
+    let mut current_json_bytes = empty_terminal_output_event_json_bytes();
     for record in records {
+        let record_json_bytes = terminal_output_record_json_bytes(&record);
         if current.is_empty() {
+            current_json_bytes = terminal_output_event_json_bytes_for_records(record_json_bytes, 1);
             current.push(record);
             continue;
         }
-        let mut candidate = current.clone();
-        candidate.push(record.clone());
-        if terminal_output_event_json_bytes(&candidate) <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES {
-            current = candidate;
+        let candidate_len = current_json_bytes
+            .saturating_add(record_json_bytes)
+            .saturating_add(1);
+        if candidate_len <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES {
+            current_json_bytes = candidate_len;
+            current.push(record);
         } else {
             batches.push(current);
+            current_json_bytes = terminal_output_event_json_bytes_for_records(record_json_bytes, 1);
             current = vec![record];
         }
     }
@@ -665,6 +671,25 @@ fn terminal_output_event_json_bytes(records: &[TerminalOutputRecord]) -> usize {
     })
     .map(|bytes| bytes.len())
     .unwrap_or(usize::MAX)
+}
+
+fn empty_terminal_output_event_json_bytes() -> usize {
+    terminal_output_event_json_bytes(&[])
+}
+
+fn terminal_output_record_json_bytes(record: &TerminalOutputRecord) -> usize {
+    serde_json::to_vec(record)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_count: usize) -> usize {
+    if record_count == 0 {
+        return empty_terminal_output_event_json_bytes();
+    }
+    empty_terminal_output_event_json_bytes()
+        .saturating_add(record_bytes)
+        .saturating_add(record_count.saturating_sub(1))
 }
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
@@ -737,6 +762,33 @@ mod tests {
                 terminal_output_event_json_bytes(&batch) <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES
             );
         }
+    }
+
+    #[test]
+    fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
+        let records = (0..5)
+            .map(|index| TerminalOutputRecord {
+                session_id: format!("session-{index}"),
+                provider_run_id: format!("provider-run-{index}"),
+                agent_id: Some(format!("agent-{index}")),
+                prompt_id: None,
+                source_attachment_id: None,
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some(format!("chunk-{index}")),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: vec![b'x'; 256 + index],
+            })
+            .collect::<Vec<_>>();
+        let accounted_bytes =
+            records
+                .iter()
+                .fold(empty_terminal_output_event_json_bytes(), |bytes, record| {
+                    let comma = usize::from(bytes != empty_terminal_output_event_json_bytes());
+                    bytes + terminal_output_record_json_bytes(record) + comma
+                });
+
+        assert_eq!(accounted_bytes, terminal_output_event_json_bytes(&records));
     }
 
     #[test]

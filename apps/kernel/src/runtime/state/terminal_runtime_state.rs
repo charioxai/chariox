@@ -124,13 +124,7 @@ impl KernelRuntimeState {
     pub(crate) fn append_native_provider_output(
         &self,
         request: crate::local::AppendNativeProviderOutputRequest,
-    ) -> Result<
-        (
-            Vec<crate::terminal::TerminalOutputRecord>,
-            crate::session::RuntimeSession,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         self.owned
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
         let provider_run = self
@@ -155,7 +149,6 @@ impl KernelRuntimeState {
             recipient_attachment_ids,
             request.text.as_bytes(),
         );
-        let session = self.owned.session_snapshot(&request.session_id)?;
-        Ok((vec![record], session))
+        Ok(vec![record])
     }
 }
