@@ -57,8 +57,9 @@ function normalizedExternalObservation(
   if (!value) {
     return null
   }
+  const settlesActivePrompt = value.settles_active_prompt === true
   return {
-    settles_active_prompt: value.settles_active_prompt === true,
-    passive_telemetry: value.passive_telemetry === true,
+    settles_active_prompt: settlesActivePrompt,
+    passive_telemetry: settlesActivePrompt ? false : value.passive_telemetry === true,
   }
 }

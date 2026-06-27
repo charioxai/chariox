@@ -64,6 +64,19 @@ test("external provider observed metadata normalizes nullable fields", () => {
   })
 })
 
+test("external provider observed metadata treats settlement as non-passive", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  })?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
 test("external provider observed metadata ignores ordinary history entries", () => {
   assert.equal(historyEntryExternalProviderObservedMetadata({
     source: null,
