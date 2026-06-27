@@ -200,6 +200,10 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
           agentId: "agent-1",
           status: "queued",
           steerDisabled: true,
+          canSteer: false,
+          canCancel: true,
+          steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+          cancelDisabledReason: null,
         },
       }],
     }),
@@ -250,6 +254,10 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     agentId: "agent-1",
     status: "queued",
     steerDisabled: true,
+    canSteer: false,
+    canCancel: true,
+    steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+    cancelDisabledReason: null,
   })
   assert.deepEqual(pickExternalFields((snapshot.transcript?.entries as Array<Record<string, unknown>>)[1]), {
     source: "provider_output",

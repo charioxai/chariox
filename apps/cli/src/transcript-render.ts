@@ -159,6 +159,10 @@ export function buildTranscriptEntryRenderable(
       && nextEntry.queuedPrompt?.promptId === currentEntry.queuedPrompt?.promptId
       && nextEntry.queuedPrompt?.agentId === currentEntry.queuedPrompt?.agentId
       && nextEntry.queuedPrompt?.steerDisabled === currentEntry.queuedPrompt?.steerDisabled
+      && nextEntry.queuedPrompt?.canSteer === currentEntry.queuedPrompt?.canSteer
+      && nextEntry.queuedPrompt?.canCancel === currentEntry.queuedPrompt?.canCancel
+      && nextEntry.queuedPrompt?.steerDisabledReason === currentEntry.queuedPrompt?.steerDisabledReason
+      && nextEntry.queuedPrompt?.cancelDisabledReason === currentEntry.queuedPrompt?.cancelDisabledReason
     currentEntry = nextEntry
     if (canFastUpdate && fastUpdate(nextEntry)) {
       return
@@ -240,7 +244,7 @@ function buildQueuedPromptTranscriptContent(
     flexGrow: 0,
   })
   actions.add(new TextRenderable(renderer, {
-    content: " queued ",
+    content: ` ${queuedPromptStatusLabel(entry)} `,
     fg: theme.textMuted,
     attributes: TextAttributes.BOLD,
   }))
@@ -258,9 +262,9 @@ function buildQueuedPromptActionLabel(
   action: QueuedPromptAction,
   onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
-  const disabled = entry.queuedPrompt?.status === "steering"
-    || entry.queuedPrompt?.status === "cancelling"
-    || (action === "steer" && entry.queuedPrompt?.steerDisabled === true)
+  const disabled = action === "steer"
+    ? entry.queuedPrompt?.canSteer !== true
+    : entry.queuedPrompt?.canCancel !== true
   const text = new TextRenderable(renderer, {
     content: disabled ? label : `[${label}]`,
     fg: disabled ? theme.textMuted : theme.primary,
@@ -276,4 +280,8 @@ function buildQueuedPromptActionLabel(
     }, 0)
   }
   return text
+}
+
+function queuedPromptStatusLabel(entry: TranscriptEntry): string {
+  return entry.queuedPrompt?.status?.trim().toLowerCase().replace(/[_-]+/g, " ") || "queued"
 }

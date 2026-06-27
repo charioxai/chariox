@@ -1227,6 +1227,15 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!queuedPrompt) {
       return
     }
+    if (action === "steer" ? !queuedPrompt.canSteer : !queuedPrompt.canCancel) {
+      flashFooter(
+        action === "steer"
+          ? queuedPrompt.steerDisabledReason ?? "Queued prompt steering is unavailable."
+          : queuedPrompt.cancelDisabledReason ?? "Queued prompt cancellation is unavailable.",
+        "info",
+      )
+      return
+    }
     const attachment = attachmentState()
     if (!attachment) {
       flashFooter("No session attached.", "error")
@@ -1262,6 +1271,11 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         queuedPrompt: {
           ...candidate.queuedPrompt,
           status,
+          steerDisabled: candidate.queuedPrompt.steerDisabled,
+          canSteer: false,
+          canCancel: false,
+          steerDisabledReason: "This prompt is no longer waiting in the queue.",
+          cancelDisabledReason: "This prompt is no longer waiting in the queue.",
         },
       }
     })

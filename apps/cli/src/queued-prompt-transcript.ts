@@ -13,6 +13,20 @@ export type QueuedPromptTranscriptSyncResult = {
   changed: boolean
 }
 
+export const QUEUED_PROMPT_STEER_EXTERNAL_REASON =
+  "Steering is unavailable while the active provider turn was started outside Arroba."
+export const QUEUED_PROMPT_STALE_REASON =
+  "This prompt is no longer waiting in the queue."
+
+type QueuedPromptActionability = {
+  status: string
+  steerDisabled: boolean
+  canSteer: boolean
+  canCancel: boolean
+  steerDisabledReason: string | null
+  cancelDisabledReason: string | null
+}
+
 export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] | null {
   if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
     return []
@@ -49,13 +63,14 @@ export function syncQueuedPromptEntriesForAgent(
       changed = true
       return []
     }
-    if (entry.queuedPrompt.steerDisabled !== steerDisabled) {
+    const actionability = queuedPromptActionability(entry.queuedPrompt.status, steerDisabled)
+    if (!queuedPromptActionabilityMatches(entry.queuedPrompt, actionability)) {
       changed = true
       return [{
         ...entry,
         queuedPrompt: {
           ...entry.queuedPrompt,
-          steerDisabled,
+          ...actionability,
         },
       }]
     }
@@ -121,6 +136,7 @@ function queuedPromptTranscriptEntry(
   id: number,
   steerDisabled: boolean,
 ): TranscriptEntry {
+  const actionability = queuedPromptActionability(prompt.status, steerDisabled)
   return {
     id,
     role: "user",
@@ -128,10 +144,43 @@ function queuedPromptTranscriptEntry(
     queuedPrompt: {
       promptId: prompt.id,
       agentId,
-      status: "queued",
-      steerDisabled,
+      ...actionability,
     },
   }
+}
+
+export function queuedPromptActionability(
+  status: string | null | undefined,
+  steerDisabled: boolean,
+): QueuedPromptActionability {
+  const normalizedStatus = normalizeQueuedPromptStatus(status)
+  const queued = normalizedStatus === "queued"
+  return {
+    status: normalizedStatus,
+    steerDisabled,
+    canSteer: queued && !steerDisabled,
+    canCancel: queued,
+    steerDisabledReason: queued
+      ? steerDisabled ? QUEUED_PROMPT_STEER_EXTERNAL_REASON : null
+      : QUEUED_PROMPT_STALE_REASON,
+    cancelDisabledReason: queued ? null : QUEUED_PROMPT_STALE_REASON,
+  }
+}
+
+function normalizeQueuedPromptStatus(status: string | null | undefined): string {
+  return status?.trim().toLowerCase() || "queued"
+}
+
+function queuedPromptActionabilityMatches(
+  current: NonNullable<TranscriptEntry["queuedPrompt"]>,
+  next: QueuedPromptActionability,
+): boolean {
+  return current.status === next.status
+    && current.steerDisabled === next.steerDisabled
+    && current.canSteer === next.canSteer
+    && current.canCancel === next.canCancel
+    && current.steerDisabledReason === next.steerDisabledReason
+    && current.cancelDisabledReason === next.cancelDisabledReason
 }
 
 function activePromptOrigin(session: RuntimeSession, agentId: string): string | null {

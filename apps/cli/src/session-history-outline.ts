@@ -202,9 +202,11 @@ function outlineTurnPromptOriginRecord(
   readonly external_provider_session_id?: string | null
 } {
   return {
-    prompt_origin: turn.prompt_origin,
-    external_provider: turn.external_provider,
-    external_provider_session_id: turn.external_provider_session_id,
+    ...(turn.prompt_origin !== undefined ? { prompt_origin: turn.prompt_origin } : {}),
+    ...(turn.external_provider !== undefined ? { external_provider: turn.external_provider } : {}),
+    ...(turn.external_provider_session_id !== undefined
+      ? { external_provider_session_id: turn.external_provider_session_id }
+      : {}),
   }
 }
 

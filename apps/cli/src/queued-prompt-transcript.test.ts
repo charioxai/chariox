@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { RuntimeSession, TranscriptEntry } from "./cli-types.js"
 import {
+  QUEUED_PROMPT_STEER_EXTERNAL_REASON,
   syncQueuedPromptEntriesByAgent,
   syncQueuedPromptEntriesForAgent,
 } from "./queued-prompt-transcript.js"
@@ -14,7 +15,7 @@ test("syncQueuedPromptEntriesForAgent appends queued prompts and removes settled
       id: 2,
       role: "user",
       text: "old queued",
-      queuedPrompt: { agentId: "agent-1", promptId: "old-prompt", status: "queued" },
+      queuedPrompt: queuedPrompt("agent-1", "old-prompt"),
     },
   ]
 
@@ -248,7 +249,7 @@ test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projecte
     id: 1,
     role: "user",
     text: "new queued",
-    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
   }]
 
   const synced = syncQueuedPromptEntriesForAgent(
@@ -274,7 +275,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected bu
     id: 1,
     role: "user",
     text: "new queued",
-    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
   }]
 
   const session = sessionWithoutPromptStates({
@@ -298,7 +299,7 @@ test("syncQueuedPromptEntriesForAgent clears stale queued prompts when projected
     id: 1,
     role: "user",
     text: "new queued",
-    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
   }]
 
   const session = sessionWithQueuedPrompt({}, {
@@ -323,7 +324,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected st
     id: 1,
     role: "user",
     text: "new queued",
-    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
   }]
 
   const session = sessionWithoutPromptStates({
@@ -348,7 +349,7 @@ test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from autho
       id: 1,
       role: "user",
       text: "stale queued",
-      queuedPrompt: { agentId: "agent-stale", promptId: "queued-stale", status: "queued" },
+      queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
     }],
   }, sessionWithQueuedPrompt({}, {
     prompt_states: {
@@ -375,13 +376,12 @@ test("syncQueuedPromptEntriesByAgent preserves stale queued prompt panes without
       id: "agent-1",
     }],
     queued_prompts: [],
-    agent_activity: null,
   })
   const existing: TranscriptEntry[] = [{
     id: 1,
     role: "user",
     text: "stale queued",
-    queuedPrompt: { agentId: "agent-stale", promptId: "queued-stale", status: "queued" },
+    queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
   }]
   const synced = syncQueuedPromptEntriesByAgent({
     "agent-stale": existing,
@@ -395,6 +395,19 @@ function sessionWithoutPromptStates(sessionOverrides: Partial<RuntimeSession> = 
   const session = sessionWithQueuedPrompt({}, sessionOverrides)
   delete session.prompt_states
   return session
+}
+
+function queuedPrompt(agentId: string, promptId: string, steerDisabled = false): NonNullable<TranscriptEntry["queuedPrompt"]> {
+  return {
+    agentId,
+    promptId,
+    status: "queued",
+    steerDisabled,
+    canSteer: !steerDisabled,
+    canCancel: true,
+    steerDisabledReason: steerDisabled ? QUEUED_PROMPT_STEER_EXTERNAL_REASON : null,
+    cancelDisabledReason: null,
+  }
 }
 
 function sessionWithQueuedPrompt(

@@ -206,8 +206,12 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
       ? {
         promptId: entry.queuedPrompt.promptId,
         agentId: entry.queuedPrompt.agentId,
-        status: entry.queuedPrompt.status ?? null,
-        steerDisabled: entry.queuedPrompt.steerDisabled ?? false,
+        status: entry.queuedPrompt.status,
+        steerDisabled: entry.queuedPrompt.steerDisabled,
+        canSteer: entry.queuedPrompt.canSteer,
+        canCancel: entry.queuedPrompt.canCancel,
+        steerDisabledReason: entry.queuedPrompt.steerDisabledReason,
+        cancelDisabledReason: entry.queuedPrompt.cancelDisabledReason,
       }
       : null,
     source: entry.source ?? null,

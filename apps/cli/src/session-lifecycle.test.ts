@@ -155,9 +155,14 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
       return null
     },
     setProviderCatalogState: () => calls.push("setProviderCatalogState"),
+    setTerminalCommandCatalogState: () => calls.push("setTerminalCommandCatalogState"),
     syncCliProviderSelection: () => calls.push("syncCliProviderSelection"),
     getProviderCatalog: async () => {
       calls.push("getProviderCatalog")
+      return {}
+    },
+    getTerminalCommandCatalog: async () => {
+      calls.push("getTerminalCommandCatalog")
       return {}
     },
     primeAttachedSessionBinding: async () => {
@@ -946,6 +951,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
     focusPromptInput: () => events.push("focusPromptInput"),
     syncKernelEventSubscription: async () => { throw new Error("subscribe failed") },
     getProviderCatalog: async () => { throw new Error("catalog down") },
+    getTerminalCommandCatalog: async () => { throw new Error("terminal catalog down") },
     hydrateAttachedSessionBinding: async () => { throw new Error("hydrate failed") },
     listSessions: async () => { throw new Error("list failed") },
     logWarning: (message: string) => warnings.push(message),
@@ -962,6 +968,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   assert.deepEqual(warnings, [
     "failed to synchronize kernel event subscription after attach",
     "failed to refresh provider catalog after attach",
+    "failed to refresh terminal command catalog after attach",
     "failed to hydrate attached session after attach",
     "failed to refresh session list after attach",
   ])

@@ -122,7 +122,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 }
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
-  const summary = sessionPromptWorkSummary(session)
+  const summary = sessionPromptWorkSummary(session as Parameters<typeof sessionPromptWorkSummary>[0])
   return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0
 }
 
@@ -131,7 +131,7 @@ export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolea
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
-  return sessionPromptWorkSummary(session).busyAgents > 0
+  return sessionPromptWorkSummary(session as Parameters<typeof sessionPromptWorkSummary>[0]).busyAgents > 0
 }
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
@@ -230,7 +230,7 @@ export function agentHasPromptWork(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): boolean {
-  return kernelSessionAgentIsBusy(session, agentId)
+  return kernelSessionAgentIsBusy(session as Parameters<typeof kernelSessionAgentIsBusy>[0], agentId)
 }
 
 export function promptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
@@ -421,7 +421,7 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, activity] of Object.entries(session.agent_activity)) {
       const activeTurn = activity.active_turn
-      if (kernelAgentRuntimeActiveTurnIsBusy(activeTurn)) {
+      if (activeTurn && kernelAgentRuntimeActiveTurnIsBusy(activeTurn)) {
         records.push({
           id: activeTurn.prompt_id,
           status: activeTurn.status,

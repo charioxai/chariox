@@ -297,7 +297,12 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
           queuedPrompt: {
             promptId: "prompt-1",
             agentId: "agent-a",
+            status: "queued",
             steerDisabled: true,
+            canSteer: false,
+            canCancel: true,
+            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+            cancelDisabledReason: null,
           },
         },
       ],
