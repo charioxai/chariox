@@ -152,6 +152,7 @@ export type RuntimeSession = {
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>
   agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
   metaagent_tasks?: MetaagentTask[]
   focused_agent_id: string | null

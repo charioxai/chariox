@@ -29,6 +29,7 @@ import {
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
 import { sessionHasActivePrompt, sessionPromptForAgent } from "./shell-agent-activity.js"
+import { sessionWithProjectedAgentActivity } from "./runtime-session.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -183,10 +184,7 @@ function promptSubmittedPayloadWithActivity(payload: PromptSubmittedPayload): Pr
 }
 
 function sessionWithAgentActivity(payload: PromptSubmittedPayload): RuntimeSession {
-  return {
-    ...payload.session,
-    agent_activity: payload.agent_activity,
-  }
+  return sessionWithProjectedAgentActivity(payload)
 }
 
 async function waitForPromptCompletion(
