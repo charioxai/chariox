@@ -1312,6 +1312,76 @@ mod tests {
     }
 
     #[test]
+    fn operational_history_external_import_index_uses_latest_duplicate_merge_key() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-external-index-duplicate-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store =
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+        let merge_key = "external:codex:thread-1:assistant-1";
+        for (sequence, text, settles_active_prompt) in [
+            (20, "old assistant snapshot", false),
+            (30, "new assistant snapshot", true),
+        ] {
+            let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
+                "session-1",
+                None,
+                "agent-1",
+                SessionHistoryEntryKind::ProviderOutput,
+                text,
+                "codex",
+                "thread-1",
+                Some(merge_key.to_string()),
+                Some("assistant-1".to_string()),
+                Some(sequence * 100),
+            );
+            entry.external_observation = Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt,
+                passive_telemetry: false,
+            });
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        turn_id: Some("assistant-1".to_string()),
+                        prompt_id: Some("external:codex:thread-1:user-1".to_string()),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("duplicate external event should append");
+        }
+
+        let index = store
+            .load_external_import_history_index("session-1", "agent-1", "external:codex:thread-1")
+            .expect("external import index should load");
+
+        let latest = index
+            .external_entries_by_merge_key
+            .get(merge_key)
+            .expect("duplicate merge key should be indexed");
+        assert_eq!(latest.text, "new assistant snapshot");
+        assert_eq!(
+            latest
+                .external_observation
+                .as_ref()
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn operational_history_store_appends_and_loads_events_idempotently() {
         let path = std::env::temp_dir().join(format!(
             "arroba-operational-history-{}-{}.db",

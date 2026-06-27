@@ -288,7 +288,8 @@ impl OperationalHistoryStore {
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
-                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)",
+                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)
+                 ORDER BY sequence ASC",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
@@ -374,7 +375,8 @@ impl OperationalHistoryStore {
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
-                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)",
+                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)
+                 ORDER BY sequence ASC",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
@@ -485,7 +487,8 @@ impl OperationalHistoryStore {
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
-                   AND kind = 'user_prompt'",
+                   AND kind = 'user_prompt'
+                 ORDER BY sequence ASC",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
