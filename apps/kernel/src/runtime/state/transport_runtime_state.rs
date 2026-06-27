@@ -87,10 +87,27 @@ impl KernelRuntimeState {
         self.owned.session_projection.change_sequence()
     }
 
+    pub(crate) fn session_projection_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.owned
+            .session_projection
+            .session_change_sequence(session_id)
+    }
+
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
         self.owned
             .session_projection
             .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_session_projection_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
+        self.owned
+            .session_projection
+            .wait_for_session_change_after(session_id, sequence)
             .await;
     }
 

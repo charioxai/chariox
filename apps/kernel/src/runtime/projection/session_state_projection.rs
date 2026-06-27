@@ -22,6 +22,7 @@ mod workspace_coordination;
 pub(crate) struct SessionStateProjectionStore {
     state: Arc<StdMutex<SessionProjectionState>>,
     changes: Arc<SessionProjectionChangeSignal>,
+    session_changes: Arc<StdMutex<HashMap<String, Arc<SessionProjectionChangeSignal>>>>,
 }
 
 #[derive(Default)]
@@ -57,6 +58,7 @@ impl SessionStateProjectionStore {
     }
 
     pub(crate) fn update(&self, session: RuntimeSession) {
+        let session_id = session.id().to_string();
         {
             let mut state = self
                 .state
@@ -68,9 +70,14 @@ impl SessionStateProjectionStore {
                 .insert(session.id().to_string(), session);
         }
         self.changes.record_change();
+        self.session_change_signal(&session_id).record_change();
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
+        let changed_session_ids = sessions
+            .iter()
+            .map(|session| session.id().to_string())
+            .collect::<Vec<_>>();
         {
             let mut state = self
                 .state
@@ -89,6 +96,9 @@ impl SessionStateProjectionStore {
             );
         }
         self.changes.record_change();
+        for session_id in changed_session_ids {
+            self.session_change_signal(&session_id).record_change();
+        }
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
@@ -103,6 +113,11 @@ impl SessionStateProjectionStore {
             }
         }
         self.changes.record_change();
+        self.session_change_signal(session_id).record_change();
+        self.session_changes
+            .lock()
+            .expect("session projection scoped change lock should not be poisoned")
+            .remove(session_id);
     }
 
     pub(crate) fn change_sequence(&self) -> u64 {
@@ -111,6 +126,16 @@ impl SessionStateProjectionStore {
 
     pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
         self.changes.wait_for_change_after(sequence).await;
+    }
+
+    pub(crate) fn session_change_sequence(&self, session_id: &str) -> u64 {
+        self.session_change_signal(session_id).sequence()
+    }
+
+    pub(crate) async fn wait_for_session_change_after(&self, session_id: &str, sequence: u64) {
+        self.session_change_signal(session_id)
+            .wait_for_change_after(sequence)
+            .await;
     }
 
     pub(crate) fn health_snapshot(&self) -> SessionProjectionHealthSnapshot {
@@ -190,6 +215,15 @@ impl SessionStateProjectionStore {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| state.session_states.values().cloned().collect())
+    }
+
+    fn session_change_signal(&self, session_id: &str) -> Arc<SessionProjectionChangeSignal> {
+        self.session_changes
+            .lock()
+            .expect("session projection scoped change lock should not be poisoned")
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
     }
 }
 
@@ -272,5 +306,45 @@ mod tests {
 
         assert_eq!(store.get("hidden"), Some(hidden));
         assert_eq!(store.list(), Some(vec![visible]));
+    }
+
+    #[tokio::test]
+    async fn session_scoped_wait_wakes_for_matching_session_update() {
+        let store = SessionStateProjectionStore::default();
+        let sequence = store.session_change_sequence("session-1");
+        let waiter = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .wait_for_session_change_after("session-1", sequence)
+                    .await;
+            })
+        };
+
+        store.update(session("session-1"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("matching session projection waiter should wake")
+            .expect("matching session projection waiter task should complete");
+        assert!(store.session_change_sequence("session-1") > sequence);
+    }
+
+    #[tokio::test]
+    async fn session_scoped_wait_does_not_wake_for_unrelated_session_update() {
+        let store = SessionStateProjectionStore::default();
+        let sequence = store.session_change_sequence("session-1");
+
+        store.update(session("session-2"));
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                store.wait_for_session_change_after("session-1", sequence),
+            )
+            .await
+            .is_err(),
+            "unrelated session projection update should not wake scoped waiter"
+        );
     }
 }

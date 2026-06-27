@@ -63,7 +63,8 @@ pub(super) async fn run_subscription_loop(
             &subscription.attachment_id,
         );
         let terminal_global_change_sequence = router.terminal_stream_change_sequence();
-        let session_projection_change_sequence = router.session_projection_change_sequence();
+        let session_projection_change_sequence =
+            router.session_projection_session_change_sequence(&subscription.session_id);
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
             || tick.wrapping_sub(last_snapshot_check_tick)
@@ -300,7 +301,10 @@ pub(super) async fn run_subscription_loop(
                         terminal_attachment_change_sequence
                     ) => {}
                     _ = router.wait_for_terminal_stream_change_after(terminal_global_change_sequence) => {}
-                    _ = router.wait_for_session_projection_change_after(session_projection_change_sequence) => {}
+                    _ = router.wait_for_session_projection_session_change_after(
+                        &subscription.session_id,
+                        session_projection_change_sequence
+                    ) => {}
                 }
             },
         )
