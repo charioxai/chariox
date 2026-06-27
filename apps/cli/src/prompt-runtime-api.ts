@@ -89,7 +89,7 @@ async function submitPrompt(
   const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
   const normalizedPayload = {
     ...payload,
-    session: normalizeRuntimeSession(payload.session),
+    session: normalizeSessionWithAgentActivity(payload),
   }
   return {
     payload: normalizedPayload,
@@ -119,7 +119,7 @@ export async function steerQueuedPrompt(
   const payload = expectVariant<QueuedPromptSteeredPayload>(response, "QueuedPromptSteered")
   return {
     ...payload,
-    session: normalizeRuntimeSession(payload.session),
+    session: normalizeSessionWithAgentActivity(payload),
   }
 }
 
@@ -157,4 +157,24 @@ export async function respondToInteraction(
 function isRecoverableProviderError(error: unknown): boolean {
   const message = describeCliError(error)
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
+}
+
+function normalizeSessionWithAgentActivity(
+  payload: {
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+  },
+): RuntimeSession {
+  const normalized = normalizeRuntimeSession(payload.session)
+  if (!payload.agent_activity) {
+    return normalized
+  }
+  return {
+    ...normalized,
+    agent_activity: payload.agent_activity,
+    ...(typeof payload.agent_activity_revision === "number"
+      ? { agent_activity_revision: payload.agent_activity_revision }
+      : {}),
+  }
 }

@@ -1023,6 +1023,14 @@ test("executeShellCommand submits prompt without waiting", async () => {
               },
             },
           }),
+          agent_activity: {
+            "agent-1": {
+              status: "working",
+              prompt_status: "running",
+              busy: true,
+            },
+          },
+          agent_activity_revision: 12,
         },
       }
     }
@@ -1033,6 +1041,13 @@ test("executeShellCommand submits prompt without waiting", async () => {
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /prompt prompt-1 submitted/)
+  assert.deepEqual((result.data as { session?: { agent_activity?: unknown } } | undefined)?.session?.agent_activity, {
+    "agent-1": {
+      status: "working",
+      prompt_status: "running",
+      busy: true,
+    },
+  })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-1" })
   assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), ["ListAgents", "SubmitPrompt"])
 })

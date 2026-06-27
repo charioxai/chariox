@@ -73,7 +73,9 @@ export async function executePromptCommand(
     promptText,
     [],
   ))
-  const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+  const payload = promptSubmittedPayloadWithActivity(
+    expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted"),
+  )
   const prompt = extractSubmittedPrompt(payload, target.id)
   const promptId = prompt?.id ?? "unknown-prompt"
   const waitForCompletion = promptArgs.options.wait || promptArgs.options.showReply || promptArgs.options.showSummary
@@ -171,6 +173,20 @@ function extractSubmittedPrompt(payload: PromptSubmittedPayload, targetAgentId: 
     }
   }
   return sessionPromptForAgent(payload.session, targetAgentId)
+}
+
+function promptSubmittedPayloadWithActivity(payload: PromptSubmittedPayload): PromptSubmittedPayload {
+  return {
+    ...payload,
+    session: sessionWithAgentActivity(payload),
+  }
+}
+
+function sessionWithAgentActivity(payload: PromptSubmittedPayload): RuntimeSession {
+  return {
+    ...payload.session,
+    agent_activity: payload.agent_activity,
+  }
 }
 
 async function waitForPromptCompletion(
