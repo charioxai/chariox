@@ -1,4 +1,4 @@
-import type { RuntimeSession, SliceRecord } from "./kernel-types.js"
+import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionGrantPlacementSummary,
@@ -13,7 +13,7 @@ import {
   sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
-import { sessionPromptWorkSummary } from "./shell-agent-activity.js"
+import { sessionAgentIsBusy, sessionPromptWorkSummary } from "./shell-agent-activity.js"
 
 export type SessionRuntimeStatusFormatOptions = {
   readonly slices?: readonly SliceRecord[]
@@ -212,7 +212,7 @@ function formatRemoteSummary(
   }).filter(Boolean))
   const workerRunGaps = remoteAgents.filter((agent) => {
     if (agent.remote_execution?.active_worker_provider_run_id) return false
-    return agent.state === "Working" || agent.is_processing
+    return remoteAgentHasWorkerRunGap(session, agent)
   })
   const workers = new Set(remoteAgents.map((agent) => (
     agent.remote_execution?.worker_machine_id
@@ -260,7 +260,7 @@ function formatSessionNextActions(
   const workerGapAgent = session.agents.find((agent) => (
     agent.remote_execution
     && !agent.remote_execution.active_worker_provider_run_id
-    && (agent.state === "Working" || agent.is_processing)
+    && remoteAgentHasWorkerRunGap(session, agent)
   ))
   if (workerGapAgent) {
     actions.push(remoteWorkerProviderRunRecoveryAction(
@@ -287,6 +287,13 @@ function formatSessionNextActions(
     actions.push(sliceAuthAction)
   }
   return actions
+}
+
+function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: AgentInstance): boolean {
+  if (!session.agent_activity && !session.prompt_states) {
+    return agent.state === "Working" || agent.is_processing
+  }
+  return sessionAgentIsBusy(session, agent.id)
 }
 
 function formatSliceAuthNextAction(

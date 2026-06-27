@@ -207,6 +207,9 @@ function formatContextProviderRunNextAction(
     agent,
     activeProviderRunId: session?.active_provider_run_id,
     activeProviderRunAgentId: activeProviderRun?.agent_instance_id,
+    agentBusy: session && (session.agent_activity || session.prompt_states)
+      ? sessionAgentIsBusy(session, agent.id)
+      : undefined,
   }).map((action) => `provider run next: ${action}`)
 }
 

@@ -31,6 +31,34 @@ test("providerRunRecoveryActions reports missing active remote worker runs", () 
   ])
 })
 
+test("providerRunRecoveryActions uses projected busy state when supplied", () => {
+  const agent = {
+    id: "agent-1",
+    agent_ref: "A1",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_machine_id: "hetzner",
+    },
+  }
+
+  assert.deepEqual(providerRunRecoveryActions({
+    agent,
+    agentBusy: false,
+  }), [])
+
+  assert.deepEqual(providerRunRecoveryActions({
+    agent: {
+      ...agent,
+      state: "Idle",
+      is_processing: false,
+    },
+    agentBusy: true,
+  }), [
+    "run /kernel remote-runtime and /machine kernels hetzner; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent if no active worker run appears",
+  ])
+})
+
 test("providerRunRecoveryActions stays quiet for healthy local and remote runs", () => {
   assert.deepEqual(providerRunRecoveryActions({
     agent: { id: "agent-1", agent_ref: "A1" },

@@ -1,4 +1,5 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
+import { agentRuntimeActivityIsBusy, type AgentRuntimeActivityBusyInput } from "./agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
@@ -23,12 +24,19 @@ export type ShellAgentProviderRunContext = {
   activeProviderRunLookupError?: string | null
 }
 
+type ShellAgentPromptState = {
+  readonly active_prompt?: unknown | null
+  readonly queued_prompts?: readonly unknown[] | null
+}
+
 export type ShellAgentSessionContext = {
   homeKernelId?: string | null
   homeMachineId?: string | null
   ownerUserId?: string | null
   workspaceLiveSyncMode?: "managed" | "tracked" | "unrestricted" | null
   workspaceLiveSyncWorktree?: string | null
+  agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null
+  promptStates?: Record<string, ShellAgentPromptState | null> | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -47,7 +55,7 @@ export function formatAgentListSummary(
     return prefix ? `${prefix}\nno agents in session` : "no agents in session"
   }
   const agentList = agents
-    .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices), providerRunContext))
+    .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices), providerRunContext, sessionContext))
     .join(", ")
   const summary = `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
   return prefix ? `${prefix}\n${summary}` : summary
@@ -70,6 +78,7 @@ function formatAgentListEntry(
   agent: AgentInstance,
   slice: SliceRecord | null,
   providerRunContext: ShellAgentProviderRunContext,
+  sessionContext: ShellAgentSessionContext,
 ): string {
   const parts = [
     agent.state,
@@ -78,7 +87,7 @@ function formatAgentListEntry(
     formatAgentListPlacement(agent, slice),
     formatAgentListSliceAuth(slice),
     formatAgentListProviderRun(agent, providerRunContext),
-    formatAgentListProviderRunHealth(agent),
+    formatAgentListProviderRunHealth(agent, sessionContext),
     agent.execution_mode_override ? `mode ${agent.execution_mode_override}` : null,
     agent.permission_level_override ? `permissions ${agent.permission_level_override}` : null,
     formatAgentListGrantCount(agent),
@@ -103,12 +112,15 @@ function formatAgentListProviderRun(
   return runId ? `session run ${runId}` : null
 }
 
-function formatAgentListProviderRunHealth(agent: AgentInstance): string | null {
+function formatAgentListProviderRunHealth(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): string | null {
   const remote = agent.remote_execution
   if (!remote || remote.active_worker_provider_run_id) {
     return null
   }
-  if (agent.state !== "Working" && !agent.is_processing) {
+  if (!agentIsBusyForSessionContext(agent, sessionContext)) {
     return null
   }
   const worker = remote.worker_machine_id ? ` on ${remote.worker_machine_id}` : ""
@@ -202,7 +214,7 @@ export function formatAgentInspectSummary(
     `worktree: ${agent.worktree_id ?? "<none>"}`,
     `placement: ${formatAgentPlacement(agent, slice)}`,
     `provider run: ${formatAgentProviderRunSummary(agent, providerRunContext)}`,
-    ...formatAgentProviderRunNextAction(agent, providerRunContext),
+    ...formatAgentProviderRunNextAction(agent, providerRunContext, sessionContext),
     ...(slice ? [
       `slice: ${formatSliceSummary(slice)}`,
       `slice provider auth: ${formatSliceProviderAuthReadiness(slice)}`,
@@ -320,12 +332,32 @@ function formatAgentProviderRunSummary(
 function formatAgentProviderRunNextAction(
   agent: AgentInstance,
   context: ShellAgentProviderRunContext,
+  sessionContext: ShellAgentSessionContext,
 ): string[] {
   return providerRunRecoveryActions({
     agent,
     activeProviderRunId: context.activeProviderRunId,
     activeProviderRunAgentId: context.activeProviderRunAgentId,
+    agentBusy: agentIsBusyForSessionContext(agent, sessionContext),
   }).map((action) => `provider run next: ${action}`)
+}
+
+function agentIsBusyForSessionContext(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): boolean {
+  if (sessionContext.agentActivity && !(agent.id in sessionContext.agentActivity)) {
+    return false
+  }
+  const activity = sessionContext.agentActivity?.[agent.id]
+  if (activity) {
+    return agentRuntimeActivityIsBusy(activity)
+  }
+  const promptState = sessionContext.promptStates?.[agent.id]
+  if (promptState !== undefined) {
+    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+  }
+  return agent.state === "Working" || agent.is_processing
 }
 
 function agentProviderRunId(

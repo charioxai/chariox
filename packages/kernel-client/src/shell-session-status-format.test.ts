@@ -153,10 +153,18 @@ test("formatSessionRuntimeStatus uses projected activity over stale legacy promp
       agent_ref: "agent-1",
       state: "Working",
       is_processing: true,
+      remote_execution: {
+        worker_kernel_id: "slice:slice-1",
+        worker_machine_id: "worker-machine",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
     })],
   })
 
   const rendered = formatSessionRuntimeStatus(session)
 
   assert.match(rendered, /prompts: active=0, queued=0, busy_agents=0/)
+  assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 slice, 0 worker run gaps/)
+  assert.doesNotMatch(rendered, /next: run \/kernel remote-runtime/)
 })

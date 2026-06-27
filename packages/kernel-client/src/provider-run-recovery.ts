@@ -13,6 +13,7 @@ export type ProviderRunRecoveryContext = {
   readonly agent: ProviderRunRecoveryAgent
   readonly activeProviderRunId?: string | null | undefined
   readonly activeProviderRunAgentId?: string | null | undefined
+  readonly agentBusy?: boolean | null | undefined
 }
 
 export function providerRunRecoveryActions(context: ProviderRunRecoveryContext): string[] {
@@ -25,7 +26,8 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
       `run /kernel health and /provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
     ]
   }
-  if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
+  const busy = context.agentBusy ?? (agent.state === "Working" || agent.is_processing)
+  if (agent.remote_execution && busy && !workerRunId) {
     const worker = concreteRecoveryRef(agent.remote_execution.worker_machine_id)
     return [
       worker
