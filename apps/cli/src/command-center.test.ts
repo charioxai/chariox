@@ -63,7 +63,7 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
   })
 
   assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Show runtime health, remote readiness, and invariants")
-  assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show provider runs, remote agents, slices, home-proxy, and live sync readiness")
+  assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show home authority, worker runs, slices, home-proxy tools, and live sync readiness")
 })
 
 test("buildCommandCenterItems describes home-proxy extension sync recovery", () => {
@@ -76,8 +76,8 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-proxy manifest sync and recovery for an agent")
-  assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry projected home-proxy manifest sync after worker recovery")
+  assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-authoritative manifest sync, worker projection, and recovery for an agent")
+  assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry worker projection of a home-authoritative extension manifest")
 })
 
 test("buildCommandCenterItems finds runtime recovery commands by user-facing terms", () => {

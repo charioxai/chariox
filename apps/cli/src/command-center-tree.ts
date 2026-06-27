@@ -128,7 +128,7 @@ export const COMMAND_TREE: CommandNode[] = [
       {
         id: "kernel-remote-runtime",
         label: "remote-runtime",
-        description: "Show provider runs, remote agents, slices, home-proxy, and live sync readiness",
+        description: "Show home authority, worker runs, slices, home-proxy tools, and live sync readiness",
         value: "/kernel remote-runtime",
         searchAliases: ["remote runtime", "remote readiness", "home proxy", "home-proxy", "manifest attention", "worker runs", "worker provider run", "worker run missing", "run missing"],
       },
@@ -253,18 +253,18 @@ export const COMMAND_TREE: CommandNode[] = [
       {
         id: "extension-sync-status",
         label: "sync-status",
-        description: "Show home-proxy manifest sync and recovery for an agent",
+        description: "Show home-authoritative manifest sync, worker projection, and recovery for an agent",
         value: "/extension sync-status ",
         searchAliases: ["home proxy manifest", "home-proxy manifest", "home-proxy status", "remote extension sync", "manifest status", "manifest attention", "manifest stale", "manifest failed", "manifest unknown", "revoke pending", "sync manifest stale", "sync manifest failed", "sync revoke pending"],
       },
       {
         id: "extension-sync-retry",
         label: "sync-retry",
-        description: "Retry projected home-proxy manifest sync after worker recovery",
+        description: "Retry worker projection of a home-authoritative extension manifest",
         value: "/extension sync-retry ",
         searchAliases: ["home proxy retry", "home-proxy retry", "manifest retry", "manifest attention retry", "remote extension retry", "manifest stale", "manifest failed", "revoke pending", "sync manifest stale", "sync manifest failed", "sync revoke pending"],
       },
-      { id: "extension-audit", label: "audit", description: "Show home extension audit events", value: "/extension audit " },
+      { id: "extension-audit", label: "audit", description: "Show home extension audit events, denials, and authority boundary", value: "/extension audit " },
     ],
   },
   {
