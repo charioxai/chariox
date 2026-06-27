@@ -138,6 +138,51 @@ test("sessionPromptWorkSummary counts projected active turns and prompt state qu
   })
 })
 
+test("sessionPromptWorkSummary prefers projected prompt counts", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "stale-queued",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-2",
+          prompt: "stale queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_prompt_count: 1,
+        queued_prompt_count: 2,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 2,
+    busyAgents: 1,
+  })
+})
+
 test("sessionPromptWorkSummary ignores settled active turn statuses", () => {
   const session = makeSession({
     agent_activity: {

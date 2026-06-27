@@ -459,6 +459,8 @@ export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
+  active_prompt_count?: number
+  queued_prompt_count?: number
   unread_idle_output?: boolean
   queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: {

@@ -2,6 +2,8 @@ export type AgentRuntimeActivityBusyInput = {
   readonly busy?: boolean | null
   readonly status?: string | null
   readonly prompt_status?: string | null
+  readonly active_prompt_count?: number | null
+  readonly queued_prompt_count?: number | null
   readonly active_turn?: unknown | null
 }
 

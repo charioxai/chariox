@@ -32,11 +32,17 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
 
   if (session.agent_activity) {
     const activities = Object.entries(session.agent_activity)
+    const projectedQueued = promptWorkCountFromProjectedActivities(
+      activities.map(([, activity]) => activity),
+      "queued_prompt_count",
+    )
     return {
-      active: activities.filter(([agentId, activity]) =>
-        agentRuntimeActivityHasActivePrompt(activity, promptStates?.[agentId]),
-      ).length,
-      queued,
+      active: activities.reduce(
+        (count, [agentId, activity]) =>
+          count + projectedActivePromptCount(activity, promptStates?.[agentId]),
+        0,
+      ),
+      queued: projectedQueued ?? queued,
       busyAgents: activities.filter(([, activity]) => agentRuntimeActivityIsBusy(activity)).length,
     }
   }
@@ -213,6 +219,36 @@ function agentRuntimeActivityHasActivePrompt(
     return true
   }
   return agentRuntimePromptStatusIsActivePrompt(normalizeAgentRuntimePromptStatus(activity.prompt_status))
+}
+
+function projectedActivePromptCount(
+  activity: NonNullable<RuntimeSession["agent_activity"]>[string],
+  promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
+): number {
+  const projectedCount = nonNegativeInteger(activity.active_prompt_count)
+  if (projectedCount !== null) {
+    return projectedCount
+  }
+  return agentRuntimeActivityHasActivePrompt(activity, promptState) ? 1 : 0
+}
+
+function promptWorkCountFromProjectedActivities(
+  activities: readonly NonNullable<RuntimeSession["agent_activity"]>[string][],
+  field: "queued_prompt_count",
+): number | null {
+  let count = 0
+  for (const activity of activities) {
+    const projectedCount = nonNegativeInteger(activity[field])
+    if (projectedCount === null) {
+      return null
+    }
+    count += projectedCount
+  }
+  return count
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null
 }
 
 function legacyBusyAgentCount(session: RuntimeSession): number {

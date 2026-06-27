@@ -886,6 +886,8 @@ mod tests {
                 status: crate::runtime::projection::AgentRuntimeStatus::Working,
                 prompt_status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
                 busy: true,
+                active_prompt_count: 1,
+                queued_prompt_count: 0,
                 unread_idle_output: false,
                 queued_prompt_controls: BTreeMap::new(),
                 active_turn: Some(crate::runtime::projection::AgentActiveTurnProjection {
@@ -1032,6 +1034,8 @@ mod tests {
                 status: crate::runtime::projection::AgentRuntimeStatus::Idle,
                 prompt_status: crate::runtime::projection::AgentPromptRuntimeStatus::None,
                 busy: false,
+                active_prompt_count: 0,
+                queued_prompt_count: 0,
                 unread_idle_output: false,
                 queued_prompt_controls: BTreeMap::new(),
                 active_turn: None,

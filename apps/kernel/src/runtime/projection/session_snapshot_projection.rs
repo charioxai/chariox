@@ -49,6 +49,8 @@ pub struct AgentRuntimeActivity {
     pub status: AgentRuntimeStatus,
     pub prompt_status: AgentPromptRuntimeStatus,
     pub busy: bool,
+    pub active_prompt_count: usize,
+    pub queued_prompt_count: usize,
     #[serde(default)]
     pub unread_idle_output: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -237,10 +239,15 @@ pub(crate) fn agent_activity_for_session_projection(
         } else {
             AgentRuntimeStatus::Idle
         };
+        let active_prompt_count = usize::from(
+            agent_prompt_runtime_status_is_active_prompt(&prompt_status) || active_turn.is_some(),
+        );
         activity.insert(
             agent.id().to_string(),
             AgentRuntimeActivity {
                 busy: status == AgentRuntimeStatus::Working,
+                active_prompt_count,
+                queued_prompt_count,
                 unread_idle_output: status == AgentRuntimeStatus::Idle
                     && unread_for_user_id.is_some_and(|user_id| {
                         session.agent_has_unread_output(user_id, agent.id())
@@ -258,6 +265,15 @@ pub(crate) fn agent_activity_for_session_projection(
     }
 
     activity
+}
+
+fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatus) -> bool {
+    matches!(
+        status,
+        AgentPromptRuntimeStatus::Running
+            | AgentPromptRuntimeStatus::Cancelling
+            | AgentPromptRuntimeStatus::Settling
+    )
 }
 
 const QUEUED_PROMPT_STEER_EXTERNAL_REASON: &str =
@@ -609,6 +625,8 @@ mod tests {
             .next()
             .expect("queued prompt control should be projected");
 
+        assert_eq!(activity.active_prompt_count, 1);
+        assert_eq!(activity.queued_prompt_count, 1);
         assert_eq!(control.status, "queued");
         assert!(control.can_steer);
         assert!(control.can_cancel);
@@ -665,6 +683,8 @@ mod tests {
             .next()
             .expect("queued prompt control should be projected");
 
+        assert_eq!(activity.active_prompt_count, 1);
+        assert_eq!(activity.queued_prompt_count, 1);
         assert_eq!(control.status, "queued");
         assert!(!control.can_steer);
         assert!(control.can_cancel);
