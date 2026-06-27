@@ -1,4 +1,5 @@
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
 
 export function sessionAgentIsBusy(session: RuntimeSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) {
@@ -9,7 +10,7 @@ export function sessionAgentIsBusy(session: RuntimeSession | null | undefined, a
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    return projected.busy || projected.status === "working" || projected.prompt_status !== "none" || Boolean(projected.active_turn)
+    return agentRuntimeActivityIsBusy(projected)
   }
   const promptState = session.prompt_states?.[agentId]
   return Boolean(promptState?.active_prompt)

@@ -1,6 +1,9 @@
 import process from "node:process"
 
 import {
+  agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
+} from "@arroba/kernel-client/agent-activity"
+import {
   normalizeAgentPromptState,
   type AgentPromptState,
   type CliOptions,
@@ -261,12 +264,7 @@ export function projectedStreamingAgentIdForSession(session: RuntimeSession): st
 export function agentRuntimeActivityIsBusy(
   activity: NonNullable<RuntimeSession["agent_activity"]>[string] | null | undefined,
 ): boolean {
-  return Boolean(activity && (
-    activity.busy
-    || activity.status === "working"
-    || activity.prompt_status !== "none"
-    || activity.active_turn
-  ))
+  return kernelAgentRuntimeActivityIsBusy(activity)
 }
 
 export function deriveSessionTransitionState(

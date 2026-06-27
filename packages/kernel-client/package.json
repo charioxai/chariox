@@ -8,6 +8,7 @@
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
     "./extension-grant-placement": "./dist/extension-grant-placement.js",
+    "./agent-activity": "./dist/agent-activity.js",
     "./external-provider-observation": "./dist/external-provider-observation.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
