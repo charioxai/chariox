@@ -233,6 +233,80 @@ async fn provider_batch_launch_rejects_duplicate_targets_without_partial_launch_
 }
 
 #[test]
+fn provider_batch_launch_rejects_focused_and_explicit_duplicate_without_partial_launch() {
+    run_provider_projection_large_stack_test(
+        "provider-batch-launch-rejects-focused-explicit-duplicate",
+        provider_batch_launch_rejects_focused_and_explicit_duplicate_without_partial_launch_inner,
+    );
+}
+
+async fn provider_batch_launch_rejects_focused_and_explicit_duplicate_without_partial_launch_inner()
+{
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-batch-focused-duplicate",
+            "worktree-batch-focused-duplicate",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let focused_launch = LaunchProviderRunRequest {
+        session_id: session_id.clone(),
+        agent_id: None,
+        adapter_key: "dev-stub".to_string(),
+        provider: "claude-code".to_string(),
+        account_profile: "default".to_string(),
+        model: "sonnet".to_string(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: false,
+    };
+    let explicit_launch = LaunchProviderRunRequest {
+        agent_id: Some(agent_id.clone()),
+        ..focused_launch.clone()
+    };
+    let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
+        max_concurrency: Some(2),
+        launches: vec![focused_launch, explicit_launch],
+    });
+    let launch_command = KernelCommand::from_local_request(
+        "cmd-provider-batch-launch-focused-explicit-duplicate",
+        None,
+        None,
+        &launch_request,
+    );
+
+    let response = router
+        .dispatch(launch_command, launch_request)
+        .await
+        .expect("provider batch focused duplicate should return indexed failures");
+    let LocalDaemonResponse::ProviderRunsLaunchAccepted {
+        provider_runs,
+        failures,
+    } = response
+    else {
+        panic!("unexpected launch response");
+    };
+    assert!(provider_runs.is_empty());
+    assert_eq!(failures.len(), 2);
+    assert_eq!(failures[0].agent_id.as_deref(), Some(agent_id.as_str()));
+    assert_eq!(failures[1].agent_id.as_deref(), Some(agent_id.as_str()));
+    assert!(failures
+        .iter()
+        .all(|failure| failure.message.contains("duplicate target agents")));
+    let app = app.lock().await;
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&session_id, &agent_id)
+        .is_none());
+}
+
+#[test]
 fn provider_batch_launch_rejects_mixed_sessions_without_partial_launch() {
     run_provider_projection_large_stack_test(
         "provider-batch-launch-rejects-mixed-sessions",

@@ -167,17 +167,35 @@ impl ProviderLaunchCommandExecutor {
                 failures: Vec::new(),
             });
         }
-        if let Some(failures) = provider_batch_preflight_failures(&request.launches) {
+        let max_concurrency = request
+            .max_concurrency
+            .unwrap_or(8)
+            .clamp(1, request.launches.len());
+        let mut launches = request.launches;
+        if let Some(failures) = provider_batch_session_preflight_failures(&launches) {
             return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
                 provider_runs: Vec::new(),
                 failures,
             });
         }
-        let max_concurrency = request
-            .max_concurrency
-            .unwrap_or(8)
-            .clamp(1, request.launches.len());
-        let mut outcomes = futures_util::stream::iter(request.launches.into_iter().enumerate())
+        if let Err(error) = self
+            .store
+            .normalize_batch_launch_targets(&mut launches)
+            .await
+        {
+            return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
+                provider_runs: Vec::new(),
+                failures: provider_batch_failures(&launches, error.to_string()),
+            });
+        }
+        if let Some(failures) = provider_batch_target_preflight_failures(&launches) {
+            return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
+                provider_runs: Vec::new(),
+                failures,
+            });
+        }
+
+        let mut outcomes = futures_util::stream::iter(launches.into_iter().enumerate())
             .map(|(index, launch_request)| {
                 let executor = self.clone();
                 let caller_user_id = caller_user_id.clone();
@@ -235,7 +253,7 @@ impl ProviderLaunchCommandExecutor {
     }
 }
 
-fn provider_batch_preflight_failures(
+fn provider_batch_session_preflight_failures(
     launches: &[LaunchProviderRunRequest],
 ) -> Option<Vec<BatchOperationFailure>> {
     let first_session_id = launches.first()?.session_id.as_str();
@@ -256,6 +274,12 @@ fn provider_batch_preflight_failures(
         );
     }
 
+    None
+}
+
+fn provider_batch_target_preflight_failures(
+    launches: &[LaunchProviderRunRequest],
+) -> Option<Vec<BatchOperationFailure>> {
     let mut seen_targets = HashSet::new();
     let duplicate_target = launches.iter().any(|launch| {
         let target = launch.agent_id.as_deref().unwrap_or("__focused_agent__");
@@ -278,9 +302,45 @@ fn provider_batch_preflight_failures(
     None
 }
 
+fn provider_batch_failures(
+    launches: &[LaunchProviderRunRequest],
+    message: String,
+) -> Vec<BatchOperationFailure> {
+    launches
+        .iter()
+        .enumerate()
+        .map(|(index, launch)| BatchOperationFailure {
+            index,
+            agent_id: launch.agent_id.clone(),
+            message: message.clone(),
+        })
+        .collect()
+}
+
 impl ProviderLaunchStore {
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
+    }
+
+    async fn normalize_batch_launch_targets(
+        &self,
+        launches: &mut [LaunchProviderRunRequest],
+    ) -> Result<(), DaemonError> {
+        if !launches.iter().any(|launch| launch.agent_id.is_none()) {
+            return Ok(());
+        }
+        let Some(session_id) = launches.first().map(|launch| launch.session_id.as_str()) else {
+            return Ok(());
+        };
+        let Some(focused_agent_id) = self.state.focused_agent_id(session_id).await? else {
+            return Ok(());
+        };
+        for launch in launches.iter_mut() {
+            if launch.agent_id.is_none() {
+                launch.agent_id = Some(focused_agent_id.clone());
+            }
+        }
+        Ok(())
     }
 
     async fn start_launch(
