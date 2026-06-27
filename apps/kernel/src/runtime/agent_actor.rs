@@ -146,6 +146,24 @@ impl AgentRuntime {
                 session,
             });
         }
+        let caller_user_id = command_agent_actor_user_id(command);
+        let authorization_failures = self
+            .prompt_batch_authorization_failures(
+                &request.session_id,
+                &caller_user_id,
+                &request.prompts,
+            )
+            .await;
+        if !authorization_failures.is_empty() {
+            let session = self.store.session_snapshot(&request.session_id).await?;
+            return Ok(LocalDaemonResponse::PromptsSubmitted {
+                results: Vec::new(),
+                failures: authorization_failures,
+                agent_activity: self.store.agent_activity_for_session(&session).await,
+                agent_activity_revision: self.session_projection.change_sequence(),
+                session,
+            });
+        }
 
         let max_concurrency = request
             .max_concurrency
@@ -162,11 +180,16 @@ impl AgentRuntime {
                 let agent_id = item.target_agent_id.clone();
                 async move {
                     let submit_request = item.into_submit_prompt_request(session_id, attachment_id);
+                    let command_trace = CommandTrace::from_command(&command);
                     let result = runtime
-                        .dispatch_prompt_submit_with_response_mode(
-                            &command,
-                            submit_request,
-                            PromptSubmitResponseMode::BatchItem,
+                        .dispatch_to_agent(
+                            agent_id.clone(),
+                            command_trace.clone(),
+                            AgentCommand::SubmitPrompt {
+                                request: submit_request,
+                                trace_id: command_trace.trace_id().to_string(),
+                                response_mode: PromptSubmitResponseMode::BatchItem,
+                            },
                         )
                         .await;
                     (index, agent_id, result)
@@ -213,6 +236,44 @@ impl AgentRuntime {
             agent_activity,
             agent_activity_revision: self.session_projection.change_sequence(),
         })
+    }
+
+    async fn prompt_batch_authorization_failures(
+        &self,
+        session_id: &str,
+        caller_user_id: &str,
+        prompts: &[crate::local::SubmitPromptsRequestItem],
+    ) -> Vec<BatchOperationFailure> {
+        let mut failures = Vec::new();
+        for (index, prompt) in prompts.iter().enumerate() {
+            match self
+                .store
+                .ensure_agent_prompt_access(
+                    &prompt.target_agent_id,
+                    caller_user_id,
+                    "submit prompt batch",
+                )
+                .await
+            {
+                Ok(agent) if agent.session_id() != session_id => {
+                    failures.push(BatchOperationFailure {
+                        index,
+                        agent_id: Some(prompt.target_agent_id.clone()),
+                        message: format!(
+                            "prompt batch target agent belongs to session `{}`, not `{session_id}`",
+                            agent.session_id()
+                        ),
+                    })
+                }
+                Ok(_) => {}
+                Err(error) => failures.push(BatchOperationFailure {
+                    index,
+                    agent_id: Some(prompt.target_agent_id.clone()),
+                    message: error.to_string(),
+                }),
+            }
+        }
+        failures
     }
 
     pub(crate) async fn dispatch_prompt_cancel(
