@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 
-import { normalizeRuntimeSession, type RuntimeSession } from "../cli-types.js"
+import { normalizeRuntimeSessionWithAgentActivity, type RuntimeSession } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import { getSessionStateRequest, getSkillRequest } from "../ipc-requests.js"
 
@@ -49,7 +49,13 @@ export async function buildClaudeNativeSkillContext(
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionState").session)
+  return normalizeRuntimeSessionWithAgentActivity(
+    expectVariant<{
+      session: RuntimeSession
+      agent_activity?: RuntimeSession["agent_activity"] | null
+      agent_activity_revision?: number | null
+    }>(response, "SessionState"),
+  )
 }
 
 function promptExplicitlyRequestsSkill(prompt: string, skillName: string): boolean {
