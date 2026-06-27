@@ -301,7 +301,7 @@ fn outline_turn_from_events(
             .or_else(|| prompt.prompt_id.clone())
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
-        prompt_origin: outline_turn_prompt_origin(prompt, external_identity.as_ref()),
+        prompt_origin: outline_turn_prompt_origin(prompt),
         external_provider: external_identity
             .as_ref()
             .map(|identity| identity.provider.clone()),
@@ -317,14 +317,10 @@ fn outline_turn_from_events(
     })
 }
 
-fn outline_turn_prompt_origin(
-    prompt: &HistoryEvent,
-    external_identity: Option<&OutlineExternalIdentity>,
-) -> PromptOrigin {
-    if external_identity.is_some()
-        || prompt
-            .to_session_history_entry()
-            .is_some_and(|entry| entry.is_external_provider_observed())
+fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
+    if prompt
+        .to_session_history_entry()
+        .is_some_and(|entry| entry.is_external_provider_observed())
     {
         return PromptOrigin::External;
     }
@@ -632,6 +628,13 @@ mod tests {
         )
         .expect("turn should be outlined");
 
+        assert_eq!(turn.prompt_origin, PromptOrigin::Arroba);
+        assert_eq!(turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            turn.external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(turn.external_provider_turn_id.as_deref(), Some("done-1"));
         assert_eq!(turn.entries.len(), 2);
         assert_eq!(
             turn.entries[0].entry.kind,
