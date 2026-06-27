@@ -329,23 +329,36 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
+    #[cfg(test)]
     pub(crate) fn activate_prompt(
         &self,
         session: &RuntimeSession,
         mut prompt: PromptQueueItem,
-    ) -> PromptQueueItem {
+    ) -> Result<PromptQueueItem, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
         let mut owner = self
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
         let state = owner.ensure_agent_state(session, &agent_id);
+        if let Some(active_prompt) = state.active_prompt.as_ref() {
+            if active_prompt.id() != prompt.id() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "activate prompt",
+                    message: format!(
+                        "cannot activate prompt `{}` for agent `{agent_id}` while active prompt `{}` is still running",
+                        prompt.id(),
+                        active_prompt.id()
+                    ),
+                });
+            }
+        }
         state
             .queued_prompts
             .retain(|queued| queued.id() != prompt.id());
         prompt.set_status(PromptStatus::Running);
         state.active_prompt = Some(prompt.clone());
-        prompt
+        Ok(prompt)
     }
 
     pub(crate) fn sync_external_active_prompt(
@@ -625,6 +638,54 @@ mod tests {
                 .as_ref()
                 .map(|prompt| prompt.id()),
             Some("prompt-queued")
+        );
+    }
+
+    #[test]
+    fn activate_prompt_rejects_replacing_different_active_prompt() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let active = owner
+            .activate_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-active",
+                    "attachment-1",
+                    "agent-1",
+                    "active",
+                    PromptStatus::Queued,
+                ),
+            )
+            .expect("first prompt should activate");
+        assert_eq!(active.status(), PromptStatus::Running);
+
+        let error = owner
+            .activate_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-replacement",
+                    "attachment-1",
+                    "agent-1",
+                    "replacement",
+                    PromptStatus::Queued,
+                ),
+            )
+            .expect_err("different active prompt must not be replaced");
+
+        assert!(error.to_string().contains("cannot activate prompt"));
+        assert_eq!(
+            owner
+                .active_prompt_for_agent_snapshot(&session, "agent-1")
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some("prompt-active")
         );
     }
 }

@@ -79,7 +79,7 @@ impl<'a> KernelAgentService<'a> {
                 .ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
                 if is_workflow_prompt {
-                    let active = self.app.prompt_owner_activate_prompt(session_id, next)?;
+                    let active = next;
                     if let Err(dispatch_error) = crate::app::ProviderPromptDispatcher::new(self.app)
                         .dispatch_prompt_to_provider(
                             session_id,
@@ -127,6 +127,9 @@ impl<'a> KernelAgentService<'a> {
                         error
                     ),
                 );
+                let _ = self
+                    .app
+                    .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 flow_control::clear_active_turn(self.app, &provider_run_id);
                 continue;
@@ -160,7 +163,7 @@ impl<'a> KernelAgentService<'a> {
                 continue;
             }
 
-            let active = self.app.prompt_owner_activate_prompt(session_id, next)?;
+            let active = next;
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
                 (active.workflow_run_id(), active.workflow_node_run_id())
             {

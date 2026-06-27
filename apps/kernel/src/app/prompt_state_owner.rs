@@ -176,6 +176,7 @@ impl DaemonApp {
         Ok(next)
     }
 
+    #[cfg(test)]
     pub(crate) fn prompt_owner_activate_prompt(
         &mut self,
         session_id: &str,
@@ -183,7 +184,7 @@ impl DaemonApp {
     ) -> Result<PromptQueueItem, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
         let session = self.sessions.get_session(session_id)?;
-        let active = self.prompt_state_owner.activate_prompt(&session, prompt);
+        let active = self.prompt_state_owner.activate_prompt(&session, prompt)?;
         self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         Ok(active)
     }
