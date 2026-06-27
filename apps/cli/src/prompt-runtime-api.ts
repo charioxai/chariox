@@ -137,7 +137,7 @@ export async function cancelQueuedPrompt(
   const payload = expectVariant<QueuedPromptCancelledPayload>(response, "QueuedPromptCancelled")
   return {
     ...payload,
-    session: normalizeRuntimeSession(payload.session),
+    session: normalizeRuntimeSessionWithAgentActivity(payload),
   }
 }
 

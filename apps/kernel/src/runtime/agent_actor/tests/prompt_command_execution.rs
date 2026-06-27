@@ -922,11 +922,18 @@ async fn prompt_cancel_queued_uses_owned_runtime_state_without_app_lock() {
     .expect("queued prompt cancellation should succeed");
     drop(app_guard);
 
-    let LocalDaemonResponse::QueuedPromptCancelled { prompt, session } = response else {
+    let LocalDaemonResponse::QueuedPromptCancelled {
+        prompt,
+        session,
+        agent_activity,
+        ..
+    } = response
+    else {
         panic!("unexpected response");
     };
     assert_eq!(prompt.id(), queued_prompt.id());
     assert_eq!(prompt.status(), PromptStatus::Cancelled);
+    assert!(agent_activity.contains_key(&agent_id));
     assert_eq!(
         session
             .active_prompt_for_agent(&agent_id)

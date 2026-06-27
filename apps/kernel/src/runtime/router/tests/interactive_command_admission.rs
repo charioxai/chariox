@@ -85,11 +85,18 @@ async fn queued_prompt_cancel_routes_through_interactive_dispatch_and_removes_st
         .await
         .expect("queued prompt cancel should route through interactive dispatch");
 
-    let LocalDaemonResponse::QueuedPromptCancelled { prompt, session } = response else {
+    let LocalDaemonResponse::QueuedPromptCancelled {
+        prompt,
+        session,
+        agent_activity,
+        ..
+    } = response
+    else {
         panic!("unexpected queued prompt cancel response");
     };
     assert_eq!(prompt.id(), fixture.queued_prompt_id);
     assert_eq!(prompt.status(), PromptStatus::Cancelled);
+    assert!(agent_activity.contains_key(&fixture.agent_id));
     assert_eq!(
         session
             .active_prompt_for_agent(&fixture.agent_id)

@@ -128,6 +128,7 @@ export type RuntimeSession = {
   queued_prompts: PromptQueueItem[]
   prompt_states?: Record<string, AgentPromptState>
   agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
   metaagent_tasks?: MetaagentTask[]
   focused_agent_id: string | null
@@ -931,6 +932,8 @@ export type QueuedPromptSteeredPayload = {
 export type QueuedPromptCancelledPayload = {
   prompt: PromptQueueItem
   session: RuntimeSession
+  agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
 }
 
 export type SessionHistoryPageEntry = {
@@ -1372,8 +1375,8 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
 
 export function normalizeRuntimeSessionWithAgentActivity(payload: {
   session: RuntimeSession
-  agent_activity?: RuntimeSession["agent_activity"] | null
-  agent_activity_revision?: number | null
+  agent_activity?: RuntimeSession["agent_activity"] | null | undefined
+  agent_activity_revision?: number | null | undefined
 }): RuntimeSession {
   const normalized = normalizeRuntimeSession(payload.session)
   if (!payload.agent_activity) {

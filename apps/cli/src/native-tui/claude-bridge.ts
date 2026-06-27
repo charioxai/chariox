@@ -226,7 +226,14 @@ export function extractSubmittedPromptId(response: Record<string, unknown>, agen
       : null
     if (prompt?.id) return prompt.id
   }
-  const session = payload.session ? normalizeRuntimeSessionWithAgentActivity(payload) : null
+  if (!payload.session) {
+    return null
+  }
+  const session = normalizeRuntimeSessionWithAgentActivity({
+    session: payload.session,
+    agent_activity: payload.agent_activity,
+    agent_activity_revision: payload.agent_activity_revision,
+  })
   return session ? promptForAgent(session, agentId)?.id ?? null : null
 }
 

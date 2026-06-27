@@ -124,10 +124,18 @@ pub(crate) fn redact_response_for_user(
                 session,
             }
         }
-        LocalDaemonResponse::QueuedPromptCancelled { prompt, session } => {
+        LocalDaemonResponse::QueuedPromptCancelled {
+            prompt,
+            session,
+            agent_activity,
+            agent_activity_revision,
+        } => {
+            let session = session.redacted_for_user(caller_user_id);
             LocalDaemonResponse::QueuedPromptCancelled {
                 prompt,
-                session: session.redacted_for_user(caller_user_id),
+                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
+                agent_activity_revision,
+                session,
             }
         }
         LocalDaemonResponse::SessionConfigUpdated { config, session } => {

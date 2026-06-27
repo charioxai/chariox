@@ -100,6 +100,8 @@ mod tests {
         let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
             prompt,
             session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
         };
 
         for response in [submitted, steered, cancelled] {

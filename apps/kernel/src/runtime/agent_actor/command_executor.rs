@@ -228,9 +228,15 @@ impl AgentRuntimeCommandExecutor {
         self.agent_runtime_projection
             .update_session(&prepared.session);
 
+        let agent_activity = self
+            .prompt_commands
+            .agent_activity_for_session(&prepared.session);
+
         Ok(LocalDaemonResponse::QueuedPromptCancelled {
             prompt: prepared.prompt,
             session: prepared.session,
+            agent_activity,
+            agent_activity_revision: self.session_projection.change_sequence(),
         })
     }
 
