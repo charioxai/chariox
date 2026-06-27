@@ -17,9 +17,9 @@ export function queuedPromptsForAgent(session: RuntimeSession, agentId: string):
   if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
     return []
   }
-  const statePrompts = session.prompt_states?.[agentId]?.queued_prompts
-  if (statePrompts) {
-    return statePrompts
+  const promptStates = session.prompt_states
+  if (promptStates) {
+    return promptStates[agentId]?.queued_prompts ?? []
   }
   const topLevelPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
   if (!session.agent_activity) {

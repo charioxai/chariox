@@ -191,7 +191,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected bu
   }]
 
   const session = sessionWithQueuedPrompt({}, {
-    prompt_states: {},
+    prompt_states: undefined,
     queued_prompts: [],
     agent_activity: {
       "agent-1": {
@@ -207,7 +207,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected bu
   assert.deepEqual(synced.entries, existing)
 })
 
-test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected status is working", () => {
+test("syncQueuedPromptEntriesForAgent clears stale queued prompts when projected queue state is empty", () => {
   const existing: TranscriptEntry[] = [{
     id: 1,
     role: "user",
@@ -217,6 +217,31 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected st
 
   const session = sessionWithQueuedPrompt({}, {
     prompt_states: {},
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+  })
+  const synced = syncQueuedPromptEntriesForAgent(existing, session, "agent-1")
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries, [])
+})
+
+test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected status is working", () => {
+  const existing: TranscriptEntry[] = [{
+    id: 1,
+    role: "user",
+    text: "new queued",
+    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+  }]
+
+  const session = sessionWithQueuedPrompt({}, {
+    prompt_states: undefined,
     queued_prompts: [],
     agent_activity: {
       "agent-1": {
