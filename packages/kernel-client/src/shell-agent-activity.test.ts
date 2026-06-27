@@ -237,6 +237,48 @@ test("sessionPromptWorkSummary counts prompt state active prompt for sparse busy
   })
 })
 
+test("sessionPromptWorkSummary treats prompt states as runtime authority", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-2",
+          target_agent_id: "agent-2",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+      "agent-3": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-3",
+          source_attachment_id: "attach-3",
+          target_agent_id: "agent-3",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [
+      makeAgent({ id: "agent-1", state: "Working", is_processing: true }),
+      makeAgent({ id: "agent-2", state: "Idle", is_processing: false }),
+      makeAgent({ id: "agent-3", state: "Idle", is_processing: false }),
+    ],
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 1,
+    busyAgents: 2,
+  })
+})
+
 test("sessionAgentRuntimeState normalizes projected error status", () => {
   const session = makeSession({
     agent_activity: {
@@ -478,6 +520,30 @@ test("session prompt helpers prefer explicit empty prompt state over stale top-l
       prompt: "stale",
       status: "Running",
     },
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
+test("session prompt helpers treat missing prompt state agents as idle", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale queued",
+      status: "Queued",
+    }],
+    prompt_states: {},
   })
 
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)

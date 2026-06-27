@@ -42,10 +42,11 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   }
 
   if (promptStates) {
+    const busyAgents = Object.values(promptStates).filter(promptStateHasWork).length
     return {
       active: Object.values(promptStates).filter((state) => Boolean(state?.active_prompt)).length,
       queued,
-      busyAgents: legacyBusyAgentCount(session),
+      busyAgents,
     }
   }
 
@@ -172,10 +173,17 @@ function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQ
     ?? null
 }
 
+function promptStateHasWork(state: AgentPromptStateLike | null | undefined): boolean {
+  return Boolean(state?.active_prompt) || Boolean(state?.queued_prompts?.length)
+}
+
 function promptStateForAgent(session: RuntimeSession, agentId: string) {
   const promptStates = session.prompt_states
-  if (!promptStates || !Object.prototype.hasOwnProperty.call(promptStates, agentId)) {
+  if (!promptStates) {
     return undefined
+  }
+  if (!Object.prototype.hasOwnProperty.call(promptStates, agentId)) {
+    return null
   }
   return promptStates[agentId] ?? null
 }

@@ -5,6 +5,10 @@ import {
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
+  sessionAgentIsBusy as kernelSessionAgentIsBusy,
+  sessionPromptWorkSummary,
+} from "@arroba/kernel-client/shell-agent-activity"
+import {
   normalizeAgentPromptState,
   type AgentPromptState,
   type CliOptions,
@@ -118,15 +122,8 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 }
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
-  if (session.agent_activity) {
-    return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
-  }
-  if (session.prompt_states) {
-    return Object.values(session.prompt_states).some((state) => {
-      return Boolean(state.active_prompt) || state.queued_prompts.length > 0
-    })
-  }
-  return Boolean(session.active_prompt) || session.queued_prompts.length > 0
+  const summary = sessionPromptWorkSummary(session)
+  return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0
 }
 
 export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolean {
@@ -134,17 +131,7 @@ export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolea
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
-  if (session.agent_activity) {
-    return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
-  }
-  if (session.prompt_states) {
-    return Object.values(session.prompt_states).some((state) => {
-      return Boolean(state.active_prompt) || state.queued_prompts.length > 0
-    })
-  }
-  return session.agents.some((agent) => {
-    return agent.is_processing || agent.state === "Working"
-  })
+  return sessionPromptWorkSummary(session).busyAgents > 0
 }
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
@@ -243,11 +230,7 @@ export function agentHasPromptWork(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): boolean {
-  if (session.agent_activity) {
-    return agentId ? agentRuntimeActivityIsBusy(session.agent_activity[agentId]) : false
-  }
-  const promptState = agentPromptState(session, agentId)
-  return Boolean(promptState?.active_prompt) || (promptState?.queued_prompts.length ?? 0) > 0
+  return kernelSessionAgentIsBusy(session, agentId)
 }
 
 export function promptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
