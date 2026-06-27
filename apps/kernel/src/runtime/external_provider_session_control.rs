@@ -2074,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn append_observed_arroba_owned_user_turn_adds_history_and_external_active_prompt() {
+    fn append_observed_external_user_turn_for_arroba_owned_run_adds_history_and_active_prompt() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -2100,7 +2100,7 @@ mod tests {
                 }],
             },
         )
-        .expect("observed Arroba-owned native user turn should append");
+        .expect("observed external native user turn should append");
 
         assert_eq!(outcome.changed_count, 1);
         let active = app
