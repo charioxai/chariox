@@ -19,9 +19,13 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
         : `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
     }
     if (pendingRevoke) {
-      return "keep the home revoke in place; identify the affected agent in /kernel remote-runtime, then retry manifest sync after the worker reconnects"
+      return workerMachine
+        ? `keep the home revoke in place; run /kernel remote-runtime and /machine kernels ${workerMachine} to identify the affected agent, then retry manifest sync after the worker reconnects`
+        : "keep the home revoke in place; identify the affected agent in /kernel remote-runtime, then retry manifest sync after the worker reconnects"
     }
-    return "home keeps stale home-proxy calls blocked; identify the affected agent in /kernel remote-runtime, then retry manifest sync after worker connectivity is healthy"
+    return workerMachine
+      ? `home keeps stale home-proxy calls blocked; run /kernel remote-runtime and /machine kernels ${workerMachine} to identify the affected agent, then retry manifest sync after worker connectivity is healthy`
+      : "home keeps stale home-proxy calls blocked; identify the affected agent in /kernel remote-runtime, then retry manifest sync after worker connectivity is healthy"
   }
   if (kind.includes(".manifest.synced") && payload.revoke_acknowledged === true) {
     return "worker acknowledged the revoke; home will continue denying calls for the removed grant"
@@ -34,7 +38,10 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
           ? `run /extension sync-status ${agentRef}; run /machine kernels ${workerMachine}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
           : `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
       }
-      return "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant"
+      const workerMachine = homeExtensionAuditWorkerMachine(payload)
+      return workerMachine
+        ? `run /kernel remote-runtime and /machine kernels ${workerMachine} to identify the affected agent; retry only after the worker lease and provider run match the current home grant`
+        : "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant"
     }
     return "verify the home grant, safety limit, and caller authority before retrying"
   }

@@ -105,6 +105,11 @@ test("home extension audit policy gives binding-specific recovery for worker den
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
     status: "denied",
     error: "worker mismatch",
+    worker_machine_id: "machine-1",
+  }), "run /kernel remote-runtime and /machine kernels machine-1 to identify the affected agent; retry only after the worker lease and provider run match the current home grant")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
+    status: "denied",
+    error: "worker mismatch",
     agent_ref: "<agent>",
   }), "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant")
 })
@@ -124,6 +129,13 @@ test("home extension audit policy handles terminal invocation outcomes", () => {
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.retry_scheduled", {
     pending_revoke: true,
   }), "keep the home revoke in place; identify the affected agent in /kernel remote-runtime, then retry manifest sync after the worker reconnects")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.retry_scheduled", {
+    pending_revoke: true,
+    worker_machine_id: "machine-1",
+  }), "keep the home revoke in place; run /kernel remote-runtime and /machine kernels machine-1 to identify the affected agent, then retry manifest sync after the worker reconnects")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.failed", {
+    worker_machine_id: "machine-1",
+  }), "home keeps stale home-proxy calls blocked; run /kernel remote-runtime and /machine kernels machine-1 to identify the affected agent, then retry manifest sync after worker connectivity is healthy")
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.synced", {
     revoke_acknowledged: true,
   }), "worker acknowledged the revoke; home will continue denying calls for the removed grant")
