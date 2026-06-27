@@ -913,6 +913,63 @@ test("executeShellCommand batch spawns agents with count option", async () => {
   assert.equal(fake.requests.length, 1)
 })
 
+test("executeShellCommand requires confirmation for large batch agent spawn", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  })
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called before large batch spawn confirmation")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agents spawn 50 reviewer"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /spawning 50 agents requires confirmation/)
+  assert.match(result.message ?? "", /--confirm-large/)
+  assert.equal(fake.requests.length, 0)
+})
+
+test("executeShellCommand accepts confirmed large batch agent spawn", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  })
+  const fake = fakeClient((request) => {
+    if ("SpawnAgents" in request) {
+      const agents = (request as { SpawnAgents: { agents: Array<{ alias: string | null }> } }).SpawnAgents.agents
+      assert.equal(agents.length, 50)
+      assert.equal(agents[0]?.alias, "reviewer")
+      assert.equal(agents[49]?.alias, "reviewer-50")
+      return {
+        AgentsSpawned: {
+          agents: Array.from({ length: 50 }, (_, index) => makeAgent({
+            id: `agent-${index + 1}`,
+            agent_ref: `agent-${index + 1}`,
+            alias: index === 0 ? "reviewer" : `reviewer-${index + 1}`,
+          })),
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agents spawn 50 reviewer --confirm-large"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /spawned 50 agents \(agent-1..agent-50\)/)
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-50" })
+  assert.equal(fake.requests.length, 1)
+})
+
 test("executeShellCommand batch spawns and prompts agents with bounded concurrency", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
@@ -1005,6 +1062,54 @@ test("executeShellCommand batch spawns and prompts agents with bounded concurren
     { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
     { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
   ])
+})
+
+test("executeShellCommand summarizes batch prompt failures without flooding output", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attachment-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  })
+  const fake = fakeClient((request) => {
+    if ("SpawnAgents" in request) {
+      return {
+        AgentsSpawned: {
+          agents: [
+            makeAgent({ id: "agent-1", agent_ref: "agent-1", alias: "reviewer" }),
+            makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer-2" }),
+            makeAgent({ id: "agent-3", agent_ref: "agent-3", alias: "reviewer-3" }),
+          ],
+        },
+      }
+    }
+    if ("LaunchProviderRun" in request) {
+      return { ProviderRunLaunched: { provider_run: { id: `run-${fake.requests.length}` } } }
+    }
+    if ("SubmitPrompt" in request) {
+      const targetAgentId = (request as { SubmitPrompt: { target_agent_id: string } }).SubmitPrompt.target_agent_id
+      if (targetAgentId === "agent-2") {
+        throw new Error("provider launch window closed")
+      }
+      return { PromptSubmitted: { session: makeSession(), outcome: {} } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+
+  const result = await executeShellCommand(
+    parseShellCommand('agents spawn 3 reviewer --prompt "inspect the branch" --concurrency 2'),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /spawned 3 agents/)
+  assert.match(result.message ?? "", /prompted 2 agents with concurrency 2/)
+  assert.match(result.message ?? "", /failed to prompt 1 agents \(agent-2: provider launch window closed\)/)
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-3" })
 })
 
 test("executeShellCommand marks agents in Meta mode in agent lists", async () => {

@@ -52,6 +52,7 @@ type ShellKernelClient = {
 
 const MAX_SHELL_BATCH_SPAWN_AGENTS = 200
 const MAX_SHELL_BATCH_SPAWN_CONCURRENCY = 50
+const SHELL_BATCH_SPAWN_CONFIRMATION_THRESHOLD = 50
 
 export type ShellAgentCommandDeps = ShellPlacementDeps & {
   client: ShellKernelClient
@@ -133,6 +134,12 @@ export async function executeAgentCommand(
       if (parsedSpawn.options.positional.length > 2) {
         return { ok: false, message: agentSpawnUsage() }
       }
+      if (spawnCount >= SHELL_BATCH_SPAWN_CONFIRMATION_THRESHOLD && !controlParse.confirmLarge) {
+        return {
+          ok: false,
+          message: `spawning ${spawnCount} agents requires confirmation; rerun with --confirm-large`,
+        }
+      }
       if (spawnCount > 1 && (parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "agent spawn --count does not accept --worktree/--branch; use --dir or create worktrees before spawning" }
       }
@@ -193,16 +200,18 @@ export async function executeAgentCommand(
           : null
         const first = agents[0]
         const last = agents.at(-1) ?? first
-        return resourceResult(
+        const promptMessage = promptSummary ? formatBatchPromptSummary(promptSummary) : null
+        const result = resourceResult(
           [
             `spawned ${agents.length} agents${first?.agent_ref && last?.agent_ref ? ` (${first.agent_ref}..${last.agent_ref})` : ""}`,
-            promptSummary ? `prompted ${promptSummary.prompted} agents with concurrency ${promptSummary.concurrency}` : null,
+            promptMessage,
           ].filter(Boolean).join("; "),
           parsed.assignment,
           last?.id ?? "",
           last ? { agentId: last.id } : {},
           { agents, promptSummary },
         )
+        return promptSummary?.failed ? { ...result, ok: false } : result
       }
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
@@ -602,7 +611,7 @@ function resourceResult(
 }
 
 function agentSpawnUsage(): string {
-  return "usage: agents spawn <count> [alias] [model] [--provider <provider>] [--prompt <text>] [--concurrency <n>] [--dir <directory>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
+  return "usage: agents spawn <count> [alias] [model] [--provider <provider>] [--prompt <text>] [--concurrency <n>] [--confirm-large] [--dir <directory>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
 }
 
 type AgentSpawnControlOptions = {
@@ -613,6 +622,7 @@ type AgentSpawnControlOptions = {
   readonly effort: string | undefined
   readonly prompt: string | undefined
   readonly concurrency: number
+  readonly confirmLarge: boolean
 }
 
 function parseAgentSpawnControlOptions(
@@ -626,6 +636,7 @@ function parseAgentSpawnControlOptions(
   let effort: string | undefined
   let prompt: string | undefined
   let concurrency = 10
+  let confirmLarge = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (!arg) {
@@ -656,6 +667,8 @@ function parseAgentSpawnControlOptions(
       }
       concurrency = parsed
       index += 1
+    } else if (arg === "--confirm-large" || arg === "--yes" || arg === "-y") {
+      confirmLarge = true
     } else {
       stripped.push(arg)
     }
@@ -670,7 +683,7 @@ function parseAgentSpawnControlOptions(
   if (concurrency > count) {
     concurrency = count
   }
-  return { ok: true, args: stripped, count, provider, model, effort, prompt, concurrency }
+  return { ok: true, args: stripped, count, provider, model, effort, prompt, concurrency, confirmLarge }
 }
 
 function parseSpawnCount(value: string | undefined): { ok: true; count: number } | { ok: false; message: string } {
@@ -693,30 +706,67 @@ async function launchAndPromptAgents(
   },
   context: ShellContext,
   deps: ShellAgentCommandDeps,
-): Promise<{ readonly prompted: number; readonly concurrency: number }> {
+): Promise<BatchPromptSummary> {
   const attachment = await resolveShellAttachmentId(context, deps)
   if (!attachment.ok) {
     throw new Error(attachment.message)
   }
   const promptText = input.prompt.endsWith("\n") ? input.prompt : `${input.prompt}\n`
+  let prompted = 0
+  const failures: BatchPromptFailure[] = []
   await runBounded(input.agents, input.concurrency, async (agent) => {
-    await deps.client.send(launchProviderRunRequest(
-      input.sessionId,
-      input.provider,
-      "default",
-      input.model,
-      input.effort,
-      agent.id,
-    ))
-    await deps.client.send(submitPromptRequest(
-      input.sessionId,
-      attachment.attachmentId,
-      agent.id,
-      promptText,
-      [],
-    ))
+    try {
+      await deps.client.send(launchProviderRunRequest(
+        input.sessionId,
+        input.provider,
+        "default",
+        input.model,
+        input.effort,
+        agent.id,
+      ))
+      await deps.client.send(submitPromptRequest(
+        input.sessionId,
+        attachment.attachmentId,
+        agent.id,
+        promptText,
+        [],
+      ))
+      prompted += 1
+    } catch (error) {
+      failures.push({
+        agentRef: agent.agent_ref ?? agent.id,
+        message: formatErrorMessage(error),
+      })
+    }
   })
-  return { prompted: input.agents.length, concurrency: input.concurrency }
+  return { prompted, failed: failures.length, concurrency: input.concurrency, failures: failures.slice(0, 3) }
+}
+
+type BatchPromptFailure = {
+  readonly agentRef: string
+  readonly message: string
+}
+
+type BatchPromptSummary = {
+  readonly prompted: number
+  readonly failed: number
+  readonly concurrency: number
+  readonly failures: readonly BatchPromptFailure[]
+}
+
+function formatBatchPromptSummary(summary: BatchPromptSummary): string {
+  if (summary.failed === 0) {
+    return `prompted ${summary.prompted} agents with concurrency ${summary.concurrency}`
+  }
+  const examples = summary.failures
+    .map((failure) => `${failure.agentRef}: ${failure.message}`)
+    .join("; ")
+  const overflow = summary.failed > summary.failures.length ? `; +${summary.failed - summary.failures.length} more` : ""
+  return `prompted ${summary.prompted} agents with concurrency ${summary.concurrency}; failed to prompt ${summary.failed} agents (${examples}${overflow})`
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 async function runBounded<T>(
