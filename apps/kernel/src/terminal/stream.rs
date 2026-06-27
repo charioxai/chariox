@@ -652,7 +652,7 @@ impl TerminalStreamService {
         }
         let mut records = Vec::with_capacity(outputs.len());
         let mut changed_keys = BTreeSet::new();
-        let mut last_single_recipient_key: Option<(String, String)> = None;
+        let mut last_recipient_scope: Option<(String, Vec<String>)> = None;
         for output in outputs {
             let record = TerminalOutputRecord {
                 session_id: output.session_id,
@@ -666,17 +666,21 @@ impl TerminalStreamService {
                 recipient_attachment_ids: output.recipient_attachment_ids,
                 bytes: output.bytes,
             };
-            if let [attachment_id] = record.recipient_attachment_ids.as_slice() {
-                let key = (record.session_id.clone(), attachment_id.clone());
-                if last_single_recipient_key.as_ref() != Some(&key) {
-                    changed_keys.insert(key.clone());
-                    last_single_recipient_key = Some(key);
-                }
-            } else {
-                last_single_recipient_key = None;
+            let same_recipient_scope = last_recipient_scope.as_ref().is_some_and(
+                |(session_id, recipient_attachment_ids)| {
+                    session_id == &record.session_id
+                        && recipient_attachment_ids.as_slice()
+                            == record.recipient_attachment_ids.as_slice()
+                },
+            );
+            if !same_recipient_scope {
                 for attachment_id in &record.recipient_attachment_ids {
                     changed_keys.insert((record.session_id.clone(), attachment_id.clone()));
                 }
+                last_recipient_scope = Some((
+                    record.session_id.clone(),
+                    record.recipient_attachment_ids.clone(),
+                ));
             }
 
             if !self.try_coalesce_output_record(&record) {
@@ -2437,6 +2441,58 @@ mod tests {
             terminal.attachment_change_sequence("session-1", "attachment-2"),
             unrelated_sequence,
             "batch fanout should not wake unrelated attachment scopes"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_batch_fanout_coalesces_repeated_multi_recipient_change_keys() {
+        let terminal = TerminalStreamStore::new();
+        let first_sequence = terminal.attachment_change_sequence("session-1", "attachment-1");
+        let second_sequence = terminal.attachment_change_sequence("session-1", "attachment-2");
+        let unrelated_sequence = terminal.attachment_change_sequence("session-1", "attachment-3");
+
+        let records = terminal.fan_out_outputs(vec![
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderTool,
+                merge_key: Some("batch-key-1".to_string()),
+                recipient_attachment_ids: vec![
+                    "attachment-1".to_string(),
+                    "attachment-2".to_string(),
+                ],
+                bytes: b"one".to_vec(),
+            },
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderTool,
+                merge_key: Some("batch-key-2".to_string()),
+                recipient_attachment_ids: vec![
+                    "attachment-1".to_string(),
+                    "attachment-2".to_string(),
+                ],
+                bytes: b"two".to_vec(),
+            },
+        ]);
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            terminal.attachment_change_sequence("session-1", "attachment-1"),
+            first_sequence + 1,
+            "repeated multi-recipient batch fanout should notify first recipient once"
+        );
+        assert_eq!(
+            terminal.attachment_change_sequence("session-1", "attachment-2"),
+            second_sequence + 1,
+            "repeated multi-recipient batch fanout should notify second recipient once"
+        );
+        assert_eq!(
+            terminal.attachment_change_sequence("session-1", "attachment-3"),
+            unrelated_sequence,
+            "batch fanout should not wake unrelated recipients"
         );
     }
 
