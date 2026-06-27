@@ -5,6 +5,7 @@ use super::{AgentInstance, AgentState};
 #[derive(Debug, Default, Clone)]
 pub struct AgentStore {
     agents: HashMap<String, AgentInstance>,
+    agent_ids_by_session: HashMap<String, HashSet<String>>,
     next_id: u64,
 }
 
@@ -25,15 +26,36 @@ impl AgentStore {
     }
 
     pub fn insert(&mut self, agent: AgentInstance) -> AgentInstance {
-        self.agents.insert(agent.id().to_string(), agent.clone());
+        self.insert_owned(agent.clone());
         agent
     }
 
     pub(crate) fn insert_many(&mut self, agents: Vec<AgentInstance>) {
         self.agents.reserve(agents.len());
         for agent in agents {
-            self.agents.insert(agent.id().to_string(), agent);
+            self.insert_owned(agent);
         }
+    }
+
+    fn insert_owned(&mut self, agent: AgentInstance) {
+        let agent_id = agent.id().to_string();
+        let existing_session_id = self
+            .agents
+            .get(&agent_id)
+            .map(|existing| existing.session_id().to_string());
+        if existing_session_id
+            .as_deref()
+            .is_some_and(|session_id| session_id != agent.session_id())
+        {
+            if let Some(session_id) = existing_session_id {
+                self.remove_session_index_entry(&session_id, &agent_id);
+            }
+        }
+        self.agent_ids_by_session
+            .entry(agent.session_id().to_string())
+            .or_default()
+            .insert(agent_id.clone());
+        self.agents.insert(agent_id, agent);
     }
 
     pub fn insert_restored(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -56,7 +78,9 @@ impl AgentStore {
     }
 
     pub fn remove(&mut self, agent_id: &str) -> Option<AgentInstance> {
-        self.agents.remove(agent_id)
+        let removed = self.agents.remove(agent_id)?;
+        self.remove_session_index_entry(removed.session_id(), agent_id);
+        Some(removed)
     }
 
     pub fn get_by_ref(&self, agent_ref: &str) -> Option<&AgentInstance> {
@@ -67,11 +91,12 @@ impl AgentStore {
 
     pub fn get_by_session(&self, session_id: &str) -> Vec<AgentInstance> {
         let mut agents = self
-            .agents
-            .values()
-            .filter(|agent| agent.session_id() == session_id)
-            .cloned()
-            .collect::<Vec<_>>();
+            .session_agent_ids(session_id)
+            .map_or_else(Vec::new, |ids| {
+                ids.iter()
+                    .filter_map(|agent_id| self.agents.get(agent_id).cloned())
+                    .collect::<Vec<_>>()
+            });
         agents.sort_by(|left, right| {
             left.position()
                 .row
@@ -90,41 +115,37 @@ impl AgentStore {
     }
 
     pub fn count_by_session(&self, session_id: &str) -> usize {
-        self.agents
-            .values()
-            .filter(|agent| agent.session_id() == session_id)
-            .count()
+        self.session_agent_ids(session_id).map_or(0, HashSet::len)
     }
 
     pub(crate) fn session_summary(&self, session_id: &str) -> AgentSessionSummary {
         let mut summary = AgentSessionSummary::default();
-        for agent in self
-            .agents
-            .values()
-            .filter(|agent| agent.session_id() == session_id)
-        {
-            summary.count += 1;
-            if let Some(alias) = agent.alias() {
-                summary.aliases.insert(alias.to_lowercase());
+        let Some(agent_ids) = self.session_agent_ids(session_id) else {
+            return summary;
+        };
+        summary.count = agent_ids.len();
+        for agent_id in agent_ids {
+            if let Some(agent) = self.agents.get(agent_id) {
+                if let Some(alias) = agent.alias() {
+                    summary.aliases.insert(alias.to_lowercase());
+                }
             }
         }
         summary
     }
 
     pub fn focused_agent(&self, session_id: &str) -> Option<&AgentInstance> {
-        self.agents
-            .values()
-            .find(|agent| agent.session_id() == session_id && agent.state() == AgentState::Focused)
+        self.session_agent_ids(session_id)?
+            .iter()
+            .filter_map(|agent_id| self.agents.get(agent_id))
+            .find(|agent| agent.state() == AgentState::Focused)
     }
 
     pub fn remove_by_session(&mut self, session_id: &str) -> Vec<AgentInstance> {
-        let to_remove: Vec<String> = self
-            .agents
-            .values()
-            .filter(|agent| agent.session_id() == session_id)
-            .map(|agent| agent.id().to_string())
-            .collect();
-
+        let to_remove = self
+            .agent_ids_by_session
+            .remove(session_id)
+            .unwrap_or_default();
         to_remove
             .into_iter()
             .filter_map(|id| self.agents.remove(&id))
@@ -141,6 +162,23 @@ impl AgentStore {
 
     pub fn is_empty(&self) -> bool {
         self.agents.is_empty()
+    }
+
+    fn session_agent_ids(&self, session_id: &str) -> Option<&HashSet<String>> {
+        self.agent_ids_by_session.get(session_id)
+    }
+
+    fn remove_session_index_entry(&mut self, session_id: &str, agent_id: &str) {
+        let should_remove_session =
+            if let Some(agent_ids) = self.agent_ids_by_session.get_mut(session_id) {
+                agent_ids.remove(agent_id);
+                agent_ids.is_empty()
+            } else {
+                false
+            };
+        if should_remove_session {
+            self.agent_ids_by_session.remove(session_id);
+        }
     }
 }
 
@@ -190,5 +228,43 @@ mod tests {
         assert_eq!(store.len(), 2);
         assert!(store.get("agent-1").is_some());
         assert!(store.get("agent-2").is_some());
+    }
+
+    #[test]
+    fn session_index_updates_when_agent_moves_or_is_removed() {
+        let mut store = AgentStore::new();
+        store.insert(agent("agent-1", "session-a", Some("one")));
+        store.insert(agent("agent-2", "session-a", Some("two")));
+        store.insert(agent("agent-1", "session-b", Some("moved")));
+
+        assert_eq!(store.count_by_session("session-a"), 1);
+        assert_eq!(store.count_by_session("session-b"), 1);
+        assert_eq!(store.session_summary("session-b").count, 1);
+        assert!(store.session_summary("session-b").aliases.contains("moved"));
+
+        let removed = store
+            .remove("agent-1")
+            .expect("moved agent should be removed");
+
+        assert_eq!(removed.session_id(), "session-b");
+        assert_eq!(store.count_by_session("session-b"), 0);
+        assert!(store.get_by_session("session-b").is_empty());
+    }
+
+    #[test]
+    fn remove_by_session_uses_and_clears_session_index() {
+        let mut store = AgentStore::new();
+        store.insert(agent("agent-1", "session-a", Some("one")));
+        store.insert(agent("agent-2", "session-a", Some("two")));
+        store.insert(agent("agent-3", "session-b", Some("three")));
+
+        let removed = store.remove_by_session("session-a");
+
+        assert_eq!(removed.len(), 2);
+        assert_eq!(store.count_by_session("session-a"), 0);
+        assert!(store.get("agent-1").is_none());
+        assert!(store.get("agent-2").is_none());
+        assert!(store.get("agent-3").is_some());
+        assert_eq!(store.count_by_session("session-b"), 1);
     }
 }
