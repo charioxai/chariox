@@ -12,7 +12,7 @@ export type ExternalProviderObservedTranscriptMetadata = {
 }
 
 export function sessionHistoryEntryIsExternalProviderObserved(
-  entry: Pick<SessionHistoryEntry, "source">,
+  entry: { readonly source?: string | null | undefined },
 ): boolean {
   return entry.source === EXTERNAL_PROVIDER_OBSERVED_SOURCE
 }

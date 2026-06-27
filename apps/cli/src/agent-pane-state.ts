@@ -1,3 +1,7 @@
+import {
+  sessionHistoryEntryIsExternalProviderObserved,
+} from "@arroba/kernel-client/external-provider-observation"
+
 export type AgentPaneExternalProviderImport = {
   external_provider_session_id: string
   external_provider: string
@@ -155,7 +159,10 @@ function entryLineageKeys(entry: {
   const externalProvider = entry.externalProvider ?? ""
   const externalProviderSessionId = entry.externalProviderSessionId ?? ""
   const externalProviderTurnId = entry.externalProviderTurnId ?? ""
-  if (externalProvider || externalProviderSessionId || externalProviderTurnId) {
+  if (
+    sessionHistoryEntryIsExternalProviderObserved(entry)
+    && (externalProvider || externalProviderSessionId || externalProviderTurnId)
+  ) {
     keys.push([
       "external",
       externalProvider,
@@ -390,10 +397,14 @@ function preserveLoadedHistoryBlobs<TEntry extends {
 function entryBelongsToAgent(
   agent: { external_provider_import?: AgentPaneExternalProviderImport | null },
   entry: {
+    source?: string | null
     externalProvider?: string | null
     externalProviderSessionId?: string | null
   },
 ) {
+  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return true
+  }
   if (!entry.externalProviderSessionId && !entry.externalProvider) {
     return true
   }

@@ -389,6 +389,54 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
   assert.deepEqual(result.visibleEntries, [])
 })
 
+test("refreshAgentPaneState ignores stray external ids without observed source when filtering panes", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-b",
+        external_provider_import: {
+          external_provider: "codex",
+          external_provider_session_id: "codex:agent-b-thread",
+          external_provider_session_provider_id: "agent-b-thread",
+        },
+      }],
+      focused_agent_id: "agent-b",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-b": [{
+        role: "assistant",
+        text: "ordinary live output",
+        source: "provider_output",
+        externalProvider: "opencode",
+        externalProviderSessionId: "agent-a-thread",
+        externalProviderTurnId: "agent-a-turn",
+      }],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [] as Array<{
+        role: string
+        text: string
+        source?: string | null
+        externalProvider?: string | null
+        externalProviderSessionId?: string | null
+        externalProviderTurnId?: string | null
+      }>,
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["ordinary live output"])
+})
+
 test("refreshAgentPaneState ignores stale focused agent ids", async () => {
   const result = await refreshAgentPaneState({
     session: {
