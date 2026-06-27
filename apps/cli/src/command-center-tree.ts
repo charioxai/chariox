@@ -2,6 +2,13 @@ import type { CommandNode } from "./command-center-tree-projection.js"
 
 export const COMMAND_TREE: CommandNode[] = [
   {
+    id: "meta",
+    label: "/meta",
+    description: "Start a temporary Meta mode task on the focused agent",
+    value: "/meta ",
+    searchAliases: ["meta mode", "metaagent", "planner", "delegate", "supervise", "task"],
+  },
+  {
     id: "session",
     label: "/session",
     description: "Create, attach, list, or delete sessions",

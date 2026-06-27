@@ -10,6 +10,7 @@ test("command center tree owns unique slash command nodes", () => {
 
   assert.equal(new Set(ids).size, ids.length)
   assert.equal(COMMAND_TREE.some((node) => node.id === "session"), true)
+  assert.equal(COMMAND_TREE.find((node) => node.id === "meta")?.value, "/meta ")
   assert.equal(COMMAND_TREE.some((node) => node.id === "workflow"), true)
   assert.equal(COMMAND_TREE.find((node) => node.id === "machine")?.children?.some((node) => node.value === "/machine kernels "), true)
   assert.equal(COMMAND_TREE.find((node) => node.id === "machine")?.children?.some((node) => node.value === "/machine approve "), true)
@@ -23,4 +24,13 @@ test("agent task command tree describes Meta mode task controls", () => {
   assert.equal(taskNode?.searchAliases?.includes("meta mode task"), true)
   assert.equal(taskNode?.searchAliases?.includes("metaagent task"), true)
   assert.equal(taskNode?.children?.find((node) => node.id === "agent-task-plan")?.description, "Edit the Meta mode plan document")
+})
+
+test("command center tree advertises Meta mode prompt prefix", () => {
+  const metaNode = COMMAND_TREE.find((node) => node.id === "meta")
+
+  assert.equal(metaNode?.description, "Start a temporary Meta mode task on the focused agent")
+  assert.equal(metaNode?.searchAliases?.includes("delegate"), true)
+  assert.equal(metaNode?.searchAliases?.includes("supervise"), true)
+  assert.equal(metaNode?.children, undefined)
 })
