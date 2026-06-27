@@ -890,7 +890,7 @@ test("executeShellCommand shows current session runtime status", async () => {
   assert.match(result.message ?? "", /home-proxy extensions: 1 agent, 1 sync issue, 0 pending revokes/)
   assert.match(result.message ?? "", /agent runtime:\n  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; script=1\) manifest=stale hash=hash-1 error=worker offline/)
   assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
-  assert.match(result.message ?? "", /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
+  assert.match(result.message ?? "", /next: home keeps stale home-proxy calls blocked; run \/extension sync-status agent-remote; run \/machine kernels worker-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
 
 test("executeShellCommand resolves session status refs before rendering", async () => {

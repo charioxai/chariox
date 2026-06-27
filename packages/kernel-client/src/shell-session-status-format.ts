@@ -1,4 +1,5 @@
 import type { RuntimeSession, SliceRecord } from "./kernel-types.js"
+import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionGrantPlacementSummary,
   shouldShowRemoteExtensionManifestSync,
@@ -255,7 +256,14 @@ function formatSessionNextActions(
     return Boolean(sync && (sync.state !== "synced" || sync.pending_revoke || sync.last_error))
   })
   if (extensionIssueAgent) {
-    actions.push(`run /extension sync-status ${extensionIssueAgent.agent_ref}; use /extension sync-retry ${extensionIssueAgent.agent_ref} after worker connectivity is healthy`)
+    const next = remoteExtensionSyncNextAction(
+      extensionIssueAgent.remote_extension_manifest_sync,
+      extensionIssueAgent.agent_ref,
+      extensionIssueAgent.remote_execution?.worker_machine_id,
+    )
+    if (next) {
+      actions.push(next)
+    }
   }
   const sliceAuthAction = formatSliceAuthNextAction(session, options.slices ?? [])
   if (sliceAuthAction) {
