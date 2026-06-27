@@ -22,7 +22,8 @@ pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
-    external_provider_observed_state_merge_key, SessionHistoryEntry, SessionHistoryEntryKind,
+    external_provider_observed_state_merge_key, parse_external_provider_observed_id,
+    ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
     SessionHistoryStore,
 };

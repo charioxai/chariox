@@ -462,6 +462,9 @@ export type AgentRuntimeActivity = {
     prompt_id: string
     provider_run_id?: string | null
     prompt_origin?: "arroba" | "external" | string | null
+    external_provider?: string | null
+    external_provider_session_id?: string | null
+    external_provider_turn_id?: string | null
     status: "none" | "queued" | "running" | "cancelling" | "settling"
     phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
     started_at_ms?: number | null

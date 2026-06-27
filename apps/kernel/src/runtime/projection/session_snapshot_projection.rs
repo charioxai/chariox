@@ -64,6 +64,12 @@ pub struct AgentActiveTurnProjection {
     pub provider_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_turn_id: Option<String>,
     pub status: AgentPromptRuntimeStatus,
     pub phase: AgentTurnRuntimePhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,24 +184,33 @@ pub(crate) fn agent_activity_for_session_projection(
             ) && provider_turn_activity.is_some()
         });
         let active_turn = provider_turn_activity
-            .map(|turn| AgentActiveTurnProjection {
-                prompt_id: turn.prompt_id.clone(),
-                provider_run_id: Some(turn.provider_run_id.clone()),
-                prompt_origin: active_prompt
+            .map(|turn| {
+                let prompt_origin = active_prompt
                     .filter(|prompt| prompt.id() == turn.prompt_id)
-                    .map(PromptQueueItem::prompt_origin),
-                status: prompt_status.clone(),
-                phase: AgentTurnRuntimePhase::from(&turn.phase),
-                started_at_ms: Some(turn.started_at_ms),
+                    .map(PromptQueueItem::prompt_origin)
+                    .or_else(|| {
+                        crate::history::parse_external_provider_observed_id(&turn.prompt_id)
+                            .map(|_| PromptOrigin::External)
+                    });
+                active_turn_projection(
+                    turn.prompt_id.clone(),
+                    Some(turn.provider_run_id.clone()),
+                    prompt_origin,
+                    prompt_status.clone(),
+                    AgentTurnRuntimePhase::from(&turn.phase),
+                    Some(turn.started_at_ms),
+                )
             })
             .or_else(|| {
-                active_prompt.map(|prompt| AgentActiveTurnProjection {
-                    prompt_id: prompt.id().to_string(),
-                    provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
-                    prompt_origin: Some(prompt.prompt_origin()),
-                    status: prompt_status.clone(),
-                    phase: AgentTurnRuntimePhase::Accepted,
-                    started_at_ms: None,
+                active_prompt.map(|prompt| {
+                    active_turn_projection(
+                        prompt.id().to_string(),
+                        provider_run.as_ref().map(|run| run.id().to_string()),
+                        Some(prompt.prompt_origin()),
+                        prompt_status.clone(),
+                        AgentTurnRuntimePhase::Accepted,
+                        None,
+                    )
                 })
             });
         let prompt_busy = !matches!(prompt_status, AgentPromptRuntimeStatus::None);
@@ -225,6 +240,33 @@ pub(crate) fn agent_activity_for_session_projection(
     }
 
     activity
+}
+
+fn active_turn_projection(
+    prompt_id: String,
+    provider_run_id: Option<String>,
+    prompt_origin: Option<PromptOrigin>,
+    status: AgentPromptRuntimeStatus,
+    phase: AgentTurnRuntimePhase,
+    started_at_ms: Option<u64>,
+) -> AgentActiveTurnProjection {
+    let external = prompt_origin
+        .is_some_and(|origin| origin == PromptOrigin::External)
+        .then(|| crate::history::parse_external_provider_observed_id(&prompt_id))
+        .flatten();
+    AgentActiveTurnProjection {
+        prompt_id,
+        provider_run_id,
+        prompt_origin,
+        external_provider: external.as_ref().map(|metadata| metadata.provider.clone()),
+        external_provider_session_id: external
+            .as_ref()
+            .map(|metadata| metadata.provider_session_id.clone()),
+        external_provider_turn_id: external.map(|metadata| metadata.provider_turn_id),
+        status,
+        phase,
+        started_at_ms,
+    }
 }
 
 impl From<&ActiveTurnPhase> for AgentTurnRuntimePhase {
@@ -445,6 +487,15 @@ mod tests {
         assert_eq!(
             active_turn.prompt_origin,
             Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            active_turn.external_provider_session_id.as_deref(),
+            Some("session-1")
+        );
+        assert_eq!(
+            active_turn.external_provider_turn_id.as_deref(),
+            Some("user-1")
         );
     }
 

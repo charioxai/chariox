@@ -205,6 +205,32 @@ pub fn external_provider_observed_merge_key(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalProviderObservedId {
+    pub provider: String,
+    pub provider_session_id: String,
+    pub provider_turn_id: String,
+}
+
+pub fn parse_external_provider_observed_id(value: &str) -> Option<ExternalProviderObservedId> {
+    let mut parts = value.splitn(4, ':');
+    let marker = parts.next()?;
+    if marker != "external" {
+        return None;
+    }
+    let provider = parts.next()?.trim();
+    let provider_session_id = parts.next()?.trim();
+    let provider_turn_id = parts.next()?.trim();
+    if provider.is_empty() || provider_session_id.is_empty() || provider_turn_id.is_empty() {
+        return None;
+    }
+    Some(ExternalProviderObservedId {
+        provider: provider.to_string(),
+        provider_session_id: provider_session_id.to_string(),
+        provider_turn_id: provider_turn_id.to_string(),
+    })
+}
+
 pub fn external_provider_observed_state_merge_key(
     provider: &str,
     provider_session_id: &str,
@@ -697,6 +723,16 @@ mod tests {
             external_provider_observed_merge_key("codex", "thread-1", "item-1"),
             "external:codex:thread-1:item-1"
         );
+        assert_eq!(
+            parse_external_provider_observed_id("external: codex : thread-1 : item-1"),
+            Some(ExternalProviderObservedId {
+                provider: "codex".to_string(),
+                provider_session_id: "thread-1".to_string(),
+                provider_turn_id: "item-1".to_string(),
+            })
+        );
+        assert_eq!(parse_external_provider_observed_id("external:codex"), None);
+        assert_eq!(parse_external_provider_observed_id("prompt-1"), None);
         assert_eq!(
             external_provider_observed_state_merge_key(
                 "codex",
