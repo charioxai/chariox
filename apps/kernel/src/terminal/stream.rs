@@ -618,6 +618,10 @@ impl TerminalStreamService {
             return;
         }
 
+        if self.output_records.len() <= self.pending_output_record_limit_per_attachment {
+            return;
+        }
+
         let mut pending_counts = std::collections::BTreeMap::<String, usize>::new();
         let mut trimmed = 0_u64;
         for record in self.output_records.iter_mut().rev() {
