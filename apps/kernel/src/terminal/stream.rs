@@ -870,27 +870,39 @@ impl TerminalStreamService {
             .remove(&key)
             .unwrap_or_default();
         while let Some(record_id) = pending_record_ids.pop_front() {
-            let Some(stored) = self.output_records.get(&record_id) else {
+            let Some((scoped, candidate_json_bytes, final_recipient)) =
+                self.output_records.get(&record_id).map(|stored| {
+                    let record = &stored.record;
+                    let scoped_json_bytes =
+                        terminal_output_record_scoped_json_bytes(record, attachment_id);
+                    let candidate_json_bytes = if drained.is_empty() {
+                        2_usize.saturating_add(scoped_json_bytes)
+                    } else {
+                        drained_json_bytes
+                            .saturating_add(1)
+                            .saturating_add(scoped_json_bytes)
+                    };
+                    (
+                        scoped_output_record(record, attachment_id),
+                        candidate_json_bytes,
+                        stored.pending_recipient_count <= 1,
+                    )
+                })
+            else {
                 continue;
-            };
-            let record = &stored.record;
-            let scoped_json_bytes = terminal_output_record_scoped_json_bytes(record, attachment_id);
-            let candidate_json_bytes = if drained.is_empty() {
-                2_usize.saturating_add(scoped_json_bytes)
-            } else {
-                drained_json_bytes
-                    .saturating_add(1)
-                    .saturating_add(scoped_json_bytes)
             };
             if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
                 pending_record_ids.push_front(record_id);
                 break;
             }
-            let scoped = scoped_output_record(record, attachment_id);
             drained_json_bytes = candidate_json_bytes;
             drained.push(scoped);
-            self.mark_output_record_drained_for_recipient(record_id, attachment_id);
-            self.remove_output_record_if_drained(record_id);
+            if final_recipient {
+                self.remove_output_record(record_id);
+            } else {
+                self.mark_output_record_drained_for_recipient(record_id, attachment_id);
+                self.remove_output_record_if_drained(record_id);
+            }
         }
         if !pending_record_ids.is_empty() {
             self.pending_output_by_attachment
@@ -907,10 +919,14 @@ impl TerminalStreamService {
             .get(&record_id)
             .is_some_and(|record| record.pending_recipient_count == 0);
         if should_remove {
-            self.output_records.remove(&record_id);
-            if self.last_output_record_id == Some(record_id) {
-                self.last_output_record_id = self.output_records.keys().next_back().copied();
-            }
+            self.remove_output_record(record_id);
+        }
+    }
+
+    fn remove_output_record(&mut self, record_id: u64) {
+        self.output_records.remove(&record_id);
+        if self.last_output_record_id == Some(record_id) {
+            self.last_output_record_id = self.output_records.keys().next_back().copied();
         }
     }
 
@@ -1550,6 +1566,40 @@ mod tests {
         assert_eq!(drained[1].bytes, b"two");
         assert!(terminal.output_records().is_empty());
         assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+    }
+
+    #[test]
+    fn final_recipient_drain_clears_coalescing_anchor() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"first",
+        );
+
+        let first = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert!(terminal.output_records().is_empty());
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"second",
+        );
+
+        assert_eq!(terminal.output_records().len(), 1);
+        let second = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].bytes, b"second");
+        assert!(terminal.output_records().is_empty());
     }
 
     #[test]
