@@ -190,8 +190,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected bu
     queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
   }]
 
-  const session = sessionWithQueuedPrompt({}, {
-    prompt_states: undefined,
+  const session = sessionWithoutPromptStates({
     queued_prompts: [],
     agent_activity: {
       "agent-1": {
@@ -240,8 +239,7 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected st
     queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
   }]
 
-  const session = sessionWithQueuedPrompt({}, {
-    prompt_states: undefined,
+  const session = sessionWithoutPromptStates({
     queued_prompts: [],
     agent_activity: {
       "agent-1": {
@@ -256,6 +254,12 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected st
   assert.equal(synced.changed, false)
   assert.deepEqual(synced.entries, existing)
 })
+
+function sessionWithoutPromptStates(sessionOverrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  const session = sessionWithQueuedPrompt({}, sessionOverrides)
+  delete session.prompt_states
+  return session
+}
 
 function sessionWithQueuedPrompt(
   overrides: Partial<NonNullable<RuntimeSession["prompt_states"]>[string]> = {},
