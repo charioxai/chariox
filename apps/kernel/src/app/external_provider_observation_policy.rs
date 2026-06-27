@@ -18,12 +18,17 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
-        text.starts_with("codex task_complete")
-            || text.starts_with("codex event turn_aborted")
-            || text.contains("\"type\":\"turn_aborted\"")
-            || text.contains("\"type\": \"turn_aborted\"")
-            || text.starts_with("claude message completed")
-            || text.starts_with("opencode message completed")
+        match self.provider {
+            "codex" => {
+                text.starts_with("codex task_complete")
+                    || text.starts_with("codex event turn_aborted")
+                    || text.contains("\"type\":\"turn_aborted\"")
+                    || text.contains("\"type\": \"turn_aborted\"")
+            }
+            "claude" => text.starts_with("claude message completed"),
+            "opencode" => text.starts_with("opencode message completed"),
+            _ => false,
+        }
     }
 
     pub(crate) fn status_is_passive_telemetry(self, text: &str) -> bool {
@@ -196,6 +201,33 @@ mod tests {
                     .map(|observation| observation.settles_active_prompt),
                 Some(true),
                 "{provider} status should be marked as settling"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_statuses_are_scoped_to_provider_policy() {
+        for (provider, foreign_text) in [
+            ("codex", "claude message completed\n{}"),
+            ("codex", "opencode message completed\n{}"),
+            ("claude", "codex task_complete\n{}"),
+            (
+                "claude",
+                "codex event turn_aborted {\"type\":\"turn_aborted\"}",
+            ),
+            ("claude", "opencode message completed\n{}"),
+            ("opencode", "codex task_complete\n{}"),
+            ("opencode", "claude message completed\n{}"),
+        ] {
+            assert!(
+                !ExternalProviderObservationPolicy::for_provider(provider)
+                    .latest_effective_turn_settles(&[ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Status,
+                        text: foreign_text.to_string(),
+                        provider_turn_id: None,
+                        observed_at_ms: None,
+                    }]),
+                "{provider} policy must not settle from foreign marker {foreign_text:?}"
             );
         }
     }
