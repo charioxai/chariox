@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -131,6 +131,16 @@ impl AgentRuntime {
             return Ok(LocalDaemonResponse::PromptsSubmitted {
                 results: Vec::new(),
                 failures: Vec::new(),
+                agent_activity: self.store.agent_activity_for_session(&session).await,
+                agent_activity_revision: self.session_projection.change_sequence(),
+                session,
+            });
+        }
+        if let Some(failures) = prompt_batch_preflight_failures(&request.prompts) {
+            let session = self.store.session_snapshot(&request.session_id).await?;
+            return Ok(LocalDaemonResponse::PromptsSubmitted {
+                results: Vec::new(),
+                failures,
                 agent_activity: self.store.agent_activity_for_session(&session).await,
                 agent_activity_revision: self.session_projection.change_sequence(),
                 session,
@@ -309,6 +319,29 @@ impl AgentRuntime {
         self.prompt_state_owner.remove_session(session_id);
         self.agent_runtime_projection.remove_session(session_id);
     }
+}
+
+fn prompt_batch_preflight_failures(
+    prompts: &[crate::local::SubmitPromptsRequestItem],
+) -> Option<Vec<BatchOperationFailure>> {
+    let mut seen_targets = HashSet::new();
+    let duplicate_target = prompts
+        .iter()
+        .any(|prompt| !seen_targets.insert(prompt.target_agent_id.as_str()));
+    if !duplicate_target {
+        return None;
+    }
+    Some(
+        prompts
+            .iter()
+            .enumerate()
+            .map(|(index, prompt)| BatchOperationFailure {
+                index,
+                agent_id: Some(prompt.target_agent_id.clone()),
+                message: "prompt batch contains duplicate target agents".to_string(),
+            })
+            .collect(),
+    )
 }
 
 #[derive(Clone)]

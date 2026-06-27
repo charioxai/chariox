@@ -167,6 +167,12 @@ impl ProviderLaunchCommandExecutor {
                 failures: Vec::new(),
             });
         }
+        if let Some(failures) = provider_batch_preflight_failures(&request.launches) {
+            return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
+                provider_runs: Vec::new(),
+                failures,
+            });
+        }
         let max_concurrency = request
             .max_concurrency
             .unwrap_or(8)
@@ -227,6 +233,49 @@ impl ProviderLaunchCommandExecutor {
             failures,
         })
     }
+}
+
+fn provider_batch_preflight_failures(
+    launches: &[LaunchProviderRunRequest],
+) -> Option<Vec<BatchOperationFailure>> {
+    let first_session_id = launches.first()?.session_id.as_str();
+    if launches
+        .iter()
+        .any(|launch| launch.session_id.as_str() != first_session_id)
+    {
+        return Some(
+            launches
+                .iter()
+                .enumerate()
+                .map(|(index, launch)| BatchOperationFailure {
+                    index,
+                    agent_id: launch.agent_id.clone(),
+                    message: "provider batch launch cannot span multiple sessions yet".to_string(),
+                })
+                .collect(),
+        );
+    }
+
+    let mut seen_targets = HashSet::new();
+    let duplicate_target = launches.iter().any(|launch| {
+        let target = launch.agent_id.as_deref().unwrap_or("__focused_agent__");
+        !seen_targets.insert(target)
+    });
+    if duplicate_target {
+        return Some(
+            launches
+                .iter()
+                .enumerate()
+                .map(|(index, launch)| BatchOperationFailure {
+                    index,
+                    agent_id: launch.agent_id.clone(),
+                    message: "provider batch launch contains duplicate target agents".to_string(),
+                })
+                .collect(),
+        );
+    }
+
+    None
 }
 
 impl ProviderLaunchStore {

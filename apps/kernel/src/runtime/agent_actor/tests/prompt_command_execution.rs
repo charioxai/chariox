@@ -859,6 +859,99 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
 }
 
 #[tokio::test]
+async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-owned-submit-batch-duplicate",
+            "worktree-owned-submit-batch-duplicate",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-owned-submit-batch-duplicate",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let agent_id = default_agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = AgentRuntime::new(
+        owned_runtime_state(&app).await,
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+
+    let request = crate::local::SubmitPromptsRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        max_concurrency: Some(2),
+        prompts: vec![
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: agent_id.clone(),
+                prompt: "duplicate batch prompt one".to_string(),
+                attachments: Vec::new(),
+            },
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: agent_id.clone(),
+                prompt: "duplicate batch prompt two".to_string(),
+                attachments: Vec::new(),
+            },
+        ],
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompts(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "owned-local-batch-prompt-submit-duplicate",
+        None,
+        None,
+        &local_request,
+    );
+    let response = runtime
+        .dispatch_prompt_submit_batch(&command, request)
+        .await
+        .expect("duplicate prompt batch should return indexed failures");
+
+    let LocalDaemonResponse::PromptsSubmitted {
+        results,
+        failures,
+        session,
+        agent_activity,
+        ..
+    } = response
+    else {
+        panic!("unexpected response");
+    };
+    assert!(results.is_empty());
+    assert_eq!(failures.len(), 2);
+    assert!(failures
+        .iter()
+        .all(|failure| failure.message.contains("duplicate target agents")));
+    assert!(session.active_prompt_for_agent(&agent_id).is_none());
+    assert!(agent_activity
+        .get(&agent_id)
+        .is_some_and(|activity| !activity.busy));
+    let app = app.lock().await;
+    let session_after = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(&session_id)
+        .expect("session snapshot should remain available");
+    assert!(session_after.active_prompt_for_agent(&agent_id).is_none());
+}
+
+#[tokio::test]
 async fn prompt_submit_batch_projects_final_queued_prompt_state() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
