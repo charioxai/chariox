@@ -163,6 +163,29 @@ test("hydrateTranscriptEntries keeps repeated merge keys scoped to their turn", 
   assert.deepEqual(entries.map((entry) => entry.providerRunId), ["run-1", "run-1", "run-2", "run-2"])
 })
 
+test("hydrateTranscriptEntries keeps adjacent unkeyed assistant history entries separate", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 1,
+      fragment_start: 0,
+      fragment_end: 12,
+      total_chars: 12,
+      entry: { kind: "provider_output", text: "first blob\n", provider_run_id: "run-1" },
+    },
+    {
+      entry_index: 2,
+      fragment_start: 0,
+      fragment_end: 13,
+      total_chars: 13,
+      entry: { kind: "provider_output", text: "second blob\n", provider_run_id: "run-1" },
+    },
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.role), ["assistant", "assistant"])
+  assert.deepEqual(entries.map((entry) => entry.text), ["first blob\n", "second blob\n"])
+  assert.deepEqual(entries.map((entry) => entry.historyEntryIndex), [1, 2])
+})
+
 test("hydrateTranscriptEntries preserves external provider observed metadata", () => {
   const entries = hydrateTranscriptEntries([
     {

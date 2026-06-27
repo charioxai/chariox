@@ -224,7 +224,7 @@ export function hydrateTranscriptEntries(
     }
 
     const last = entries.at(-1)
-    if (!options.mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
+    if (!options.mergeKey && last?.role === role && role === "reasoning") {
       last.text += normalized
       applyEntryMetadata(last, options)
       return
