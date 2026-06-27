@@ -52,7 +52,12 @@ function formatSessionRemoteRuntime(session: RuntimeSession): string {
   const remoteAgents = session.agents.filter((agent) => agent.remote_execution)
   if (remoteAgents.length === 0) return ""
   const workerRunGaps = remoteAgents.filter(remoteAgentHasWorkerRunGap)
-  const remote = ` - remote ${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`
+  const sliceAgents = remoteAgents.filter(remoteAgentIsSliceBacked)
+  const remoteParts = [
+    `${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`,
+    sliceAgents.length > 0 ? `${sliceAgents.length} slice${sliceAgents.length === 1 ? "" : "s"}` : null,
+  ].filter(Boolean)
+  const remote = ` - remote ${remoteParts.join(", ")}`
   if (workerRunGaps.length === 0) return remote
   const target = workerRunGaps[0]
   const next = remoteWorkerProviderRunRecoveryAction(
@@ -68,6 +73,10 @@ function remoteAgentHasWorkerRunGap(agent: AgentInstance): boolean {
   const workerRun = remote.active_worker_provider_run_id?.trim()
   if (workerRun) return false
   return agent.state === "Working" || agent.is_processing
+}
+
+function remoteAgentIsSliceBacked(agent: AgentInstance): boolean {
+  return agent.remote_execution?.worker_kernel_id?.startsWith("slice:") ?? false
 }
 
 export function formatSessionMembers(members: SessionMember[], invites: SessionInvite[]): string {

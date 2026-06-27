@@ -795,7 +795,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
         agent_ref: "remote-1",
         state: "Working",
         remote_execution: {
-          worker_kernel_id: "worker-kernel",
+          worker_kernel_id: "slice:slice-1",
           worker_machine_id: "worker-machine",
           execution_lease_id: "lease-1",
           leased_agent_id: "leased-agent-1",
@@ -812,7 +812,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1@home-machine-1 - owner user-1 - authority home-owned - live sync managed \(selected workspace\/worktree only; other repositories unrestricted\) current/)
-  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - owner user-2 - authority home-owned - live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - owner user-2 - authority home-owned - live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) - remote 1 agent, 1 slice, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
 test("executeShellCommand shows current session runtime status", async () => {
