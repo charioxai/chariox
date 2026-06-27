@@ -253,6 +253,9 @@ impl KernelRuntimeOwnedState {
                         );
                     }
                 }
+                if self.history_archive_enabled() {
+                    self.enqueue_history_archive_event(&event);
+                }
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -264,6 +267,32 @@ impl KernelRuntimeOwnedState {
                     }),
                 );
             }
+        }
+    }
+
+    fn history_archive_enabled(&self) -> bool {
+        self.config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive
+            .mode
+            == crate::config::HistoryArchiveMode::External
+    }
+
+    fn enqueue_history_archive_event(&self, event: &crate::history::HistoryEvent) {
+        if let Err(error) = self
+            .operational_history_store
+            .enqueue_archive_events(std::slice::from_ref(event))
+        {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to enqueue history archive event",
+                serde_json::json!({
+                    "session_id": event.session_id.as_deref(),
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 

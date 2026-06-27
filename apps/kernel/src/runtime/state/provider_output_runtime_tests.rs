@@ -198,6 +198,56 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
 }
 
 #[tokio::test]
+async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive_enabled() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.history.archive.mode = crate::config::HistoryArchiveMode::External;
+    config.user_config.history.archive.url = Some("http://127.0.0.1:9".to_string());
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-archive",
+            "worktree-owned-archive",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-owned-archive",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .append_user_prompt_history(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "owned archive prompt",
+            &[],
+            Some("prompt-owned-archive"),
+            None,
+            None,
+        )
+        .expect("owned prompt history should append");
+
+    let pending = runtime
+        .owned
+        .operational_history_store
+        .load_pending_archive_events(10)
+        .expect("pending archive events should load");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event.session_id.as_deref(), Some(session.id()));
+    assert_eq!(pending[0].event.agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(
+        pending[0].event.content.as_deref().map(str::trim_end),
+        Some("owned archive prompt")
+    );
+}
+
+#[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
