@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { RuntimeSession, TranscriptEntry } from "./cli-types.js"
 import {
+  syncQueuedPromptEntriesByAgent,
   syncQueuedPromptEntriesForAgent,
 } from "./queued-prompt-transcript.js"
 
@@ -281,6 +282,55 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected st
 
   assert.equal(synced.changed, false)
   assert.deepEqual(synced.entries, existing)
+})
+
+test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from authoritative prompt states", () => {
+  const synced = syncQueuedPromptEntriesByAgent({
+    "agent-stale": [{
+      id: 1,
+      role: "user",
+      text: "stale queued",
+      queuedPrompt: { agentId: "agent-stale", promptId: "queued-stale", status: "queued" },
+    }],
+  }, sessionWithQueuedPrompt({}, {
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agents: [{
+      ...sessionWithQueuedPrompt().agents[0]!,
+      id: "agent-1",
+    }],
+  }))
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entriesByAgent["agent-stale"], [])
+  assert.deepEqual(synced.previews["agent-stale"], "")
+})
+
+test("syncQueuedPromptEntriesByAgent preserves stale queued prompt panes without authoritative projection", () => {
+  const session = sessionWithoutPromptStates({
+    agents: [{
+      ...sessionWithQueuedPrompt().agents[0]!,
+      id: "agent-1",
+    }],
+    queued_prompts: [],
+    agent_activity: null,
+  })
+  const existing: TranscriptEntry[] = [{
+    id: 1,
+    role: "user",
+    text: "stale queued",
+    queuedPrompt: { agentId: "agent-stale", promptId: "queued-stale", status: "queued" },
+  }]
+  const synced = syncQueuedPromptEntriesByAgent({
+    "agent-stale": existing,
+  }, session)
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(synced.entriesByAgent["agent-stale"], existing)
 })
 
 function sessionWithoutPromptStates(sessionOverrides: Partial<RuntimeSession> = {}): RuntimeSession {

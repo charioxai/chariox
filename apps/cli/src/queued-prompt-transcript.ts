@@ -97,6 +97,13 @@ export function syncQueuedPromptEntriesByAgent(
     ...session.agents.map((agent) => agent.id),
     ...Object.keys(session.prompt_states ?? {}),
   ])
+  if (session.prompt_states || session.agent_activity) {
+    for (const [agentId, entries] of Object.entries(entriesByAgent)) {
+      if (entries.some((entry) => entry.queuedPrompt)) {
+        agentIds.add(agentId)
+      }
+    }
+  }
   for (const agentId of agentIds) {
     const synced = syncQueuedPromptEntriesForAgent(entriesByAgentNext[agentId] ?? [], session, agentId)
     if (synced.changed) {
