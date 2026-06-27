@@ -121,6 +121,34 @@ test("syncQueuedPromptEntriesForAgent normalizes projected external active turn 
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
 })
 
+test("syncQueuedPromptEntriesForAgent infers external ownership from active turn metadata", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-external",
+            provider_run_id: "run-external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            status: "running",
+            phase: "streaming",
+            started_at_ms: 2,
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
 test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when projected activity exists", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],

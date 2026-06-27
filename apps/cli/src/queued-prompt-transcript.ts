@@ -3,7 +3,7 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
-import { promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
+import { promptOriginFromRecord, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
@@ -137,7 +137,7 @@ function queuedPromptTranscriptEntry(
 function activePromptOrigin(session: RuntimeSession, agentId: string): string | null {
   if (session.agent_activity) {
     const projectedActivity = session.agent_activity[agentId]
-    const activeTurnOrigin = projectedActivity?.active_turn?.prompt_origin
+    const activeTurnOrigin = promptOriginFromRecord(projectedActivity?.active_turn)
     if (activeTurnOrigin) {
       return activeTurnOrigin
     }
