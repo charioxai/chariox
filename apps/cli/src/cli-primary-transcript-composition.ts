@@ -43,6 +43,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setPromptHistoryDraft: AnyFn
   setProviderCatalogState: AnyFn
   setProviderCommandCatalogState: AnyFn
+  setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
   flashFooter: AnyFn
   attachmentState: AnyFn
@@ -281,6 +282,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
     setProviderCommandCatalogs: deps.setProviderCommandCatalogState,
+    setTerminalCommandCatalog: deps.setTerminalCommandCatalogState,
     updateSessionChrome: deps.updateSessionChrome,
     setPromptHistoryEntries: deps.setPromptHistoryEntries,
     resetPromptHistoryNavigation: () => {

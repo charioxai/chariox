@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import {
@@ -6,8 +7,14 @@ import {
   type CommandCenterKeyEvent,
   type CommandCenterRenderState,
 } from "./command-center-controller.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+
+const commandTree = JSON.parse(readFileSync(
+  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
+  "utf8",
+)) as CommandNode[]
 
 function createHarness(initialPrompt = "") {
   let promptText = initialPrompt
@@ -16,6 +23,7 @@ function createHarness(initialPrompt = "") {
   const renderStates: CommandCenterRenderState[] = []
   const renderBoxes: Array<string | undefined> = []
   const controller = createCommandCenterController<string>({
+    getCommandTree: () => commandTree,
     getProviderCatalog: fallbackProviderCatalog,
     getProviderCommandCatalogs: fallbackProviderCommandCatalogs,
     getCurrentProvider: () => "opencode",

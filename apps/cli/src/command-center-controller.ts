@@ -7,6 +7,7 @@ import {
   shouldSubmitExactCommandCenterMatch,
 } from "./command-center-selection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import type {
   CommandCenterWorkflowRegistryEntry,
 } from "./command-center-context.js"
@@ -29,6 +30,7 @@ export type CommandCenterRenderState = {
 }
 
 type CommandCenterControllerOptions<TBox = unknown> = {
+  getCommandTree: () => readonly CommandNode[]
   getProviderCatalog: () => ProviderCatalog
   getProviderCommandCatalogs: () => ProviderCommandCatalogs
   getCurrentProvider: () => BackendProviderId
@@ -88,6 +90,7 @@ export function createCommandCenterController<TBox = unknown>(
     options.refreshWorkflowRegistryEntries?.(value)
     items = buildCommandCenterItems(value, {
       providerCatalog: options.getProviderCatalog(),
+      commandTree: options.getCommandTree(),
       providerCommandCatalogs: options.getProviderCommandCatalogs(),
       currentProvider: options.getCurrentProvider(),
       focusedProvider: options.getFocusedProvider(),

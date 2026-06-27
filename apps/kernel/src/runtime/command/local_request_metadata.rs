@@ -386,6 +386,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PauseMetaagentTask(_) => "metaagent.task.pause",
         LocalDaemonRequest::ResumeMetaagentTask(_) => "metaagent.task.resume",
         LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
+        LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",

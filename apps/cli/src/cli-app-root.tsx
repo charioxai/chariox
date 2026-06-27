@@ -50,6 +50,7 @@ import { createCommandCenterController } from "./command-center-controller.js"
 import type { CommandCenterWorkflowRegistryEntry } from "./command-center-context.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
+import { commandTreeFromTerminalCommandCatalog } from "./terminal-command-catalog.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
@@ -191,6 +192,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setProviderCatalogState,
     providerCommandCatalogState,
     setProviderCommandCatalogState,
+    terminalCommandCatalogState,
+    setTerminalCommandCatalogState,
     themeRegistryState,
     relayStatusState,
     setRelayStatusState,
@@ -654,6 +657,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
   }
   const commandCenterController = createCommandCenterController<BoxRenderable>({
+    getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState()),
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
@@ -1141,6 +1145,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPromptHistoryDraft,
     setProviderCatalogState,
     setProviderCommandCatalogState,
+    setTerminalCommandCatalogState,
     updateSessionChrome,
     flashFooter,
     attachmentState,
@@ -1393,6 +1398,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setHistoryLoadingState,
     setStatusLine,
     setProviderCatalogState,
+    setTerminalCommandCatalogState,
     availableSessions,
     setAvailableSessions,
     scheduleShortViewportHistoryCheck: () => transcriptHistoryAutoloadController.scheduleShortViewportCheck(),

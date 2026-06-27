@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import {
@@ -9,9 +10,14 @@ import {
   buildViewItems,
   providerNamespaceRootItem,
 } from "./command-center-dynamic-items.js"
-import { COMMAND_TREE } from "./command-center-tree.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
+
+const commandTree = JSON.parse(readFileSync(
+  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
+  "utf8",
+)) as CommandNode[]
 
 test("command center dynamic items project provider namespaces and completions", () => {
   const catalogs = withCodexCommand()
@@ -31,7 +37,7 @@ test("command center marks provider namespace command lists from local fallback"
 })
 
 test("command center dynamic items project provider, model, variant, and view choices", () => {
-  const providerNode = COMMAND_TREE.find((node) => node.id === "provider")!
+  const providerNode = commandTree.find((node) => node.id === "provider")!
   const context = {
     providerCatalog: fallbackProviderCatalog(),
     currentProvider: "opencode" as const,
@@ -55,7 +61,7 @@ test("command center dynamic items project provider, model, variant, and view ch
 })
 
 test("command center marks provider and model choices from local fallback provider catalog", () => {
-  const providerNode = COMMAND_TREE.find((node) => node.id === "provider")!
+  const providerNode = commandTree.find((node) => node.id === "provider")!
   const context = {
     providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
     currentProvider: "opencode" as const,

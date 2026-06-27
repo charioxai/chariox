@@ -125,6 +125,7 @@ function bootstrapHarness(options: {
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
+    terminalCommandCatalog: null as unknown,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
@@ -142,6 +143,9 @@ function bootstrapHarness(options: {
     },
     setProviderCommandCatalogs: (catalogs) => {
       harness.providerCommandCatalogs = catalogs
+    },
+    setTerminalCommandCatalog: (catalog) => {
+      harness.terminalCommandCatalog = catalog
     },
     updateSessionChrome: () => {
       harness.chromeUpdates += 1

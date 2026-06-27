@@ -36,6 +36,7 @@ import type {
 } from "./relay-api.js"
 import { createMutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
+import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
 import {
@@ -82,6 +83,7 @@ export function createCliAppState(options: {
   const initialSessions = options.bootstrap.sessions
   const initialProviderCatalog = options.bootstrap.providerCatalog
   const initialProviderCommandCatalogs = options.bootstrap.providerCommandCatalogs
+  const initialTerminalCommandCatalog = options.bootstrap.terminalCommandCatalog
   const initialPreferences = options.bootstrap.preferences
   const initialThemeRegistry = options.bootstrap.themeRegistry ?? DEFAULT_THEME_REGISTRY
   setThemeRegistry(initialThemeRegistry)
@@ -104,6 +106,7 @@ export function createCliAppState(options: {
   const [availableSessions, setAvailableSessions] = createSignal<SessionListEntry[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
+  const [terminalCommandCatalogState, setTerminalCommandCatalogState] = createSignal<TerminalCommandCatalog | null>(initialTerminalCommandCatalog)
   const [themeRegistryState] = createSignal(initialThemeRegistry)
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
@@ -223,6 +226,8 @@ export function createCliAppState(options: {
     setProviderCatalogState,
     providerCommandCatalogState,
     setProviderCommandCatalogState,
+    terminalCommandCatalogState,
+    setTerminalCommandCatalogState,
     themeRegistryState,
     relayStatusState,
     setRelayStatusState,

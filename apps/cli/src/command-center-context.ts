@@ -1,5 +1,6 @@
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 
 export type CommandCenterWorkflowRegistryEntry = {
   name: string
@@ -10,6 +11,7 @@ export type CommandCenterWorkflowRegistryEntry = {
 }
 
 export type CommandCenterContext = {
+  commandTree: readonly CommandNode[]
   providerCatalog: ProviderCatalog
   providerCommandCatalogs: ProviderCommandCatalogs
   currentProvider: BackendProviderId
@@ -26,5 +28,5 @@ export type CommandCenterDynamicContext = Pick<
 
 export type CommandCenterProviderNamespaceContext = Pick<
   CommandCenterContext,
-  "focusedProvider" | "providerCommandCatalogs"
+  "commandTree" | "focusedProvider" | "providerCommandCatalogs"
 >

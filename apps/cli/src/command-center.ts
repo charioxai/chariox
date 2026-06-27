@@ -14,7 +14,6 @@ import type { CommandCenterContext } from "./command-center-context.js"
 import { buildCommandCenterRootItems } from "./command-center-root-items.js"
 import { buildScopedCommandCenterItems } from "./command-center-scoped-items.js"
 import { buildWorkflowRegistryItems } from "./command-center-workflow-registry-items.js"
-import { COMMAND_TREE } from "./command-center-tree.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 
 export type { CommandCenterItem } from "./command-center-types.js"
@@ -34,7 +33,8 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
   }
 
   if (normalized.startsWith("/provider ")) {
-    return buildProviderItems(normalized, COMMAND_TREE.find((node) => node.id === "provider")!, context)
+    const providerNode = context.commandTree.find((node) => node.id === "provider")
+    return providerNode ? buildProviderItems(normalized, providerNode, context) : []
   }
 
   if (normalized.startsWith("/model ")) {

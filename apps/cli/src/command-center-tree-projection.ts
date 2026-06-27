@@ -6,13 +6,13 @@ export type CommandNode = {
   description: string
   value: string
   searchAliases?: string[]
-  children?: CommandNode[]
+  children?: readonly CommandNode[]
 }
 
-export function findDeepestScope(input: string, nodes: CommandNode[]): { node: CommandNode } | null {
+export function findDeepestScope(input: string, nodes: readonly CommandNode[]): { node: CommandNode } | null {
   let match: CommandNode | null = null
   for (const node of nodes) {
-    if (input === node.value.trim() || input === node.value || input.startsWith(node.value)) {
+    if (node.children?.length && (input === node.value.trim() || input === node.value || input.startsWith(node.value))) {
       if (!match || node.value.length > match.value.length) {
         match = node
       }
@@ -27,7 +27,7 @@ export function findDeepestScope(input: string, nodes: CommandNode[]): { node: C
   return match ? { node: match } : null
 }
 
-export function collectCommandNodes(nodes: CommandNode[]): CommandNode[] {
+export function collectCommandNodes(nodes: readonly CommandNode[]): CommandNode[] {
   return nodes.flatMap((node) => [node, ...collectCommandNodes(node.children ?? [])])
 }
 

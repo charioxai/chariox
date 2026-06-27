@@ -1,7 +1,6 @@
 import { providerSupportsNamespaceCommands } from "./provider-command-catalog.js"
 import { providerNamespaceScopeNode } from "./command-center-dynamic-items.js"
 import { filterCommandCenterItems } from "./command-center-search.js"
-import { COMMAND_TREE } from "./command-center-tree.js"
 import {
   collectCommandNodes,
   findDeepestScope,
@@ -15,10 +14,10 @@ export function buildScopedCommandCenterItems(
 ) {
   const scopeNodes = context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)
     ? [
-      ...COMMAND_TREE,
+      ...context.commandTree,
       providerNamespaceScopeNode(context.focusedProvider, context.providerCommandCatalogs),
     ]
-    : COMMAND_TREE
+    : context.commandTree
   const nodes = collectCommandNodes(scopeNodes)
   const exactCommand = nodes.find((node) => !node.children?.length && input === node.value)
   if (exactCommand && input.endsWith(" ")) {
@@ -32,7 +31,8 @@ export function buildScopedCommandCenterItems(
 
   const query = input.slice(scope.node.value.length).trim().toLowerCase()
   if (scope.node.children?.length) {
-    const items = [mapNodeToItem(scope.node), ...scope.node.children.map(mapNodeToItem)]
+    const scopedNodes = query ? collectCommandNodes(scope.node.children) : scope.node.children
+    const items = [mapNodeToItem(scope.node), ...scopedNodes.map(mapNodeToItem)]
     return query ? filterCommandCenterItems(items, query) : items
   }
   return null

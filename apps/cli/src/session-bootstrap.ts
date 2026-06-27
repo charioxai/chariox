@@ -1,5 +1,6 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
+import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { extractPromptInputHistoryEntries } from "./prompt-history.js"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
@@ -25,6 +26,7 @@ type BootstrapDeps = {
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
   getProviderCatalog: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCatalog>
   getProviderCommandCatalogs: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCommandCatalogs>
+  getTerminalCommandCatalog: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<TerminalCommandCatalog>
   createSession: (client: LocalIpcClient, workspace: string, worktree: string, alias?: string) => Promise<RuntimeSession>
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
@@ -95,9 +97,10 @@ export async function bootstrapSession(
       break
     }
     case "none": {
-      const [providerCatalog, providerCommandCatalogs] = await Promise.all([
+      const [providerCatalog, providerCommandCatalogs, terminalCommandCatalog] = await Promise.all([
         deps.getProviderCatalog(client, deps.logger),
         deps.getProviderCommandCatalogs(client, deps.logger),
+        deps.getTerminalCommandCatalog(client, deps.logger),
       ])
       return {
         client,
@@ -105,6 +108,7 @@ export async function bootstrapSession(
         sessions,
         providerCatalog,
         providerCommandCatalogs,
+        terminalCommandCatalog,
         options,
         preferences,
       }
@@ -112,9 +116,10 @@ export async function bootstrapSession(
   }
 
   if (!session) {
-    const [providerCatalog, providerCommandCatalogs] = await Promise.all([
+    const [providerCatalog, providerCommandCatalogs, terminalCommandCatalog] = await Promise.all([
       deps.getProviderCatalog(client, deps.logger),
       deps.getProviderCommandCatalogs(client, deps.logger),
+      deps.getTerminalCommandCatalog(client, deps.logger),
     ])
     return {
       client,
@@ -122,6 +127,7 @@ export async function bootstrapSession(
       sessions,
       providerCatalog,
       providerCommandCatalogs,
+      terminalCommandCatalog,
       options,
       preferences,
     }
@@ -173,6 +179,7 @@ export async function bootstrapSession(
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
   const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
+  const terminalCommandCatalogPromise = deps.getTerminalCommandCatalog(client, deps.logger)
   const attachedHistoryPromise = hydrateAttachedHistory(
     client,
     session.id,
@@ -195,11 +202,13 @@ export async function bootstrapSession(
     sessions,
     providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
     providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
+    terminalCommandCatalog: null,
     options,
     preferences,
     deferred: {
       providerCatalog: providerCatalogPromise,
       providerCommandCatalogs: providerCommandCatalogsPromise,
+      terminalCommandCatalog: terminalCommandCatalogPromise,
       attachedHistory: attachedHistoryPromise,
     },
   }

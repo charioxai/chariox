@@ -5,6 +5,7 @@ import type {
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
 
@@ -15,6 +16,7 @@ export type DeferredBootstrapControllerDeps = {
   entryCounter: () => number
   setProviderCatalog: (catalog: ProviderCatalog) => void
   setProviderCommandCatalogs: (catalogs: ProviderCommandCatalogs) => void
+  setTerminalCommandCatalog: (catalog: TerminalCommandCatalog) => void
   updateSessionChrome: () => void
   setPromptHistoryEntries: (entries: string[]) => void
   resetPromptHistoryNavigation: () => void
@@ -90,6 +92,12 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       deps.setProviderCommandCatalogs(catalogs)
     }).catch((error) => {
       warn("failed to hydrate provider command catalog after bootstrap", error)
+    })
+
+    void deferred.terminalCommandCatalog?.then((catalog) => {
+      deps.setTerminalCommandCatalog(catalog)
+    }).catch((error) => {
+      warn("failed to hydrate terminal command catalog after bootstrap", error)
     })
 
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {

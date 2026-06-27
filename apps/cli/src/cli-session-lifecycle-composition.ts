@@ -18,6 +18,7 @@ import {
   launchProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
+import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   getExitCleanupDecision,
@@ -108,6 +109,7 @@ export type CliSessionLifecycleCompositionDeps = {
   setHistoryLoadingState: AnyFn
   setStatusLine: AnyFn
   setProviderCatalogState: AnyFn
+  setTerminalCommandCatalogState: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
   scheduleShortViewportHistoryCheck: AnyFn
@@ -276,7 +278,9 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       launchProviderRun(deps.client, sessionId, provider, accountProfile, model, effort, targetAgentId),
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(deps.client, providerRunId, deps.appLogger),
     setProviderCatalogState: deps.setProviderCatalogState,
+    setTerminalCommandCatalogState: deps.setTerminalCommandCatalogState,
     getProviderCatalog: () => getProviderCatalog(deps.client, deps.appLogger),
+    getTerminalCommandCatalog: () => getTerminalCommandCatalog(deps.client, deps.appLogger),
     syncCliProviderSelection: ({ provider, model, effort }) => {
       deps.options.provider = provider
       deps.options.model = model

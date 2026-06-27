@@ -14,6 +14,7 @@ use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_reque
 use crate::runtime::session_read_control::{
     projected_session_inspection_response, projected_session_read_response,
 };
+use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
 use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
@@ -39,6 +40,9 @@ impl CommandRouter {
             return response.map(Some);
         }
         match request {
+            LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
+                return terminal_command_catalog_response().map(Some);
+            }
             request @ LocalDaemonRequest::RelayStatus(_) => {
                 return execute_relay_config_request(
                     &self.runtime_state,

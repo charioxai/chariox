@@ -1,10 +1,28 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
 
-import { buildCommandCenterItems } from "./command-center.js"
+import { buildCommandCenterItems as buildCommandCenterItemsFromCatalog } from "./command-center.js"
+import type { CommandCenterContext } from "./command-center-context.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
+
+const commandTree = JSON.parse(readFileSync(
+  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
+  "utf8",
+)) as CommandNode[]
+
+function buildCommandCenterItems(
+  input: string,
+  context: Omit<CommandCenterContext, "commandTree">,
+) {
+  return buildCommandCenterItemsFromCatalog(input, {
+    ...context,
+    commandTree,
+  })
+}
 
 test("buildCommandCenterItems shows root slash commands", () => {
   const items = buildCommandCenterItems("/", {
@@ -22,8 +40,9 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/variant"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/view"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
+  assert.equal(items.some((item) => item.kind === "group" && item.label === "/meta" && item.value === "/meta "), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
-  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions (7)")
+  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
 })
 
 test("buildCommandCenterItems includes config subcommands", () => {
@@ -62,8 +81,8 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Show runtime health, remote readiness, and invariants")
-  assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show home authority, worker runs, slices, home-proxy tools, and live sync readiness")
+  assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Open runtime health, remote readiness, and invariants")
+  assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Open home authority, worker runs, slices, home-proxy tools, and live sync readiness")
 })
 
 test("buildCommandCenterItems includes session runtime status", () => {
@@ -147,7 +166,7 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
 
   const sliceMissing = new Set(buildCommandCenterItems("/slice missing", context).map((item) => item.value))
   assert.equal(sliceMissing.has("/slice doctor "), true)
-  assert.equal(sliceMissing.has("/slice auth login "), true)
+  assert.equal(sliceMissing.has("/slice auth "), true)
 
   const workspaceCollision = new Set(buildCommandCenterItems("/workspace sync collision", context).map((item) => item.value))
   assert.equal(workspaceCollision.has("/workspace sync conflicts"), true)
@@ -173,7 +192,7 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
 
   const sliceProviderAccount = new Set(buildCommandCenterItems("/slice provider account missing", context).map((item) => item.value))
   assert.equal(sliceProviderAccount.has("/slice doctor "), true)
-  assert.equal(sliceProviderAccount.has("/slice auth login "), true)
+  assert.equal(sliceProviderAccount.has("/slice auth "), true)
 
   const sliceDisplay = new Set(buildCommandCenterItems("/slice display", context).map((item) => item.value))
   assert.equal(sliceDisplay.has("/slice screen "), true)
@@ -189,7 +208,7 @@ test("buildCommandCenterItems explains slice spawn primitives", () => {
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/agent spawn ")?.description, "Spawn local, remote, or slice agents; use --slice off, new, new:headed, or an existing slice")
+  assert.equal(items.find((item) => item.value === "/agent spawn")?.description, "Spawn local, remote, or slice agents; choose slice off, new, or reuse existing in the dialog")
 })
 
 test("buildCommandCenterItems surfaces local provider catalog fallback in selection rows", () => {
@@ -233,12 +252,12 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync enable tracked"), false)
   assert.equal(values.has("/workspace sync disable"), false)
   assert.equal(values.has("/workspace sync mode "), false)
-  assert.equal(items.find((item) => item.value === "/workspace sync off")?.description, "Disable live sync for this session; other repositories stay unrestricted")
+  assert.equal(items.find((item) => item.value === "/workspace sync off")?.description, "Turn Workspace Live Sync off; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync doctor")?.description, "Diagnose workspace live sync health, blockers, and recovery commands")
-  assert.equal(items.find((item) => item.value === "/workspace sync audit")?.description, "Show workspace live sync mode audit events")
+  assert.equal(items.find((item) => item.value === "/workspace sync audit")?.description, "Open Workspace Live Sync mode audit")
   assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted")
-  assert.equal(items.find((item) => item.value === "/workspace sync default ")?.description, "Set default live sync for new sessions without changing the current session")
+  assert.equal(items.find((item) => item.value === "/workspace sync default ")?.description, "Set default live sync for new sessions without changing the current session (3)")
   assert.equal(buildCommandCenterItems("/managed write fencing", context).some((item) => item.value === "/workspace "), true)
   assert.equal(buildCommandCenterItems("/workspace managed write fencing", context).some((item) => item.value === "/workspace sync managed"), true)
   assert.equal(buildCommandCenterItems("/workspace turn-end sync", context).some((item) => item.value === "/workspace sync tracked"), true)
@@ -356,15 +375,23 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice start "), true)
   assert.equal(values.has("/slice stop "), true)
   assert.equal(values.has("/slice delete "), true)
-  assert.equal(values.has("/slice auth login "), true)
+  assert.equal(values.has("/slice auth "), true)
   assert.equal(items.find((item) => item.value === "/slice state ")?.description, "Show saved slice state and restart requirements")
-  assert.equal(items.find((item) => item.value === "/slice save-state ")?.description, "Save slice state after shutdown or agent restart")
-  assert.equal(items.find((item) => item.value === "/slice backup ")?.description, "Create a recoverable slice state backup")
+  assert.equal(items.find((item) => item.value === "/slice save-state ")?.description, "Save reusable slice state and choose what happens to attached agents (4)")
+  assert.equal(items.find((item) => item.value === "/slice backup ")?.description, "Create a backup copy of saved slice state (1)")
   assert.equal(items.find((item) => item.value === "/slice reset-state ")?.description, "Reset saved slice state after agents are detached")
-  assert.equal(items.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
-  assert.equal(items.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
-  assert.equal(items.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
-  assert.equal(items.find((item) => item.value === "/slice auth alias ")?.description, "Set an Arroba display alias when the provider account label is unclear")
+  const authItems = buildCommandCenterItems("/slice auth", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  })
+  assert.equal(authItems.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
+  assert.equal(authItems.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
+  assert.equal(authItems.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
+  assert.equal(authItems.find((item) => item.value === "/slice auth alias ")?.description, "Set an Arroba display alias when the provider account label is unclear")
 
   assert.equal(buildCommandCenterItems("/slice snapshot", {
     providerCatalog: fallbackProviderCatalog(),
@@ -590,8 +617,7 @@ test("buildCommandCenterItems exposes workflow add node all shorthand", () => {
     currentVariant: "high",
   })
 
-  assert.equal(items[0]?.label, "add node all")
-  assert.equal(items[0]?.value, "/workflow add node all")
+  assert.equal(items.some((item) => item.label === "add node all" && item.value === "/workflow add node all"), true)
 })
 
 test("buildCommandCenterItems exposes the focused provider namespace", () => {

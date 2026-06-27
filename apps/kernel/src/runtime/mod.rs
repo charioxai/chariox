@@ -56,6 +56,7 @@ pub(crate) mod session_projection_refresh;
 pub(crate) mod session_read_control;
 pub(crate) mod slice_command_executor;
 pub(crate) mod state;
+pub(crate) mod terminal_command_catalog;
 pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;

@@ -6,6 +6,13 @@ import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 
+function terminalCatalog() {
+  return {
+    revision: "test",
+    nodes: [],
+  }
+}
+
 test("bootstrapSession returns waiting-room bootstrap when no session should attach", async () => {
   const catalog = fallbackProviderCatalog()
   const bootstrap = await bootstrapSession(
@@ -23,6 +30,7 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
       listSessions: async () => [],
       getProviderCatalog: async () => catalog,
       getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => { throw new Error("should not resolve") },
       attachToSession: async () => { throw new Error("should not attach") },
@@ -94,6 +102,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
       listSessions: async () => [session],
       getProviderCatalog: async () => catalog,
       getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => {
         calls.push("resolve")
@@ -217,6 +226,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
       listSessions: async () => [session],
       getProviderCatalog: async () => catalog,
       getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => session,
       attachToSession: async () => {
@@ -326,6 +336,7 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
       listSessions: async () => [session],
       getProviderCatalog: async () => fallbackProviderCatalog(),
       getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => session,
       attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),

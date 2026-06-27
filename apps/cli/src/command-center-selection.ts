@@ -46,6 +46,9 @@ export function nextCommandCenterIndex(
 
   if (previousInput !== input) {
     const normalized = input.trim()
+    if (normalized === "/") {
+      return 0
+    }
     const exactGroupIndex = items.findIndex((item) => (
       item.kind === "group"
       && (normalized === item.value.trim() || input === item.value)

@@ -30,6 +30,7 @@ use crate::runtime::session_collaboration_executor::execute_session_collaboratio
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::workflow_publication_endpoint_runtime::execute_register_workflow_publication_endpoint_request;
+use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
 use crate::runtime::terminal_output_executor::execute_append_native_provider_output_request;
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::execute_waiting_room_request;
@@ -60,6 +61,7 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
+            LocalDaemonRequest::GetTerminalCommandCatalog(_) => terminal_command_catalog_response(),
             LocalDaemonRequest::RespondToInteraction(_) => Err(DaemonError::LocalTransport {
                 operation: "dispatch normal or background",
                 message: "interaction responses must be dispatched through the session runtime"

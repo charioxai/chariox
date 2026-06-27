@@ -1499,7 +1499,43 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 204
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 205
+
+export type TerminalCommandCatalogNodeKind =
+  | "group"
+  | "command"
+  | "prompt_prefix"
+  | "dynamic"
+
+export type TerminalCommandCatalogExecutionTarget =
+  | "kernel"
+  | "terminal_local"
+  | "prompt_prefix"
+
+export type TerminalCommandCatalogSurface =
+  | "session"
+  | "waiting_room"
+  | "workflow_screen"
+
+export type TerminalCommandCatalogNode = {
+  id: string
+  label: string
+  description: string
+  value: string
+  kind: TerminalCommandCatalogNodeKind
+  execution_target: TerminalCommandCatalogExecutionTarget
+  surfaces: TerminalCommandCatalogSurface[]
+  search_aliases?: string[]
+  intents?: string[]
+  examples?: string[]
+  dynamic_source?: string | null
+  children?: TerminalCommandCatalogNode[]
+}
+
+export type TerminalCommandCatalog = {
+  revision: string
+  nodes: TerminalCommandCatalogNode[]
+}
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

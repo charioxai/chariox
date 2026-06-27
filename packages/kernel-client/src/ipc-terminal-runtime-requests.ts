@@ -164,6 +164,10 @@ export function pollRuntimeNoticesRequest(sessionId: string, attachmentId: strin
   }
 }
 
+export function getTerminalCommandCatalogRequest() {
+  return { GetTerminalCommandCatalog: null }
+}
+
 export function respondToInteractionRequest(
   sessionId: string,
   interactionId: string,

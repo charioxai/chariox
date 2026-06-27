@@ -47,6 +47,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::SearchRecall(_) => "recall.search",
         LocalDaemonRequest::SemanticSearchRecall(_) => "recall.semantic_search",

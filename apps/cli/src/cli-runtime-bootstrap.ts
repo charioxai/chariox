@@ -31,6 +31,7 @@ import {
   launchProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
+import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
 import {
   fallbackProviderCatalog,
 } from "./provider-catalog.js"
@@ -272,6 +273,7 @@ export function buildDetachedBootstrap(
     sessions: [],
     providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
     providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
+    terminalCommandCatalog: null,
     options,
     preferences,
   }
@@ -290,6 +292,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     listSessions,
     getProviderCatalog,
     getProviderCommandCatalogs,
+    getTerminalCommandCatalog,
     createSession,
     resolveSession,
     attachToSession,

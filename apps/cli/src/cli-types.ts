@@ -2,6 +2,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
@@ -1320,6 +1321,7 @@ export type SessionBinding = {
 export type BootstrapDeferredState = {
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
+  terminalCommandCatalog?: Promise<TerminalCommandCatalog>
   attachedHistory?: Promise<{
     sessionId: string
     visibleAgentId: string | null
@@ -1336,6 +1338,7 @@ export type BootstrapState = {
   sessions: RuntimeSession[]
   providerCatalog: ProviderCatalog
   providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog | null
   options: CliOptions
   preferences: ArrobaPreferences
   themeRegistry?: ThemeRegistry

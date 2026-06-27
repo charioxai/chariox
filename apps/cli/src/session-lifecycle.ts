@@ -15,6 +15,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
 
 type ProviderCatalog = Record<string, unknown>
+type TerminalCommandCatalog = Record<string, unknown>
 type LaunchSelection = { provider: string; model: string; effort: string }
 
 type ProviderSelectionState = {
@@ -92,8 +93,10 @@ type SessionLifecycleDeps = {
     providerRunId: string,
   ) => Promise<RuntimeProviderRun | null>
   setProviderCatalogState: (catalog: ProviderCatalog) => void
+  setTerminalCommandCatalogState: (catalog: TerminalCommandCatalog) => void
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
   getProviderCatalog: () => Promise<ProviderCatalog>
+  getTerminalCommandCatalog: () => Promise<TerminalCommandCatalog>
   primeAttachedSessionBinding?: (session: RuntimeSession) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
@@ -323,6 +326,14 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         deps.setProviderCatalogState(await deps.getProviderCatalog())
       } catch (error) {
         deps.logWarning?.("failed to refresh provider catalog after attach", {
+          session_id: session.id,
+          error: formatError(error),
+        })
+      }
+      try {
+        deps.setTerminalCommandCatalogState(await deps.getTerminalCommandCatalog())
+      } catch (error) {
+        deps.logWarning?.("failed to refresh terminal command catalog after attach", {
           session_id: session.id,
           error: formatError(error),
         })
