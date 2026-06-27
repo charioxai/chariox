@@ -861,6 +861,7 @@ test("executeShellCommand shows current session runtime status", async () => {
   assert.match(result.message ?? "", /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
   assert.match(result.message ?? "", /home-proxy extensions: 1 agent, 1 sync issue, 0 pending revokes/)
+  assert.match(result.message ?? "", /agent runtime:\n  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; script=1\) manifest=stale hash=hash-1 error=worker offline/)
   assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
   assert.match(result.message ?? "", /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })

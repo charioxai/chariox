@@ -108,6 +108,7 @@ test("session status renders home authority and runtime blockers", async () => {
   assert.match(notices[0] ?? "", /home kernel: home-kernel@home-machine/)
   assert.match(notices[0] ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(notices[0] ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
+  assert.match(notices[0] ?? "", /agent runtime:\n  - agent-remote: Working opencode\/openai\/gpt-5 worktree=worktree-1 placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=none/)
   assert.match(notices[0] ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
   assert.deepEqual(footers, ["info:session runtime status"])
 })

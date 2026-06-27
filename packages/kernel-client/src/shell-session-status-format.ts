@@ -1,4 +1,8 @@
 import type { RuntimeSession } from "./kernel-types.js"
+import {
+  formatExtensionGrantPlacementSummary,
+  shouldShowRemoteExtensionManifestSync,
+} from "./extension-grant-placement.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
@@ -27,6 +31,8 @@ export function formatSessionRuntimeStatus(session: RuntimeSession): string {
     `remote runtime: ${remoteSummary}`,
     `home-proxy extensions: ${extensionSummary}`,
     `provider run: ${session.active_provider_run_id ?? "-"}`,
+    "agent runtime:",
+    ...formatAgentRuntimeLines(session),
   ]
   if (session.collaboration_agent_counts) {
     lines.push(`collaboration: ${formatCollaborationSummary(session)}`)
@@ -35,6 +41,21 @@ export function formatSessionRuntimeStatus(session: RuntimeSession): string {
     lines.push(`next: ${action}`)
   }
   return lines.join("\n")
+}
+
+function formatAgentRuntimeLines(session: RuntimeSession): string[] {
+  if (session.agents.length === 0) {
+    return ["  - none"]
+  }
+  return session.agents.map((agent) => [
+    `  - ${formatAgentLabel(agent)}:`,
+    agent.state,
+    formatAgentProvider(agent),
+    `worktree=${agent.worktree_id ?? "-"}`,
+    formatAgentPlacement(agent),
+    formatAgentExtensions(agent),
+    formatAgentRemoteExtensionSync(agent),
+  ].filter(Boolean).join(" "))
 }
 
 function formatSessionHomeKernel(session: RuntimeSession): string {
@@ -48,6 +69,68 @@ function formatSessionHomeKernel(session: RuntimeSession): string {
 
 function formatAgentLabel(agent: RuntimeSession["agents"][number]): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+}
+
+function formatAgentProvider(agent: RuntimeSession["agents"][number]): string {
+  const provider = agent.primary_provider ?? agent.provider
+  const model = agent.primary_model ?? agent.model
+  if (!model) {
+    return provider
+  }
+  return model.startsWith(`${provider}/`) ? model : `${provider}/${model}`
+}
+
+function formatAgentPlacement(agent: RuntimeSession["agents"][number]): string {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return "placement=local"
+  }
+  const sliceRef = remote.worker_kernel_id.startsWith("slice:")
+    ? remote.worker_kernel_id.slice("slice:".length)
+    : null
+  const placement = sliceRef ? `slice:${sliceRef}` : "remote"
+  const parts = [
+    `placement=${placement}`,
+    remote.worker_machine_id ? `worker=${remote.worker_machine_id}` : null,
+    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `worker_run=${remote.active_worker_provider_run_id}` : null,
+  ].filter(Boolean)
+  return parts.join(" ")
+}
+
+function formatAgentExtensions(agent: RuntimeSession["agents"][number]): string {
+  const grants = agent.extension_grants ?? []
+  if (grants.length === 0) {
+    return agent.remote_extension_manifest_sync?.pending_revoke
+      ? "extensions=none(final-revoke-pending)"
+      : "extensions=none"
+  }
+  return `extensions=${formatExtensionGrantPlacementSummary(grants, {
+    remote: Boolean(agent.remote_execution),
+    countSeparator: "=",
+  })}`
+}
+
+function formatAgentRemoteExtensionSync(agent: RuntimeSession["agents"][number]): string | null {
+  if (!agent.remote_execution) {
+    return null
+  }
+  const status = agent.remote_extension_manifest_sync
+  if (!shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)) {
+    return null
+  }
+  if (!status) {
+    return "manifest=pending"
+  }
+  const details = [
+    `manifest=${status.state}`,
+    status.manifest_hash ? `hash=${status.manifest_hash.slice(0, 8)}` : null,
+    status.pending_revoke ? "pending_revoke=yes" : null,
+    status.last_error ? `error=${status.last_error}` : null,
+  ].filter(Boolean)
+  return details.join(" ")
 }
 
 function formatPromptSummary(session: RuntimeSession): string {

@@ -60,8 +60,9 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
   assert.match(rendered, /agents: 2 total, 1 local, 1 remote\/slice/)
   assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
   assert.match(rendered, /home-proxy extensions: 1 agent, 1 sync issue, 1 pending revoke/)
+  assert.match(rendered, /agent runtime:\n  - agent-local: Idle opencode\/gpt-5\.2 worktree=\/repo placement=local extensions=none/)
+  assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
   assert.match(rendered, /collaboration: 1 collaborator, 1 mine, 1 others, 2 total/)
   assert.match(rendered, /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(rendered, /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
-
