@@ -12,6 +12,7 @@ use crate::local::{
     SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
     SessionHistoryOutlineTurn,
 };
+use crate::session::PromptOrigin;
 use crate::session_history_page::SessionHistoryPageEntry;
 
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
@@ -300,6 +301,7 @@ fn outline_turn_from_events(
             .or_else(|| prompt.prompt_id.clone())
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
+        prompt_origin: outline_turn_prompt_origin(prompt, external_identity.as_ref()),
         external_provider: external_identity
             .as_ref()
             .map(|identity| identity.provider.clone()),
@@ -313,6 +315,20 @@ fn outline_turn_from_events(
         summary,
         blobs,
     })
+}
+
+fn outline_turn_prompt_origin(
+    prompt: &HistoryEvent,
+    external_identity: Option<&OutlineExternalIdentity>,
+) -> PromptOrigin {
+    if external_identity.is_some()
+        || prompt
+            .to_session_history_entry()
+            .is_some_and(|entry| entry.is_external_provider_observed())
+    {
+        return PromptOrigin::External;
+    }
+    PromptOrigin::Arroba
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1774,6 +1774,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
             turns: vec![crate::local::SessionHistoryOutlineTurn {
                 turn_id: "turn-1".to_string(),
                 prompt_id: Some("prompt-1".to_string()),
+                prompt_origin: crate::session::PromptOrigin::External,
                 external_provider: Some("codex".to_string()),
                 external_provider_session_id: Some("thread-1".to_string()),
                 external_provider_turn_id: Some("turn-1".to_string()),
@@ -1815,6 +1816,10 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/2/SessionHistoryOutline/agents/0/turns/0/entries/0/entry/text"),
         Some(&serde_json::json!("assistant detail"))
+    );
+    assert_eq!(
+        snapshot.pointer("/2/SessionHistoryOutline/agents/0/turns/0/prompt_origin"),
+        Some(&serde_json::json!("external"))
     );
     assert_eq!(
         snapshot.pointer("/2/SessionHistoryOutline/agents/0/turns/0/external_provider"),
@@ -1863,7 +1868,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a14940374f3325b36e2a21bfe2d890ef8d0558c7a5c2226388c621c2f50d1d4b"
+        "66bcdb01c3016ee7ce0116b83008a0bc6cd5122a16a8efc7f9af8f1c7bdb984d"
     );
 }
 

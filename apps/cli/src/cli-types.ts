@@ -987,6 +987,7 @@ export type SessionHistoryOutlineCursor = {
 export type SessionHistoryOutlineTurn = {
   turn_id: string
   prompt_id?: string | null
+  prompt_origin?: "arroba" | "external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null

@@ -36,6 +36,8 @@ pub struct SessionHistoryOutlineTurn {
     pub turn_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_id: Option<String>,
+    #[serde(default)]
+    pub prompt_origin: crate::session::PromptOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

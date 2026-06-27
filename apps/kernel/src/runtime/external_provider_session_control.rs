@@ -2486,6 +2486,7 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].turns.len(), 1);
         let turn = &agents[0].turns[0];
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
         assert_eq!(turn.external_provider.as_deref(), Some("codex"));
         assert_eq!(
             turn.external_provider_session_id.as_deref(),
