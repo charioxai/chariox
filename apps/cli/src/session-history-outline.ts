@@ -6,6 +6,8 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./cli-types.js"
+import { EXTERNAL_PROVIDER_OBSERVED_SOURCE } from "@arroba/kernel-client/external-provider-observation"
+import { normalizePromptOrigin, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { hydrateTranscriptEntries } from "./transcript-history.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
@@ -104,9 +106,10 @@ export function markHistoryBlobLoading(
 }
 
 type OutlineTurnExternalMetadata = {
-  externalProvider: string
-  externalProviderSessionId: string
-  externalProviderTurnId: string
+  source: typeof EXTERNAL_PROVIDER_OBSERVED_SOURCE
+  externalProvider: string | null
+  externalProviderSessionId: string | null
+  externalProviderTurnId: string | null
 }
 
 function outlineTurnExternalMetadata(
@@ -115,10 +118,14 @@ function outlineTurnExternalMetadata(
   const externalProvider = nonBlankString(turn.external_provider)
   const externalProviderSessionId = nonBlankString(turn.external_provider_session_id)
   const externalProviderTurnId = nonBlankString(turn.external_provider_turn_id)
-  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+  const promptOrigin = normalizePromptOrigin(turn.prompt_origin)
+  const isExternal = promptOriginIsExternal(promptOrigin)
+    || (!promptOrigin && Boolean(externalProvider && externalProviderSessionId && externalProviderTurnId))
+  if (!isExternal) {
     return null
   }
   return {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider,
     externalProviderSessionId,
     externalProviderTurnId,
@@ -132,13 +139,20 @@ function applyOutlineTurnExternalMetadata(
   if (!metadata) {
     return entry
   }
-  return {
+  const next: TranscriptEntry = {
     ...entry,
-    source: entry.source ?? "external_provider_observed",
-    externalProvider: entry.externalProvider ?? metadata.externalProvider,
-    externalProviderSessionId: entry.externalProviderSessionId ?? metadata.externalProviderSessionId,
-    externalProviderTurnId: entry.externalProviderTurnId ?? metadata.externalProviderTurnId,
+    source: entry.source ?? metadata.source,
   }
+  if (next.externalProvider === undefined && metadata.externalProvider !== null) {
+    next.externalProvider = metadata.externalProvider
+  }
+  if (next.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== null) {
+    next.externalProviderSessionId = metadata.externalProviderSessionId
+  }
+  if (next.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== null) {
+    next.externalProviderTurnId = metadata.externalProviderTurnId
+  }
+  return next
 }
 
 function transcriptEntryExternalMetadata(
@@ -147,10 +161,11 @@ function transcriptEntryExternalMetadata(
   const externalProvider = nonBlankString(entry.externalProvider)
   const externalProviderSessionId = nonBlankString(entry.externalProviderSessionId)
   const externalProviderTurnId = nonBlankString(entry.externalProviderTurnId)
-  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+  if (entry.source !== EXTERNAL_PROVIDER_OBSERVED_SOURCE) {
     return null
   }
   return {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider,
     externalProviderSessionId,
     externalProviderTurnId,
