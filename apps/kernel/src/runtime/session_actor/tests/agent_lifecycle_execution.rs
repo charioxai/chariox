@@ -5,12 +5,16 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (session_id, terminal_stream) = {
+    let (session_id, terminal_stream, durable_state_store) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        (session.id().to_string(), app_locked.terminal_stream_store())
+        (
+            session.id().to_string(),
+            app_locked.terminal_stream_store(),
+            app_locked.durable_state_store(),
+        )
     };
     let session_projection = SessionStateProjectionStore::default();
     let agent_runtime_projection = AgentRuntimeProjectionStore::default();
@@ -64,6 +68,22 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
             .is_some(),
         "spawn should refresh agent-runtime projection"
     );
+    let durable_events = durable_state_store
+        .load_events_after(0)
+        .expect("durable state events should load");
+    assert!(
+        durable_events.iter().any(|event| {
+            event.kind == "agent.created"
+                && event.subject_id.as_deref() == Some(agent.id())
+                && event
+                    .payload
+                    .get("agent")
+                    .and_then(|agent| agent.get("id"))
+                    .and_then(|id| id.as_str())
+                    == Some(agent.id())
+        }),
+        "owned runtime spawn-agent path should persist the agent.created durable event"
+    );
 }
 
 #[tokio::test]
@@ -71,12 +91,16 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (session_id, terminal_stream) = {
+    let (session_id, terminal_stream, durable_state_store) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        (session.id().to_string(), app_locked.terminal_stream_store())
+        (
+            session.id().to_string(),
+            app_locked.terminal_stream_store(),
+            app_locked.durable_state_store(),
+        )
     };
     let session_projection = SessionStateProjectionStore::default();
     let agent_runtime_projection = AgentRuntimeProjectionStore::default();
@@ -138,6 +162,30 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
     assert_eq!(agents[0].session_id(), session_id);
     assert_eq!(agents[0].alias(), Some("owned-agent-1"));
     assert_eq!(agents[1].alias(), Some("owned-agent-2"));
+    let durable_events = durable_state_store
+        .load_events_after(0)
+        .expect("durable state events should load");
+    let batch_events = durable_events
+        .iter()
+        .filter(|event| event.kind == "agents.created")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        batch_events.len(),
+        1,
+        "owned runtime batch spawn should persist one compact agents.created event"
+    );
+    assert_eq!(
+        batch_events[0].subject_id.as_deref(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        batch_events[0]
+            .payload
+            .get("agents")
+            .and_then(|agents| agents.as_array())
+            .map(|agents| agents.len()),
+        Some(2)
+    );
     let projected = session_projection
         .get(&session_id)
         .expect("batch spawn should refresh session projection");
@@ -151,6 +199,97 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
             "batch spawn should refresh agent-runtime projection"
         );
     }
+}
+
+#[tokio::test]
+async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, first_agent_id, second_agent_id) = {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+        let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+            session_id: session_id.clone(),
+            agents: vec![
+                crate::local::SpawnAgentsRequestItem {
+                    alias: Some("restored-bulk-1".to_string()),
+                    provider: Some("dev-stub".to_string()),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    execution_mode: None,
+                    permission_level: None,
+                    worktree_id: Some("worktree".to_string()),
+                    kernel_ref: None,
+                    slice_ref: None,
+                    worktree_placement: None,
+                    metaagent: false,
+                },
+                crate::local::SpawnAgentsRequestItem {
+                    alias: Some("restored-bulk-2".to_string()),
+                    provider: Some("dev-stub".to_string()),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    execution_mode: None,
+                    permission_level: None,
+                    worktree_id: Some("worktree".to_string()),
+                    kernel_ref: None,
+                    slice_ref: None,
+                    worktree_placement: None,
+                    metaagent: false,
+                },
+            ],
+        });
+        let command =
+            KernelCommand::from_local_request("restore-agent-batch", None, None, &request);
+        let response = runtime
+            .dispatch_session_command(command, request)
+            .await
+            .expect("agent batch spawn should succeed");
+        let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+            panic!("unexpected response");
+        };
+        (
+            session_id,
+            agents[0].id().to_string(),
+            agents[1].id().to_string(),
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("daemon should restore");
+    let restored_session = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert_eq!(restored_session.agents().len(), 3);
+    assert_eq!(
+        app.agents()
+            .get_agent(&first_agent_id)
+            .expect("first batch agent should restore")
+            .alias(),
+        Some("restored-bulk-1")
+    );
+    assert_eq!(
+        app.agents()
+            .get_agent(&second_agent_id)
+            .expect("second batch agent should restore")
+            .alias(),
+        Some("restored-bulk-2")
+    );
 }
 
 #[tokio::test]

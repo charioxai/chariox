@@ -6,7 +6,16 @@ impl KernelRuntimeOwnedState {
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let mut sessions = self.session_store.write();
-        self.agent_store.create_agent(request, &mut sessions)
+        let agent = self.agent_store.create_agent(request, &mut sessions)?;
+        drop(sessions);
+        self.durable_state_store.append_event(
+            "agent.created",
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+            }),
+        )?;
+        Ok(agent)
     }
 
     pub(super) fn spawn_agents(
@@ -14,7 +23,19 @@ impl KernelRuntimeOwnedState {
         requests: Vec<crate::agent::CreateAgentRequest>,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
         let mut sessions = self.session_store.write();
-        self.agent_store.create_agents(requests, &mut sessions)
+        let agents = self.agent_store.create_agents(requests, &mut sessions)?;
+        drop(sessions);
+        if let Some(first_agent) = agents.first() {
+            self.durable_state_store.append_event(
+                "agents.created",
+                Some(first_agent.session_id().to_string()),
+                serde_json::json!({
+                    "session_id": first_agent.session_id(),
+                    "agents": &agents,
+                }),
+            )?;
+        }
+        Ok(agents)
     }
 
     pub(super) fn ensure_agent_owner(
