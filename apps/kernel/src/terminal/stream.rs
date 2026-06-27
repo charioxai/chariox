@@ -383,7 +383,9 @@ pub struct TerminalStreamService {
     notice_records: BTreeMap<u64, RuntimeNoticeRecord>,
     pending_notice_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
     next_notice_record_id: u64,
-    completion_records: Vec<AssistantMessageCompletionRecord>,
+    completion_records: BTreeMap<u64, AssistantMessageCompletionRecord>,
+    pending_completion_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
+    next_completion_record_id: u64,
     pending_output_record_limit_per_attachment: usize,
     output_coalesce_byte_limit: usize,
     output_drain_json_limit: usize,
@@ -808,9 +810,22 @@ impl TerminalStreamService {
             completed_at_ms,
         };
 
-        self.completion_records.push(record.clone());
+        self.push_completion_record(record.clone());
         self.refresh_health();
         record
+    }
+
+    fn push_completion_record(&mut self, record: AssistantMessageCompletionRecord) -> u64 {
+        let record_id = self.next_completion_record_id;
+        self.next_completion_record_id = self.next_completion_record_id.saturating_add(1);
+        for attachment_id in &record.pending_recipient_attachment_ids {
+            self.pending_completion_by_attachment
+                .entry((record.session_id.clone(), attachment_id.clone()))
+                .or_default()
+                .push_back(record_id);
+        }
+        self.completion_records.insert(record_id, record);
+        record_id
     }
 
     pub fn drain_completion_records(
@@ -819,24 +834,48 @@ impl TerminalStreamService {
         attachment_id: &str,
     ) -> Vec<AssistantMessageCompletionRecord> {
         let mut drained = Vec::new();
-        for record in &mut self.completion_records {
-            if record.session_id == session_id
-                && record
-                    .pending_recipient_attachment_ids
-                    .iter()
-                    .any(|id| id == attachment_id)
-            {
+        let key = (session_id.to_string(), attachment_id.to_string());
+        let completion_ids = self
+            .pending_completion_by_attachment
+            .remove(&key)
+            .unwrap_or_default();
+        for record_id in completion_ids {
+            let should_drain = self
+                .completion_records
+                .get(&record_id)
+                .is_some_and(|record| {
+                    record.session_id == session_id
+                        && record
+                            .pending_recipient_attachment_ids
+                            .iter()
+                            .any(|id| id == attachment_id)
+                });
+            if !should_drain {
+                continue;
+            }
+            if let Some(record) = self.completion_records.get(&record_id) {
                 drained.push(scoped_completion_record(record, attachment_id));
+            }
+            if let Some(record) = self.completion_records.get_mut(&record_id) {
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
             }
+            self.remove_completion_record_if_drained(record_id);
         }
 
-        self.completion_records
-            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
         self.refresh_health();
         drained
+    }
+
+    fn remove_completion_record_if_drained(&mut self, record_id: u64) {
+        let should_remove = self
+            .completion_records
+            .get(&record_id)
+            .is_some_and(|record| record.pending_recipient_attachment_ids.is_empty());
+        if should_remove {
+            self.completion_records.remove(&record_id);
+        }
     }
 
     pub fn drain_notice_records(
@@ -936,7 +975,9 @@ impl TerminalStreamService {
         self.pending_notice_by_attachment
             .retain(|(pending_session_id, _), _| pending_session_id != session_id);
         self.completion_records
-            .retain(|record| record.session_id != session_id);
+            .retain(|_, record| record.session_id != session_id);
+        self.pending_completion_by_attachment
+            .retain(|(pending_session_id, _), _| pending_session_id != session_id);
         self.refresh_health();
     }
 
@@ -977,6 +1018,17 @@ impl TerminalStreamService {
         for record_id in broadcast_notice_ids {
             self.notice_records.remove(&record_id);
         }
+        if let Some(record_ids) = self.pending_completion_by_attachment.remove(&key) {
+            changed = true;
+            for record_id in record_ids {
+                if let Some(record) = self.completion_records.get_mut(&record_id) {
+                    record
+                        .pending_recipient_attachment_ids
+                        .retain(|id| id != attachment_id);
+                }
+                self.remove_completion_record_if_drained(record_id);
+            }
+        }
         for record in self.notice_records.values_mut() {
             if record.session_id == session_id {
                 let previous_len = record.pending_recipient_attachment_ids.len();
@@ -986,7 +1038,7 @@ impl TerminalStreamService {
                 changed |= record.pending_recipient_attachment_ids.len() != previous_len;
             }
         }
-        for record in &mut self.completion_records {
+        for record in self.completion_records.values_mut() {
             if record.session_id == session_id {
                 let previous_len = record.pending_recipient_attachment_ids.len();
                 record
@@ -1000,7 +1052,7 @@ impl TerminalStreamService {
                 && !record.pending_recipient_attachment_ids.is_empty()
         });
         self.completion_records
-            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+            .retain(|_, record| !record.pending_recipient_attachment_ids.is_empty());
         if changed {
             self.refresh_health();
         }
@@ -1652,6 +1704,52 @@ mod tests {
     }
 
     #[test]
+    fn completion_pending_index_tracks_recipient_drain() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "message-1",
+            42,
+        );
+
+        assert_eq!(
+            terminal
+                .pending_completion_by_attachment
+                .get(&("session-1".to_string(), "attachment-1".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+        assert_eq!(
+            terminal
+                .pending_completion_by_attachment
+                .get(&("session-1".to_string(), "attachment-2".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+
+        let first = terminal.drain_completion_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert!(!terminal
+            .pending_completion_by_attachment
+            .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
+        assert_eq!(
+            terminal
+                .pending_completion_by_attachment
+                .get(&("session-1".to_string(), "attachment-2".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+
+        let second = terminal.drain_completion_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+        assert!(terminal.pending_completion_by_attachment.is_empty());
+        assert!(terminal.completion_records.is_empty());
+    }
+
+    #[test]
     fn removing_attachment_prunes_pending_terminal_records() {
         let mut terminal = TerminalStreamService::new();
         terminal.fan_out_output(
@@ -1690,7 +1788,12 @@ mod tests {
             vec!["attachment-2".to_string()],
         );
         assert_eq!(
-            terminal.completion_records[0].pending_recipient_attachment_ids,
+            terminal
+                .completion_records
+                .values()
+                .next()
+                .expect("completion record should remain")
+                .pending_recipient_attachment_ids,
             vec!["attachment-2".to_string()],
         );
 
