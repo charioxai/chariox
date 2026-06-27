@@ -10,7 +10,6 @@ import {
   type TranscriptEntry,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import { promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
@@ -331,9 +330,6 @@ export function derivePromptLifecycleTransition(
   const nextPromptIdSet = new Set(nextPromptIds)
   const settledPromptRecords = collectActivePromptRecords(currentSession)
     .filter((prompt) => !nextPromptIdSet.has(prompt.id))
-    .filter((prompt) => {
-      return !promptOriginIsExternal(prompt.promptOrigin) || prompt.status === "cancelling"
-    })
 
   return {
     activePromptChanged:

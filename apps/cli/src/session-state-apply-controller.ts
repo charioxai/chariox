@@ -109,6 +109,9 @@ export function createSessionStateApplyController(
     for (const settledAgentId of promptLifecycle.settledAgentIds) {
       deps.clearAgentBusy(settledAgentId)
     }
+    if (promptLifecycle.settledAgentIds.length > 0 && !transition.nextHasPromptWork) {
+      deps.setWorking(false)
+    }
     if (promptLifecycle.cancelledPromptSettled) {
       deps.clearActiveToolLabels()
       deps.setAgentActivityLabels({})

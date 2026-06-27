@@ -115,7 +115,7 @@ test("session state apply controller clears cancelled prompt residue when cancel
   assert.ok(harness.calls.includes("cancelPendingTurnCompletion"))
 })
 
-test("session state apply controller does not clear agent busy when external prompt disappears from active state", () => {
+test("session state apply controller clears agent busy when external prompt disappears from active state", () => {
   const externalWorkingPrompt = session({
     agent_activity: {
       "agent-a": {
@@ -140,9 +140,11 @@ test("session state apply controller does not clear agent busy when external pro
 
   harness.controller.apply(session())
 
-  assert.equal(harness.state.working, true)
-  assert.deepEqual(harness.state.clearedBusyAgents, [])
-  assert.deepEqual(harness.calls.filter((call) => call === "clearAgentBusy"), [])
+  assert.equal(harness.state.working, false)
+  assert.deepEqual(harness.state.clearedBusyAgents, ["agent-a"])
+  assert.deepEqual(harness.calls.filter((call) => call === "clearAgentBusy"), [
+    "clearAgentBusy",
+  ])
 })
 
 function createHarness(options: {
