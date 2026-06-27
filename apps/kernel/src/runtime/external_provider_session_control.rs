@@ -1373,7 +1373,7 @@ fn persist_external_import_metadata(
     agent_id: &str,
     import: ExternalProviderImportMetadata,
 ) -> Result<AgentInstance, DaemonError> {
-    let mut session = app
+    let session = app
         .sessions_mut()
         .upsert_external_provider_import(session_id, import.clone())?;
     let agent = app
@@ -1389,9 +1389,7 @@ fn persist_external_import_metadata(
         Some(agent.id().to_string()),
         serde_json::json!({ "agent": &agent }),
     )?;
-    let agents = app.agents().get_session_agents(session_id);
-    session.set_agents(agents);
-    app.update_session_projection(session);
+    let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?;
     Ok(agent)
 }
 
@@ -1659,6 +1657,71 @@ mod tests {
                 .expect("record should remain indexed")
                 .is_attached_to_arroba());
         });
+    }
+
+    #[test]
+    fn persist_external_import_metadata_refreshes_runtime_session_projection() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-import-projection",
+                "worktree-import-projection",
+            ))
+            .expect("session should create");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.sessions
+            .set_active_provider_run(session.id(), None)
+            .expect("test should clear stale stored active run");
+        app.update_session_projection(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should still exist"),
+        );
+
+        persist_external_import_metadata(
+            &mut app,
+            session.id(),
+            agent.id(),
+            ExternalProviderImportMetadata::observed_history(
+                "dev-stub:external-import-projection".to_string(),
+                "dev-stub".to_string(),
+                "external-import-projection".to_string(),
+            ),
+        )
+        .expect("external import metadata should persist");
+
+        let projected = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("session projection should refresh");
+        assert_eq!(projected.active_provider_run_id(), Some(run.id()));
+        assert_eq!(
+            projected.external_provider_imports()[0].external_provider_session_id,
+            "dev-stub:external-import-projection"
+        );
+        let projected_agent = projected
+            .agents()
+            .iter()
+            .find(|projected_agent| projected_agent.id() == agent.id())
+            .expect("projected session should include imported agent");
+        assert_eq!(
+            projected_agent
+                .external_provider_import()
+                .expect("projected agent import metadata should refresh")
+                .external_provider_session_provider_id,
+            "external-import-projection"
+        );
     }
 
     #[test]
