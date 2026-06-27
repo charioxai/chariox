@@ -37,6 +37,7 @@ static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<
 thread_local! {
     static JSONL_PREFIX_READ_COUNT: Cell<usize> = const { Cell::new(0) };
     static JSONL_RECENT_READ_COUNT: Cell<usize> = const { Cell::new(0) };
+    static JSONL_INCREMENTAL_READ_COUNT: Cell<usize> = const { Cell::new(0) };
     static FILE_CANDIDATE_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -54,6 +55,12 @@ struct ExternalProviderTranscriptIndexEntry {
 struct ProviderTranscriptFileFingerprint {
     len: u64,
     modified_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedProviderObservedTranscript {
+    last_observed_offset: u64,
+    observed_turns: Vec<ObservedExternalProviderTurn>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,13 +284,14 @@ fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, 
     };
     let key = provider_transcript_path_index_key(provider, provider_session_id);
     if let Ok(mut index) = provider_transcript_path_index().lock() {
-        let observed_turns = index.get(&key).and_then(|existing| {
-            (existing.path == path
-                && existing.len == fingerprint.len
-                && existing.modified_at_ms == fingerprint.modified_at_ms)
-                .then(|| existing.observed_turns.clone())
-                .flatten()
+        let previous = index.get(&key).filter(|existing| {
+            existing.path == path && fingerprint.len >= existing.last_observed_offset
         });
+        let observed_turns = previous.and_then(|existing| existing.observed_turns.clone());
+        let last_observed_offset = observed_turns
+            .as_ref()
+            .and_then(|_| previous.map(|existing| existing.last_observed_offset))
+            .unwrap_or(0);
         index.insert(
             key,
             ExternalProviderTranscriptIndexEntry {
@@ -291,10 +299,7 @@ fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, 
                 path: path.to_path_buf(),
                 len: fingerprint.len,
                 modified_at_ms: fingerprint.modified_at_ms,
-                last_observed_offset: observed_turns
-                    .as_ref()
-                    .map(|_| fingerprint.len)
-                    .unwrap_or(0),
+                last_observed_offset,
                 observed_turns,
             },
         );
@@ -335,6 +340,26 @@ fn cached_provider_observed_turns_for_path(
     (entry.provider_session_id == provider_session_id && entry.path == path)
         .then(|| entry.observed_turns)
         .flatten()
+}
+
+fn cached_provider_observed_transcript_for_path(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+) -> Option<CachedProviderObservedTranscript> {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let entry = provider_transcript_path_index()
+        .lock()
+        .ok()?
+        .get(&key)
+        .cloned()?;
+    let observed_turns = (entry.provider_session_id == provider_session_id && entry.path == path)
+        .then(|| entry.observed_turns)
+        .flatten()?;
+    Some(CachedProviderObservedTranscript {
+        last_observed_offset: entry.last_observed_offset,
+        observed_turns,
+    })
 }
 
 fn cached_provider_transcript_identity_matches(
@@ -637,7 +662,21 @@ fn codex_observed_turns_from_path(
             return None;
         }
     }
+    let previous_transcript =
+        cached_provider_observed_transcript_for_path("codex", provider_session_id, path);
     remember_provider_transcript_path("codex", provider_session_id, path);
+    if let Some(turns) =
+        incremental_codex_observed_turns(path, previous_transcript.as_ref(), fingerprint)
+    {
+        remember_provider_observed_turns(
+            "codex",
+            provider_session_id,
+            path,
+            fingerprint,
+            turns.clone(),
+        );
+        return Some(turns);
+    }
     let lines = read_recent_codex_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -657,6 +696,23 @@ fn codex_observed_turns_from_path(
         turns.clone(),
     );
     Some(turns)
+}
+
+fn incremental_codex_observed_turns(
+    path: &Path,
+    previous: Option<&CachedProviderObservedTranscript>,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
+    let previous = previous?;
+    if previous.last_observed_offset > fingerprint.len {
+        return None;
+    }
+    let values = read_incremental_jsonl_values(path, previous.last_observed_offset)?;
+    let mut turns = previous.observed_turns.clone();
+    turns.extend(values.iter().filter_map(codex_observed_turn_from_value));
+    Some(latest_observed_turns(deduplicate_codex_mirrored_turns(
+        turns,
+    )))
 }
 
 fn codex_observed_turn_from_value(value: &Value) -> Option<ObservedExternalProviderTurn> {
@@ -987,7 +1043,21 @@ fn claude_observed_turns_from_path(
     }
     let previous_turns =
         cached_provider_observed_turns_for_path("claude", provider_session_id, path);
+    let previous_transcript =
+        cached_provider_observed_transcript_for_path("claude", provider_session_id, path);
     remember_provider_transcript_path("claude", provider_session_id, path);
+    if let Some(turns) =
+        incremental_claude_observed_turns(path, previous_transcript.as_ref(), fingerprint)
+    {
+        remember_provider_observed_turns(
+            "claude",
+            provider_session_id,
+            path,
+            fingerprint,
+            turns.clone(),
+        );
+        return Some(turns);
+    }
     let lines = read_recent_claude_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -1003,6 +1073,23 @@ fn claude_observed_turns_from_path(
         turns.clone(),
     );
     Some(turns)
+}
+
+fn incremental_claude_observed_turns(
+    path: &Path,
+    previous: Option<&CachedProviderObservedTranscript>,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
+    let previous = previous?;
+    if previous.last_observed_offset > fingerprint.len {
+        return None;
+    }
+    let values = read_incremental_jsonl_values(path, previous.last_observed_offset)?;
+    let mut turns = previous.observed_turns.clone();
+    for value in &values {
+        turns.extend(claude_observed_turns_from_value(value));
+    }
+    Some(latest_observed_turns(turns))
 }
 
 fn prepend_claude_user_anchor_from_cache_or_prefix(
@@ -1486,7 +1573,21 @@ fn opencode_jsonl_observed_turns_from_path(
             return None;
         }
     }
+    let previous_transcript =
+        cached_provider_observed_transcript_for_path("opencode", provider_session_id, path);
     remember_provider_transcript_path("opencode", provider_session_id, path);
+    if let Some(turns) =
+        incremental_opencode_observed_turns(path, previous_transcript.as_ref(), fingerprint)
+    {
+        remember_provider_observed_turns(
+            "opencode",
+            provider_session_id,
+            path,
+            fingerprint,
+            turns.clone(),
+        );
+        return Some(turns);
+    }
     let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -1501,6 +1602,23 @@ fn opencode_jsonl_observed_turns_from_path(
         turns.clone(),
     );
     Some(turns)
+}
+
+fn incremental_opencode_observed_turns(
+    path: &Path,
+    previous: Option<&CachedProviderObservedTranscript>,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
+    let previous = previous?;
+    if previous.last_observed_offset > fingerprint.len {
+        return None;
+    }
+    let values = read_incremental_jsonl_values(path, previous.last_observed_offset)?;
+    let mut turns = previous.observed_turns.clone();
+    for value in &values {
+        turns.extend(opencode_observed_turns_from_value(value));
+    }
+    Some(latest_observed_turns(turns))
 }
 
 fn opencode_session_id_from_values(lines: &[Value]) -> Option<String> {
@@ -2036,6 +2154,11 @@ fn increment_jsonl_recent_read_count() {
 }
 
 #[cfg(test)]
+fn increment_jsonl_incremental_read_count() {
+    JSONL_INCREMENTAL_READ_COUNT.with(|counter| counter.set(counter.get() + 1));
+}
+
+#[cfg(test)]
 fn increment_file_candidate_scan_count() {
     FILE_CANDIDATE_SCAN_COUNT.with(|counter| counter.set(counter.get() + 1));
 }
@@ -2044,6 +2167,7 @@ fn increment_file_candidate_scan_count() {
 fn reset_jsonl_read_counts() {
     JSONL_PREFIX_READ_COUNT.with(|counter| counter.set(0));
     JSONL_RECENT_READ_COUNT.with(|counter| counter.set(0));
+    JSONL_INCREMENTAL_READ_COUNT.with(|counter| counter.set(0));
 }
 
 #[cfg(test)]
@@ -2059,6 +2183,11 @@ fn jsonl_prefix_read_count() -> usize {
 #[cfg(test)]
 fn jsonl_recent_read_count() -> usize {
     JSONL_RECENT_READ_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn jsonl_incremental_read_count() -> usize {
+    JSONL_INCREMENTAL_READ_COUNT.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -2121,6 +2250,35 @@ fn read_recent_claude_jsonl_values(path: &Path) -> Vec<Value> {
         .iter()
         .filter_map(|line| serde_json::from_str::<Value>(line.as_str()).ok())
         .collect()
+}
+
+fn read_incremental_jsonl_values(path: &Path, offset: u64) -> Option<Vec<Value>> {
+    #[cfg(test)]
+    increment_jsonl_incremental_read_count();
+
+    let mut file = fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let file_len = metadata.len();
+    if offset > file_len {
+        return None;
+    }
+    let appended_len = file_len.saturating_sub(offset);
+    if appended_len > MAX_RECENT_JSONL_TAIL_BYTES {
+        return None;
+    }
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return None;
+    }
+    let mut payload = String::new();
+    if file.read_to_string(&mut payload).is_err() {
+        return None;
+    }
+    Some(
+        payload
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect(),
+    )
 }
 
 fn read_recent_jsonl_lines(path: &Path) -> Vec<String> {
@@ -2899,12 +3057,14 @@ mod tests {
         assert_eq!(first[0].text, "Indexed prompt before cache.");
         assert_eq!(jsonl_prefix_read_count(), 0);
         assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(jsonl_incremental_read_count(), 0);
 
         reset_jsonl_read_counts();
         let unchanged = read_codex_observed_turns(root, "thread-unchanged-index");
         assert_eq!(unchanged, first);
         assert_eq!(jsonl_prefix_read_count(), 0);
         assert_eq!(jsonl_recent_read_count(), 0);
+        assert_eq!(jsonl_incremental_read_count(), 0);
 
         let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
         writeln!(
@@ -2916,7 +3076,8 @@ mod tests {
         reset_jsonl_read_counts();
         let appended = read_codex_observed_turns(root, "thread-unchanged-index");
         assert_eq!(jsonl_prefix_read_count(), 0);
-        assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(jsonl_recent_read_count(), 0);
+        assert_eq!(jsonl_incremental_read_count(), 1);
         assert!(appended
             .iter()
             .any(|turn| turn.text == "Indexed assistant after append."));
@@ -3097,6 +3258,7 @@ mod tests {
         let first = read_claude_observed_turns(root, "session-1");
         assert_eq!(jsonl_prefix_read_count(), 2);
         assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(jsonl_incremental_read_count(), 0);
         assert_eq!(first[0].role, ObservedExternalProviderTurnRole::User);
         assert_eq!(first[0].text, "Run a long cached Claude external drill.");
 
@@ -3110,7 +3272,8 @@ mod tests {
         reset_jsonl_read_counts();
         let appended = read_claude_observed_turns(root, "session-1");
         assert_eq!(jsonl_prefix_read_count(), 0);
-        assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(jsonl_recent_read_count(), 0);
+        assert_eq!(jsonl_incremental_read_count(), 1);
         assert_eq!(appended[0].role, ObservedExternalProviderTurnRole::User);
         assert_eq!(appended[0].text, "Run a long cached Claude external drill.");
         assert!(appended
@@ -3223,6 +3386,46 @@ mod tests {
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u1"));
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].text, "Capture the waiting-room evidence.");
+    }
+
+    #[test]
+    fn reads_changed_opencode_jsonl_turns_incrementally_after_warmup() {
+        let temp = temp_dir("opencode-observed-jsonl-incremental");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("session-1.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"sessionID\":\"open-jsonl-1\",\"id\":\"u1\",\"role\":\"user\",\"content\":\"Draft the OpenCode JSONL import drill.\",\"createdAt\":\"2026-03-01T00:00:01.000Z\"}\n",
+                "{\"sessionID\":\"open-jsonl-1\",\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"Capture the first waiting-room evidence.\",\"createdAt\":\"2026-03-01T00:00:02.000Z\"}\n",
+            ),
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        let first = read_opencode_observed_turns(root, "open-jsonl-1");
+        assert_eq!(jsonl_prefix_read_count(), 1);
+        assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(jsonl_incremental_read_count(), 0);
+        assert_eq!(first.len(), 2);
+
+        let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(
+            file,
+            "{{\"sessionID\":\"open-jsonl-1\",\"id\":\"a2\",\"role\":\"assistant\",\"content\":\"OPENCODE_INCREMENTAL_REPLY\",\"createdAt\":\"2026-03-01T00:00:03.000Z\"}}"
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        let appended = read_opencode_observed_turns(root, "open-jsonl-1");
+        assert_eq!(jsonl_prefix_read_count(), 0);
+        assert_eq!(jsonl_recent_read_count(), 0);
+        assert_eq!(jsonl_incremental_read_count(), 1);
+        assert!(appended
+            .iter()
+            .any(|turn| turn.text == "OPENCODE_INCREMENTAL_REPLY"));
     }
 
     #[test]
