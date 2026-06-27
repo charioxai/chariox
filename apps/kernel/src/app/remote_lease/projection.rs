@@ -747,6 +747,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &projected.text,
             PromptStatus::Queued,
         );
+        let outcome =
+            self.app
+                .prompt_owner_submit_prepared_prompt(session_id, prompt.clone(), false)?;
         self.app.spawn_user_prompt_history_append(
             session_id,
             &attachment_id,
@@ -754,9 +757,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt.prompt(),
             prompt.attachments(),
         )?;
-        let outcome = self
-            .app
-            .prompt_owner_submit_prepared_prompt(session_id, prompt, false)?;
         if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
             crate::transport::flow_control::note_prompt_started(self.app, provider_run_id);
         }
