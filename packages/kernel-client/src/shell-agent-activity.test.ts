@@ -138,6 +138,58 @@ test("sessionPromptWorkSummary counts projected active turns and prompt state qu
   })
 })
 
+test("sessionPromptWorkSummary ignores settled active turn statuses", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: malformedRuntimeValue("completed"),
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          provider_run_id: "run-1",
+          prompt_origin: "arroba",
+          status: malformedRuntimeValue(" Completed "),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+      "agent-2": {
+        status: "idle",
+        prompt_status: malformedRuntimeValue("cancelled"),
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-2",
+          provider_run_id: "run-2",
+          prompt_origin: "external",
+          status: malformedRuntimeValue("cancelled"),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+      "agent-3": {
+        status: "idle",
+        prompt_status: "settling",
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-3",
+          provider_run_id: "run-3",
+          prompt_origin: "external",
+          status: malformedRuntimeValue(" settling "),
+          phase: "settling",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 0,
+    busyAgents: 3,
+  })
+})
+
 test("sessionPromptWorkSummary counts prompt state active prompt for sparse busy activity", () => {
   const session = makeSession({
     prompt_states: {
@@ -183,6 +235,25 @@ test("sessionPromptWorkSummary counts prompt state active prompt for sparse busy
     queued: 0,
     busyAgents: 1,
   })
+})
+
+test("sessionAgentRuntimeState normalizes projected error status", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: malformedRuntimeValue(" Error "),
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentRuntimeState(session, makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  })), "Error")
 })
 
 test("sessionHasActivePrompt follows projected active turn identity", () => {
@@ -420,3 +491,7 @@ test("session prompt helpers ignore top-level prompts for other agents", () => {
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-other"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
 })
+
+function malformedRuntimeValue<T>(value: string): T {
+  return value as unknown as T
+}

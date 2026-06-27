@@ -1,5 +1,10 @@
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./kernel-types.js"
-import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
+import {
+  agentRuntimeActivityIsBusy,
+  agentRuntimePromptStatusIsActivePrompt,
+  normalizeAgentRuntimeActivityStatus,
+  normalizeAgentRuntimePromptStatus,
+} from "./agent-activity.js"
 import type { AgentRuntimeActivityBusyInput } from "./agent-activity.js"
 
 export type SessionPromptWorkSummary = {
@@ -90,7 +95,7 @@ export function agentRuntimeStateFromProjection(
   }
   const projected = context.agentActivity?.[agent.id]
   if (projected) {
-    if (projected.status === "error") {
+    if (normalizeAgentRuntimeActivityStatus(projected.status) === "error") {
       return "Error"
     }
     return agentRuntimeActivityIsBusy(projected) ? "Working" : "Idle"
@@ -181,14 +186,21 @@ function agentRuntimeActivityHasActivePrompt(
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): boolean {
   if (activity.active_turn) {
-    return activity.active_turn.status !== "none" && activity.active_turn.status !== "queued"
+    const activeTurnStatus = normalizeAgentRuntimePromptStatus(activity.active_turn.status)
+    if (
+      activeTurnStatus === "none"
+      || activeTurnStatus === "queued"
+      || activeTurnStatus === "completed"
+      || activeTurnStatus === "cancelled"
+    ) {
+      return false
+    }
+    return agentRuntimePromptStatusIsActivePrompt(activeTurnStatus) || activeTurnStatus === null
   }
   if (agentRuntimeActivityIsBusy(activity) && promptState?.active_prompt) {
     return true
   }
-  return activity.prompt_status === "running"
-    || activity.prompt_status === "cancelling"
-    || activity.prompt_status === "settling"
+  return agentRuntimePromptStatusIsActivePrompt(normalizeAgentRuntimePromptStatus(activity.prompt_status))
 }
 
 function legacyBusyAgentCount(session: RuntimeSession): number {

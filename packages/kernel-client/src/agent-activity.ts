@@ -18,19 +18,25 @@ export function agentRuntimeActivityIsBusy(
   ))
 }
 
-function normalizeAgentRuntimeActivityStatus(value: string | null | undefined): string | null {
+export function normalizeAgentRuntimeActivityStatus(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase()
   return normalized || null
 }
 
-function normalizeAgentRuntimePromptStatus(value: string | null | undefined): string | null {
+export function normalizeAgentRuntimePromptStatus(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase()
   return normalized || null
 }
 
-function agentRuntimePromptStatusIsActive(value: string | null): boolean {
+export function agentRuntimePromptStatusIsActive(value: string | null): boolean {
   return value === "queued"
     || value === "running"
+    || value === "cancelling"
+    || value === "settling"
+}
+
+export function agentRuntimePromptStatusIsActivePrompt(value: string | null): boolean {
+  return value === "running"
     || value === "cancelling"
     || value === "settling"
 }
