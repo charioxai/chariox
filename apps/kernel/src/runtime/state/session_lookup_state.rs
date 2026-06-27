@@ -70,13 +70,7 @@ impl KernelRuntimeState {
             .session_store
             .list_sessions()
             .into_iter()
-            .map(|mut session| {
-                let agents = self.owned.agent_store.get_session_agents(session.id());
-                session.set_agents(agents);
-                self.owned.project_session_runtime_view(&mut session);
-                self.owned.session_projection.update(session.clone());
-                session
-            })
+            .filter_map(|session| self.owned.session_snapshot(session.id()).ok())
             .collect()
     }
 
@@ -84,16 +78,14 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::ResolveSessionRequest,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let mut session = self
+        let session_id = self
             .owned
             .session_store
             .read()
-            .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
-        let agents = self.owned.agent_store.get_session_agents(session.id());
-        session.set_agents(agents);
-        self.owned.project_session_runtime_view(&mut session);
-        self.owned.session_projection.update(session.clone());
-        Ok(session)
+            .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?
+            .id()
+            .to_string();
+        self.owned.session_snapshot(&session_id)
     }
 
     pub(crate) fn session_state_response(

@@ -147,6 +147,57 @@ fn assert_external_active_prompt_and_queued_arroba_prompt(
 }
 
 #[tokio::test]
+async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "workspace-session-lookup-projection",
+                "worktree-session-lookup-projection",
+            )
+            .with_alias("lookup-projection"),
+        )
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("test should clear stale stored active run");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let listed = runtime.list_session_snapshots();
+    let listed_session = listed
+        .iter()
+        .find(|listed| listed.id() == session.id())
+        .expect("listed sessions should include the test session");
+    assert_eq!(listed_session.agents().len(), 1);
+    assert_eq!(listed_session.active_provider_run_id(), Some(run.id()));
+
+    let resolved = runtime
+        .resolve_session_snapshot(crate::local::ResolveSessionRequest {
+            session_ref: "lookup-projection".to_string(),
+            workspace_id: Some("workspace-session-lookup-projection".to_string()),
+        })
+        .expect("session should resolve by alias");
+    assert_eq!(resolved.id(), session.id());
+    assert_eq!(resolved.agents().len(), 1);
+    assert_eq!(resolved.active_provider_run_id(), Some(run.id()));
+}
+
+#[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
