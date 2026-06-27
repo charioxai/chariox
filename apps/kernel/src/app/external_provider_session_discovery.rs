@@ -32,6 +32,9 @@ const MAX_TITLE_CHARS: usize = 80;
 static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<
     Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>>,
 > = OnceLock::new();
+static PROVIDER_TRANSCRIPT_DISCOVERY_PATH_INDEX: OnceLock<
+    Mutex<BTreeMap<(String, PathBuf), ExternalProviderTranscriptDiscoveryPathEntry>>,
+> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -47,8 +50,16 @@ struct ExternalProviderTranscriptIndexEntry {
     path: PathBuf,
     len: u64,
     modified_at_ms: u64,
+    discovery_record: Option<ExternalProviderSessionRecord>,
     last_observed_offset: u64,
     observed_turns: Option<Vec<ObservedExternalProviderTurn>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalProviderTranscriptDiscoveryPathEntry {
+    len: u64,
+    modified_at_ms: u64,
+    record: ExternalProviderSessionRecord,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -255,6 +266,11 @@ fn provider_transcript_path_index(
     PROVIDER_TRANSCRIPT_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn provider_transcript_discovery_path_index(
+) -> &'static Mutex<BTreeMap<(String, PathBuf), ExternalProviderTranscriptDiscoveryPathEntry>> {
+    PROVIDER_TRANSCRIPT_DISCOVERY_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn provider_transcript_path_index_key(provider: &str, provider_session_id: &str) -> String {
     format!("{provider}:{provider_session_id}")
 }
@@ -288,6 +304,12 @@ fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, 
             existing.path == path && fingerprint.len >= existing.last_observed_offset
         });
         let observed_turns = previous.and_then(|existing| existing.observed_turns.clone());
+        let discovery_record = previous.and_then(|existing| {
+            (existing.len == fingerprint.len
+                && existing.modified_at_ms == fingerprint.modified_at_ms)
+                .then(|| existing.discovery_record.clone())
+                .flatten()
+        });
         let last_observed_offset = observed_turns
             .as_ref()
             .and_then(|_| previous.map(|existing| existing.last_observed_offset))
@@ -299,6 +321,7 @@ fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, 
                 path: path.to_path_buf(),
                 len: fingerprint.len,
                 modified_at_ms: fingerprint.modified_at_ms,
+                discovery_record,
                 last_observed_offset,
                 observed_turns,
             },
@@ -324,6 +347,24 @@ fn cached_provider_observed_turns(
         && entry.modified_at_ms == fingerprint.modified_at_ms)
         .then(|| entry.observed_turns)
         .flatten()
+}
+
+fn cached_provider_discovery_record_for_path(
+    provider: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<ExternalProviderSessionRecord> {
+    let key = (provider.to_string(), path.to_path_buf());
+    provider_transcript_discovery_path_index()
+        .lock()
+        .ok()?
+        .get(&key)
+        .filter(|entry| {
+            entry.record.provider == provider
+                && entry.len == fingerprint.len
+                && entry.modified_at_ms == fingerprint.modified_at_ms
+        })
+        .map(|entry| entry.record.clone())
 }
 
 fn cached_provider_observed_turns_for_path(
@@ -389,6 +430,13 @@ fn remember_provider_observed_turns(
 ) {
     let key = provider_transcript_path_index_key(provider, provider_session_id);
     if let Ok(mut index) = provider_transcript_path_index().lock() {
+        let discovery_record = index.get(&key).and_then(|existing| {
+            (existing.path == path
+                && existing.len == fingerprint.len
+                && existing.modified_at_ms == fingerprint.modified_at_ms)
+                .then(|| existing.discovery_record.clone())
+                .flatten()
+        });
         index.insert(
             key,
             ExternalProviderTranscriptIndexEntry {
@@ -396,8 +444,52 @@ fn remember_provider_observed_turns(
                 path: path.to_path_buf(),
                 len: fingerprint.len,
                 modified_at_ms: fingerprint.modified_at_ms,
+                discovery_record,
                 last_observed_offset: fingerprint.len,
                 observed_turns: Some(turns),
+            },
+        );
+    }
+}
+
+fn remember_provider_discovery_record(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+    record: ExternalProviderSessionRecord,
+) {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let path_key = (provider.to_string(), path.to_path_buf());
+    if let Ok(mut index) = provider_transcript_path_index().lock() {
+        let previous = index.get(&key).filter(|existing| {
+            existing.path == path && fingerprint.len >= existing.last_observed_offset
+        });
+        let observed_turns = previous.and_then(|existing| existing.observed_turns.clone());
+        let last_observed_offset = observed_turns
+            .as_ref()
+            .and_then(|_| previous.map(|existing| existing.last_observed_offset))
+            .unwrap_or(0);
+        index.insert(
+            key,
+            ExternalProviderTranscriptIndexEntry {
+                provider_session_id: provider_session_id.to_string(),
+                path: path.to_path_buf(),
+                len: fingerprint.len,
+                modified_at_ms: fingerprint.modified_at_ms,
+                discovery_record: Some(record.clone()),
+                last_observed_offset,
+                observed_turns,
+            },
+        );
+    }
+    if let Ok(mut index) = provider_transcript_discovery_path_index().lock() {
+        index.insert(
+            path_key,
+            ExternalProviderTranscriptDiscoveryPathEntry {
+                len: fingerprint.len,
+                modified_at_ms: fingerprint.modified_at_ms,
+                record,
             },
         );
     }
@@ -582,6 +674,10 @@ fn collect_file_candidates(
 }
 
 fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> {
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(record) = cached_provider_discovery_record_for_path("codex", path, fingerprint) {
+        return Some(record);
+    }
     let lines = read_jsonl_values(path);
     let mut provider_session_id = None;
     let mut worktree_path = None;
@@ -610,18 +706,25 @@ fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> 
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
-    remember_provider_transcript_path("codex", &provider_session_id, path);
     let capabilities = observed_capabilities(true);
-    Some(record_from_parts(
+    let record = record_from_parts(
         "codex",
-        provider_session_id,
+        provider_session_id.clone(),
         first_prompt,
         worktree_path,
         created_at_ms,
-        file_modified_ms(path),
+        fingerprint.modified_at_ms,
         account_profile,
         capabilities,
-    ))
+    );
+    remember_provider_discovery_record(
+        "codex",
+        &provider_session_id,
+        path,
+        fingerprint,
+        record.clone(),
+    );
+    Some(record)
 }
 
 fn read_codex_observed_turns(
@@ -967,6 +1070,10 @@ fn codex_session_id_from_values(lines: &[Value]) -> Option<String> {
 }
 
 fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> {
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(record) = cached_provider_discovery_record_for_path("claude", path, fingerprint) {
+        return Some(record);
+    }
     let lines = read_jsonl_values(path);
     let mut provider_session_id = None;
     let mut worktree_path = None;
@@ -987,18 +1094,25 @@ fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord>
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
-    remember_provider_transcript_path("claude", &provider_session_id, path);
     let capabilities = observed_capabilities(true);
-    Some(record_from_parts(
+    let record = record_from_parts(
         "claude",
-        provider_session_id,
+        provider_session_id.clone(),
         first_prompt,
         worktree_path,
         created_at_ms,
-        file_modified_ms(path),
+        fingerprint.modified_at_ms,
         None,
         capabilities,
-    ))
+    );
+    remember_provider_discovery_record(
+        "claude",
+        &provider_session_id,
+        path,
+        fingerprint,
+        record.clone(),
+    );
+    Some(record)
 }
 
 fn read_claude_observed_turns(
@@ -1468,11 +1582,14 @@ fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRec
     if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
         return parse_opencode_jsonl(path);
     }
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(record) = cached_provider_discovery_record_for_path("opencode", path, fingerprint) {
+        return Some(record);
+    }
     let payload = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<Value>(&payload).ok()?;
     let provider_session_id = string_field(&value, &["id", "sessionID", "sessionId", "session_id"])
         .or_else(|| file_stem(path))?;
-    remember_provider_transcript_path("opencode", &provider_session_id, path);
     let title = string_field(&value, &["title", "name"]);
     let first_prompt = title.clone().or_else(|| opencode_user_prompt(&value));
     let worktree_path = string_field(&value, &["cwd", "path", "workspace"]);
@@ -1480,18 +1597,26 @@ fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRec
         .and_then(|timestamp| parse_timestamp_millis(&timestamp));
     let last_modified_at_ms = string_field(&value, &["updated", "updatedAt", "timeUpdated"])
         .and_then(|timestamp| parse_timestamp_millis(&timestamp))
-        .unwrap_or_else(|| file_modified_ms(path));
+        .unwrap_or(fingerprint.modified_at_ms);
     let capabilities = observed_capabilities(true);
-    Some(record_from_parts(
+    let record = record_from_parts(
         "opencode",
-        provider_session_id,
+        provider_session_id.clone(),
         first_prompt,
         worktree_path,
         created_at_ms,
         last_modified_at_ms,
         None,
         capabilities,
-    ))
+    );
+    remember_provider_discovery_record(
+        "opencode",
+        &provider_session_id,
+        path,
+        fingerprint,
+        record.clone(),
+    );
+    Some(record)
 }
 
 fn read_opencode_observed_turns(
@@ -1839,6 +1964,10 @@ fn opencode_metadata_text(label: &str, payload: &Value) -> String {
 }
 
 fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(record) = cached_provider_discovery_record_for_path("opencode", path, fingerprint) {
+        return Some(record);
+    }
     let lines = read_jsonl_values(path);
     let mut provider_session_id = None;
     let mut worktree_path = None;
@@ -1860,16 +1989,24 @@ fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
     let capabilities = observed_capabilities(true);
-    Some(record_from_parts(
+    let record = record_from_parts(
         "opencode",
-        provider_session_id,
+        provider_session_id.clone(),
         first_prompt,
         worktree_path,
         created_at_ms,
-        file_modified_ms(path),
+        fingerprint.modified_at_ms,
         None,
         capabilities,
-    ))
+    );
+    remember_provider_discovery_record(
+        "opencode",
+        &provider_session_id,
+        path,
+        fingerprint,
+        record.clone(),
+    );
+    Some(record)
 }
 
 fn discover_opencode_sqlite_sessions(root: &Path) -> Vec<ExternalProviderSessionRecord> {
@@ -2785,6 +2922,88 @@ mod tests {
         assert_eq!(signature.files.len(), 1);
         assert_eq!(signature.files[0].provider, "codex");
         assert_eq!(signature.files[0].path, transcript);
+    }
+
+    #[test]
+    fn discovers_unchanged_jsonl_sessions_from_cached_records() {
+        let temp = temp_dir("provider-discovery-record-cache");
+        let root = temp.path();
+        let codex_dir = root.join("codex").join("sessions");
+        let claude_dir = root.join("claude").join("projects").join("-repo");
+        let opencode_dir = root.join("opencode").join("sessions");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::create_dir_all(&opencode_dir).unwrap();
+        let codex_transcript = codex_dir.join("codex-record-cache.jsonl");
+        fs::write(
+            &codex_transcript,
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-record-cache\",\"cwd\":\"/repo\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Cache Codex discovery summary.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            claude_dir.join("claude-record-cache.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"u-record-cache\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Cache Claude discovery summary.\"}]},\"cwd\":\"/repo\",\"sessionId\":\"claude-record-cache\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            opencode_dir.join("opencode-record-cache.jsonl"),
+            concat!(
+                "{\"sessionID\":\"opencode-record-cache\",\"id\":\"u-record-cache\",\"role\":\"user\",\"content\":\"Cache OpenCode discovery summary.\",\"createdAt\":\"2026-03-01T00:00:01.000Z\"}\n",
+            ),
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        assert_eq!(
+            discover_codex_external_sessions(&root.join("codex")).len(),
+            1
+        );
+        assert_eq!(
+            discover_claude_external_sessions(&root.join("claude")).len(),
+            1
+        );
+        assert_eq!(
+            discover_opencode_external_sessions(&root.join("opencode")).len(),
+            1
+        );
+        assert_eq!(jsonl_prefix_read_count(), 3);
+
+        reset_jsonl_read_counts();
+        assert_eq!(
+            discover_codex_external_sessions(&root.join("codex")).len(),
+            1
+        );
+        assert_eq!(
+            discover_claude_external_sessions(&root.join("claude")).len(),
+            1
+        );
+        assert_eq!(
+            discover_opencode_external_sessions(&root.join("opencode")).len(),
+            1
+        );
+        assert_eq!(jsonl_prefix_read_count(), 0);
+
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&codex_transcript)
+            .unwrap();
+        writeln!(
+            file,
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Codex discovery cache invalidated.\"}}]}}}}"
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        assert_eq!(
+            discover_codex_external_sessions(&root.join("codex")).len(),
+            1
+        );
+        assert_eq!(jsonl_prefix_read_count(), 1);
     }
 
     #[test]
