@@ -187,14 +187,15 @@ test("buildCommandCenterItems surfaces local provider catalog fallback in select
 })
 
 test("buildCommandCenterItems includes workspace live sync subcommands", () => {
-  const items = buildCommandCenterItems("/workspace sync", {
+  const context = {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
-  })
+  } as const
+  const items = buildCommandCenterItems("/workspace sync", context)
   const values = new Set(items.map((item) => item.value))
 
   assert.equal(values.has("/workspace sync status"), true)
@@ -218,6 +219,13 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync default ")?.description, "Set default live sync for new sessions without changing the current session")
+  assert.equal(buildCommandCenterItems("/managed write fencing", context).some((item) => item.value === "/workspace "), true)
+  assert.equal(buildCommandCenterItems("/workspace managed write fencing", context).some((item) => item.value === "/workspace sync managed"), true)
+  assert.equal(buildCommandCenterItems("/workspace turn-end sync", context).some((item) => item.value === "/workspace sync tracked"), true)
+  assert.equal(buildCommandCenterItems("/sync off by default", context).some((item) => item.value === "/workspace "), true)
+  assert.equal(buildCommandCenterItems("/workspace disable live sync", context).some((item) => item.value === "/workspace sync off"), true)
+  assert.equal(buildCommandCenterItems("/workspace sync another repo", context).some((item) => item.value === "/workspace sync link "), true)
+  assert.equal(buildCommandCenterItems("/workspace sync mode history", context).some((item) => item.value === "/workspace sync audit"), true)
 })
 
 test("buildCommandCenterItems suggests registered workflow names and run endpoints", () => {
