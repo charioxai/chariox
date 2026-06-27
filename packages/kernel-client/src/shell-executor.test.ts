@@ -423,7 +423,7 @@ test("executeShellCommand renders attached session runtime context before kernel
   const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /^session runtime:\n  session: session-1\n  home kernel: home-kernel-1@home-machine-1\n  owner: user-1\n  agent: agent-1\nkernel health/)
+  assert.match(result.message ?? "", /^session runtime:\n  session: session-1\n  home kernel: home-kernel-1@home-machine-1\n  owner: user-1\n  authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools\n  agent: agent-1\nkernel health/)
   assert.deepEqual(fake.requests, [
     { GetDaemonHealth: null },
     { GetSessionState: { session_id: "session-1" } },
@@ -446,7 +446,7 @@ test("executeShellCommand keeps kernel health available when session runtime loo
   const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /^session runtime:\n  session: session-missing\n  home kernel: unknown\n  lookup: session not found\nkernel health/)
+  assert.match(result.message ?? "", /^session runtime:\n  session: session-missing\n  home kernel: unknown\n  authority: unknown until session state is available\n  lookup: session not found\nkernel health/)
 })
 
 test("executeShellCommand renders shell-local context and pwd", async () => {

@@ -1955,6 +1955,7 @@ async fn get_session_state_projection_tracks_prompt_cancellation_without_app_loc
     let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment.id().to_string(),
+        target_agent_id: None,
     });
     let cancel_command = KernelCommand::from_local_request(
         "cmd-cancel-state-projection",
@@ -2065,6 +2066,7 @@ async fn prompt_cancel_uses_agent_runtime_projection_when_session_projection_is_
     let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment.id().to_string(),
+        target_agent_id: None,
     });
     let cancel_command = KernelCommand::from_local_request(
         "cmd-cancel-owner-projection",

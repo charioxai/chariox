@@ -113,11 +113,12 @@ export function completePromptRequest(sessionId: string) {
   }
 }
 
-export function cancelActivePromptRequest(sessionId: string, attachmentId: string) {
+export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
+      ...(targetAgentId ? { target_agent_id: targetAgentId } : {}),
     },
   }
 }

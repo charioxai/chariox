@@ -90,6 +90,7 @@ async function kernelHealthRuntimeContext(
       `  session: ${session.id}`,
       `  home kernel: ${formatHomeKernel(session)}`,
       `  owner: ${session.owner_user_id?.trim() || "-"}`,
+      "  authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools",
       `  agent: ${context.agentId ?? "-"}`,
     ].join("\n")
   } catch (error) {
@@ -98,6 +99,7 @@ async function kernelHealthRuntimeContext(
       "session runtime:",
       `  session: ${context.sessionId}`,
       "  home kernel: unknown",
+      "  authority: unknown until session state is available",
       `  lookup: ${message || "failed"}`,
     ].join("\n")
   }

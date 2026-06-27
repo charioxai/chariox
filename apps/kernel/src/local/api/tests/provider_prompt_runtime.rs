@@ -1446,6 +1446,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
             CancelActivePromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
+                target_agent_id: None,
             },
         ))
         .expect("cancel should resolve the single active agent")
@@ -1464,6 +1465,99 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
             .clone()
     });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(prompt_agent.id())
+            .map(|prompt| prompt.status()),
+        Some(crate::session::PromptStatus::Cancelling)
+    );
+}
+
+#[test]
+fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_active() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    for (agent, prompt_text) in [
+        (&default_agent, "default running"),
+        (&prompt_agent, "prompt-agent running"),
+    ] {
+        match harness
+            .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                target_agent_id: Some(agent.id().to_string()),
+                prompt: prompt_text.to_string(),
+                attachments: Vec::new(),
+            }))
+            .expect("prompt submit should start")
+        {
+            LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Started { prompt },
+                ..
+            } => assert_eq!(prompt.target_agent_id(), agent.id()),
+            other => panic!("unexpected local response: {other:?}"),
+        }
+    }
+
+    let _ = harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+        }))
+        .expect("focus should stay on the default agent");
+
+    match harness
+        .dispatch(LocalDaemonRequest::CancelActivePrompt(
+            CancelActivePromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                target_agent_id: Some(prompt_agent.id().to_string()),
+            },
+        ))
+        .expect("cancel should use the explicit target agent")
+    {
+        LocalDaemonResponse::PromptCancelled { cancellation } => {
+            assert_eq!(cancellation.prompt.target_agent_id(), prompt_agent.id());
+            assert!(cancellation.started_next.is_none());
+        }
+        other => panic!("unexpected local response: {other:?}"),
+    }
+
+    let session_state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should still exist")
+            .clone()
+    });
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(default_agent.id())
+            .map(|prompt| prompt.status()),
+        Some(crate::session::PromptStatus::Running)
+    );
     assert_eq!(
         session_state
             .active_prompt_for_agent(prompt_agent.id())
@@ -1711,6 +1805,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
             CancelActivePromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
+                target_agent_id: None,
             },
         ))
         .expect("cancel should succeed");

@@ -158,6 +158,7 @@ async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_
     let request = CancelActivePromptRequest {
         session_id: session_id.clone(),
         attachment_id,
+        target_agent_id: None,
     };
     let local_request = LocalDaemonRequest::CancelActivePrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -803,6 +804,7 @@ async fn prompt_cancel_uses_owned_runtime_state_for_pty_prompt_without_app_lock(
     let request = CancelActivePromptRequest {
         session_id: session_id.clone(),
         attachment_id,
+        target_agent_id: None,
     };
     let local_request = LocalDaemonRequest::CancelActivePrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(

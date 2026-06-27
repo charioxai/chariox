@@ -19,6 +19,7 @@ pub struct CompletePromptRequest {
 pub struct CancelActivePromptRequest {
     pub session_id: String,
     pub attachment_id: String,
+    pub target_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

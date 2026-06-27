@@ -111,9 +111,12 @@ impl AgentRuntime {
         request: crate::local::CancelActivePromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller_user_id = command_agent_actor_user_id(command);
-        let agent_id = self
-            .resolve_active_prompt_agent_id(&request.session_id)
-            .await?;
+        let agent_id = if let Some(target_agent_id) = request.target_agent_id.as_deref() {
+            target_agent_id.to_string()
+        } else {
+            self.resolve_active_prompt_agent_id(&request.session_id)
+                .await?
+        };
         self.store
             .ensure_agent_owner(&agent_id, &caller_user_id, "cancel active prompt")
             .await?;

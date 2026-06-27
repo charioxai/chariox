@@ -136,9 +136,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             metadata
         }
         LocalDaemonRequest::CancelActivePrompt(request) => {
-            LocalRequestMetadata::new("prompt.cancel", Interactive)
+            let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
-                .attachment(&request.attachment_id)
+                .attachment(&request.attachment_id);
+            if let Some(agent_id) = request.target_agent_id.as_deref() {
+                metadata = metadata.agent(agent_id);
+            }
+            metadata
         }
         LocalDaemonRequest::SteerQueuedPrompt(request) => {
             LocalRequestMetadata::new("prompt.queued.steer", Interactive)
