@@ -304,6 +304,25 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn spawn_agents(
+        &self,
+        requests: Vec<crate::agent::CreateAgentRequest>,
+    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        if requests.iter().all(|request| request.kernel_ref.is_none()) {
+            let mut prepared_requests = Vec::with_capacity(requests.len());
+            for request in requests {
+                prepared_requests.push(self.prepare_local_agent_worktree_placement(request)?);
+            }
+            return self.owned.spawn_agents(prepared_requests);
+        }
+
+        let mut agents = Vec::with_capacity(requests.len());
+        for request in requests {
+            agents.push(self.spawn_agent(request).await?);
+        }
+        Ok(agents)
+    }
+
     fn prepare_local_agent_worktree_placement(
         &self,
         mut request: crate::agent::CreateAgentRequest,

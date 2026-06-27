@@ -9,6 +9,14 @@ impl KernelRuntimeOwnedState {
         self.agent_store.create_agent(request, &mut sessions)
     }
 
+    pub(super) fn spawn_agents(
+        &self,
+        requests: Vec<crate::agent::CreateAgentRequest>,
+    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        let mut sessions = self.session_store.write();
+        self.agent_store.create_agents(requests, &mut sessions)
+    }
+
     pub(super) fn ensure_agent_owner(
         &self,
         agent_id: &str,

@@ -1,5 +1,7 @@
 //! Agent-specific session-store request adapters.
 
+use std::collections::HashMap;
+
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
@@ -360,29 +362,144 @@ impl SessionRuntimeStore {
                 projection_action,
             );
         }
-        let mut agents = Vec::with_capacity(request.agents.len());
+        let session = match self.state.session_snapshot(&request.session_id).await {
+            Ok(session) => session,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        let defaults = session.agent_defaults();
+        let default_provider = defaults.provider.clone();
+        let default_model = defaults.model.clone();
+        let default_effort = defaults.effort.clone();
+        let default_account_profile = defaults.account_profile.clone();
+        let default_execution_mode = defaults.execution_mode;
+        let default_permission_level = defaults.permission_level;
+        let workspace_id = session.workspace_id().to_string();
+        let default_worktree_id = session.worktree_id().to_string();
+
+        let mut slice_kernel_refs = HashMap::<String, String>::new();
+        let mut create_requests = Vec::with_capacity(request.agents.len());
+        let mut slice_refs_for_agents = Vec::with_capacity(request.agents.len());
         for item in request.agents {
-            let spawn_request = item.into_spawn_agent_request(request.session_id.clone());
-            let (result, _) = self
-                .spawn_agent(
-                    spawn_request,
-                    caller_user_id.clone(),
-                    caller_metaagent_id.clone(),
-                )
-                .await;
-            match result {
-                Ok(LocalDaemonResponse::AgentSpawned { agent }) => agents.push(agent),
-                Ok(other) => {
-                    return self
-                        .with_session_projection_action_result(Err(DaemonError::LocalTransport {
-                            operation: "agents.spawn",
-                            message: format!("unexpected spawn response: {other:?}"),
-                        }))
-                        .await;
+            if item.metaagent {
+                return self
+                    .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                        operation: "agents.spawn",
+                        message: "creating separate metaagents is deprecated; send `/meta <task>` to a regular agent to enter meta mode".to_string(),
+                    }))
+                    .await;
+            }
+            if item.kernel_ref.is_some() && item.slice_ref.is_some() {
+                return self
+                    .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                        operation: "agents.spawn",
+                        message: "use either kernel_ref or slice_ref, not both".to_string(),
+                    }))
+                    .await;
+            }
+
+            let model = item.model.or_else(|| default_model.clone());
+            let effort = item.effort.or_else(|| default_effort.clone());
+            let execution_mode = item.execution_mode.or(default_execution_mode);
+            let permission_level = item.permission_level.or(default_permission_level);
+            let requested_worktree_for_scope = item.worktree_id.clone();
+            let slice_ref_for_agent = item.slice_ref.clone();
+            let slice_kernel_ref = match item.slice_ref {
+                Some(slice_ref) => {
+                    let requested_worktree_id = requested_worktree_for_scope
+                        .as_deref()
+                        .unwrap_or(default_worktree_id.as_str());
+                    if let Err(error) = self
+                        .state
+                        .ensure_slice_worktree_scope(
+                            &slice_ref,
+                            &workspace_id,
+                            requested_worktree_id,
+                        )
+                        .await
+                    {
+                        return self.with_session_projection_action_result(Err(error)).await;
+                    }
+                    match slice_kernel_refs.get(&slice_ref) {
+                        Some(kernel_ref) => Some(kernel_ref.clone()),
+                        None => {
+                            match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
+                                Ok(kernel_ref) => {
+                                    slice_kernel_refs.insert(slice_ref, kernel_ref.clone());
+                                    Some(kernel_ref)
+                                }
+                                Err(error) => {
+                                    return self
+                                        .with_session_projection_action_result(Err(error))
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                 }
-                Err(error) => {
+                None => None,
+            };
+
+            let mut create_request = CreateAgentRequest::new(
+                &request.session_id,
+                item.provider.unwrap_or_else(|| default_provider.clone()),
+            )
+            .with_owner_user_id(caller_user_id.clone());
+            if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
+                create_request = create_request.with_controlled_by_metaagent_id(metaagent_id);
+            }
+            if let Some(alias) = item.alias {
+                create_request = create_request.with_alias(alias);
+            }
+            if let Some(model) = model {
+                create_request = create_request.with_model(model);
+            }
+            if let Some(effort) = effort {
+                create_request = create_request.with_effort(effort);
+            }
+            if let Some(account_profile) = default_account_profile.clone() {
+                create_request = create_request.with_account_profile(account_profile);
+            }
+            if let Some(execution_mode) = execution_mode {
+                create_request = create_request.with_execution_mode_override(execution_mode);
+            }
+            if let Some(permission_level) = permission_level {
+                create_request = create_request.with_permission_level_override(permission_level);
+            }
+            if let Some(worktree_id) = item.worktree_id {
+                create_request = create_request.with_worktree(worktree_id);
+            }
+            if let Some(kernel_ref) = item.kernel_ref.or(slice_kernel_ref) {
+                create_request = create_request.with_kernel(kernel_ref);
+            }
+            if let Some(placement) = item.worktree_placement {
+                create_request = create_request.with_worktree_placement(placement);
+            }
+            create_requests.push(create_request);
+            slice_refs_for_agents.push(slice_ref_for_agent);
+        }
+        let agents = match self.state.spawn_agents(create_requests).await {
+            Ok(agents) => agents,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        for (agent, slice_ref) in agents.iter().zip(slice_refs_for_agents.iter()) {
+            if let Some(slice_ref) = slice_ref {
+                if let Err(error) = self
+                    .state
+                    .attach_slice_agent(slice_ref, agent.session_id(), agent.id())
+                    .await
+                {
                     return self.with_session_projection_action_result(Err(error)).await;
                 }
+            }
+            if caller_metaagent_id.is_none() && !agent.is_metaagent() {
+                let _ = self
+                    .state
+                    .inject_metaagent_agent_lifecycle_event_for_agent(
+                        agent.session_id(),
+                        agent,
+                        "agent.spawned",
+                    )
+                    .await;
             }
         }
         self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {

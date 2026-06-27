@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -272,7 +273,6 @@ impl TerminalStreamStore {
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .output_records()
-            .to_vec()
     }
 
     pub fn notice_records(&self) -> Vec<RuntimeNoticeRecord> {
@@ -377,7 +377,10 @@ impl TerminalStreamStore {
 #[derive(Debug, Clone, Default)]
 pub struct TerminalStreamService {
     input_records: Vec<TerminalInputRecord>,
-    output_records: Vec<TerminalOutputRecord>,
+    output_records: BTreeMap<u64, TerminalOutputRecord>,
+    pending_output_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
+    next_output_record_id: u64,
+    last_output_record_id: Option<u64>,
     notice_records: Vec<RuntimeNoticeRecord>,
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
@@ -474,7 +477,7 @@ impl TerminalStreamService {
         };
 
         if !self.try_coalesce_output_record(&record) {
-            self.output_records.push(record.clone());
+            self.push_output_record(record.clone());
         }
         self.enforce_pending_output_record_limits();
         self.refresh_health();
@@ -504,7 +507,7 @@ impl TerminalStreamService {
             };
 
             if !self.try_coalesce_output_record(&record) {
-                self.output_records.push(record.clone());
+                self.push_output_record(record.clone());
             }
             records.push(record);
         }
@@ -538,18 +541,35 @@ impl TerminalStreamService {
         };
 
         if !self.try_coalesce_output_record(&record) {
-            self.output_records.push(record.clone());
+            self.push_output_record(record.clone());
         }
         self.enforce_pending_output_record_limits();
         self.refresh_health();
         record
     }
 
+    fn push_output_record(&mut self, record: TerminalOutputRecord) -> u64 {
+        let record_id = self.next_output_record_id;
+        self.next_output_record_id = self.next_output_record_id.saturating_add(1);
+        for attachment_id in &record.pending_recipient_attachment_ids {
+            self.pending_output_by_attachment
+                .entry((record.session_id.clone(), attachment_id.clone()))
+                .or_default()
+                .push_back(record_id);
+        }
+        self.output_records.insert(record_id, record);
+        self.last_output_record_id = Some(record_id);
+        record_id
+    }
+
     fn try_coalesce_output_record(&mut self, record: &TerminalOutputRecord) -> bool {
         if self.output_coalesce_byte_limit == 0 || !is_coalescible_output_kind(&record.kind) {
             return false;
         }
-        let Some(previous) = self.output_records.last_mut() else {
+        let Some(previous_id) = self.last_output_record_id else {
+            return false;
+        };
+        let Some(previous) = self.output_records.get_mut(&previous_id) else {
             return false;
         };
         if !is_coalescible_output_kind(&previous.kind)
@@ -599,8 +619,8 @@ impl TerminalStreamService {
         &self.input_records
     }
 
-    pub fn output_records(&self) -> &[TerminalOutputRecord] {
-        &self.output_records
+    pub fn output_records(&self) -> Vec<TerminalOutputRecord> {
+        self.output_records.values().cloned().collect()
     }
 
     pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
@@ -629,77 +649,126 @@ impl TerminalStreamService {
     ) -> Vec<TerminalOutputRecord> {
         let mut drained = Vec::new();
         let mut drained_json_bytes: usize = 2;
-        for record in &mut self.output_records {
-            if record.session_id == session_id
-                && record
-                    .pending_recipient_attachment_ids
-                    .iter()
-                    .any(|id| id == attachment_id)
-            {
-                let scoped = scoped_output_record(record, attachment_id);
-                let scoped_json_bytes = terminal_output_record_json_bytes(&scoped);
-                let candidate_json_bytes = if drained.is_empty() {
-                    2_usize.saturating_add(scoped_json_bytes)
-                } else {
-                    drained_json_bytes
-                        .saturating_add(1)
-                        .saturating_add(scoped_json_bytes)
-                };
-                if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
-                    break;
-                }
-                drained_json_bytes = candidate_json_bytes;
-                drained.push(scoped);
+        let key = (session_id.to_string(), attachment_id.to_string());
+        loop {
+            let Some(record_id) = self
+                .pending_output_by_attachment
+                .get(&key)
+                .and_then(|queue| queue.front().copied())
+            else {
+                break;
+            };
+            let Some(record) = self.output_records.get(&record_id) else {
+                self.pop_pending_output_queue_front(&key);
+                continue;
+            };
+            let scoped = scoped_output_record(record, attachment_id);
+            let scoped_json_bytes = terminal_output_record_json_bytes(&scoped);
+            let candidate_json_bytes = if drained.is_empty() {
+                2_usize.saturating_add(scoped_json_bytes)
+            } else {
+                drained_json_bytes
+                    .saturating_add(1)
+                    .saturating_add(scoped_json_bytes)
+            };
+            if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
+                break;
+            }
+            self.pop_pending_output_queue_front(&key);
+            drained_json_bytes = candidate_json_bytes;
+            drained.push(scoped);
+            if let Some(record) = self.output_records.get_mut(&record_id) {
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
             }
+            self.remove_output_record_if_drained(record_id);
         }
 
-        self.output_records
-            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
         self.refresh_health();
         drained
+    }
+
+    fn pop_pending_output_queue_front(&mut self, key: &(String, String)) {
+        let empty = match self.pending_output_by_attachment.get_mut(key) {
+            Some(queue) => {
+                queue.pop_front();
+                queue.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            self.pending_output_by_attachment.remove(key);
+        }
+    }
+
+    fn remove_output_record_if_drained(&mut self, record_id: u64) {
+        let should_remove = self
+            .output_records
+            .get(&record_id)
+            .is_some_and(|record| record.pending_recipient_attachment_ids.is_empty());
+        if should_remove {
+            self.output_records.remove(&record_id);
+            if self.last_output_record_id == Some(record_id) {
+                self.last_output_record_id = self.output_records.keys().next_back().copied();
+            }
+        }
     }
 
     fn enforce_pending_output_record_limits(&mut self) {
         if self.pending_output_record_limit_per_attachment == 0 {
             let trimmed = self
-                .output_records
-                .iter()
-                .map(|record| record.pending_recipient_attachment_ids.len() as u64)
+                .pending_output_by_attachment
+                .values()
+                .map(|queue| queue.len() as u64)
                 .sum::<u64>();
             self.trimmed_pending_output_recipients = self
                 .trimmed_pending_output_recipients
                 .saturating_add(trimmed);
             self.output_records.clear();
+            self.pending_output_by_attachment.clear();
+            self.last_output_record_id = None;
             return;
         }
 
-        if self.output_records.len() <= self.pending_output_record_limit_per_attachment {
-            return;
-        }
-
-        let mut pending_counts = std::collections::BTreeMap::<String, usize>::new();
         let mut trimmed = 0_u64;
-        for record in self.output_records.iter_mut().rev() {
-            record
-                .pending_recipient_attachment_ids
-                .retain(|attachment_id| {
-                    let count = pending_counts.entry(attachment_id.clone()).or_default();
-                    *count += 1;
-                    let keep = *count <= self.pending_output_record_limit_per_attachment;
-                    if !keep {
-                        trimmed += 1;
-                    }
-                    keep
-                });
+        let keys = self
+            .pending_output_by_attachment
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            loop {
+                let should_trim =
+                    self.pending_output_by_attachment
+                        .get(&key)
+                        .is_some_and(|queue| {
+                            queue.len() > self.pending_output_record_limit_per_attachment
+                        });
+                if !should_trim {
+                    break;
+                }
+                let Some(record_id) = self
+                    .pending_output_by_attachment
+                    .get_mut(&key)
+                    .and_then(|queue| queue.pop_front())
+                else {
+                    break;
+                };
+                trimmed = trimmed.saturating_add(1);
+                if let Some(record) = self.output_records.get_mut(&record_id) {
+                    record
+                        .pending_recipient_attachment_ids
+                        .retain(|id| id != &key.1);
+                }
+                self.remove_output_record_if_drained(record_id);
+            }
         }
+        self.pending_output_by_attachment
+            .retain(|_, queue| !queue.is_empty());
         self.trimmed_pending_output_recipients = self
             .trimmed_pending_output_recipients
             .saturating_add(trimmed);
-        self.output_records
-            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
     }
 
     pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
@@ -791,8 +860,19 @@ impl TerminalStreamService {
     pub fn remove_session(&mut self, session_id: &str) {
         self.input_records
             .retain(|record| record.session_id != session_id);
-        self.output_records
-            .retain(|record| record.session_id != session_id);
+        let output_record_ids = self
+            .output_records
+            .iter()
+            .filter_map(|(record_id, record)| {
+                (record.session_id == session_id).then_some(*record_id)
+            })
+            .collect::<Vec<_>>();
+        for record_id in output_record_ids {
+            self.output_records.remove(&record_id);
+        }
+        self.pending_output_by_attachment
+            .retain(|(pending_session_id, _), _| pending_session_id != session_id);
+        self.last_output_record_id = self.output_records.keys().next_back().copied();
         self.notice_records
             .retain(|record| record.session_id != session_id);
         self.completion_records
@@ -802,13 +882,16 @@ impl TerminalStreamService {
 
     pub fn remove_attachment(&mut self, session_id: &str, attachment_id: &str) -> bool {
         let mut changed = false;
-        for record in &mut self.output_records {
-            if record.session_id == session_id {
-                let previous_len = record.pending_recipient_attachment_ids.len();
-                record
-                    .pending_recipient_attachment_ids
-                    .retain(|id| id != attachment_id);
-                changed |= record.pending_recipient_attachment_ids.len() != previous_len;
+        let key = (session_id.to_string(), attachment_id.to_string());
+        if let Some(record_ids) = self.pending_output_by_attachment.remove(&key) {
+            changed = true;
+            for record_id in record_ids {
+                if let Some(record) = self.output_records.get_mut(&record_id) {
+                    record
+                        .pending_recipient_attachment_ids
+                        .retain(|id| id != attachment_id);
+                }
+                self.remove_output_record_if_drained(record_id);
             }
         }
         for record in &mut self.notice_records {
@@ -829,8 +912,6 @@ impl TerminalStreamService {
                 changed |= record.pending_recipient_attachment_ids.len() != previous_len;
             }
         }
-        self.output_records
-            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
         self.notice_records.retain(|record| {
             if record.recipient_attachment_ids.is_empty() {
                 false

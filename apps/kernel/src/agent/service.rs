@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
@@ -35,6 +36,118 @@ impl AgentService {
         let agent = self.create_agent_for_session(request, &session)?;
         sessions.set_focused_agent(agent.session_id(), Some(agent.id().to_string()))?;
         Ok(agent)
+    }
+
+    pub fn create_agents(
+        &mut self,
+        requests: Vec<CreateAgentRequest>,
+        sessions: &mut SessionService,
+    ) -> Result<Vec<AgentInstance>, DaemonError> {
+        let Some(first) = requests.first() else {
+            return Ok(Vec::new());
+        };
+        let session_id = first.session_id.clone();
+        if requests
+            .iter()
+            .any(|request| request.session_id.as_str() != session_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "create agents",
+                message: "batch create requires all agents to target the same session".to_string(),
+            });
+        }
+
+        let session = sessions.get_session(&session_id)?;
+        if session.status() == SessionStatus::Ended {
+            return Err(DaemonError::SessionOperationNotAllowed {
+                session_id,
+                status: session.status(),
+                operation: "create agents",
+            });
+        }
+
+        let current_count = self.store.count_by_session(session.id());
+        let new_count = requests.len();
+        if current_count + new_count > session.max_agents() as usize {
+            return Err(DaemonError::AgentLimitReached {
+                session_id: session.id().to_string(),
+                max_agents: session.max_agents(),
+            });
+        }
+
+        let mut aliases = self
+            .store
+            .get_by_session(session.id())
+            .into_iter()
+            .filter_map(|agent| agent.alias().map(|alias| alias.to_lowercase()))
+            .collect::<HashSet<_>>();
+        for request in &requests {
+            if request.role == crate::agent::AgentRole::Meta {
+                return Err(DaemonError::LocalTransport {
+                    operation: "create agents",
+                    message: "creating separate metaagents is deprecated; create a regular agent and send `/meta <task>` to enter meta mode".to_string(),
+                });
+            }
+            if let Some(alias) = request.alias.as_deref() {
+                let normalized = alias.trim().to_lowercase();
+                if !aliases.insert(normalized) {
+                    return Err(DaemonError::AgentAliasConflict {
+                        session_id: session.id().to_string(),
+                        alias: alias.to_string(),
+                    });
+                }
+            }
+        }
+
+        let final_positions = calculate_agent_layout(current_count + new_count);
+        let mut created_ids = Vec::with_capacity(new_count);
+        for (index, request) in requests.into_iter().enumerate() {
+            let position = final_positions
+                .get(current_count + index)
+                .cloned()
+                .unwrap_or_else(|| GridPosition::new(0, 0, 1, 1));
+            let agent_ref = generate_agent_ref();
+            let mut agent = AgentInstance::new(
+                self.store.next_agent_id(),
+                agent_ref,
+                request.session_id,
+                request.alias,
+                request.provider,
+                request.model,
+                request.effort,
+                request.worktree_id,
+                position,
+            );
+            agent.set_owner_user_id(request.owner_user_id);
+            agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
+            agent.set_role(request.role);
+            agent.set_account_profile(request.account_profile);
+            agent.set_execution_mode_override(request.execution_mode_override);
+            agent.set_permission_level_override(request.permission_level_override);
+            created_ids.push(agent.id().to_string());
+            self.store.insert(agent);
+        }
+
+        let focused_agent_id = created_ids.last().cloned();
+        let mut session_agents = self.store.get_by_session(session.id());
+        recalculate_positions(&mut session_agents);
+        for agent in &session_agents {
+            if let Some(stored) = self.store.get_mut(agent.id()) {
+                stored.set_position(agent.position().clone());
+                let next_state = if Some(agent.id()) == focused_agent_id.as_deref() {
+                    AgentState::Focused
+                } else {
+                    AgentState::Idle
+                };
+                stored.set_state(next_state);
+            }
+        }
+        sessions.set_focused_agent(session.id(), focused_agent_id)?;
+
+        Ok(created_ids
+            .into_iter()
+            .filter_map(|agent_id| self.store.get(&agent_id).cloned())
+            .collect())
     }
 
     pub(crate) fn create_agent_for_session(
@@ -895,6 +1008,14 @@ impl AgentServiceStore {
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().create_agent(request, sessions)
+    }
+
+    pub fn create_agents(
+        &self,
+        requests: Vec<CreateAgentRequest>,
+        sessions: &mut SessionService,
+    ) -> Result<Vec<AgentInstance>, DaemonError> {
+        self.write().create_agents(requests, sessions)
     }
 
     pub(crate) fn create_agent_for_session(
