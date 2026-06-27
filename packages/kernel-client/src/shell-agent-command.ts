@@ -337,15 +337,15 @@ async function resolveMachineSpawnKernelRef(
   const response = await deps.client.send(listRemoteMachineKernelsRequest(machineRef))
   const kernels = expectVariant<{ kernels: RelayKernelPresence[] }>(response, "RemoteMachineKernelsListed").kernels
   if (kernels.length === 0) {
-    return { ok: false, message: `remote machine ${machineRef} has no live worker kernels; next: run machine kernels ${machineRef} or choose another worker` }
+    return { ok: false, message: `remote machine ${machineRef} has no live worker kernels; next: run /machine kernels ${machineRef}; reconnect that machine or choose another worker` }
   }
   const ready = kernels.filter((kernel) => remoteKernelReadiness(kernel) === "ready")
   if (ready.length === 0) {
-    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel; next: run machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker` }
+    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}; fix the listed readiness/account issue or choose another worker` }
   }
   const providerReady = ready.find((kernel) => (kernel.available_providers ?? []).includes(provider))
   if (!providerReady) {
-    return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider` }
+    return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: run /machine kernels ${machineRef}; choose a ready worker with ${provider}, configure/import its provider account, or change the agent provider` }
   }
   return { ok: true, kernelRef: providerReady.kernel_id }
 }

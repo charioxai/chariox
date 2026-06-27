@@ -830,6 +830,7 @@ test("executeShellCommand rejects machine spawn when no ready kernel supports th
 
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /no accepting kernel with provider codex/)
+  assert.match(result.message ?? "", /next: run \/machine kernels machine-1; choose a ready worker with codex, configure\/import its provider account, or change the agent provider/)
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
 
