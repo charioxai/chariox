@@ -42,6 +42,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn submit_leased_prompt_with_workflow_context(
         &mut self,
         leased_agent_id: &str,

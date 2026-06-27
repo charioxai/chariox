@@ -48,6 +48,7 @@ impl DaemonApp {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn fan_out_output(
         &mut self,
         session_id: &str,
@@ -156,6 +157,7 @@ impl DaemonApp {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
         let session = match self.sessions.get_session(session_id) {
             Ok(session) => session,
