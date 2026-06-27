@@ -71,7 +71,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         self,
         turns: &'turn [ObservedExternalProviderTurn],
         has_new_observations: bool,
-        arroba_owned_prompt_texts: &BTreeSet<String>,
+        arroba_owned_provider_turn_ids: &BTreeSet<String>,
     ) -> Option<&'turn ObservedExternalProviderTurn> {
         if self.latest_effective_turn_settles(turns) {
             return None;
@@ -104,9 +104,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
                     .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?,
             }
         };
-        if normalized_observed_prompt_text(&latest.text)
-            .is_some_and(|text| arroba_owned_prompt_texts.contains(&text))
-        {
+        if arroba_owned_provider_turn_ids.contains(&latest.provider_turn_id_or_fallback()) {
             return None;
         }
         Some(latest)
@@ -360,10 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn active_external_prompt_turn_filters_arroba_owned_prompt_texts() {
+    fn active_external_prompt_turn_filters_arroba_owned_provider_turn_ids() {
         let policy = ExternalProviderObservationPolicy::for_provider("claude");
         let mut arroba_owned = BTreeSet::new();
-        arroba_owned.insert("same prompt".to_string());
+        arroba_owned.insert("user-1".to_string());
 
         assert!(policy
             .active_external_prompt_turn(

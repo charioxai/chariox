@@ -776,23 +776,26 @@ fn append_observed_external_turns_for_attached_target_with_options(
             &external_merge_key_prefix,
         )?;
     let mut existing_entries_by_merge_key = history_index.external_entries_by_merge_key;
-    let mut arroba_owned_prompt_texts = history_index
+    let mut arroba_owned_prompt_text_counts = history_index
         .arroba_owned_prompts
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
-        .collect::<BTreeSet<_>>();
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, text| {
+            *counts.entry(text).or_default() += 1;
+            counts
+        });
     if let Some(prompt_state) = session.prompt_states().get(agent.id()) {
         if let Some(active_prompt) = prompt_state.active_prompt() {
             if active_prompt.is_arroba_owned() {
                 if let Some(text) = normalized_observed_prompt_text(active_prompt.prompt()) {
-                    arroba_owned_prompt_texts.insert(text);
+                    *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
                 }
             }
         }
         for queued_prompt in prompt_state.queued_prompts() {
             if queued_prompt.is_arroba_owned() {
                 if let Some(text) = normalized_observed_prompt_text(queued_prompt.prompt()) {
-                    arroba_owned_prompt_texts.insert(text);
+                    *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
                 }
             }
         }
@@ -802,6 +805,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
     let mut last_cursor = read.target.observed_cursor.clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
     let mut current_observed_turn_is_arroba_owned = false;
+    let mut arroba_owned_provider_turn_ids = BTreeSet::new();
     let candidate_turns =
         latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
     for turn in &candidate_turns {
@@ -815,8 +819,13 @@ fn append_observed_external_turns_for_attached_target_with_options(
             .unwrap_or_else(|| merge_turn_id.clone());
         let merge_key = turn.external_merge_key(&provider, &provider_session_id);
         if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
-            current_observed_turn_is_arroba_owned = normalized_observed_prompt_text(&turn.text)
-                .is_some_and(|text| arroba_owned_prompt_texts.contains(&text));
+            current_observed_turn_is_arroba_owned = consume_arroba_owned_prompt_text_match(
+                &mut arroba_owned_prompt_text_counts,
+                &turn.text,
+            );
+            if current_observed_turn_is_arroba_owned {
+                arroba_owned_provider_turn_ids.insert(merge_turn_id.clone());
+            }
         }
         if current_observed_turn_is_arroba_owned {
             last_cursor.last_observed_merge_key = Some(merge_key);
@@ -882,7 +891,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
         &read.target,
         &candidate_turns,
         active_relevant_appended > 0,
-        &arroba_owned_prompt_texts,
+        &arroba_owned_provider_turn_ids,
     );
     let latest_observation_settles = ExternalProviderObservationPolicy::for_provider(&provider)
         .latest_effective_turn_settles(&candidate_turns);
@@ -957,17 +966,37 @@ fn external_observed_history_entry_matches(
         && existing.external_observation == next.external_observation
 }
 
+fn consume_arroba_owned_prompt_text_match(
+    counts: &mut BTreeMap<String, usize>,
+    observed_text: &str,
+) -> bool {
+    let Some(text) = normalized_observed_prompt_text(observed_text) else {
+        return false;
+    };
+    let Some(count) = counts.get_mut(&text) else {
+        return false;
+    };
+    if *count == 0 {
+        return false;
+    }
+    *count -= 1;
+    if *count == 0 {
+        counts.remove(&text);
+    }
+    true
+}
+
 fn external_active_prompt_from_turns(
     target: &AttachedExternalObserverTarget,
     turns: &[crate::app::ObservedExternalProviderTurn],
     has_new_observations: bool,
-    arroba_owned_prompt_texts: &BTreeSet<String>,
+    arroba_owned_provider_turn_ids: &BTreeSet<String>,
 ) -> Option<PromptQueueItem> {
     let policy = ExternalProviderObservationPolicy::for_provider(&target.provider);
     let latest = policy.active_external_prompt_turn(
         turns,
         has_new_observations,
-        arroba_owned_prompt_texts,
+        arroba_owned_provider_turn_ids,
     )?;
     let provider_turn_id = latest.provider_turn_id_or_fallback();
     let external_prompt_id = crate::history::external_provider_observed_merge_key(
@@ -3811,6 +3840,98 @@ mod tests {
             cursor.last_observed_turn_id.as_deref(),
             Some("assistant-owned")
         );
+    }
+
+    #[test]
+    fn append_observed_external_turns_consumes_arroba_owned_prompt_matches_once() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        app.append_history_entry(
+            session.id(),
+            SessionHistoryEntry::user_prompt(
+                session.id(),
+                "attachment-1",
+                agent.id(),
+                "repeatable prompt",
+            ),
+        );
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import,
+        );
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "repeatable prompt".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "provider reply to arroba owned prompt".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-external".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "repeatable prompt".to_string(),
+                        observed_at_ms: Some(126),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-external".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "provider reply to external repeated prompt".to_string(),
+                        observed_at_ms: Some(168),
+                    },
+                ],
+            },
+        )
+        .expect("later repeated prompt should be observed as external");
+
+        assert_eq!(outcome.changed_count, 2);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].text, "repeatable prompt");
+        assert_eq!(entries[1].text, "repeatable prompt");
+        assert!(entries[1].is_external_provider_observed());
+        assert_eq!(
+            entries[1].merge_key.as_deref(),
+            Some("external:codex:thread-observed:user-external")
+        );
+        assert_eq!(
+            entries[2].text,
+            "provider reply to external repeated prompt"
+        );
+        assert_eq!(
+            entries[2].external_provider_turn_id.as_deref(),
+            Some("user-external")
+        );
+        let active_prompt = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .expect("latest repeated external prompt should be active");
+        assert_eq!(active_prompt.prompt_origin(), PromptOrigin::External);
+        assert_eq!(active_prompt.prompt(), "repeatable prompt");
     }
 
     #[test]
