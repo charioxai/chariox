@@ -60,6 +60,7 @@ function formatAgentListSessionContext(context: ShellAgentSessionContext): strin
   const parts = [
     `home kernel ${formatHomeKernel(context)}`,
     context.ownerUserId ? `owner ${context.ownerUserId}` : null,
+    "authority home-owned",
     `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}${formatLiveSyncScopeSuffix(context)}`,
   ].filter(Boolean)
   return `session runtime: ${parts.join("; ")}`
@@ -189,6 +190,7 @@ export function formatAgentInspectSummary(
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
+    "runtime authority: home owns session, prompts, grants, and live sync; workers execute leases and projected tools",
     `live sync: ${formatWorkspaceLiveSyncModeLabel(sessionContext.workspaceLiveSyncMode)}`,
     `live sync scope: ${formatLiveSyncScope(sessionContext)}`,
     `provider: ${agent.provider}`,

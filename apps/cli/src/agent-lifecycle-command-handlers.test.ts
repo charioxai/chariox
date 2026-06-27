@@ -84,7 +84,7 @@ test("agent list summary renders aliases and pluralization", () => {
       workspaceLiveSyncMode: "tracked",
       workspaceLiveSyncWorktree: "/repo",
     }),
-    /^session runtime: home kernel home-kernel@home-machine; owner user-1; live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) on \/repo\n1 agent:/,
+    /^session runtime: home kernel home-kernel@home-machine; owner user-1; authority home-owned; live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) on \/repo\n1 agent:/,
   )
 })
 
