@@ -21,6 +21,11 @@ use crate::runtime::command_latency::{
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::state::{KernelRuntimeState, ProviderLaunchStartOutcome};
 
+const DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY: usize = 8;
+const DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT: usize = 16;
+const DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT: usize = 64;
+const PROVIDER_CLI_BATCH_LAUNCH_LIMIT: usize = 16;
+
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchCommandExecutor {
     store: ProviderLaunchStore,
@@ -167,10 +172,8 @@ impl ProviderLaunchCommandExecutor {
                 failures: Vec::new(),
             });
         }
-        let max_concurrency = request
-            .max_concurrency
-            .unwrap_or(8)
-            .clamp(1, request.launches.len());
+        let max_concurrency =
+            provider_batch_launch_effective_concurrency(request.max_concurrency, &request.launches);
         let mut launches = request.launches;
         if let Err(error) = self
             .store
@@ -271,6 +274,35 @@ fn provider_batch_target_preflight_failures(
     }
 
     None
+}
+
+fn provider_batch_launch_effective_concurrency(
+    requested: Option<usize>,
+    launches: &[LaunchProviderRunRequest],
+) -> usize {
+    if launches.is_empty() {
+        return 0;
+    }
+    let requested = requested.unwrap_or(DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY);
+    let provider_limit = launches
+        .iter()
+        .map(provider_batch_launch_concurrency_limit)
+        .min()
+        .unwrap_or(DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT)
+        .max(1);
+    requested.clamp(1, launches.len()).min(provider_limit)
+}
+
+fn provider_batch_launch_concurrency_limit(launch: &LaunchProviderRunRequest) -> usize {
+    match launch.adapter_key.as_str() {
+        "dev-stub" => DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT,
+        "codex" | "opencode" | "claude" | "claude-code" => PROVIDER_CLI_BATCH_LAUNCH_LIMIT,
+        _ => match launch.provider.as_str() {
+            "dev-stub" => DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT,
+            "codex" | "opencode" | "claude" | "claude-code" => PROVIDER_CLI_BATCH_LAUNCH_LIMIT,
+            _ => DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT,
+        },
+    }
 }
 
 fn interleave_batch_launches_by_session(
@@ -512,6 +544,54 @@ mod tests {
                 (4, "session-b", Some("agent-b-2")),
                 (2, "session-a", Some("agent-a-3")),
             ]
+        );
+    }
+
+    #[test]
+    fn batch_launch_concurrency_respects_provider_caps() {
+        let codex_launches = (0..64)
+            .map(|index| {
+                let mut launch = test_launch("session-a", &format!("agent-{index}"));
+                launch.adapter_key = "codex".to_string();
+                launch.provider = "codex".to_string();
+                launch
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(50), &codex_launches),
+            PROVIDER_CLI_BATCH_LAUNCH_LIMIT
+        );
+
+        let dev_stub_launches = (0..64)
+            .map(|index| {
+                let mut launch = test_launch("session-a", &format!("stub-agent-{index}"));
+                launch.adapter_key = "dev-stub".to_string();
+                launch.provider = "dev-stub".to_string();
+                launch
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(50), &dev_stub_launches),
+            50
+        );
+    }
+
+    #[test]
+    fn batch_launch_concurrency_uses_smallest_provider_cap_for_mixed_batches() {
+        let mut launches = (0..40)
+            .map(|index| {
+                let mut launch = test_launch("session-a", &format!("agent-{index}"));
+                launch.adapter_key = "codex".to_string();
+                launch.provider = "codex".to_string();
+                launch
+            })
+            .collect::<Vec<_>>();
+        launches[0].adapter_key = "dev-stub".to_string();
+        launches[0].provider = "dev-stub".to_string();
+
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(40), &launches),
+            PROVIDER_CLI_BATCH_LAUNCH_LIMIT
         );
     }
 
