@@ -584,7 +584,12 @@ test("executeShellCommand context uses projected idle over stale legacy prompt s
       return {
         SessionState: {
           session: makeSession({
-            agents: [makeAgent({ id: "agent-1", agent_ref: "agent-1" })],
+            agents: [makeAgent({
+              id: "agent-1",
+              agent_ref: "agent-1",
+              state: "Working",
+              is_processing: true,
+            })],
             prompt_states: {
               "agent-1": {
                 active_prompt: {

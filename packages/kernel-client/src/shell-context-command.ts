@@ -74,7 +74,7 @@ function formatShellContext(
 ): string {
   const currentAgent = findCurrentAgent(context, session)
   const currentAgentId = currentAgent?.id ?? context.agentId ?? null
-  const currentAgentBusy = sessionAgentIsBusy(session, currentAgentId) || Boolean(currentAgent?.is_processing)
+  const currentAgentBusy = sessionAgentIsBusy(session, currentAgentId)
   const agentLabel = currentAgent
     ? `${currentAgent.agent_ref}${currentAgent.alias ? ` (${currentAgent.alias})` : ""}${currentAgentBusy ? " (busy)" : ""}`
     : `${context.agentId ?? "-"}${currentAgentBusy ? " (busy)" : ""}`
