@@ -32,6 +32,7 @@ import {
   formatSessionList,
   formatSessionMembers,
 } from "./shell-session-format.js"
+import { formatSessionRuntimeStatus } from "./shell-session-status-format.js"
 import {
   attachShellSession,
   resolveShellAttachmentId,
@@ -65,6 +66,21 @@ export async function executeSessionCommand(
         ok: true,
         message: formatSessionList(sessions, context.sessionId),
         data: { sessions },
+      }
+    }
+    case "status":
+    case "info":
+    case "inspect": {
+      const sessionId = args[0] ?? context.sessionId
+      if (!sessionId) {
+        return { ok: false, message: "usage: session status [session-ref]" }
+      }
+      const response = await deps.client.send(getSessionStateRequest(sessionId))
+      const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+      return {
+        ok: true,
+        message: formatSessionRuntimeStatus(session),
+        data: { session },
       }
     }
     case "new":
@@ -258,7 +274,7 @@ export async function executeSessionCommand(
       }
     }
     default:
-      return { ok: false, message: "usage: session list|new|attach|use|members|invite|join|revoke-invite|mode|permissions" }
+      return { ok: false, message: "usage: session list|status|new|attach|use|members|invite|join|revoke-invite|mode|permissions" }
   }
 }
 

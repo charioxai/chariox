@@ -38,6 +38,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invite\|join\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|off\|managed\|tracked\|default\|link/)
@@ -812,6 +813,56 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1@home-machine-1 - owner user-1 - authority home-owned - live sync managed \(selected workspace\/worktree only; other repositories unrestricted\) current/)
   assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - owner user-2 - authority home-owned - live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+})
+
+test("executeShellCommand shows current session runtime status", async () => {
+  const remoteAgent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "script", name: "release" }],
+    remote_extension_manifest_sync: {
+      state: "stale",
+      manifest_hash: "hash-1",
+      pending_revoke: false,
+      last_error: "worker offline",
+    },
+  })
+  const session = makeSession({
+    id: "session-1",
+    alias: "main",
+    host_daemon_id: "home-kernel",
+    host_machine_id: "home-machine",
+    owner_user_id: "alice",
+    worktree_id: "/repo/main",
+    workspace_live_sync_mode: "tracked",
+    focused_agent_id: remoteAgent.id,
+    agents: [remoteAgent],
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return { SessionState: { session } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/main", sessionId: "session-1" })
+
+  const result = await executeShellCommand(parseShellCommand("session status"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /^session runtime/)
+  assert.match(result.message ?? "", /session: main \(session-1\)/)
+  assert.match(result.message ?? "", /home kernel: home-kernel@home-machine/)
+  assert.match(result.message ?? "", /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
+  assert.match(result.message ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
+  assert.match(result.message ?? "", /home-proxy extensions: 1 agent, 1 sync issue, 0 pending revokes/)
+  assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
+  assert.match(result.message ?? "", /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
 
 test("executeShellCommand rejects deprecated metaagent spawns", async () => {
