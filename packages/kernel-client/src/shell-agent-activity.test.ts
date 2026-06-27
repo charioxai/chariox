@@ -186,7 +186,7 @@ test("sessionPromptWorkSummary ignores settled active turn statuses", () => {
   assert.deepEqual(sessionPromptWorkSummary(session), {
     active: 1,
     queued: 0,
-    busyAgents: 3,
+    busyAgents: 1,
   })
 })
 

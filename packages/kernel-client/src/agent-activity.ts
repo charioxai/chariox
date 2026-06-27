@@ -14,7 +14,7 @@ export function agentRuntimeActivityIsBusy(
     activity.busy === true
     || status === "working"
     || agentRuntimePromptStatusIsActive(promptStatus)
-    || activity.active_turn
+    || agentRuntimeActiveTurnIsBusy(activity.active_turn)
   ))
 }
 
@@ -39,4 +39,13 @@ export function agentRuntimePromptStatusIsActivePrompt(value: string | null): bo
   return value === "running"
     || value === "cancelling"
     || value === "settling"
+}
+
+function agentRuntimeActiveTurnIsBusy(activeTurn: unknown): boolean {
+  if (!activeTurn || typeof activeTurn !== "object" || Array.isArray(activeTurn)) {
+    return false
+  }
+  const rawStatus = (activeTurn as { readonly status?: unknown }).status
+  const status = normalizeAgentRuntimePromptStatus(typeof rawStatus === "string" ? rawStatus : null)
+  return status === null || agentRuntimePromptStatusIsActive(status)
 }
