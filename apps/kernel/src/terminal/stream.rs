@@ -342,6 +342,13 @@ impl TerminalStreamStore {
             .drain_output_records(session_id, attachment_id)
     }
 
+    pub fn has_pending_output_records(&self, session_id: &str, attachment_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .has_pending_output_records(session_id, attachment_id)
+    }
+
     pub fn record_assistant_message_completion(
         &self,
         session_id: &str,
@@ -915,6 +922,12 @@ impl TerminalStreamService {
 
         self.refresh_health();
         drained
+    }
+
+    fn has_pending_output_records(&self, session_id: &str, attachment_id: &str) -> bool {
+        self.pending_output_by_attachment
+            .get(&(session_id.to_string(), attachment_id.to_string()))
+            .is_some_and(|record_ids| !record_ids.is_empty())
     }
 
     fn remove_output_record_if_drained(&mut self, record_id: u64) {

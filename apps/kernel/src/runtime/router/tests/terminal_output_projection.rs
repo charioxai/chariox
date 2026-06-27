@@ -299,6 +299,88 @@ async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
 }
 
 #[tokio::test]
+async fn terminal_output_with_active_run_drains_buffer_before_provider_lane() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "cli-pump-active-buffered",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let provider_run_id = launch_test_provider(
+        &mut app,
+        &session_id,
+        agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    )
+    .id()
+    .to_string();
+    app.fan_out_output(
+        &session_id,
+        &provider_run_id,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        vec![attachment.id().to_string()],
+        b"active buffered output",
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+    let list_command = KernelCommand::from_local_request(
+        "cmd-pump-active-buffered-warm",
+        None,
+        None,
+        &list_request,
+    );
+    router
+        .dispatch(list_command, list_request)
+        .await
+        .expect("initial list should warm active provider projection");
+
+    let permit = router
+        .provider_runtime_lanes
+        .acquire(&provider_run_id)
+        .await;
+    let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+    });
+    let pump_command = KernelCommand::from_local_request(
+        "cmd-pump-active-buffered-lane",
+        None,
+        None,
+        &pump_request,
+    );
+    let pump_router = router.clone();
+    let pump_task =
+        tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+    let pump_response = timeout(Duration::from_millis(100), pump_task)
+        .await
+        .expect("buffered terminal output should drain before waiting on provider lane")
+        .expect("pump task should join")
+        .expect("pump should succeed");
+    drop(permit);
+
+    match pump_response {
+        LocalDaemonResponse::TerminalOutput { records } => {
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].session_id, session_id);
+            assert_eq!(records[0].bytes, b"active buffered output".to_vec());
+        }
+        _ => panic!("unexpected pump response"),
+    }
+}
+
+#[tokio::test]
 async fn terminal_output_with_projected_inactive_run_drains_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

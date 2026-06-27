@@ -84,6 +84,16 @@ impl TerminalOutputExecutor {
                     .drain_output_records(&request.session_id, &request.attachment_id),
             });
         }
+        if self
+            .terminal_stream
+            .has_pending_output_records(&request.session_id, &request.attachment_id)
+        {
+            return Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
+            });
+        }
 
         let mut permits = Vec::new();
         for provider_run_id in &provider_run_ids {
