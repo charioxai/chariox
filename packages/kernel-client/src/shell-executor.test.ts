@@ -865,6 +865,26 @@ test("executeShellCommand shows current session runtime status", async () => {
   assert.match(result.message ?? "", /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
 
+test("executeShellCommand resolves session status refs before rendering", async () => {
+  const session = makeSession({
+    id: "session-2",
+    alias: "release",
+    host_daemon_id: "home-kernel",
+    host_machine_id: "home-machine",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ResolveSession: { session_ref: "release", workspace_id: "/repo" } })
+    return { SessionResolved: { session } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/main", sessionId: "session-1" })
+
+  const result = await executeShellCommand(parseShellCommand("session status release"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /session: release \(session-2\)/)
+  assert.equal(fake.requests.length, 1)
+})
+
 test("executeShellCommand rejects deprecated metaagent spawns", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

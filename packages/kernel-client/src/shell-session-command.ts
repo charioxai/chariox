@@ -71,11 +71,23 @@ export async function executeSessionCommand(
     case "status":
     case "info":
     case "inspect": {
-      const sessionId = args[0] ?? context.sessionId
-      if (!sessionId) {
+      const sessionRef = args[0]
+      if (args.length > 1) {
         return { ok: false, message: "usage: session status [session-ref]" }
       }
-      const response = await deps.client.send(getSessionStateRequest(sessionId))
+      if (sessionRef) {
+        const response = await deps.client.send(resolveSessionRequest(sessionRef, context.workspace))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved").session
+        return {
+          ok: true,
+          message: formatSessionRuntimeStatus(session),
+          data: { session },
+        }
+      }
+      if (!context.sessionId) {
+        return { ok: false, message: "usage: session status [session-ref]" }
+      }
+      const response = await deps.client.send(getSessionStateRequest(context.sessionId))
       const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
       return {
         ok: true,

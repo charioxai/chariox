@@ -112,6 +112,26 @@ test("session status renders home authority and runtime blockers", async () => {
   assert.deepEqual(footers, ["info:session runtime status"])
 })
 
+test("session status rejects refs in the attached TUI surface", async () => {
+  const notices: string[] = []
+  const footers: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string, tone: string) => { footers.push(`${tone}:${message}`) },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: "/session status release",
+    action: "status",
+    args: ["release"],
+    value: "release",
+  })
+
+  assert.deepEqual(notices, [])
+  assert.deepEqual(footers, ["error:usage: /session status"])
+})
+
   test("session command aliases the current session", async () => {
     let flashedMessage = ""
     let aliasedPayload: { sessionId: string; alias: string } | null = null

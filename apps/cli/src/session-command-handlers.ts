@@ -81,7 +81,7 @@ export async function handleSessionSlashCommand(
     case "status":
     case "info":
     case "inspect":
-      return showSessionStatus(deps)
+      return showSessionStatus(deps, args)
     case "mode":
       return setSessionMode(deps, value)
     case "permissions":
@@ -159,7 +159,11 @@ async function listSessions(deps: SessionCommandHandlerDeps): Promise<boolean> {
   return true
 }
 
-async function showSessionStatus(deps: SessionCommandHandlerDeps): Promise<boolean> {
+async function showSessionStatus(deps: SessionCommandHandlerDeps, args: string[]): Promise<boolean> {
+  if (args.length > 0) {
+    deps.flashFooter("usage: /session status", "error")
+    return true
+  }
   if (!deps.isAttached()) {
     deps.flashFooter("attach to a session before viewing session status", "error")
     return true
