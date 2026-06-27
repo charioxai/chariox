@@ -671,6 +671,31 @@ test("derivePromptLifecycleTransition does not settle external prompts when they
   assert.deepEqual(transition.settledAgentIds, [])
 })
 
+test("derivePromptLifecycleTransition normalizes external prompt origins before settlement", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      agent_activity: {
+        "agent-a": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "running",
+            prompt_origin: " External ",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    session(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, [])
+})
+
 test("derivePromptLifecycleTransition still settles external prompts with explicit cancellation", () => {
   const transition = derivePromptLifecycleTransition(
     session({

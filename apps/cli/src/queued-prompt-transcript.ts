@@ -3,6 +3,7 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
+import { promptOriginIsExternal } from "./prompt-origin.js"
 import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
@@ -37,7 +38,7 @@ export function syncQueuedPromptEntriesForAgent(
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
   const queuedIds = new Set(queuedPrompts.map((prompt) => prompt.id))
-  const steerDisabled = normalizePromptOrigin(activePromptOrigin(session, agentId)) === "external"
+  const steerDisabled = promptOriginIsExternal(activePromptOrigin(session, agentId))
   let changed = false
   const retained = entries.flatMap((entry) => {
     if (!entry.queuedPrompt) {
@@ -138,11 +139,6 @@ function activePromptOrigin(session: RuntimeSession, agentId: string): string | 
     return session.active_prompt.prompt_origin ?? "arroba"
   }
   return null
-}
-
-function normalizePromptOrigin(origin: string | null | undefined): string | null {
-  const normalized = origin?.trim().toLowerCase()
-  return normalized || null
 }
 
 function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {

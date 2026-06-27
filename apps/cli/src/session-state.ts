@@ -10,6 +10,7 @@ import {
   type TranscriptEntry,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
+import { promptOriginIsExternal } from "./prompt-origin.js"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
@@ -331,8 +332,7 @@ export function derivePromptLifecycleTransition(
   const settledPromptRecords = collectActivePromptRecords(currentSession)
     .filter((prompt) => !nextPromptIdSet.has(prompt.id))
     .filter((prompt) => {
-      const normalizedOrigin = prompt.promptOrigin?.trim().toLowerCase()
-      return normalizedOrigin !== "external" || prompt.status === "cancelling"
+      return !promptOriginIsExternal(prompt.promptOrigin) || prompt.status === "cancelling"
     })
 
   return {
