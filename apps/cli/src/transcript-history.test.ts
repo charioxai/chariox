@@ -213,6 +213,56 @@ test("hydrateTranscriptEntries preserves external provider observed metadata", (
   assert.equal(entries[0]?.observedAtMs, 123)
 })
 
+test("hydrateTranscriptEntries merges external observation metadata across fragments", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 7,
+      fragment_start: 0,
+      fragment_end: 7,
+      total_chars: 12,
+      entry: {
+        kind: "provider_output",
+        text: "native ",
+        merge_key: "external:codex:thread-1:item-1",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "item-1",
+        external_observation: {
+          settles_active_prompt: false,
+          passive_telemetry: true,
+        },
+      },
+    },
+    {
+      entry_index: 7,
+      fragment_start: 7,
+      fragment_end: 12,
+      total_chars: 12,
+      entry: {
+        kind: "provider_output",
+        text: "reply",
+        merge_key: "external:codex:thread-1:item-1",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "item-1",
+        external_observation: {
+          settles_active_prompt: true,
+          passive_telemetry: false,
+        },
+      },
+    },
+  ])
+
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0]?.text, "native reply")
+  assert.deepEqual(entries[0]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
 test("hydrateTranscriptEntries renders only externally observed provider statuses from history", () => {
   const entries = hydrateTranscriptEntries([
     {
@@ -541,6 +591,45 @@ test("stitchPrependedHistory preserves external observed metadata while merging 
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
   assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.deepEqual(stitched[0]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
+test("stitchPrependedHistory merges external observation metadata while merging fragments", () => {
+  const stitched = stitchPrependedHistory(
+    [entry(1, "assistant", "native ", {
+      source: "external_provider_observed",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 12,
+    })],
+    [entry(2, "assistant", "reply", {
+      source: "external_provider_observed",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      externalObservation: {
+        settles_active_prompt: false,
+        passive_telemetry: true,
+      },
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 12,
+      historyTotalChars: 12,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
   assert.deepEqual(stitched[0]?.externalObservation, {
     settles_active_prompt: true,
     passive_telemetry: false,

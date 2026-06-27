@@ -122,6 +122,7 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
       if (entry.entry.attachments !== undefined) {
         previous.entry.attachments = mergeHistoryAttachments(previous.entry.attachments, entry.entry.attachments)
       }
+      mergeHistoryExternalObservation(previous.entry, entry.entry)
       continue
     }
 
@@ -214,7 +215,13 @@ export function hydrateTranscriptEntries(
           if (options.externalProviderSessionId !== undefined) candidate.externalProviderSessionId = options.externalProviderSessionId
           if (options.externalProviderTurnId !== undefined) candidate.externalProviderTurnId = options.externalProviderTurnId
           if (options.observedAtMs !== undefined) candidate.observedAtMs = options.observedAtMs
-          if (options.externalObservation !== undefined) candidate.externalObservation = options.externalObservation
+          if (options.externalObservation !== undefined) {
+            const externalObservation = mergeTranscriptExternalObservation(
+              candidate.externalObservation,
+              options.externalObservation,
+            )
+            if (externalObservation !== undefined) candidate.externalObservation = externalObservation
+          }
           if (options.promptId !== undefined) candidate.promptId = options.promptId
           if (options.sourceAttachmentId !== undefined) candidate.sourceAttachmentId = options.sourceAttachmentId
           if (options.attachments !== undefined) candidate.attachments = mergeHistoryAttachments(candidate.attachments, options.attachments)
@@ -246,7 +253,13 @@ export function hydrateTranscriptEntries(
     if (options.externalProviderSessionId !== undefined) nextEntry.externalProviderSessionId = options.externalProviderSessionId
     if (options.externalProviderTurnId !== undefined) nextEntry.externalProviderTurnId = options.externalProviderTurnId
     if (options.observedAtMs !== undefined) nextEntry.observedAtMs = options.observedAtMs
-    if (options.externalObservation !== undefined) nextEntry.externalObservation = options.externalObservation
+    if (options.externalObservation !== undefined) {
+      const externalObservation = mergeTranscriptExternalObservation(
+        nextEntry.externalObservation,
+        options.externalObservation,
+      )
+      if (externalObservation !== undefined) nextEntry.externalObservation = externalObservation
+    }
     if (options.promptId !== undefined) nextEntry.promptId = options.promptId
     if (options.sourceAttachmentId !== undefined) nextEntry.sourceAttachmentId = options.sourceAttachmentId
     if (options.attachments !== undefined) nextEntry.attachments = cloneHistoryAttachments(options.attachments)
@@ -367,7 +380,13 @@ function applyEntryMetadata(
   if (options.externalProviderSessionId !== undefined) entry.externalProviderSessionId = options.externalProviderSessionId
   if (options.externalProviderTurnId !== undefined) entry.externalProviderTurnId = options.externalProviderTurnId
   if (options.observedAtMs !== undefined) entry.observedAtMs = options.observedAtMs
-  if (options.externalObservation !== undefined) entry.externalObservation = options.externalObservation
+  if (options.externalObservation !== undefined) {
+    const externalObservation = mergeTranscriptExternalObservation(
+      entry.externalObservation,
+      options.externalObservation,
+    )
+    if (externalObservation !== undefined) entry.externalObservation = externalObservation
+  }
   if (options.promptId !== undefined) entry.promptId = options.promptId
   if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
   if (options.attachments !== undefined) entry.attachments = mergeHistoryAttachments(entry.attachments, options.attachments)
@@ -431,8 +450,12 @@ function mergeStitchedHistoryMetadata(
     if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
       target.observedAtMs = older.observedAtMs
     }
-    if (target.externalObservation === undefined && older.externalObservation !== undefined) {
-      target.externalObservation = older.externalObservation
+    if (older.externalObservation !== undefined || newer.externalObservation !== undefined) {
+      const externalObservation = mergeTranscriptExternalObservation(
+        older.externalObservation,
+        newer.externalObservation,
+      )
+      if (externalObservation !== undefined) target.externalObservation = externalObservation
     }
   }
   if (target.promptId === undefined && older.promptId !== undefined) {
@@ -451,6 +474,54 @@ function mergeStitchedHistoryMetadata(
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {
   return historyEntryExternalProviderObservedMetadata(entry) ?? {}
+}
+
+function mergeHistoryExternalObservation(
+  target: SessionHistoryEntry,
+  incoming: SessionHistoryEntry,
+) {
+  if (incoming.external_observation === undefined && incoming.source === undefined) {
+    return
+  }
+  if (target.source === undefined && incoming.source !== undefined) {
+    target.source = incoming.source
+  }
+  if (target.external_provider === undefined && incoming.external_provider !== undefined) {
+    target.external_provider = incoming.external_provider
+  }
+  if (target.external_provider_session_id === undefined && incoming.external_provider_session_id !== undefined) {
+    target.external_provider_session_id = incoming.external_provider_session_id
+  }
+  if (target.external_provider_turn_id === undefined && incoming.external_provider_turn_id !== undefined) {
+    target.external_provider_turn_id = incoming.external_provider_turn_id
+  }
+  if (target.observed_at_ms === undefined && incoming.observed_at_ms !== undefined) {
+    target.observed_at_ms = incoming.observed_at_ms
+  }
+  const externalObservation = mergeTranscriptExternalObservation(
+    target.external_observation,
+    incoming.external_observation,
+  )
+  if (externalObservation !== undefined) target.external_observation = externalObservation
+}
+
+function mergeTranscriptExternalObservation(
+  existing: TranscriptEntry["externalObservation"] | undefined,
+  incoming: TranscriptEntry["externalObservation"] | undefined,
+): TranscriptEntry["externalObservation"] | undefined {
+  if (!existing) {
+    return incoming
+  }
+  if (!incoming) {
+    return existing
+  }
+  const settlesActivePrompt = existing.settles_active_prompt || incoming.settles_active_prompt
+  return {
+    settles_active_prompt: settlesActivePrompt,
+    passive_telemetry: settlesActivePrompt
+      ? false
+      : existing.passive_telemetry === true || incoming.passive_telemetry === true,
+  }
 }
 
 function historyEntryIdentityOptions(
