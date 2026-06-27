@@ -317,7 +317,7 @@ test("visible external observed output carries kernel observation metadata into 
       _sourceText?: string,
       metadata?: Partial<TranscriptEntry>,
     ) => {
-      chunks.push({ role, text, metadata })
+      chunks.push(metadata === undefined ? { role, text } : { role, text, metadata })
     },
   })
   const controller = createKernelEventController(deps as never)

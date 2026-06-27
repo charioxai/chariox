@@ -119,12 +119,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
             break
           }
           const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
-          deps.appendTranscriptEntryToAgentPane(recordAgentId, {
+          deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({
             role: "user",
             text: deps.trimSingleTrailingNewline(text),
             turnId: deps.computeNextTurnId(paneEntries),
-            ...metadata,
-          })
+          }, metadata))
           break
         }
         case "provider_reasoning":
@@ -136,7 +135,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         case "provider_error": {
           const normalized = normalize(text).trim()
           if (normalized) {
-            deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error", ...metadata })
+            deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({ role: "error", text: normalized, emphasis: "error" }, metadata))
           }
           break
         }
@@ -163,12 +162,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
               break
             }
             const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
-            deps.appendTranscriptEntryToAgentPane(recordAgentId, {
+            deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({
               role: "user",
               text: deps.trimSingleTrailingNewline(text),
               turnId: deps.computeNextTurnId(paneEntries),
-              ...metadata,
-            })
+            }, metadata))
             break
           }
           case "provider_reasoning":
@@ -180,7 +178,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           case "provider_error": {
             const normalized = normalize(text).trim()
             if (normalized) {
-              deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error", ...metadata })
+              deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({ role: "error", text: normalized, emphasis: "error" }, metadata))
             }
             break
           }
@@ -208,7 +206,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
           break
         }
-        deps.appendEntry({ role: "user", text: deps.trimSingleTrailingNewline(text), ...metadata })
+        deps.appendEntry(transcriptEntryWithTerminalMetadata({ role: "user", text: deps.trimSingleTrailingNewline(text) }, metadata))
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_reasoning":
@@ -297,6 +295,22 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
 function normalize(text: string) {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+}
+
+function transcriptEntryWithTerminalMetadata(
+  entry: Omit<TranscriptEntry, "id">,
+  metadata: TerminalRecordTranscriptMetadata,
+): Omit<TranscriptEntry, "id"> {
+  const next: Omit<TranscriptEntry, "id"> = { ...entry }
+  if (metadata.promptId !== undefined) next.promptId = metadata.promptId
+  if (metadata.sourceAttachmentId !== undefined) next.sourceAttachmentId = metadata.sourceAttachmentId
+  if (metadata.source !== undefined) next.source = metadata.source
+  if (metadata.externalProvider !== undefined) next.externalProvider = metadata.externalProvider
+  if (metadata.externalProviderSessionId !== undefined) next.externalProviderSessionId = metadata.externalProviderSessionId
+  if (metadata.externalProviderTurnId !== undefined) next.externalProviderTurnId = metadata.externalProviderTurnId
+  if (metadata.observedAtMs !== undefined) next.observedAtMs = metadata.observedAtMs
+  if (metadata.externalObservation !== undefined) next.externalObservation = metadata.externalObservation
+  return next
 }
 
 function terminalRecordTranscriptMetadata(record: TerminalOutputRecord): TerminalRecordTranscriptMetadata {

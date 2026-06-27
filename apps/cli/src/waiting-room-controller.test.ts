@@ -446,6 +446,7 @@ test("deriveWaitingRoomControlActivationDecision handles remote kernel activatio
         machine_id: "machine-1",
         relay_alias: "builder-kernel",
         accepting_remote_leases: true,
+        available_providers: ["codex"],
         leased_agent_count: 0,
         local_session_count: 0,
       }],

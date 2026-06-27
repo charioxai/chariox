@@ -892,6 +892,7 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
             session_id: session_id.clone(),
             attachment_id: attachment_id.clone(),
+            target_agent_id: None,
         }),
     )
     .await;

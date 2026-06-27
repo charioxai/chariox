@@ -334,7 +334,7 @@ test("agent inspect renders diagnostics as a notice with concise footer", async 
   assert.equal(flashedMessage, "showing agent agent-remote")
   assert.equal(notices.length, 1)
   assert.match(notices[0] ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
-  assert.match(notices[0] ?? "", /slice: devbox \(id=slice-1, status=running, display=headless, worktree=worktree-1, agents=1\)/)
+  assert.match(notices[0] ?? "", /slice: devbox \(id=slice-1, status=running, owner=kernel-home@machine-home, authority=home-managed, display=headless, worktree=worktree-1, agents=1\)/)
   assert.match(notices[0] ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker offline/)
 })
 
