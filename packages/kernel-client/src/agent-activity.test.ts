@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActive,
   agentRuntimePromptStatusIsActivePrompt,
@@ -80,6 +81,8 @@ test("agent activity busy helper follows kernel projected activity semantics", (
     busy: false,
     active_turn: { prompt_id: "prompt-1", status: "cancelled" },
   }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1" }), true)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "completed" }), false)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
     prompt_status: "none",

@@ -1,5 +1,6 @@
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import {
+  agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityStatus,
@@ -118,8 +119,9 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    if (projected.active_turn) {
-      return projected.active_turn.prompt_id === promptId
+    const activeTurn = projected.active_turn
+    if (agentRuntimeActiveTurnIsBusy(activeTurn)) {
+      return activeTurn?.prompt_id === promptId
     }
     if (!agentRuntimeActivityIsBusy(projected)) {
       return false
@@ -134,7 +136,9 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    const activeTurnPromptId = projected.active_turn?.prompt_id
+    const activeTurnPromptId = agentRuntimeActiveTurnIsBusy(projected.active_turn)
+      ? projected.active_turn?.prompt_id
+      : null
     if (activeTurnPromptId) {
       const prompt = legacyPromptForAgent(session, agentId)
       return prompt?.id === activeTurnPromptId ? prompt : null

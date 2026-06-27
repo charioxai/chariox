@@ -238,6 +238,39 @@ test("activePromptIdForAgent suppresses prompt state for session-wide idle or mi
   assert.equal(activePromptIdForAgent(nextSession, "agent-b"), null)
 })
 
+test("activePromptIdForAgent ignores settled projected active turn identity", () => {
+  const nextSession = session({
+    agent_activity: {
+      "agent-a": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_turn: {
+          prompt_id: "prompt-settled",
+          status: malformedRuntimeValue("cancelled"),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+    },
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "prompt-stale",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), null)
+  assert.equal(activePromptIdForAgent(nextSession, null), null)
+})
+
 test("focusedAgentIdForSession does not fall back when focused id is not in the session", () => {
   assert.equal(focusedAgentIdForSession(session({
     focused_agent_id: "stale-agent",
@@ -839,6 +872,28 @@ test("derivePromptLifecycleTransition treats projected idle activity as prompt s
   assert.deepEqual(transition.settledAgentIds, ["agent-a"])
 })
 
+test("derivePromptLifecycleTransition ignores already-settled projected active turns", () => {
+  const settledSession = session({
+    agent_activity: {
+      "agent-a": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_turn: {
+          prompt_id: "prompt-settled",
+          status: malformedRuntimeValue("cancelled"),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+    },
+  })
+  const transition = derivePromptLifecycleTransition(settledSession, session())
+
+  assert.equal(transition.activePromptChanged, false)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, [])
+})
+
 test("derivePromptLifecycleTransition ignores normal prompt replacement", () => {
   const transition = derivePromptLifecycleTransition(
     session({
@@ -1069,4 +1124,8 @@ function providerRunFor(agentId: string) {
     usage_tokens_total: null,
     state: "running",
   }
+}
+
+function malformedRuntimeValue<T>(value: string): T {
+  return value as T
 }

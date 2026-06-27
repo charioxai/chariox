@@ -298,6 +298,43 @@ test("sessionHasActivePrompt follows projected active turn identity", () => {
   assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "prompt-2")
 })
 
+test("session prompt helpers ignore settled projected active turn identity", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-stale",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          provider_run_id: "run-1",
+          prompt_origin: "external",
+          status: malformedRuntimeValue("cancelled"),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+    },
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
 test("sessionPromptForAgent rejects legacy prompts that do not match projected active turn", () => {
   const session = makeSession({
     prompt_states: {

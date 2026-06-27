@@ -1,6 +1,7 @@
 import process from "node:process"
 
 import {
+  agentRuntimeActiveTurnIsBusy as kernelAgentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
@@ -180,7 +181,9 @@ export function activePromptIdForAgent(
 ): string | null {
   if (agentId) {
     const projectedActivity = session.agent_activity?.[agentId]
-    const projectedPromptId = projectedActivity?.active_turn?.prompt_id
+    const projectedPromptId = kernelAgentRuntimeActiveTurnIsBusy(projectedActivity?.active_turn)
+      ? projectedActivity?.active_turn?.prompt_id
+      : null
     if (projectedPromptId) {
       return projectedPromptId
     }
@@ -435,7 +438,7 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, activity] of Object.entries(session.agent_activity)) {
       const activeTurn = activity.active_turn
-      if (activeTurn) {
+      if (kernelAgentRuntimeActiveTurnIsBusy(activeTurn)) {
         records.push({
           id: activeTurn.prompt_id,
           status: activeTurn.status,

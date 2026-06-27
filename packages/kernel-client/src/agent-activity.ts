@@ -41,7 +41,7 @@ export function agentRuntimePromptStatusIsActivePrompt(value: string | null): bo
     || value === "settling"
 }
 
-function agentRuntimeActiveTurnIsBusy(activeTurn: unknown): boolean {
+export function agentRuntimeActiveTurnIsBusy(activeTurn: unknown): boolean {
   if (!activeTurn || typeof activeTurn !== "object" || Array.isArray(activeTurn)) {
     return false
   }
