@@ -9,6 +9,7 @@ import type {
   SessionMember,
 } from "./kernel-types.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import { sessionAgentIsBusy } from "./shell-agent-activity.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 export function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {
@@ -51,7 +52,7 @@ function formatSessionHomeKernel(session: RuntimeSession): string {
 function formatSessionRemoteRuntime(session: RuntimeSession): string {
   const remoteAgents = session.agents.filter((agent) => agent.remote_execution)
   if (remoteAgents.length === 0) return ""
-  const workerRunGaps = remoteAgents.filter(remoteAgentHasWorkerRunGap)
+  const workerRunGaps = remoteAgents.filter((agent) => remoteAgentHasWorkerRunGap(session, agent))
   const sliceAgents = remoteAgents.filter(remoteAgentIsSliceBacked)
   const remoteParts = [
     `${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`,
@@ -67,12 +68,15 @@ function formatSessionRemoteRuntime(session: RuntimeSession): string {
   return `${remote}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"} - next ${next}`
 }
 
-function remoteAgentHasWorkerRunGap(agent: AgentInstance): boolean {
+function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: AgentInstance): boolean {
   const remote = agent.remote_execution
   if (!remote) return false
   const workerRun = remote.active_worker_provider_run_id?.trim()
   if (workerRun) return false
-  return agent.state === "Working" || agent.is_processing
+  if (!session.agent_activity && !session.prompt_states) {
+    return agent.state === "Working" || agent.is_processing
+  }
+  return sessionAgentIsBusy(session, agent.id)
 }
 
 function remoteAgentIsSliceBacked(agent: AgentInstance): boolean {
