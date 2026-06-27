@@ -46,6 +46,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|audit\|off\|managed\|tracked\|default\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|state\|save-state\|backup\|reset-state\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
   assert.match(result.message ?? "", /slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label/)
+  assert.match(result.message ?? "", /provider status\|login\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
 })
 
 test("executeShellCommand exports session-scoped kernel debug bundle", async () => {

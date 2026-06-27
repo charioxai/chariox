@@ -66,7 +66,7 @@ export async function executeProviderCommand(
     const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
     return { ok: true, message: formatProviderProcesses(processes), data: { processes } }
   }
-  return { ok: false, message: "usage: provider status|login|logout|reauth|processes" }
+  return { ok: false, message: "usage: provider status|login|logout|reauth|processes [provider]|processes teardown <provider>" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -63,6 +63,8 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/kernel remote-runtime\s+show home authority, worker runs, slices, home-proxy tools, and live sync readiness/)
   assert.match(output, /\/session status\s+show owner, placement, live sync, extensions, and blockers/)
   assert.match(output, /\/workspace sync \.\.\.\s+manage live sync status, session mode, global default, links, and diagnostics/)
+  assert.match(output, /\/provider processes \[n\]\s+list daemon-tracked provider processes/)
+  assert.match(output, /\/provider processes teardown <n>\s+tear down safe daemon-tracked provider processes/)
   assert.match(output, /\/extension import\s+import provider MCPs and skills into Arroba/)
   assert.match(output, /\/extension grant\s+grant mcp, skill, script, or connector capabilities to an agent/)
   assert.match(output, /\/extension revoke\s+revoke an extension from an agent/)

@@ -67,6 +67,7 @@ test("executeShellCommand manages provider auth and processes", async () => {
   const list = await executeShellCommand(parseShellCommand("provider processes codex"), context, { client: fake.client })
   const broadTeardown = await executeShellCommand(parseShellCommand("provider processes teardown"), context, { client: fake.client })
   const teardown = await executeShellCommand(parseShellCommand("provider processes teardown codex"), context, { client: fake.client })
+  const unknown = await executeShellCommand(parseShellCommand("provider unknown"), context, { client: fake.client })
   assert.equal(login.ok, true)
   assert.match(login.message ?? "", /codex login started/)
   assert.equal(logout.ok, true)
@@ -79,6 +80,8 @@ test("executeShellCommand manages provider auth and processes", async () => {
   assert.match(broadTeardown.message ?? "", /usage: provider processes teardown <provider>/)
   assert.equal(teardown.ok, true)
   assert.match(teardown.message ?? "", /tore down 1 provider process/)
+  assert.equal(unknown.ok, false)
+  assert.match(unknown.message ?? "", /usage: provider status\|login\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
   assert.deepEqual(requests, [
     { StartProviderLogin: { provider: "codex" } },
     { LogoutProvider: { provider: "codex" } },

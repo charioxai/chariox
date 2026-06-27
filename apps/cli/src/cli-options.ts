@@ -211,6 +211,8 @@ function printUsage() {
     "  /provider login [n]   start provider-native login for the current or named provider",
     "  /provider logout [n]  clear the current or named provider login",
     "  /provider reauth [n]  log out then start a fresh provider login",
+    "  /provider processes [n] list daemon-tracked provider processes",
+    "  /provider processes teardown <n> tear down safe daemon-tracked provider processes",
     "  /model <id>           select the active model",
     "  /variant <name>       select the model variant",
     "  /workspace [path]     show or set the next-session workspace path",
