@@ -13,6 +13,9 @@ test("hydrateOutlineAgentEntries carries turn prompt identity into entries and b
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
+      external_provider: " codex ",
+      external_provider_session_id: " thread-1 ",
+      external_provider_turn_id: " user-1 ",
       started_at_ms: 1,
       user_prompt: pageEntry(0, "user_prompt", "build\n"),
       entries: [pageEntry(1, "provider_reasoning", "thinking\n")],
@@ -35,6 +38,16 @@ test("hydrateOutlineAgentEntries carries turn prompt identity into entries and b
   assert.equal(entries.find((entry) => entry.role === "user")?.promptId, "prompt-1")
   assert.equal(entries.find((entry) => entry.role === "reasoning")?.promptId, "prompt-1")
   assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptId, "prompt-1")
+  const prompt = entries.find((entry) => entry.role === "user")
+  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(prompt?.externalProvider, "codex")
+  assert.equal(prompt?.externalProviderSessionId, "thread-1")
+  assert.equal(prompt?.externalProviderTurnId, "user-1")
+  const blob = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(blob?.source, "external_provider_observed")
+  assert.equal(blob?.externalProvider, "codex")
+  assert.equal(blob?.externalProviderSessionId, "thread-1")
+  assert.equal(blob?.externalProviderTurnId, "user-1")
 })
 
 test("hydrateOutlineAgentEntries preserves prompt attachments and external observation metadata", () => {
@@ -43,6 +56,9 @@ test("hydrateOutlineAgentEntries preserves prompt attachments and external obser
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
       started_at_ms: 1,
       user_prompt: pageEntry(0, "user_prompt", "inspect\n", {
         attachments: [{
@@ -80,6 +96,7 @@ test("hydrateOutlineAgentEntries preserves prompt attachments and external obser
   assert.equal(assistant?.externalProvider, "codex")
   assert.equal(assistant?.externalProviderSessionId, "thread-1")
   assert.equal(assistant?.externalProviderTurnId, "msg-1")
+  assert.equal(prompt?.externalProviderTurnId, "user-1")
   assert.deepEqual(assistant?.externalObservation, {
     settles_active_prompt: true,
     passive_telemetry: false,
@@ -92,6 +109,9 @@ test("replaceHistoryBlobPlaceholder keeps prompt identity when expanding blob co
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
       started_at_ms: 1,
       user_prompt: pageEntry(0, "user_prompt", "build\n"),
       entries: [],
@@ -129,6 +149,11 @@ test("replaceHistoryBlobPlaceholder keeps prompt identity when expanding blob co
   )
 
   assert.equal(replaced.find((entry) => entry.role === "tool")?.promptId, "prompt-1")
+  const tool = replaced.find((entry) => entry.role === "tool")
+  assert.equal(tool?.source, "external_provider_observed")
+  assert.equal(tool?.externalProvider, "codex")
+  assert.equal(tool?.externalProviderSessionId, "thread-1")
+  assert.equal(tool?.externalProviderTurnId, "user-1")
 })
 
 function pageEntry(

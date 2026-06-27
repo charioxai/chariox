@@ -2,6 +2,7 @@ import type {
   SessionHistoryBlobContent,
   SessionHistoryOutlineAgent,
   SessionHistoryOutlineBlob,
+  SessionHistoryOutlineTurn,
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./cli-types.js"
@@ -15,9 +16,10 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
 
   agent.turns.forEach((turn, turnIndex) => {
     const turnId = turnIndex + 1
+    const externalMetadata = outlineTurnExternalMetadata(turn)
     const promptEntries = hydratePageEntries([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
-      entries.push({ ...entry, id: ++nextId })
+      entries.push(applyOutlineTurnExternalMetadata({ ...entry, id: ++nextId }, externalMetadata))
     }
     const turnItems = [
       ...turn.entries.map((entry) => ({ sequence: entry.entry_index, entry })),
@@ -26,12 +28,15 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
     ].sort((left, right) => left.sequence - right.sequence)
     for (const item of turnItems) {
       if ("blob" in item) {
-        entries.push(outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId))
+        entries.push(applyOutlineTurnExternalMetadata(
+          outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
+          externalMetadata,
+        ))
         continue
       }
       const hydratedEntries = hydratePageEntries([item.entry], turnId, turn.prompt_id ?? null)
       for (const entry of hydratedEntries) {
-        entries.push({ ...entry, id: ++nextId })
+        entries.push(applyOutlineTurnExternalMetadata({ ...entry, id: ++nextId }, externalMetadata))
       }
     }
   })
@@ -50,6 +55,7 @@ export function replaceHistoryBlobPlaceholder(
     return entries
   }
   const turnId = placeholder.turnId
+  const externalMetadata = transcriptEntryExternalMetadata(placeholder)
   const hydrated = hydratePageEntries(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
     const next: TranscriptEntry = {
       ...entry,
@@ -62,7 +68,7 @@ export function replaceHistoryBlobPlaceholder(
     if (placeholder.historyBlobAgentId) {
       next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
     }
-    return next
+    return applyOutlineTurnExternalMetadata(next, externalMetadata)
   })
   const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
   return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), expandedTurnIds)
@@ -95,6 +101,64 @@ export function markHistoryBlobLoading(
     delete next.historyBlobError
     return next
   })
+}
+
+type OutlineTurnExternalMetadata = {
+  externalProvider: string
+  externalProviderSessionId: string
+  externalProviderTurnId: string
+}
+
+function outlineTurnExternalMetadata(
+  turn: SessionHistoryOutlineTurn,
+): OutlineTurnExternalMetadata | null {
+  const externalProvider = nonBlankString(turn.external_provider)
+  const externalProviderSessionId = nonBlankString(turn.external_provider_session_id)
+  const externalProviderTurnId = nonBlankString(turn.external_provider_turn_id)
+  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+    return null
+  }
+  return {
+    externalProvider,
+    externalProviderSessionId,
+    externalProviderTurnId,
+  }
+}
+
+function applyOutlineTurnExternalMetadata(
+  entry: TranscriptEntry,
+  metadata: OutlineTurnExternalMetadata | null,
+): TranscriptEntry {
+  if (!metadata) {
+    return entry
+  }
+  return {
+    ...entry,
+    source: entry.source ?? "external_provider_observed",
+    externalProvider: entry.externalProvider ?? metadata.externalProvider,
+    externalProviderSessionId: entry.externalProviderSessionId ?? metadata.externalProviderSessionId,
+    externalProviderTurnId: entry.externalProviderTurnId ?? metadata.externalProviderTurnId,
+  }
+}
+
+function transcriptEntryExternalMetadata(
+  entry: TranscriptEntry,
+): OutlineTurnExternalMetadata | null {
+  const externalProvider = nonBlankString(entry.externalProvider)
+  const externalProviderSessionId = nonBlankString(entry.externalProviderSessionId)
+  const externalProviderTurnId = nonBlankString(entry.externalProviderTurnId)
+  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+    return null
+  }
+  return {
+    externalProvider,
+    externalProviderSessionId,
+    externalProviderTurnId,
+  }
+}
+
+function nonBlankString(value: string | null | undefined): string | null {
+  return value?.trim() ? value.trim() : null
 }
 
 function hydratePageEntries(
