@@ -280,7 +280,6 @@ impl TerminalStreamStore {
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .notice_records()
-            .to_vec()
     }
 
     pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
@@ -381,7 +380,9 @@ pub struct TerminalStreamService {
     pending_output_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
     next_output_record_id: u64,
     last_output_record_id: Option<u64>,
-    notice_records: Vec<RuntimeNoticeRecord>,
+    notice_records: BTreeMap<u64, RuntimeNoticeRecord>,
+    pending_notice_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
+    next_notice_record_id: u64,
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
     output_coalesce_byte_limit: usize,
@@ -610,9 +611,22 @@ impl TerminalStreamService {
             message: message.into(),
         };
 
-        self.notice_records.push(record.clone());
+        self.push_notice_record(record.clone());
         self.refresh_health();
         record
+    }
+
+    fn push_notice_record(&mut self, record: RuntimeNoticeRecord) -> u64 {
+        let record_id = self.next_notice_record_id;
+        self.next_notice_record_id = self.next_notice_record_id.saturating_add(1);
+        for attachment_id in &record.pending_recipient_attachment_ids {
+            self.pending_notice_by_attachment
+                .entry((record.session_id.clone(), attachment_id.clone()))
+                .or_default()
+                .push_back(record_id);
+        }
+        self.notice_records.insert(record_id, record);
+        record_id
     }
 
     pub fn input_records(&self) -> &[TerminalInputRecord] {
@@ -771,8 +785,8 @@ impl TerminalStreamService {
             .saturating_add(trimmed);
     }
 
-    pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
-        &self.notice_records
+    pub fn notice_records(&self) -> Vec<RuntimeNoticeRecord> {
+        self.notice_records.values().cloned().collect()
     }
 
     pub fn record_assistant_message_completion(
@@ -831,30 +845,74 @@ impl TerminalStreamService {
         attachment_id: &str,
     ) -> Vec<RuntimeNoticeRecord> {
         let mut drained = Vec::new();
-        for record in &mut self.notice_records {
-            if record.session_id == session_id
-                && (record.pending_recipient_attachment_ids.is_empty()
-                    || record
-                        .pending_recipient_attachment_ids
-                        .iter()
-                        .any(|id| id == attachment_id))
-            {
+        let key = (session_id.to_string(), attachment_id.to_string());
+        let mut notice_ids = self
+            .pending_notice_by_attachment
+            .get(&key)
+            .map(|queue| queue.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        notice_ids.extend(
+            self.notice_records
+                .iter()
+                .filter_map(|(record_id, record)| {
+                    (record.session_id == session_id
+                        && record.recipient_attachment_ids.is_empty()
+                        && record.pending_recipient_attachment_ids.is_empty())
+                    .then_some(*record_id)
+                }),
+        );
+        notice_ids.sort_unstable();
+        notice_ids.dedup();
+
+        for record_id in notice_ids {
+            let should_drain = self.notice_records.get(&record_id).is_some_and(|record| {
+                record.session_id == session_id
+                    && (record.pending_recipient_attachment_ids.is_empty()
+                        || record
+                            .pending_recipient_attachment_ids
+                            .iter()
+                            .any(|id| id == attachment_id))
+            });
+            if !should_drain {
+                self.remove_pending_notice_queue_id(&key, record_id);
+                continue;
+            }
+            if let Some(record) = self.notice_records.get(&record_id) {
                 drained.push(scoped_notice_record(record, attachment_id));
+            }
+            self.remove_pending_notice_queue_id(&key, record_id);
+            if let Some(record) = self.notice_records.get_mut(&record_id) {
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
             }
+            self.remove_notice_record_if_drained(record_id);
         }
-
-        self.notice_records.retain(|record| {
-            if record.recipient_attachment_ids.is_empty() {
-                false
-            } else {
-                !record.pending_recipient_attachment_ids.is_empty()
-            }
-        });
         self.refresh_health();
         drained
+    }
+
+    fn remove_pending_notice_queue_id(&mut self, key: &(String, String), record_id: u64) {
+        let empty = match self.pending_notice_by_attachment.get_mut(key) {
+            Some(queue) => {
+                queue.retain(|queued_id| *queued_id != record_id);
+                queue.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            self.pending_notice_by_attachment.remove(key);
+        }
+    }
+
+    fn remove_notice_record_if_drained(&mut self, record_id: u64) {
+        let should_remove = self.notice_records.get(&record_id).is_some_and(|record| {
+            record.recipient_attachment_ids.is_empty()
+                || record.pending_recipient_attachment_ids.is_empty()
+        });
+        if should_remove {
+            self.notice_records.remove(&record_id);
+        }
     }
 
     pub fn remove_session(&mut self, session_id: &str) {
@@ -874,7 +932,9 @@ impl TerminalStreamService {
             .retain(|(pending_session_id, _), _| pending_session_id != session_id);
         self.last_output_record_id = self.output_records.keys().next_back().copied();
         self.notice_records
-            .retain(|record| record.session_id != session_id);
+            .retain(|_, record| record.session_id != session_id);
+        self.pending_notice_by_attachment
+            .retain(|(pending_session_id, _), _| pending_session_id != session_id);
         self.completion_records
             .retain(|record| record.session_id != session_id);
         self.refresh_health();
@@ -894,7 +954,30 @@ impl TerminalStreamService {
                 self.remove_output_record_if_drained(record_id);
             }
         }
-        for record in &mut self.notice_records {
+        if let Some(record_ids) = self.pending_notice_by_attachment.remove(&key) {
+            changed = true;
+            for record_id in record_ids {
+                if let Some(record) = self.notice_records.get_mut(&record_id) {
+                    record
+                        .pending_recipient_attachment_ids
+                        .retain(|id| id != attachment_id);
+                }
+                self.remove_notice_record_if_drained(record_id);
+            }
+        }
+        let broadcast_notice_ids = self
+            .notice_records
+            .iter()
+            .filter_map(|(record_id, record)| {
+                (record.session_id == session_id && record.recipient_attachment_ids.is_empty())
+                    .then_some(*record_id)
+            })
+            .collect::<Vec<_>>();
+        changed |= !broadcast_notice_ids.is_empty();
+        for record_id in broadcast_notice_ids {
+            self.notice_records.remove(&record_id);
+        }
+        for record in self.notice_records.values_mut() {
             if record.session_id == session_id {
                 let previous_len = record.pending_recipient_attachment_ids.len();
                 record
@@ -912,12 +995,9 @@ impl TerminalStreamService {
                 changed |= record.pending_recipient_attachment_ids.len() != previous_len;
             }
         }
-        self.notice_records.retain(|record| {
-            if record.recipient_attachment_ids.is_empty() {
-                false
-            } else {
-                !record.pending_recipient_attachment_ids.is_empty()
-            }
+        self.notice_records.retain(|_, record| {
+            !record.recipient_attachment_ids.is_empty()
+                && !record.pending_recipient_attachment_ids.is_empty()
         });
         self.completion_records
             .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
@@ -1109,6 +1189,8 @@ fn json_byte_array_len(bytes: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::{
         scoped_output_record, terminal_output_record_scoped_json_bytes, TerminalOutputKind,
         TerminalOutputRecord, TerminalStreamService, TerminalStreamStore,
@@ -1497,6 +1579,51 @@ mod tests {
         let second = terminal.drain_notice_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].recipient_attachment_ids, vec!["attachment-2"]);
+        assert!(terminal.notice_records().is_empty());
+    }
+
+    #[test]
+    fn notice_pending_index_tracks_recipient_drain() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_notice(
+            "session-1",
+            None,
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "indexed notice",
+        );
+
+        assert_eq!(
+            terminal
+                .pending_notice_by_attachment
+                .get(&("session-1".to_string(), "attachment-1".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+        assert_eq!(
+            terminal
+                .pending_notice_by_attachment
+                .get(&("session-1".to_string(), "attachment-2".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+
+        let first = terminal.drain_notice_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert!(!terminal
+            .pending_notice_by_attachment
+            .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
+        assert_eq!(
+            terminal
+                .pending_notice_by_attachment
+                .get(&("session-1".to_string(), "attachment-2".to_string()))
+                .map(VecDeque::len),
+            Some(1)
+        );
+
+        let second = terminal.drain_notice_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+        assert!(terminal.pending_notice_by_attachment.is_empty());
         assert!(terminal.notice_records().is_empty());
     }
 
