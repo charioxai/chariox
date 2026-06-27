@@ -76,12 +76,12 @@ impl DaemonApp {
             PromptSubmissionOutcome::Started { prompt }
             | PromptSubmissionOutcome::Queued { prompt } => prompt.target_agent_id().to_string(),
         };
-        self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         self.agents
             .note_prompt_sent_at(&agent_id, prompt_sent_at_ms)?;
         self.sessions
             .note_prompt_sent(session_id, &agent_id, prompt_sent_at_ms)?;
+        self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         Ok(outcome)
     }
 
@@ -259,6 +259,7 @@ impl DaemonApp {
             queued_prompts,
         )?;
         self.provider_process_projection.invalidate();
+        self.refresh_prompt_owner_session_projection(session_id)?;
         Ok(session)
     }
 
@@ -280,6 +281,101 @@ impl DaemonApp {
             mirrored_session = self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         }
         Ok(mirrored_session)
+    }
+
+    fn refresh_prompt_owner_session_projection(&self, session_id: &str) -> Result<(), DaemonError> {
+        let mut session = self.sessions.get_session(session_id)?;
+        let agents = self.agents.get_session_agents(session_id);
+        session.set_agents(agents);
+        self.project_session_runtime_view(&mut session);
+        self.update_session_projection(session);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::KernelSessionService;
+    use crate::session::{CreateSessionRequest, PromptOrigin};
+
+    #[test]
+    fn external_active_prompt_sync_refreshes_projected_session_state() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "external:codex:thread-1:user-1",
+            "codex",
+            agent.id(),
+            "external prompt",
+        );
+
+        let changed = app
+            .prompt_owner_sync_external_active_prompt(
+                session.id(),
+                agent.id(),
+                Some(external_prompt),
+            )
+            .expect("external prompt should sync");
+
+        assert!(changed);
+        let projected = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("session projection should refresh");
+        assert_eq!(projected.agents().len(), 1);
+        let active_prompt = projected
+            .active_prompt_for_agent(agent.id())
+            .expect("external active prompt should be projected");
+        assert_eq!(active_prompt.prompt_origin(), PromptOrigin::External);
+        assert_eq!(active_prompt.prompt(), "external prompt");
+        let activity = app
+            .agent_runtime_projection_store()
+            .get(agent.id())
+            .expect("agent runtime projection should refresh");
+        assert!(activity.active_prompt.is_some());
+    }
+
+    #[test]
+    fn prompt_submission_refreshes_projected_prompt_timestamp() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = PromptQueueItem::new(
+            app.sessions.reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "projected prompt timestamp",
+            PromptStatus::Queued,
+        );
+
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should submit");
+
+        let projected = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("session projection should refresh");
+        assert!(projected.last_prompt_sent_at_ms().is_some());
+        assert!(projected.active_prompt_for_agent(agent.id()).is_some());
+        let projected_agent = projected
+            .agents()
+            .iter()
+            .find(|projected_agent| projected_agent.id() == agent.id())
+            .expect("projected session should include agent");
+        assert!(projected_agent.last_prompt_sent_at_ms().is_some());
     }
 }
 
