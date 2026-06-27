@@ -6,6 +6,23 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn mirror_prompt_owner_agent_state(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<crate::session::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+    ) -> Result<(), DaemonError> {
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.provider_process_projection.invalidate();
+        Ok(())
+    }
+
     pub(super) fn mirror_prompt_owner_session_state(
         &self,
         session_id: &str,
@@ -23,7 +40,7 @@ impl KernelRuntimeOwnedState {
         for agent_id in agent_ids {
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, &agent_id);
-            self.session_store.mirror_agent_prompt_state(
+            self.mirror_prompt_owner_agent_state(
                 session_id,
                 &agent_id,
                 active_prompt,
@@ -44,12 +61,7 @@ impl KernelRuntimeOwnedState {
             .remove_queued_prompts_for_agent(&session, agent_id);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         Ok(removed)
     }
 
@@ -67,12 +79,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         Ok(prompt)
     }
 
@@ -123,12 +130,7 @@ impl KernelRuntimeOwnedState {
         );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
             started_next.workflow_run_id(),
             started_next.workflow_node_run_id(),
@@ -225,12 +227,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         self.record_notice(
             session_id,
             Some(provider_run.id()),
@@ -288,12 +285,7 @@ impl KernelRuntimeOwnedState {
         prompt.set_status(crate::session::PromptStatus::Cancelled);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         self.record_notice(
             session_id,
             None,

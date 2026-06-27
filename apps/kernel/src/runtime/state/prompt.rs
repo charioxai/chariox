@@ -39,12 +39,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
 
         let completion_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.provider_store
@@ -138,7 +133,7 @@ impl KernelRuntimeOwnedState {
         else {
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, agent_id);
-            self.session_store.mirror_agent_prompt_state(
+            self.mirror_prompt_owner_agent_state(
                 session_id,
                 agent_id,
                 active_prompt,
@@ -164,12 +159,7 @@ impl KernelRuntimeOwnedState {
         );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)

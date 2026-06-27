@@ -256,7 +256,7 @@ impl KernelRuntimeOwnedState {
             self.remove_provider_process_tracking_for_run(ended.id(), None);
         }
         self.prompt_state_owner.remove_agent(&session_id, agent_id);
-        self.session_store.mirror_agent_prompt_state(
+        self.mirror_prompt_owner_agent_state(
             &session_id,
             agent_id,
             None,

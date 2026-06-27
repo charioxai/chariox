@@ -577,6 +577,97 @@ async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_wit
     );
 }
 
+#[test]
+fn provider_process_projection_invalidates_when_prompt_state_changes() {
+    run_provider_projection_large_stack_test(
+        "provider-process-projection-invalidates-when-prompt-state-changes",
+        provider_process_projection_invalidates_when_prompt_state_changes_inner,
+    );
+}
+
+async fn provider_process_projection_invalidates_when_prompt_state_changes_inner() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "client-1",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    launch_test_provider(
+        &mut app,
+        &session_id,
+        &agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let canonical_processes = app
+        .list_provider_processes(None)
+        .expect("provider process list should warm projection");
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    router
+        .provider_process_projection
+        .update_list(canonical_processes);
+    assert!(
+        router.provider_process_projection.list(None).is_some(),
+        "test setup should start with a warmed provider-process projection"
+    );
+
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "invalidate provider process projection".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command = KernelCommand::from_local_request(
+        "cmd-process-projection-invalidating-prompt",
+        None,
+        None,
+        &prompt_request,
+    );
+    router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect("prompt submit should succeed");
+    assert!(
+        router.provider_process_projection.list(None).is_none(),
+        "prompt-state mutation should invalidate stale provider-process projection"
+    );
+
+    let list_request =
+        LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest { provider: None });
+    let list_command = KernelCommand::from_local_request(
+        "cmd-process-list-after-prompt-invalidation",
+        None,
+        None,
+        &list_request,
+    );
+    let list_response = router
+        .dispatch(list_command, list_request)
+        .await
+        .expect("provider process list should recompute after invalidation");
+    match list_response {
+        LocalDaemonResponse::ProviderProcessesListed { processes } => {
+            assert_eq!(processes.len(), 1);
+            assert!(!processes[0].teardown_safe);
+            assert!(processes[0]
+                .teardown_blockers
+                .iter()
+                .any(|blocker| blocker == "active prompt"));
+        }
+        _ => panic!("unexpected provider process list response"),
+    }
+}
+
 #[tokio::test]
 async fn provider_process_projection_stores_canonical_unfiltered_snapshot() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

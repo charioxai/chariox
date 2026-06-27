@@ -244,8 +244,14 @@ impl DaemonApp {
         let session = self.sessions.get_session(session_id)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.sessions
-            .mirror_agent_prompt_state(session_id, agent_id, active_prompt, queued_prompts)
+        let session = self.sessions.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.provider_process_projection.invalidate();
+        Ok(session)
     }
 
     fn mirror_prompt_owner_session_state(

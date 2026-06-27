@@ -95,7 +95,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
-        self.session_store.mirror_agent_prompt_state(
+        self.mirror_prompt_owner_agent_state(
             &session_id,
             &outcome_agent_id,
             active_prompt,

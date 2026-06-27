@@ -1129,6 +1129,50 @@ mod tests {
     }
 
     #[test]
+    fn provider_process_projection_invalidates_after_app_prompt_owner_change() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed");
+        app.list_provider_processes(None)
+            .expect("provider processes should warm projection");
+        assert!(app.provider_process_projection_store().list(None).is_some());
+
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "active prompt\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+        assert!(
+            app.provider_process_projection_store().list(None).is_none(),
+            "app-level prompt-owner changes should invalidate provider-process projection"
+        );
+    }
+
+    #[test]
     fn provider_launch_runtime_profile_survives_kernel_restart() {
         let config = DaemonConfig::for_tests();
         let (agent_id, run_model) = {

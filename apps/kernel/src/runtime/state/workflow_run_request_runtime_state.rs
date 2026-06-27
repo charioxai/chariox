@@ -166,7 +166,7 @@ impl KernelRuntimeState {
                         })?;
                     let (active_prompt, queued_prompts) =
                         owned.prompt_state_owner.state_parts(&session, agent.id());
-                    owned.session_store.mirror_agent_prompt_state(
+                    owned.mirror_prompt_owner_agent_state(
                         &request.session_id,
                         agent.id(),
                         active_prompt,
@@ -201,7 +201,7 @@ impl KernelRuntimeState {
             for agent in owned.agent_store.get_session_agents(&request.session_id) {
                 let (active_prompt, queued_prompts) =
                     owned.prompt_state_owner.state_parts(&session, agent.id());
-                let _ = owned.session_store.mirror_agent_prompt_state(
+                let _ = owned.mirror_prompt_owner_agent_state(
                     &request.session_id,
                     agent.id(),
                     active_prompt,

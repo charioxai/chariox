@@ -25,12 +25,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         Ok(cancelled)
     }
 
@@ -56,12 +51,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.provider_store
                 .get_run_for_agent(session_id, agent_id)
@@ -102,12 +92,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&self.session_store.get_session(session_id)?, agent_id);
-        self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         if started_next.is_none() {
             self.sync_focused_provider_run_if_idle(session_id)?;
         }
@@ -235,7 +220,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, target_agent_id);
-        self.session_store.mirror_agent_prompt_state(
+        self.mirror_prompt_owner_agent_state(
             session_id,
             target_agent_id,
             active_prompt,

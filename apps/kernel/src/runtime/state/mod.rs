@@ -61,6 +61,7 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
+    provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     durable_state_store: DurableKernelStateStore,
@@ -301,11 +302,14 @@ impl KernelRuntimeState {
             crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let completed_git_turn_snapshots = {
+        let (completed_git_turn_snapshots, provider_process_projection) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
-                    break app.completed_git_turn_snapshot_store();
+                    break (
+                        app.completed_git_turn_snapshot_store(),
+                        app.provider_process_projection_store(),
+                    );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
                     panic!("KernelRuntimeState could not acquire the app lock during bootstrap");
@@ -343,6 +347,7 @@ impl KernelRuntimeState {
                 slice_store,
                 session_projection,
                 provider_run_projection,
+                provider_process_projection,
                 history_store,
                 operational_history_store,
                 durable_state_store,
