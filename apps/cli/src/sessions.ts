@@ -101,7 +101,7 @@ function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">
   const remoteExtensionSyncIssues = session.activity?.remote_extension_sync_issue_count ?? 0
   const pendingRevokes = session.activity?.remote_extension_pending_revoke_count ?? 0
   const parts = [
-    remoteAgents > 0 ? `${remoteAgents} remote ${remoteAgents === 1 ? "agent" : "agents"}` : "",
+    remoteAgents > 0 ? `${remoteAgents} remote/slice ${remoteAgents === 1 ? "agent" : "agents"}` : "",
     workerRunGaps > 0 ? `${workerRunGaps} worker run ${workerRunGaps === 1 ? "gap" : "gaps"}` : "",
     homeProxyAgents > 0 ? `${homeProxyAgents} home-proxy ${homeProxyAgents === 1 ? "agent" : "agents"}` : "",
     remoteExtensionSyncIssues > 0 ? `${remoteExtensionSyncIssues} extension sync ${remoteExtensionSyncIssues === 1 ? "issue" : "issues"}` : "",

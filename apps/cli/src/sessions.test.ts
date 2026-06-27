@@ -48,7 +48,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
     ),
     [
       "Sessions",
-      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked - 1 remote agent, 1 worker run gap - next: run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent - current",
+      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked - 1 remote/slice agent, 1 worker run gap - next: run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent - current",
       "- `session-1` - ended - 0 CLIs - demo - sync off",
     ].join("\n"),
   )
@@ -85,7 +85,7 @@ test("formatSessionList surfaces home-proxy sync blockers", () => {
     ]),
     [
       "Sessions",
-      "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync managed - 2 remote agents, 2 home-proxy agents, 1 extension sync issue, 1 pending revoke - next: keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects",
+      "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync managed - 2 remote/slice agents, 2 home-proxy agents, 1 extension sync issue, 1 pending revoke - next: keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects",
     ].join("\n"),
   )
 })
@@ -116,7 +116,7 @@ test("formatSessionList routes aggregate stale home-proxy blockers through remot
     ]),
     [
       "Sessions",
-      "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync tracked - 1 remote agent, 1 home-proxy agent, 1 extension sync issue - next: home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy",
+      "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync tracked - 1 remote/slice agent, 1 home-proxy agent, 1 extension sync issue - next: home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy",
     ].join("\n"),
   )
 })
