@@ -7,7 +7,9 @@ import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.j
 import {
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
+  formatSliceProviderList,
   formatSliceScope,
+  sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
@@ -25,7 +27,7 @@ export function formatSessionRuntimeStatus(
   const agentSummary = formatAgentSummary(session)
   const remoteSummary = formatRemoteSummary(session)
   const extensionSummary = formatRemoteExtensionSummary(session)
-  const nextActions = formatSessionNextActions(session)
+  const nextActions = formatSessionNextActions(session, options)
   const lines = [
     "session runtime",
     `session: ${session.alias ? `${session.alias} (${session.id})` : session.id}`,
@@ -232,7 +234,10 @@ function formatCollaborationSummary(session: RuntimeSession): string {
   return `${counts.collaborator_count} collaborator${counts.collaborator_count === 1 ? "" : "s"}, ${counts.owned_agent_count} mine, ${counts.other_user_agent_count} others, ${counts.total_agent_count} total`
 }
 
-function formatSessionNextActions(session: RuntimeSession): string[] {
+function formatSessionNextActions(
+  session: RuntimeSession,
+  options: SessionRuntimeStatusFormatOptions,
+): string[] {
   const actions: string[] = []
   const workerGapAgent = session.agents.find((agent) => (
     agent.remote_execution
@@ -252,5 +257,34 @@ function formatSessionNextActions(session: RuntimeSession): string[] {
   if (extensionIssueAgent) {
     actions.push(`run /extension sync-status ${extensionIssueAgent.agent_ref}; use /extension sync-retry ${extensionIssueAgent.agent_ref} after worker connectivity is healthy`)
   }
+  const sliceAuthAction = formatSliceAuthNextAction(session, options.slices ?? [])
+  if (sliceAuthAction) {
+    actions.push(sliceAuthAction)
+  }
   return actions
+}
+
+function formatSliceAuthNextAction(
+  session: RuntimeSession,
+  slices: readonly SliceRecord[],
+): string | null {
+  for (const agent of session.agents) {
+    const slice = sliceForRemoteAgent(agent, slices)
+    if (!slice) {
+      continue
+    }
+    const coverage = sliceProviderAuthCoverage(slice)
+    const ref = slice.name || slice.id
+    if (coverage.missingProviders.length > 0) {
+      const provider = coverage.missingProviders[0]!
+      const list = formatSliceProviderList(coverage.missingProviders)
+      return `run /slice doctor ${ref}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${list} with /slice auth import ${ref} ${provider} or /slice auth login ${ref} ${provider} before sending prompts to agents in that slice`
+    }
+    if (coverage.staleProviders.length > 0) {
+      const provider = coverage.staleProviders[0]!
+      const list = formatSliceProviderList(coverage.staleProviders)
+      return `run /slice doctor ${ref}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${list} with /slice auth login ${ref} ${provider} before sending prompts to agents in that slice`
+    }
+  }
+  return null
 }

@@ -91,3 +91,41 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
   assert.match(rendered, /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(rendered, /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
+
+test("formatSessionRuntimeStatus renders slice provider auth recovery", () => {
+  const remoteAgent = makeAgent({
+    id: "agent-slice",
+    agent_ref: "agent-slice",
+    remote_execution: {
+      worker_kernel_id: "slice:slice-1",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const rendered = formatSessionRuntimeStatus(makeSession({
+    focused_agent_id: remoteAgent.id,
+    agents: [remoteAgent],
+  }), {
+    slices: [{
+      id: "slice-1",
+      name: "linux-dev",
+      owner_kernel_id: "home-kernel",
+      owner_machine_id: "home-machine",
+      backend: "local_docker",
+      os: "linux",
+      status: "running",
+      worker_kernel_ref: "slice:slice-1",
+      worker_kernel_id: "slice:slice-1",
+      worker_machine_id: "slice-machine",
+      agent_ids: ["agent-slice"],
+      providers: ["codex"],
+      provider_auth: [],
+      created_at_ms: 0,
+      updated_at_ms: 0,
+    }],
+  })
+
+  assert.match(rendered, /slice_auth=missing codex/)
+  assert.match(rendered, /next: run \/slice doctor linux-dev; configure missing provider account codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex before sending prompts to agents in that slice/)
+})
