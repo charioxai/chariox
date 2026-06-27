@@ -87,6 +87,46 @@ test("native TUI runtime banner calls out missing slice provider auth", () => {
   assert.match(banner, /slice next:     run \/slice doctor linux-dev; configure missing provider accounts codex, opencode:openai with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
 })
 
+test("native TUI runtime banner reports stopped slice lifecycle recovery", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "tracked" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    }),
+    slices: [slice({ status: "stopped" })],
+    worktree: "/repo/worktrees/feature",
+  })
+
+  assert.match(banner, /slice:          linux-dev \(id=slice-1, status=stopped/)
+  assert.match(banner, /slice next:     run \/slice start linux-dev; if it does not become running, run \/slice doctor linux-dev and \/slice logs linux-dev/)
+})
+
+test("native TUI runtime banner reports unhealthy slice lifecycle recovery", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "opencode native-tui",
+    session: session({ workspace_live_sync_mode: "managed" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    }),
+    slices: [slice({ status: "unhealthy" })],
+    worktree: "/repo/worktrees/feature",
+  })
+
+  assert.match(banner, /slice:          linux-dev \(id=slice-1, status=unhealthy/)
+  assert.match(banner, /slice next:     run \/slice doctor linux-dev; inspect \/slice logs linux-dev and \/slice audit linux-dev; then try \/slice start linux-dev or recreate the slice/)
+})
+
 test("native TUI runtime banner can show explicit slice lookup failures", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "codex native-tui",

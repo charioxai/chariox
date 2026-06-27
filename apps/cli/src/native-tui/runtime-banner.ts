@@ -142,13 +142,45 @@ function formatSliceLines(
       `  slice:          ${formatSliceSummary(slice)}`,
       `  slice auth:     ${formatSliceProviderAuthReadiness(slice)}`,
       `  slice accounts: ${formatSliceProviderAccounts(slice)}`,
-      ...formatSliceAuthNextLines(slice),
+      ...formatSliceNextLines(slice),
     ]
   }
   if (agent.remote_execution && sliceLookupError) {
     return [`  slice lookup:   ${sliceLookupError}`]
   }
   return []
+}
+
+function formatSliceNextLines(slice: SliceRecord): string[] {
+  return [
+    ...formatSliceLifecycleNextLines(slice),
+    ...formatSliceAuthNextLines(slice),
+  ]
+}
+
+function formatSliceLifecycleNextLines(slice: SliceRecord): string[] {
+  const sliceRef = slice.name || slice.id
+  if (slice.status === "running") {
+    return []
+  }
+  if (slice.status === "stopped") {
+    return [
+      `  slice next:     run /slice start ${sliceRef}; if it does not become running, run /slice doctor ${sliceRef} and /slice logs ${sliceRef}`,
+    ]
+  }
+  if (slice.status === "starting" || slice.status === "stopping") {
+    return [
+      `  slice next:     wait for slice ${slice.status}; run /slice doctor ${sliceRef} and /slice logs ${sliceRef} if it does not settle`,
+    ]
+  }
+  if (slice.status === "unhealthy") {
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; inspect /slice logs ${sliceRef} and /slice audit ${sliceRef}; then try /slice start ${sliceRef} or recreate the slice`,
+    ]
+  }
+  return [
+    `  slice next:     run /slice doctor ${sliceRef}; inspect /slice logs ${sliceRef} and /slice audit ${sliceRef}`,
+  ]
 }
 
 function formatSliceAuthNextLines(slice: SliceRecord): string[] {
