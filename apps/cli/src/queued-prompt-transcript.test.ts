@@ -216,6 +216,68 @@ test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when pr
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
 })
 
+test("syncQueuedPromptEntriesForAgent prefers projected queued prompt controls", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({
+      active_prompt: {
+        id: "prompt-stale",
+        source_attachment_id: "attachment-stale",
+        target_agent_id: "agent-1",
+        prompt: "stale arroba running",
+        status: "Running",
+        prompt_origin: "arroba",
+      },
+      queued_prompts: [{
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "new queued",
+        status: "Queued",
+      }],
+    }, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          queued_prompt_controls: {
+            "prompt-1": {
+              prompt_id: "prompt-1",
+              status: "dispatching",
+              can_steer: false,
+              can_cancel: false,
+              steer_disabled_reason: "This prompt is no longer waiting in the queue.",
+              cancel_disabled_reason: "This prompt is no longer waiting in the queue.",
+            },
+          },
+          active_turn: {
+            prompt_id: "prompt-external",
+            provider_run_id: "run-external",
+            prompt_origin: "external",
+            status: "running",
+            phase: "streaming",
+            started_at_ms: 2,
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
+    agentId: "agent-1",
+    promptId: "prompt-1",
+    status: "dispatching",
+    steerDisabled: true,
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: "This prompt is no longer waiting in the queue.",
+    cancelDisabledReason: "This prompt is no longer waiting in the queue.",
+  })
+})
+
 test("syncQueuedPromptEntriesForAgent uses prompt state origin when projected activity is busy without active turn", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],

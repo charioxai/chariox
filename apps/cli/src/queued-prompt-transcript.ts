@@ -51,7 +51,8 @@ export function syncQueuedPromptEntriesForAgent(
   if (queuedPrompts === null) {
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
-  const queuedIds = new Set(queuedPrompts.map((prompt) => prompt.id))
+  const queuedById = new Map(queuedPrompts.map((prompt) => [prompt.id, prompt]))
+  const queuedIds = new Set(queuedById.keys())
   const steerDisabled = promptOriginIsExternal(activePromptOrigin(session, agentId))
   let changed = false
   const retained = entries.flatMap((entry) => {
@@ -63,7 +64,10 @@ export function syncQueuedPromptEntriesForAgent(
       changed = true
       return []
     }
-    const actionability = queuedPromptActionability(entry.queuedPrompt.status, steerDisabled)
+    const prompt = queuedById.get(entry.queuedPrompt.promptId)
+    const actionability = prompt
+      ? queuedPromptActionabilityForPrompt(session, agentId, prompt, steerDisabled)
+      : queuedPromptActionability(entry.queuedPrompt.status, steerDisabled)
     if (!queuedPromptActionabilityMatches(entry.queuedPrompt, actionability)) {
       changed = true
       return [{
@@ -89,7 +93,7 @@ export function syncQueuedPromptEntriesForAgent(
     changed = true
     nextEntries = [
       ...nextEntries,
-      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), steerDisabled),
+      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), session, steerDisabled),
     ]
   }
   if (!changed) {
@@ -134,9 +138,10 @@ function queuedPromptTranscriptEntry(
   prompt: PromptQueueItem,
   agentId: string,
   id: number,
+  session: RuntimeSession,
   steerDisabled: boolean,
 ): TranscriptEntry {
-  const actionability = queuedPromptActionability(prompt.status, steerDisabled)
+  const actionability = queuedPromptActionabilityForPrompt(session, agentId, prompt, steerDisabled)
   return {
     id,
     role: "user",
@@ -164,6 +169,26 @@ export function queuedPromptActionability(
       ? steerDisabled ? QUEUED_PROMPT_STEER_EXTERNAL_REASON : null
       : QUEUED_PROMPT_STALE_REASON,
     cancelDisabledReason: queued ? null : QUEUED_PROMPT_STALE_REASON,
+  }
+}
+
+function queuedPromptActionabilityForPrompt(
+  session: RuntimeSession,
+  agentId: string,
+  prompt: PromptQueueItem,
+  fallbackSteerDisabled: boolean,
+): QueuedPromptActionability {
+  const projected = session.agent_activity?.[agentId]?.queued_prompt_controls?.[prompt.id]
+  if (!projected) {
+    return queuedPromptActionability(prompt.status, fallbackSteerDisabled)
+  }
+  return {
+    status: normalizeQueuedPromptStatus(projected.status),
+    steerDisabled: projected.can_steer !== true && Boolean(projected.steer_disabled_reason),
+    canSteer: projected.can_steer === true,
+    canCancel: projected.can_cancel === true,
+    steerDisabledReason: projected.steer_disabled_reason ?? null,
+    cancelDisabledReason: projected.cancel_disabled_reason ?? null,
   }
 }
 

@@ -748,8 +748,18 @@ export type AgentRuntimeActivity = {
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
   unread_idle_output: boolean
+  queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: AgentActiveTurn | null
   last_completed_turn?: CompletedGitTurnActionProjection | null
+}
+
+export type AgentQueuedPromptControl = {
+  prompt_id: string
+  status: string
+  can_steer: boolean
+  can_cancel: boolean
+  steer_disabled_reason?: string | null
+  cancel_disabled_reason?: string | null
 }
 
 export type AgentActiveTurn = {
@@ -1499,7 +1509,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 205
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 206
 
 export type TerminalCommandCatalogNodeKind =
   | "group"

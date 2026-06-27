@@ -51,10 +51,24 @@ pub struct AgentRuntimeActivity {
     pub busy: bool,
     #[serde(default)]
     pub unread_idle_output: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub queued_prompt_controls: BTreeMap<String, AgentQueuedPromptControlProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<AgentActiveTurnProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_completed_turn: Option<crate::git_observer::CompletedGitTurnActionProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentQueuedPromptControlProjection {
+    pub prompt_id: String,
+    pub status: String,
+    pub can_steer: bool,
+    pub can_cancel: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_disabled_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +245,10 @@ pub(crate) fn agent_activity_for_session_projection(
                     && unread_for_user_id.is_some_and(|user_id| {
                         session.agent_has_unread_output(user_id, agent.id())
                     }),
+                queued_prompt_controls: queued_prompt_controls_projection(
+                    prompt_state,
+                    active_turn.as_ref(),
+                ),
                 status,
                 prompt_status,
                 active_turn,
@@ -240,6 +258,63 @@ pub(crate) fn agent_activity_for_session_projection(
     }
 
     activity
+}
+
+const QUEUED_PROMPT_STEER_EXTERNAL_REASON: &str =
+    "Steering is unavailable while the active provider turn was started outside Arroba.";
+const QUEUED_PROMPT_STALE_REASON: &str = "This prompt is no longer waiting in the queue.";
+
+fn queued_prompt_controls_projection(
+    prompt_state: Option<&crate::session::AgentPromptState>,
+    active_turn: Option<&AgentActiveTurnProjection>,
+) -> BTreeMap<String, AgentQueuedPromptControlProjection> {
+    let Some(prompt_state) = prompt_state else {
+        return BTreeMap::new();
+    };
+    let active_prompt_is_external = active_turn
+        .and_then(|turn| turn.prompt_origin)
+        .is_some_and(|origin| origin == PromptOrigin::External)
+        || prompt_state
+            .active_prompt()
+            .is_some_and(|prompt| prompt.prompt_origin() == PromptOrigin::External);
+    prompt_state
+        .queued_prompts()
+        .iter()
+        .map(|prompt| {
+            let queued = prompt.status() == PromptStatus::Queued;
+            let can_steer = queued && !active_prompt_is_external;
+            let can_cancel = queued;
+            let steer_disabled_reason = if !queued {
+                Some(QUEUED_PROMPT_STALE_REASON.to_string())
+            } else if active_prompt_is_external {
+                Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON.to_string())
+            } else {
+                None
+            };
+            let cancel_disabled_reason = (!queued).then(|| QUEUED_PROMPT_STALE_REASON.to_string());
+            (
+                prompt.id().to_string(),
+                AgentQueuedPromptControlProjection {
+                    prompt_id: prompt.id().to_string(),
+                    status: queued_prompt_status_label(prompt.status()).to_string(),
+                    can_steer,
+                    can_cancel,
+                    steer_disabled_reason,
+                    cancel_disabled_reason,
+                },
+            )
+        })
+        .collect()
+}
+
+fn queued_prompt_status_label(status: PromptStatus) -> &'static str {
+    match status {
+        PromptStatus::Queued => "queued",
+        PromptStatus::Running => "running",
+        PromptStatus::Cancelling => "cancelling",
+        PromptStatus::Completed => "completed",
+        PromptStatus::Cancelled => "cancelled",
+    }
 }
 
 fn active_turn_projection(
@@ -286,7 +361,7 @@ mod tests {
 
     use super::{
         AgentPromptRuntimeStatus, AgentRuntimeStatus, AgentTurnRuntimePhase,
-        SessionSnapshotProjection,
+        SessionSnapshotProjection, QUEUED_PROMPT_STEER_EXTERNAL_REASON,
     };
     use crate::runtime::projection::test_support::{
         attach_cli, launch_dev_stub_provider, submit_prompt,
@@ -497,6 +572,107 @@ mod tests {
             active_turn.external_provider_turn_id.as_deref(),
             Some("user-1")
         );
+    }
+
+    #[test]
+    fn session_snapshot_projection_projects_queued_prompt_controls() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-queued-controls");
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "active prompt",
+        );
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "queued prompt",
+        );
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let control = activity
+            .queued_prompt_controls
+            .values()
+            .next()
+            .expect("queued prompt control should be projected");
+
+        assert_eq!(control.status, "queued");
+        assert!(control.can_steer);
+        assert!(control.can_cancel);
+        assert!(control.steer_disabled_reason.is_none());
+        assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn session_snapshot_projection_disables_queued_prompt_steering_for_external_active_turns() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-external-queued-controls");
+        let external_prompt = crate::session::PromptQueueItem::new(
+            "external:codex:session-1:user-1",
+            "external:codex",
+            agent.id(),
+            "external prompt",
+            crate::session::PromptStatus::Running,
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
+        app.prompt_owner_sync_external_active_prompt(
+            session.id(),
+            agent.id(),
+            Some(external_prompt),
+        )
+        .expect("external active prompt should sync");
+        app.active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "external:codex:session-1:user-1".to_string(),
+                provider_run.id().to_string(),
+            ));
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "queued behind external prompt",
+        );
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let control = activity
+            .queued_prompt_controls
+            .values()
+            .next()
+            .expect("queued prompt control should be projected");
+
+        assert_eq!(control.status, "queued");
+        assert!(!control.can_steer);
+        assert!(control.can_cancel);
+        assert_eq!(
+            control.steer_disabled_reason.as_deref(),
+            Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
+        );
+        assert!(control.cancel_disabled_reason.is_none());
     }
 
     #[test]

@@ -887,6 +887,7 @@ mod tests {
                 prompt_status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
                 busy: true,
                 unread_idle_output: false,
+                queued_prompt_controls: BTreeMap::new(),
                 active_turn: Some(crate::runtime::projection::AgentActiveTurnProjection {
                     prompt_id: "prompt-a".to_string(),
                     provider_run_id: None,
@@ -1032,6 +1033,7 @@ mod tests {
                 prompt_status: crate::runtime::projection::AgentPromptRuntimeStatus::None,
                 busy: false,
                 unread_idle_output: false,
+                queued_prompt_controls: BTreeMap::new(),
                 active_turn: None,
                 last_completed_turn: None,
             },

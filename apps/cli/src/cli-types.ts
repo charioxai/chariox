@@ -460,6 +460,7 @@ export type AgentRuntimeActivity = {
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
   unread_idle_output?: boolean
+  queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: {
     prompt_id: string
     provider_run_id?: string | null
@@ -472,6 +473,15 @@ export type AgentRuntimeActivity = {
     started_at_ms?: number | null
   } | null
   last_completed_turn?: CompletedGitTurnActionProjection | null
+}
+
+export type AgentQueuedPromptControl = {
+  prompt_id: string
+  status: string
+  can_steer: boolean
+  can_cancel: boolean
+  steer_disabled_reason?: string | null
+  cancel_disabled_reason?: string | null
 }
 
 export type CompletedGitTurnActionProjection = {

@@ -40,8 +40,8 @@ pub use store::SessionStore;
 pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
     unix_epoch_ms, CollaborationLevel, CreateSessionRequest, MetaagentTask, MetaagentTaskStatus,
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
-    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeInteraction,
+    AgentPromptState, PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect,
+    PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeInteraction,
     RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice,
     RuntimeInteractionInputKind, RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults,

@@ -30,8 +30,8 @@ pub(crate) use provider_projection::{
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
 pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
 pub use session_snapshot_projection::{
-    AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,
-    AgentTurnRuntimePhase, SessionSnapshotProjection,
+    AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentQueuedPromptControlProjection,
+    AgentRuntimeActivity, AgentRuntimeStatus, AgentTurnRuntimePhase, SessionSnapshotProjection,
 };
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 pub(crate) use transport_health::{TransportHealthSnapshot, TransportHealthStore};
