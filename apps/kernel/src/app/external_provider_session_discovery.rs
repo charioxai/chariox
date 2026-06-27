@@ -37,6 +37,7 @@ static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<
 thread_local! {
     static JSONL_PREFIX_READ_COUNT: Cell<usize> = const { Cell::new(0) };
     static JSONL_RECENT_READ_COUNT: Cell<usize> = const { Cell::new(0) };
+    static FILE_CANDIDATE_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,16 +144,22 @@ pub(crate) fn discover_external_provider_sessions(
     deduplicate_external_sessions(sessions)
 }
 
-pub(crate) fn external_provider_session_discovery_signature(
+pub(crate) fn external_provider_session_discovery_candidate_paths(
     provider_filter: Option<&str>,
+) -> Vec<(String, PathBuf)> {
+    provider_session_candidate_paths(provider_filter)
+}
+
+pub(crate) fn external_provider_session_discovery_signature_for_candidates(
+    paths: &[(String, PathBuf)],
 ) -> ExternalProviderSessionDiscoverySignature {
-    let mut files = provider_session_candidate_paths(provider_filter)
-        .into_iter()
+    let mut files = paths
+        .iter()
         .filter_map(|(provider, path)| {
             let metadata = fs::metadata(&path).ok()?;
             Some(ExternalProviderSessionFileSignature {
-                provider,
-                path,
+                provider: provider.clone(),
+                path: path.clone(),
                 len: metadata.len(),
                 modified_at_ms: metadata
                     .modified()
@@ -495,6 +502,8 @@ fn collect_file_candidates(
     if depth_remaining == 0 {
         return;
     }
+    #[cfg(test)]
+    increment_file_candidate_scan_count();
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -1958,9 +1967,19 @@ fn increment_jsonl_recent_read_count() {
 }
 
 #[cfg(test)]
+fn increment_file_candidate_scan_count() {
+    FILE_CANDIDATE_SCAN_COUNT.with(|counter| counter.set(counter.get() + 1));
+}
+
+#[cfg(test)]
 fn reset_jsonl_read_counts() {
     JSONL_PREFIX_READ_COUNT.with(|counter| counter.set(0));
     JSONL_RECENT_READ_COUNT.with(|counter| counter.set(0));
+}
+
+#[cfg(test)]
+fn reset_file_candidate_scan_count() {
+    FILE_CANDIDATE_SCAN_COUNT.with(|counter| counter.set(0));
 }
 
 #[cfg(test)]
@@ -1971,6 +1990,11 @@ fn jsonl_prefix_read_count() -> usize {
 #[cfg(test)]
 fn jsonl_recent_read_count() -> usize {
     JSONL_RECENT_READ_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn file_candidate_scan_count() -> usize {
+    FILE_CANDIDATE_SCAN_COUNT.with(Cell::get)
 }
 
 fn read_jsonl_values(path: &Path) -> Vec<Value> {
@@ -2539,6 +2563,35 @@ mod tests {
         let candidates = jsonl_candidates(root, 1);
 
         assert_eq!(candidates.len(), MAX_PROVIDER_FILES + 1);
+    }
+
+    #[test]
+    fn signature_from_known_candidates_does_not_rescan_provider_roots() {
+        let temp = temp_dir("provider-signature-known-candidates");
+        let root = temp.path();
+        let session_dir = root.join("sessions").join("2026").join("06");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("rollout.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-known\"}}\n",
+        )
+        .unwrap();
+
+        reset_file_candidate_scan_count();
+        let candidates = codex_candidate_paths(root);
+        assert_eq!(candidates, vec![transcript.clone()]);
+        assert!(file_candidate_scan_count() > 0);
+
+        reset_file_candidate_scan_count();
+        let signature = external_provider_session_discovery_signature_for_candidates(&[(
+            "codex".to_string(),
+            transcript.clone(),
+        )]);
+        assert_eq!(file_candidate_scan_count(), 0);
+        assert_eq!(signature.files.len(), 1);
+        assert_eq!(signature.files[0].provider, "codex");
+        assert_eq!(signature.files[0].path, transcript);
     }
 
     #[test]

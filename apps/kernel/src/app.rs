@@ -49,7 +49,8 @@ pub(crate) use external_provider_observation_policy::{
     normalized_observed_prompt_text, ExternalProviderObservationPolicy,
 };
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, external_provider_session_discovery_signature,
+    discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
+    external_provider_session_discovery_signature_for_candidates,
     read_external_provider_observed_turns, ExternalProviderSessionDiscoverySignature,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };

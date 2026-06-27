@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,10 +22,9 @@ use crate::provider::{
     ProviderResumeState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::{
-    CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession,
-    SessionAgentDefaults,
-};
+use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
+#[cfg(test)]
+use crate::session::{PromptOrigin, PromptStatus};
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
@@ -35,11 +35,21 @@ const EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK: usize = 16;
 const EXTERNAL_PROVIDER_ATTACHED_SLOW_TICK: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
+const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 
 #[derive(Debug, Default)]
 struct ExternalProviderSessionDiscoveryCache {
     signature: Option<crate::app::ExternalProviderSessionDiscoverySignature>,
+    candidate_paths: Option<Vec<(String, PathBuf)>>,
+    cached_signature_checks: u32,
+}
+
+#[derive(Debug)]
+struct ExternalProviderSessionDiscoverySignatureRead {
+    signature: crate::app::ExternalProviderSessionDiscoverySignature,
+    candidate_paths: Vec<(String, PathBuf)>,
+    full_scan: bool,
 }
 
 pub(crate) async fn run_external_provider_session_discovery_poller(
@@ -340,25 +350,45 @@ async fn refresh_external_provider_session_index(
 ) {
     let refresh_started = Instant::now();
     let signature_started = Instant::now();
-    let signature = match tokio::task::spawn_blocking(|| {
-        crate::app::external_provider_session_discovery_signature(None)
-    })
-    .await
+    let cached_candidate_paths = (!force)
+        .then(|| {
+            cache.as_ref().and_then(|cache| {
+                (cache.cached_signature_checks
+                    < EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS)
+                    .then(|| cache.candidate_paths.clone())
+                    .flatten()
+            })
+        })
+        .flatten();
+    let mut signature_read =
+        match read_external_provider_discovery_signature(cached_candidate_paths).await {
+            Some(signature) => signature,
+            None => return,
+        };
+    let mut signature_ms = signature_started.elapsed().as_millis();
+    if !signature_read.full_scan
+        && cache
+            .as_ref()
+            .and_then(|cache| cache.signature.as_ref())
+            .is_some_and(|cached| cached != &signature_read.signature)
     {
-        Ok(signature) => signature,
-        Err(error) => {
-            crate::logging::warn_with_fields(
-                "daemon.external_provider_sessions",
-                "external provider session signature task failed",
-                serde_json::json!({
-                    "error": error.to_string(),
-                }),
-            );
-            return;
-        }
-    };
-    let signature_ms = signature_started.elapsed().as_millis();
+        let full_signature_started = Instant::now();
+        signature_read = match read_external_provider_discovery_signature(None).await {
+            Some(signature) => signature,
+            None => return,
+        };
+        signature_ms += full_signature_started.elapsed().as_millis();
+    }
+    let signature = signature_read.signature.clone();
     if !force && cache.as_ref().and_then(|cache| cache.signature.as_ref()) == Some(&signature) {
+        if let Some(cache) = cache.as_mut() {
+            cache.candidate_paths = Some(signature_read.candidate_paths);
+            cache.cached_signature_checks = if signature_read.full_scan {
+                0
+            } else {
+                cache.cached_signature_checks.saturating_add(1)
+            };
+        }
         let total_elapsed = refresh_started.elapsed();
         if total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE {
             crate::logging::info_with_fields(
@@ -367,6 +397,11 @@ async fn refresh_external_provider_session_index(
                 serde_json::json!({
                     "signature_ms": signature_ms,
                     "total_ms": total_elapsed.as_millis(),
+                    "full_scan": signature_read.full_scan,
+                    "cached_signature_checks": cache
+                        .as_ref()
+                        .map(|cache| cache.cached_signature_checks)
+                        .unwrap_or(0),
                 }),
             );
         }
@@ -395,6 +430,8 @@ async fn refresh_external_provider_session_index(
     let opencode_count = count_external_provider_sessions(&discovered, "opencode");
     if let Some(cache) = cache.as_mut() {
         cache.signature = Some(signature);
+        cache.candidate_paths = Some(signature_read.candidate_paths);
+        cache.cached_signature_checks = 0;
     }
     let store = {
         let app = app.lock().await;
@@ -421,12 +458,46 @@ async fn refresh_external_provider_session_index(
                 "signature_ms": signature_ms,
                 "discovery_ms": discovery_ms,
                 "total_ms": total_elapsed.as_millis(),
+                "signature_full_scan": signature_read.full_scan,
                 "session_count": discovered.len(),
                 "codex_count": codex_count,
                 "claude_count": claude_count,
                 "opencode_count": opencode_count,
             }),
         );
+    }
+}
+
+async fn read_external_provider_discovery_signature(
+    cached_candidate_paths: Option<Vec<(String, PathBuf)>>,
+) -> Option<ExternalProviderSessionDiscoverySignatureRead> {
+    let full_scan = cached_candidate_paths.is_none();
+    match tokio::task::spawn_blocking(move || {
+        let candidate_paths = cached_candidate_paths.unwrap_or_else(|| {
+            crate::app::external_provider_session_discovery_candidate_paths(None)
+        });
+        let signature = crate::app::external_provider_session_discovery_signature_for_candidates(
+            &candidate_paths,
+        );
+        ExternalProviderSessionDiscoverySignatureRead {
+            signature,
+            candidate_paths,
+            full_scan,
+        }
+    })
+    .await
+    {
+        Ok(signature) => Some(signature),
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.external_provider_sessions",
+                "external provider session signature task failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            None
+        }
     }
 }
 
