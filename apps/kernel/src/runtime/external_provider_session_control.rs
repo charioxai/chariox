@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{watch, Mutex};
 
@@ -32,6 +32,9 @@ const EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL: Duration = Duration::from_secs(2
 const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
 const EXTERNAL_PROVIDER_ATTACHED_SETTLE_GRACE: Duration = Duration::from_secs(4);
 const EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK: usize = 16;
+const EXTERNAL_PROVIDER_ATTACHED_SLOW_TICK: Duration = Duration::from_millis(250);
+const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_millis(250);
+const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 
 #[derive(Debug, Default)]
@@ -156,11 +159,13 @@ async fn poll_attached_external_provider_transcripts(
     runtime_state: &crate::runtime::state::KernelRuntimeState,
     schedule: &mut BTreeMap<String, AttachedExternalObserverSchedule>,
 ) {
+    let tick_started = Instant::now();
     let now = tokio::time::Instant::now();
     let targets = {
         let app = app.lock().await;
         attached_external_observer_targets(&app)
     };
+    let target_count = targets.len();
     let target_keys = targets
         .iter()
         .map(attached_observer_target_key)
@@ -175,6 +180,13 @@ async fn poll_attached_external_provider_transcripts(
     if due.is_empty() {
         return;
     }
+    let due_count = due.len();
+    let limited = due_count >= EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK;
+    let mut read_ms_total = 0u128;
+    let mut append_ms_total = 0u128;
+    let mut changed_count = 0usize;
+    let mut active_relevant_changed_count = 0usize;
+    let mut error_count = 0usize;
     for target in due {
         let key = attached_observer_target_key(&target);
         let allow_external_active_prompt_settlement = schedule
@@ -185,6 +197,7 @@ async fn poll_attached_external_provider_transcripts(
             });
         let provider = target.provider.clone();
         let provider_session_id = target.provider_session_id.clone();
+        let read_started = Instant::now();
         let read = match tokio::task::spawn_blocking(move || {
             crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
         })
@@ -193,8 +206,10 @@ async fn poll_attached_external_provider_transcripts(
             Ok(turns) => Ok(AttachedExternalObserverRead { target, turns }),
             Err(error) => Err(error.to_string()),
         };
+        read_ms_total += read_started.elapsed().as_millis();
         match read {
             Ok(read) => {
+                let append_started = Instant::now();
                 let outcome = {
                     let mut app = app.lock().await;
                     append_observed_external_turns_for_attached_target_with_options(
@@ -206,6 +221,9 @@ async fn poll_attached_external_provider_transcripts(
                     )
                     .unwrap_or_default()
                 };
+                append_ms_total += append_started.elapsed().as_millis();
+                changed_count += outcome.changed_count;
+                active_relevant_changed_count += outcome.active_relevant_changed_count;
                 if outcome.external_active_prompt_settled {
                     if let Some(provider_run_id) = outcome.provider_run_id.as_deref() {
                         if let Err(error) = runtime_state
@@ -248,6 +266,7 @@ async fn poll_attached_external_provider_transcripts(
                     };
             }
             Err(error) => {
+                error_count += 1;
                 crate::logging::warn_with_fields(
                     "daemon.external_provider_sessions",
                     "external provider transcript observer read failed",
@@ -264,6 +283,29 @@ async fn poll_attached_external_provider_transcripts(
                 state.next_due_at = now + Duration::from_secs(backoff_secs);
             }
         }
+    }
+    let total_elapsed = tick_started.elapsed();
+    if total_elapsed >= EXTERNAL_PROVIDER_ATTACHED_SLOW_TICK
+        || changed_count > 0
+        || error_count > 0
+        || limited
+    {
+        crate::logging::info_with_fields(
+            "daemon.external_provider_sessions",
+            "attached provider transcript observer tick",
+            serde_json::json!({
+                "target_count": target_count,
+                "due_count": due_count,
+                "max_polls": EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK,
+                "limited": limited,
+                "read_ms": read_ms_total,
+                "append_ms": append_ms_total,
+                "total_ms": total_elapsed.as_millis(),
+                "changed_count": changed_count,
+                "active_relevant_changed_count": active_relevant_changed_count,
+                "error_count": error_count,
+            }),
+        );
     }
 }
 
@@ -296,6 +338,8 @@ async fn refresh_external_provider_session_index(
     mut cache: Option<&mut ExternalProviderSessionDiscoveryCache>,
     force: bool,
 ) {
+    let refresh_started = Instant::now();
+    let signature_started = Instant::now();
     let signature = match tokio::task::spawn_blocking(|| {
         crate::app::external_provider_session_discovery_signature(None)
     })
@@ -313,9 +357,22 @@ async fn refresh_external_provider_session_index(
             return;
         }
     };
+    let signature_ms = signature_started.elapsed().as_millis();
     if !force && cache.as_ref().and_then(|cache| cache.signature.as_ref()) == Some(&signature) {
+        let total_elapsed = refresh_started.elapsed();
+        if total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE {
+            crate::logging::info_with_fields(
+                "daemon.external_provider_sessions",
+                "external provider session discovery unchanged",
+                serde_json::json!({
+                    "signature_ms": signature_ms,
+                    "total_ms": total_elapsed.as_millis(),
+                }),
+            );
+        }
         return;
     }
+    let discovery_started = Instant::now();
     let discovered =
         match tokio::task::spawn_blocking(|| crate::app::discover_external_provider_sessions(None))
             .await
@@ -332,6 +389,10 @@ async fn refresh_external_provider_session_index(
                 return;
             }
         };
+    let discovery_ms = discovery_started.elapsed().as_millis();
+    let codex_count = count_external_provider_sessions(&discovered, "codex");
+    let claude_count = count_external_provider_sessions(&discovered, "claude");
+    let opencode_count = count_external_provider_sessions(&discovered, "opencode");
     if let Some(cache) = cache.as_mut() {
         cache.signature = Some(signature);
     }
@@ -349,6 +410,34 @@ async fn refresh_external_provider_session_index(
     }
     let app = app.lock().await;
     mark_attached_external_provider_sessions(&app, runtime_state, &store);
+    let total_elapsed = refresh_started.elapsed();
+    if force || total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH || !discovered.is_empty()
+    {
+        crate::logging::info_with_fields(
+            "daemon.external_provider_sessions",
+            "external provider session discovery refreshed",
+            serde_json::json!({
+                "force": force,
+                "signature_ms": signature_ms,
+                "discovery_ms": discovery_ms,
+                "total_ms": total_elapsed.as_millis(),
+                "session_count": discovered.len(),
+                "codex_count": codex_count,
+                "claude_count": claude_count,
+                "opencode_count": opencode_count,
+            }),
+        );
+    }
+}
+
+fn count_external_provider_sessions(
+    sessions: &[ExternalProviderSessionRecord],
+    provider: &str,
+) -> usize {
+    sessions
+        .iter()
+        .filter(|session| session.provider == provider)
+        .count()
 }
 
 pub(crate) async fn execute_external_provider_session_request(
