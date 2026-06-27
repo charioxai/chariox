@@ -42,6 +42,10 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::LaunchProviderRuns(request) => request
+            .launches
+            .first()
+            .map(|launch| SessionMembershipScope::SessionId(launch.session_id.clone())),
         LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -73,6 +77,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SubmitPrompts(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(

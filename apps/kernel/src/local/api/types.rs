@@ -44,7 +44,15 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 200;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 201;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchOperationFailure {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -151,6 +159,7 @@ pub enum LocalDaemonRequest {
     DetachWorkspaceLink(DetachWorkspaceLinkRequest),
     GetWorkspaceLiveSyncStatus(GetWorkspaceLiveSyncStatusRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
+    LaunchProviderRuns(LaunchProviderRunsRequest),
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
@@ -301,6 +310,7 @@ pub enum LocalDaemonRequest {
     RespondToInteraction(RespondToInteractionRequest),
     RequestNativeProviderInteraction(RequestNativeProviderInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
+    SubmitPrompts(SubmitPromptsRequest),
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
@@ -477,6 +487,10 @@ pub enum LocalDaemonResponse {
     },
     ProviderRunLaunchAccepted {
         provider_run: RuntimeProviderRun,
+    },
+    ProviderRunsLaunchAccepted {
+        provider_runs: Vec<ProviderRunBatchLaunchResult>,
+        failures: Vec<BatchOperationFailure>,
     },
     SessionsListed {
         sessions: Vec<RuntimeSession>,
@@ -973,6 +987,14 @@ pub enum LocalDaemonResponse {
     },
     PromptSubmitted {
         outcome: PromptSubmissionOutcome,
+        session: RuntimeSession,
+        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        #[serde(default)]
+        agent_activity_revision: u64,
+    },
+    PromptsSubmitted {
+        results: Vec<PromptBatchSubmissionResult>,
+        failures: Vec<BatchOperationFailure>,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]

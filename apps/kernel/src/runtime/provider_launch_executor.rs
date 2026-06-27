@@ -1,13 +1,17 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::app::StartedProviderLaunch;
 use crate::error::DaemonError;
-use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
+use crate::local::{
+    BatchOperationFailure, LaunchProviderRunRequest, LaunchProviderRunsRequest,
+    LocalDaemonResponse, ProviderRunBatchLaunchResult,
+};
 use crate::provider::{ProviderProcessService, ProviderRunState};
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::command_latency::{
@@ -40,6 +44,20 @@ pub(crate) async fn execute_provider_launch_command(
     let command_trace = CommandTrace::from_command(command);
     ProviderLaunchCommandExecutor::new(runtime_state.clone())
         .execute(request, command_caller_user_id(command), command_trace)
+        .await
+}
+
+pub(crate) async fn execute_provider_batch_launch_command(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: LaunchProviderRunsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    ProviderLaunchCommandExecutor::new(runtime_state.clone())
+        .execute_batch(
+            request,
+            command_caller_user_id(command),
+            CommandTrace::from_command(command),
+        )
         .await
 }
 
@@ -136,6 +154,79 @@ impl ProviderLaunchCommandExecutor {
             provider_run: accepted,
         })
     }
+
+    pub(crate) async fn execute_batch(
+        &self,
+        request: LaunchProviderRunsRequest,
+        caller_user_id: String,
+        command_trace: CommandTrace,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if request.launches.is_empty() {
+            return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
+                provider_runs: Vec::new(),
+                failures: Vec::new(),
+            });
+        }
+        let max_concurrency = request
+            .max_concurrency
+            .unwrap_or(8)
+            .clamp(1, request.launches.len());
+        let mut outcomes = futures_util::stream::iter(request.launches.into_iter().enumerate())
+            .map(|(index, launch_request)| {
+                let executor = self.clone();
+                let caller_user_id = caller_user_id.clone();
+                let command_trace = command_trace.clone();
+                async move {
+                    let agent_id = launch_request.agent_id.clone();
+                    let result = executor
+                        .execute(launch_request, caller_user_id, command_trace)
+                        .await;
+                    (index, agent_id, result)
+                }
+            })
+            .buffer_unordered(max_concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        outcomes.sort_by_key(|(index, _, _)| *index);
+
+        let mut provider_runs = Vec::new();
+        let mut failures = Vec::new();
+        for (index, agent_id, result) in outcomes {
+            match result {
+                Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run }) => {
+                    provider_runs.push(ProviderRunBatchLaunchResult {
+                        index,
+                        agent_id,
+                        provider_run,
+                        reused: true,
+                    });
+                }
+                Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
+                    provider_runs.push(ProviderRunBatchLaunchResult {
+                        index,
+                        agent_id,
+                        provider_run,
+                        reused: false,
+                    });
+                }
+                Ok(other) => failures.push(BatchOperationFailure {
+                    index,
+                    agent_id,
+                    message: format!("unexpected launch response: {other:?}"),
+                }),
+                Err(error) => failures.push(BatchOperationFailure {
+                    index,
+                    agent_id,
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
+            provider_runs,
+            failures,
+        })
+    }
 }
 
 impl ProviderLaunchStore {
@@ -178,11 +269,20 @@ impl ProviderLaunchStore {
 
 impl ProviderLaunchPendingTracker {
     pub(crate) async fn track_response(&self, result: &Result<LocalDaemonResponse, DaemonError>) {
-        if let Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) = result {
-            self.sessions
-                .lock()
-                .await
-                .insert(provider_run.session_id().to_string());
+        match result {
+            Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
+                self.sessions
+                    .lock()
+                    .await
+                    .insert(provider_run.session_id().to_string());
+            }
+            Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted { provider_runs, .. }) => {
+                let mut sessions = self.sessions.lock().await;
+                for launched in provider_runs {
+                    sessions.insert(launched.provider_run.session_id().to_string());
+                }
+            }
+            _ => {}
         }
     }
 

@@ -992,11 +992,35 @@ test("executeShellCommand batch spawns and prompts agents with bounded concurren
         },
       }
     }
-    if ("LaunchProviderRun" in request) {
-      return { ProviderRunLaunched: { provider_run: { id: `run-${fake.requests.length}` } } }
+    if ("LaunchProviderRuns" in request) {
+      const launches = (request as { LaunchProviderRuns: { launches: Array<{ agent_id: string }> } }).LaunchProviderRuns.launches
+      return {
+        ProviderRunsLaunchAccepted: {
+          provider_runs: launches.map((launch, index) => ({
+            index,
+            agent_id: launch.agent_id,
+            provider_run: { id: `run-${index + 1}` },
+            reused: false,
+          })),
+          failures: [],
+        },
+      }
     }
-    if ("SubmitPrompt" in request) {
-      return { PromptSubmitted: { session: makeSession(), outcome: {} } }
+    if ("SubmitPrompts" in request) {
+      const prompts = (request as { SubmitPrompts: { prompts: Array<{ target_agent_id: string }> } }).SubmitPrompts.prompts
+      return {
+        PromptsSubmitted: {
+          results: prompts.map((prompt, index) => ({
+            index,
+            agent_id: prompt.target_agent_id,
+            outcome: {},
+          })),
+          failures: [],
+          session: makeSession(),
+          agent_activity: {},
+          agent_activity_revision: 1,
+        },
+      }
     }
     throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
@@ -1053,14 +1077,20 @@ test("executeShellCommand batch spawns and prompts agents with bounded concurren
       ],
     },
   })
-  const launchRequests = fake.requests.filter((request) => "LaunchProviderRun" in request)
-  const promptRequests = fake.requests.filter((request) => "SubmitPrompt" in request)
-  assert.equal(launchRequests.length, 3)
-  assert.equal(promptRequests.length, 3)
-  assert.deepEqual(promptRequests.map((request) => (request as { SubmitPrompt: { target_agent_id: string; prompt: string } }).SubmitPrompt), [
-    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-1", prompt: "inspect the branch\n", attachments: [] },
-    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
-    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
+  assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), ["SpawnAgents", "LaunchProviderRuns", "SubmitPrompts"])
+  const launchRequest = fake.requests[1] as { LaunchProviderRuns: { max_concurrency: number; launches: Array<{ agent_id: string; provider: string; model: string; variant: string }> } }
+  assert.equal(launchRequest.LaunchProviderRuns.max_concurrency, 2)
+  assert.deepEqual(launchRequest.LaunchProviderRuns.launches.map((launch) => [launch.agent_id, launch.provider, launch.model, launch.variant]), [
+    ["agent-1", "opencode", "gpt-5.5", "high"],
+    ["agent-2", "opencode", "gpt-5.5", "high"],
+    ["agent-3", "opencode", "gpt-5.5", "high"],
+  ])
+  const promptRequest = fake.requests[2] as { SubmitPrompts: { max_concurrency: number; prompts: Array<{ target_agent_id: string; prompt: string; attachments: unknown[] }> } }
+  assert.equal(promptRequest.SubmitPrompts.max_concurrency, 2)
+  assert.deepEqual(promptRequest.SubmitPrompts.prompts, [
+    { target_agent_id: "agent-1", prompt: "inspect the branch\n", attachments: [] },
+    { target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
+    { target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
   ])
 })
 
@@ -1086,15 +1116,44 @@ test("executeShellCommand summarizes batch prompt failures without flooding outp
         },
       }
     }
-    if ("LaunchProviderRun" in request) {
-      return { ProviderRunLaunched: { provider_run: { id: `run-${fake.requests.length}` } } }
-    }
-    if ("SubmitPrompt" in request) {
-      const targetAgentId = (request as { SubmitPrompt: { target_agent_id: string } }).SubmitPrompt.target_agent_id
-      if (targetAgentId === "agent-2") {
-        throw new Error("provider launch window closed")
+    if ("LaunchProviderRuns" in request) {
+      const launches = (request as { LaunchProviderRuns: { launches: Array<{ agent_id: string }> } }).LaunchProviderRuns.launches
+      return {
+        ProviderRunsLaunchAccepted: {
+          provider_runs: launches.map((launch, index) => ({
+            index,
+            agent_id: launch.agent_id,
+            provider_run: { id: `run-${index + 1}` },
+            reused: false,
+          })),
+          failures: [],
+        },
       }
-      return { PromptSubmitted: { session: makeSession(), outcome: {} } }
+    }
+    if ("SubmitPrompts" in request) {
+      const prompts = (request as { SubmitPrompts: { prompts: Array<{ target_agent_id: string }> } }).SubmitPrompts.prompts
+      return {
+        PromptsSubmitted: {
+          results: prompts
+            .map((prompt, index) => ({ prompt, index }))
+            .filter(({ prompt }) => prompt.target_agent_id !== "agent-2")
+            .map(({ prompt, index }) => ({
+              index,
+              agent_id: prompt.target_agent_id,
+              outcome: {},
+            })),
+          failures: [
+            {
+              index: 1,
+              agent_id: "agent-2",
+              message: "provider launch window closed",
+            },
+          ],
+          session: makeSession(),
+          agent_activity: {},
+          agent_activity_revision: 1,
+        },
+      }
     }
     throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })

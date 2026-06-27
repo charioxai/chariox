@@ -18,6 +18,23 @@ pub struct LaunchProviderRunRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchProviderRunsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<usize>,
+    pub launches: Vec<LaunchProviderRunRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunBatchLaunchResult {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub provider_run: RuntimeProviderRun,
+    #[serde(default)]
+    pub reused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateAgentConfigRequest {
     pub session_id: String,
     pub agent_id: String,

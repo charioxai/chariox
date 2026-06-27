@@ -104,6 +104,43 @@ export function launchProviderRunRequest(
   }
 }
 
+export type LaunchProviderRunBatchItem = {
+  sessionId: string
+  provider: string
+  accountProfile: string
+  model: string
+  effort: string
+  agentId?: string | null
+  native?: {
+    structuredEndpoint?: string | null
+    providerSessionId?: string | null
+    nativeTui?: boolean | null
+  } | null
+}
+
+export function launchProviderRunsRequest(
+  launches: LaunchProviderRunBatchItem[],
+  maxConcurrency?: number | null,
+) {
+  return {
+    LaunchProviderRuns: {
+      max_concurrency: maxConcurrency ?? null,
+      launches: launches.map((launch) => {
+        const single = launchProviderRunRequest(
+          launch.sessionId,
+          launch.provider,
+          launch.accountProfile,
+          launch.model,
+          launch.effort,
+          launch.agentId,
+          launch.native,
+        )
+        return single.LaunchProviderRun
+      }),
+    },
+  }
+}
+
 function normalizedProviderModel(provider: string, model: string) {
   if (provider === "codex" && model.startsWith("codex/")) {
     return model.slice("codex/".length)

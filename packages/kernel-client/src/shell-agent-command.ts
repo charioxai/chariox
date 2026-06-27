@@ -12,11 +12,13 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  launchProviderRunsRequest,
   listRemoteMachineKernelsRequest,
   listSlicesRequest,
   spawnAgentRequest,
   spawnAgentsRequest,
   submitPromptRequest,
+  submitPromptsRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
@@ -714,32 +716,81 @@ async function launchAndPromptAgents(
   const promptText = input.prompt.endsWith("\n") ? input.prompt : `${input.prompt}\n`
   let prompted = 0
   const failures: BatchPromptFailure[] = []
-  await runBounded(input.agents, input.concurrency, async (agent) => {
-    try {
-      await deps.client.send(launchProviderRunRequest(
-        input.sessionId,
-        input.provider,
-        "default",
-        input.model,
-        input.effort,
-        agent.id,
-      ))
-      await deps.client.send(submitPromptRequest(
-        input.sessionId,
-        attachment.attachmentId,
-        agent.id,
-        promptText,
-        [],
-      ))
-      prompted += 1
-    } catch (error) {
+  const agentById = new Map(input.agents.map((agent) => [agent.id, agent]))
+  const launchBatch = parseBatchLaunchResponse(await deps.client.send(launchProviderRunsRequest(
+    input.agents.map((agent) => ({
+      sessionId: input.sessionId,
+      provider: input.provider,
+      accountProfile: "default",
+      model: input.model,
+      effort: input.effort,
+      agentId: agent.id,
+    })),
+    input.concurrency,
+  )))
+  const launchFailedIndexes = new Set<number>()
+  for (const failure of launchBatch.failures) {
+    launchFailedIndexes.add(failure.index)
+    const agent = failure.agent_id ? agentById.get(failure.agent_id) : input.agents[failure.index]
+    failures.push({
+      agentRef: agent?.agent_ref ?? agent?.id ?? failure.agent_id ?? `#${failure.index + 1}`,
+      message: failure.message,
+    })
+  }
+  const promptAgents = input.agents.filter((_, index) => !launchFailedIndexes.has(index))
+  if (promptAgents.length > 0) {
+    const promptBatch = parseBatchPromptResponse(await deps.client.send(submitPromptsRequest(
+      input.sessionId,
+      attachment.attachmentId,
+      promptAgents.map((agent) => ({
+        targetAgentId: agent.id,
+        prompt: promptText,
+        attachments: [],
+      })),
+      input.concurrency,
+    )))
+    prompted += promptBatch.results.length
+    for (const failure of promptBatch.failures) {
+      const agent = failure.agent_id ? agentById.get(failure.agent_id) : promptAgents[failure.index]
       failures.push({
-        agentRef: agent.agent_ref ?? agent.id,
-        message: formatErrorMessage(error),
+        agentRef: agent?.agent_ref ?? agent?.id ?? failure.agent_id ?? `#${failure.index + 1}`,
+        message: failure.message,
       })
     }
-  })
+  }
   return { prompted, failed: failures.length, concurrency: input.concurrency, failures: failures.slice(0, 3) }
+}
+
+type BatchFailurePayload = {
+  readonly index: number
+  readonly agent_id?: string | null
+  readonly message: string
+}
+
+function parseBatchLaunchResponse(response: Record<string, unknown>): {
+  readonly failures: readonly BatchFailurePayload[]
+} {
+  if (!("ProviderRunsLaunchAccepted" in response)) {
+    throw new Error(`unexpected batch launch response ${JSON.stringify(response)}`)
+  }
+  const payload = response.ProviderRunsLaunchAccepted as {
+    failures?: readonly BatchFailurePayload[]
+  }
+  return { failures: payload.failures ?? [] }
+}
+
+function parseBatchPromptResponse(response: Record<string, unknown>): {
+  readonly results: readonly unknown[]
+  readonly failures: readonly BatchFailurePayload[]
+} {
+  if (!("PromptsSubmitted" in response)) {
+    throw new Error(`unexpected batch prompt response ${JSON.stringify(response)}`)
+  }
+  const payload = response.PromptsSubmitted as {
+    results?: readonly unknown[]
+    failures?: readonly BatchFailurePayload[]
+  }
+  return { results: payload.results ?? [], failures: payload.failures ?? [] }
 }
 
 type BatchPromptFailure = {
@@ -763,28 +814,6 @@ function formatBatchPromptSummary(summary: BatchPromptSummary): string {
     .join("; ")
   const overflow = summary.failed > summary.failures.length ? `; +${summary.failed - summary.failures.length} more` : ""
   return `prompted ${summary.prompted} agents with concurrency ${summary.concurrency}; failed to prompt ${summary.failed} agents (${examples}${overflow})`
-}
-
-function formatErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-async function runBounded<T>(
-  items: readonly T[],
-  concurrency: number,
-  run: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) {
-      const item = items[next]
-      next += 1
-      if (item !== undefined) {
-        await run(item)
-      }
-    }
-  })
-  await Promise.all(workers)
 }
 
 function parseSubstitutionTimeoutMs(value: string | null | undefined): number | undefined {

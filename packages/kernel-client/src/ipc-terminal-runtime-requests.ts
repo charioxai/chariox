@@ -131,6 +131,32 @@ export function submitPromptRequest(
   }
 }
 
+export type SubmitPromptBatchItem = {
+  targetAgentId: string
+  prompt: string
+  attachments: PromptAttachmentPart[]
+}
+
+export function submitPromptsRequest(
+  sessionId: string,
+  attachmentId: string,
+  prompts: SubmitPromptBatchItem[],
+  maxConcurrency?: number | null,
+) {
+  return {
+    SubmitPrompts: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      max_concurrency: maxConcurrency ?? null,
+      prompts: prompts.map((prompt) => ({
+        target_agent_id: prompt.targetAgentId,
+        prompt: prompt.prompt,
+        attachments: prompt.attachments,
+      })),
+    },
+  }
+}
+
 export function completePromptRequest(sessionId: string) {
   return {
     CompletePrompt: {

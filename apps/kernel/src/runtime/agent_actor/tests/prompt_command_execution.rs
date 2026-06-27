@@ -750,6 +750,115 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
 }
 
 #[tokio::test]
+async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-owned-submit-batch",
+            "worktree-owned-submit-batch",
+        ))
+        .expect("session should be created");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("batch-agent")
+                .with_worktree("worktree-owned-submit-batch"),
+        )
+        .expect("second agent should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-owned-submit-batch",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    launch_dev_stub_provider(&mut app, session.id(), default_agent.id(), "sonnet");
+    launch_dev_stub_provider(&mut app, session.id(), second_agent.id(), "sonnet");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let first_agent_id = default_agent.id().to_string();
+    let second_agent_id = second_agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = AgentRuntime::new(
+        owned_runtime_state(&app).await,
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+
+    let request = crate::local::SubmitPromptsRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        max_concurrency: Some(2),
+        prompts: vec![
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: first_agent_id.clone(),
+                prompt: "batch prompt one".to_string(),
+                attachments: Vec::new(),
+            },
+            crate::local::SubmitPromptsRequestItem {
+                target_agent_id: second_agent_id.clone(),
+                prompt: "batch prompt two".to_string(),
+                attachments: Vec::new(),
+            },
+        ],
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompts(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "owned-local-batch-prompt-submit",
+        None,
+        None,
+        &local_request,
+    );
+    let response = runtime
+        .dispatch_prompt_submit_batch(&command, request)
+        .await
+        .expect("batch prompt submit should succeed");
+
+    let LocalDaemonResponse::PromptsSubmitted {
+        results,
+        failures,
+        session,
+        agent_activity,
+        ..
+    } = response
+    else {
+        panic!("unexpected response");
+    };
+    assert!(failures.is_empty());
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].agent_id, first_agent_id);
+    assert_eq!(results[1].agent_id, second_agent_id);
+    assert!(matches!(
+        results[0].outcome,
+        PromptSubmissionOutcome::Started { .. }
+    ));
+    assert!(matches!(
+        results[1].outcome,
+        PromptSubmissionOutcome::Started { .. }
+    ));
+    assert!(session.active_prompt_for_agent(&first_agent_id).is_some());
+    assert!(session.active_prompt_for_agent(&second_agent_id).is_some());
+    assert!(agent_activity
+        .get(&first_agent_id)
+        .is_some_and(|activity| activity.busy));
+    assert!(agent_activity
+        .get(&second_agent_id)
+        .is_some_and(|activity| activity.busy));
+}
+
+#[tokio::test]
 async fn prompt_cancel_uses_owned_runtime_state_for_pty_prompt_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

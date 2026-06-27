@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::error::DaemonError;
-use crate::local::LocalDaemonResponse;
+use crate::local::{BatchOperationFailure, LocalDaemonResponse, PromptBatchSubmissionResult};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_prompt_service::AgentPromptCommandService;
 use crate::runtime::command_latency::CommandTrace;
@@ -103,6 +104,99 @@ impl AgentRuntime {
             },
         )
         .await
+    }
+
+    pub(crate) async fn dispatch_prompt_submit_batch(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SubmitPromptsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if request.prompts.is_empty() {
+            let session = self.store.session_snapshot(&request.session_id).await?;
+            return Ok(LocalDaemonResponse::PromptsSubmitted {
+                results: Vec::new(),
+                failures: Vec::new(),
+                agent_activity: self.store.agent_activity_for_session(&session).await,
+                agent_activity_revision: self.session_projection.change_sequence(),
+                session,
+            });
+        }
+
+        let max_concurrency = request
+            .max_concurrency
+            .unwrap_or(16)
+            .clamp(1, request.prompts.len());
+        let session_id = request.session_id.clone();
+        let attachment_id = request.attachment_id.clone();
+        let mut outcomes = futures_util::stream::iter(request.prompts.into_iter().enumerate())
+            .map(|(index, item)| {
+                let runtime = self.clone();
+                let command = command.clone();
+                let session_id = session_id.clone();
+                let attachment_id = attachment_id.clone();
+                let agent_id = item.target_agent_id.clone();
+                async move {
+                    let submit_request = item.into_submit_prompt_request(session_id, attachment_id);
+                    let result = runtime
+                        .dispatch_prompt_submit(&command, submit_request)
+                        .await;
+                    (index, agent_id, result)
+                }
+            })
+            .buffer_unordered(max_concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        outcomes.sort_by_key(|(index, _, _)| *index);
+
+        let mut results = Vec::new();
+        let mut failures = Vec::new();
+        let mut latest_session = None;
+        let mut latest_agent_activity = None;
+        let mut latest_agent_activity_revision = self.session_projection.change_sequence();
+        for (index, agent_id, outcome) in outcomes {
+            match outcome {
+                Ok(LocalDaemonResponse::PromptSubmitted {
+                    outcome,
+                    session,
+                    agent_activity,
+                    agent_activity_revision,
+                }) => {
+                    results.push(PromptBatchSubmissionResult {
+                        index,
+                        agent_id,
+                        outcome,
+                    });
+                    latest_session = Some(session);
+                    latest_agent_activity = Some(agent_activity);
+                    latest_agent_activity_revision = agent_activity_revision;
+                }
+                Ok(other) => failures.push(BatchOperationFailure {
+                    index,
+                    agent_id: Some(agent_id),
+                    message: format!("unexpected prompt response: {other:?}"),
+                }),
+                Err(error) => failures.push(BatchOperationFailure {
+                    index,
+                    agent_id: Some(agent_id),
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        let session = match latest_session {
+            Some(session) => session,
+            None => self.store.session_snapshot(&session_id).await?,
+        };
+        let agent_activity = latest_agent_activity
+            .unwrap_or_else(|| self.store.agent_activity_for_session_sync(&session));
+
+        Ok(LocalDaemonResponse::PromptsSubmitted {
+            results,
+            failures,
+            session,
+            agent_activity,
+            agent_activity_revision: latest_agent_activity_revision,
+        })
     }
 
     pub(crate) async fn dispatch_prompt_cancel(
@@ -252,6 +346,27 @@ impl AgentRuntimeStore {
         self.state
             .ensure_agent_prompt_access(agent_id, caller_user_id, operation)
             .await
+    }
+
+    async fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.state.session_snapshot(session_id).await
+    }
+
+    async fn agent_activity_for_session(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.state.agent_activity_for_session(session)
+    }
+
+    fn agent_activity_for_session_sync(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.state.agent_activity_for_session(session)
     }
 
     fn prompt_command_service(

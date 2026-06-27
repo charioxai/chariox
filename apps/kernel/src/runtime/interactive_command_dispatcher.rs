@@ -17,6 +17,7 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::ListHomeExtensionAudit(_)
                 | LocalDaemonRequest::RevokeAgentExtension(_)
                 | LocalDaemonRequest::SubmitPrompt(_)
+                | LocalDaemonRequest::SubmitPrompts(_)
                 | LocalDaemonRequest::CancelActivePrompt(_)
                 | LocalDaemonRequest::SteerQueuedPrompt(_)
                 | LocalDaemonRequest::CancelQueuedPrompt(_)
@@ -49,6 +50,11 @@ pub(crate) async fn dispatch_interactive_command(
         LocalDaemonRequest::SubmitPrompt(request) => {
             agent_runtime
                 .dispatch_prompt_submit(&command, request)
+                .await
+        }
+        LocalDaemonRequest::SubmitPrompts(request) => {
+            agent_runtime
+                .dispatch_prompt_submit_batch(&command, request)
                 .await
         }
         LocalDaemonRequest::CancelActivePrompt(request) => {

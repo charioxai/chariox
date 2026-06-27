@@ -135,6 +135,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::SubmitPrompts(request) => {
+            LocalRequestMetadata::new("prompts.submit", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -360,6 +365,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
+        LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
         LocalDaemonRequest::ListSessionMembers(_) => "session.members.list",
         LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
@@ -646,6 +652,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)
+        | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)

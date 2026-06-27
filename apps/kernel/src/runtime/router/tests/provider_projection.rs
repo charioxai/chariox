@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::LaunchProviderRunsRequest;
 
 fn run_provider_projection_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
 where
@@ -76,6 +77,92 @@ async fn provider_launch_rejects_cross_session_agent_before_acceptance() {
         .providers()
         .get_latest_run_for_agent(&second_session_id, &first_agent_id)
         .is_none());
+}
+
+#[test]
+fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request() {
+    run_provider_projection_large_stack_test(
+        "provider-batch-launch-accepts-multiple-agents",
+        provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_inner,
+    );
+}
+
+async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_inner() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-batch",
+            "worktree-batch",
+        ))
+        .expect("session should be created");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("batch-launch-agent")
+                .with_worktree("worktree-batch"),
+        )
+        .expect("second agent should be created");
+    let session_id = session.id().to_string();
+    let first_agent_id = first_agent.id().to_string();
+    let second_agent_id = second_agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
+        max_concurrency: Some(2),
+        launches: vec![
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(first_agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(second_agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ],
+    });
+    let launch_command =
+        KernelCommand::from_local_request("cmd-provider-batch-launch", None, None, &launch_request);
+
+    let response = router
+        .dispatch(launch_command, launch_request)
+        .await
+        .expect("provider batch launch should be accepted");
+    let LocalDaemonResponse::ProviderRunsLaunchAccepted {
+        provider_runs,
+        failures,
+    } = response
+    else {
+        panic!("unexpected launch response");
+    };
+    assert!(failures.is_empty());
+    assert_eq!(provider_runs.len(), 2);
+    assert_eq!(
+        provider_runs[0].agent_id.as_deref(),
+        Some(first_agent_id.as_str())
+    );
+    assert_eq!(
+        provider_runs[1].agent_id.as_deref(),
+        Some(second_agent_id.as_str())
+    );
+    assert_eq!(provider_runs[0].index, 0);
+    assert_eq!(provider_runs[1].index, 1);
 }
 
 #[test]
