@@ -485,16 +485,21 @@ impl SessionRuntimeStore {
             Ok(agents) => agents,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        for (agent, slice_ref) in agents.iter().zip(slice_refs_for_agents.iter()) {
-            if let Some(slice_ref) = slice_ref {
-                if let Err(error) = self
-                    .state
-                    .attach_slice_agent(slice_ref, agent.session_id(), agent.id())
-                    .await
-                {
-                    return self.with_session_projection_action_result(Err(error)).await;
-                }
-            }
+        let slice_attachments = agents
+            .iter()
+            .zip(slice_refs_for_agents.iter())
+            .filter_map(|(agent, slice_ref)| {
+                slice_ref
+                    .as_ref()
+                    .map(|slice_ref| crate::slice::SliceAgentAttachment {
+                        slice_ref: slice_ref.clone(),
+                        session_id: agent.session_id().to_string(),
+                        agent_id: agent.id().to_string(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self.state.attach_slice_agents(slice_attachments).await {
+            return self.with_session_projection_action_result(Err(error)).await;
         }
         if caller_metaagent_id.is_none() {
             let _ = self

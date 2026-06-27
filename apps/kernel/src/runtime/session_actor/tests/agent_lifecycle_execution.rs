@@ -208,6 +208,96 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, daemon_id, terminal_stream, durable_state_store) = {
+        let mut app_locked = app.lock().await;
+        let daemon_id = app_locked.config().daemon_id.clone();
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (
+            session.id().to_string(),
+            daemon_id,
+            app_locked.terminal_stream_store(),
+            app_locked.durable_state_store(),
+        )
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        session_id: session_id.clone(),
+        agents: vec![
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("local-kernel-ref-1".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: Some(daemon_id.clone()),
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("local-kernel-ref-2".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: Some(daemon_id),
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+        ],
+    });
+    let command = KernelCommand::from_local_request(
+        "owned-local-kernel-ref-agent-batch",
+        None,
+        None,
+        &request,
+    );
+    let _locked_app = app.lock().await;
+    let response = timeout(
+        Duration::from_millis(100),
+        runtime.dispatch_session_command(command, request),
+    )
+    .await
+    .expect("local kernel-ref batch spawn should not wait for the app lock")
+    .expect("local kernel-ref batch spawn should succeed");
+
+    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agents.len(), 2);
+    let durable_events = durable_state_store
+        .load_events_after(0)
+        .expect("durable state events should load");
+    assert_eq!(
+        durable_events
+            .iter()
+            .filter(|event| event.kind == "agents.created")
+            .count(),
+        1,
+        "local kernel-ref batch should still persist one compact agents.created event"
+    );
+}
+
+#[tokio::test]
 async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

@@ -24,6 +24,13 @@ pub struct SliceStore {
     inner: Arc<Mutex<SliceStoreState>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SliceAgentAttachment {
+    pub slice_ref: String,
+    pub session_id: String,
+    pub agent_id: String,
+}
+
 #[derive(Debug)]
 pub struct SliceOperationGuard {
     store: SliceStore,
@@ -738,6 +745,62 @@ impl SliceStore {
         }
         record.updated_at_ms = now_ms;
         Ok(record.clone())
+    }
+
+    pub fn attach_agents(
+        &self,
+        attachments: Vec<SliceAgentAttachment>,
+        now_ms: u64,
+    ) -> Result<Vec<SliceRecord>, DaemonError> {
+        if attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resolved = attachments
+            .iter()
+            .map(|attachment| {
+                self.resolve(&attachment.slice_ref)
+                    .map(|slice| (slice.id, attachment.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        for (slice_id, attachment) in &resolved {
+            if !state.records.contains_key(slice_id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.attach_agents",
+                    message: format!("unknown slice `{}`", attachment.slice_ref),
+                });
+            }
+        }
+        let mut changed_slice_ids = Vec::new();
+        for (slice_id, attachment) in resolved {
+            let record = state
+                .records
+                .get_mut(&slice_id)
+                .expect("slice existence should be preflighted");
+            if !record
+                .session_ids
+                .iter()
+                .any(|value| value == &attachment.session_id)
+            {
+                record.session_ids.push(attachment.session_id.clone());
+            }
+            record.session_id = Some(attachment.session_id);
+            if !record
+                .agent_ids
+                .iter()
+                .any(|value| value == &attachment.agent_id)
+            {
+                record.agent_ids.push(attachment.agent_id);
+            }
+            record.updated_at_ms = now_ms;
+            if !changed_slice_ids.iter().any(|value| value == &slice_id) {
+                changed_slice_ids.push(slice_id);
+            }
+        }
+        Ok(changed_slice_ids
+            .into_iter()
+            .filter_map(|slice_id| state.records.get(&slice_id).cloned())
+            .collect())
     }
 
     pub fn detach_agent(
