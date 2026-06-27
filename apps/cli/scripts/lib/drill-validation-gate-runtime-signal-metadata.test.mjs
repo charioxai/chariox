@@ -12,7 +12,7 @@ test("builds runtime signal metadata for validation gate reports", () => {
   const metadata = runtimeSignalMetadataForValidationGateReport({
     checks: {
       platformBundle: {
-        requiredRuntimeSignals: ["session-authority", "relay-target-freshness"],
+        requiredRuntimeSignals: ["session-authority", "relay-target-freshness", "runtime-transition-audit"],
         missingRuntimeSignals: ["relay-target-freshness"],
       },
       artifacts: {
@@ -27,7 +27,7 @@ test("builds runtime signal metadata for validation gate reports", () => {
           providerAccountAliases: { "codex=work": 1 },
           requiredRuntimeSignals: { "provider-run-lifecycle": 1 },
           missingRuntimeSignals: { "client-projection-health": 1 },
-          runtimeSignals: { "session-authority": 1 },
+          runtimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
           runtimeSignalOwners: { "kernel-authority": 1 },
         },
       },
@@ -46,10 +46,10 @@ test("builds runtime signal metadata for validation gate reports", () => {
   assert.deepEqual(metadata, {
     missingRuntimeSignals: "client-projection-health,lease-health,relay-target-freshness,slice-auth-state",
     missingRuntimeSignalOwners: "kernel-authority,provider-account,runtime-network,ui-client",
-    requiredRuntimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-projection-health,session-authority,workspace-live-sync-state",
+    requiredRuntimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-projection-health,runtime-transition-audit,session-authority,workspace-live-sync-state",
     requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
-    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority,workspace-live-sync-state",
   })
 })
 
@@ -87,7 +87,7 @@ test("builds owner and classification metadata for validation gate reports", () 
           providerAccountAliases: { "codex=work": 1 },
           requiredRuntimeSignals: { "relay-target-freshness": 1 },
           missingRuntimeSignals: { "permission-interaction": 1 },
-          runtimeSignals: { "session-authority": 1 },
+          runtimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
           runtimeSignalOwners: { "kernel-authority": 1 },
         },
       },
@@ -164,14 +164,14 @@ test("builds owner and classification metadata for validation gate reports", () 
     requiredRuntimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
     requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
-    runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
+    runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority",
   })
 })
 
 test("builds runtime signal metadata for validation gate aggregates", () => {
   const metadata = runtimeSignalMetadataForValidationGateAggregate({
     coverage: {
-      artifactRuntimeSignals: { "session-authority": 1 },
+      artifactRuntimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
       artifactRuntimeSignalOwners: { "kernel-authority": 1 },
       artifactCoverageAreas: { "distributed-observability": 1 },
       artifactOwners: { "validation-platform": 1 },
@@ -210,14 +210,14 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
     requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
     requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-state,worker-kernel",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
-    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority,workspace-live-sync-state",
   })
 })
 
 test("builds owner and classification metadata for validation gate aggregates", () => {
   const metadata = diagnosticMetadataForValidationGateAggregate({
     coverage: {
-      artifactRuntimeSignals: { "session-authority": 1 },
+      artifactRuntimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
       artifactRuntimeSignalOwners: { "kernel-authority": 1 },
       artifactCoverageAreas: { "distributed-observability": 1 },
       artifactOwners: { "validation-platform": 1 },
@@ -342,7 +342,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
     requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
     requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-state,worker-kernel",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
-    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority",
   })
 })
 
