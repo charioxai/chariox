@@ -477,7 +477,11 @@ impl SessionRuntimeStore {
             create_requests.push(create_request);
             slice_refs_for_agents.push(slice_ref_for_agent);
         }
-        let agents = match self.state.spawn_agents(create_requests).await {
+        let agents = match self
+            .state
+            .spawn_agents(create_requests, &caller_user_id)
+            .await
+        {
             Ok(agents) => agents,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };

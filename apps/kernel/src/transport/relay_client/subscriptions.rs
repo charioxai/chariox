@@ -9,6 +9,7 @@ pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscri
 
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
+    pub(super) client_public_key: String,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -195,8 +196,7 @@ pub(super) async fn handle_relay_subscribe(
         .await
         .get(&task_key)
         .is_some_and(|existing| {
-            existing.relay_subscription_id == relay_subscription_id
-                && !existing.handle.is_finished()
+            relay_subscription_task_matches(existing, &relay_subscription_id, &client_public_key)
         })
     {
         return Ok(());
@@ -233,7 +233,7 @@ pub(super) async fn handle_relay_subscribe(
         Arc::clone(router),
         outgoing_tx.clone(),
         relay_subscription_id.clone(),
-        client_public_key,
+        client_public_key.clone(),
         session_id.clone(),
         attachment_id.clone(),
         subscription_scope.clone(),
@@ -244,10 +244,21 @@ pub(super) async fn handle_relay_subscribe(
         task_key,
         RelaySubscriptionTask {
             relay_subscription_id,
+            client_public_key,
             handle: task,
         },
     );
     Ok(())
+}
+
+fn relay_subscription_task_matches(
+    existing: &RelaySubscriptionTask,
+    relay_subscription_id: &str,
+    client_public_key: &str,
+) -> bool {
+    existing.relay_subscription_id == relay_subscription_id
+        && existing.client_public_key == client_public_key
+        && !existing.handle.is_finished()
 }
 
 pub(super) async fn handle_relay_unsubscribe(
@@ -748,8 +759,8 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        relay_subscription_task_key, remove_relay_subscription_task_by_relay_id,
-        RelaySubscriptionTask, RelaySubscriptionTasks,
+        relay_subscription_task_key, relay_subscription_task_matches,
+        remove_relay_subscription_task_by_relay_id, RelaySubscriptionTask, RelaySubscriptionTasks,
     };
 
     use std::collections::BTreeMap;
@@ -772,6 +783,7 @@ mod tests {
             first_key.clone(),
             RelaySubscriptionTask {
                 relay_subscription_id: "relay-subscription-1".to_string(),
+                client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
             },
         );
@@ -786,6 +798,7 @@ mod tests {
             second_key,
             RelaySubscriptionTask {
                 relay_subscription_id: "relay-subscription-2".to_string(),
+                client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
             },
         );
@@ -795,5 +808,32 @@ mod tests {
             remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
         assert!(removed.is_some());
         assert!(tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_subscription_task_reuse_requires_same_client_public_key() {
+        let handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        let task = RelaySubscriptionTask {
+            relay_subscription_id: "relay-subscription-1".to_string(),
+            client_public_key: "client-public-key-1".to_string(),
+            handle,
+        };
+
+        assert!(relay_subscription_task_matches(
+            &task,
+            "relay-subscription-1",
+            "client-public-key-1",
+        ));
+        assert!(
+            !relay_subscription_task_matches(
+                &task,
+                "relay-subscription-1",
+                "client-public-key-2",
+            ),
+            "browser event-socket reconnects can reuse the relay subscription id with a fresh client keypair"
+        );
+        task.handle.abort();
     }
 }

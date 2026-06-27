@@ -154,6 +154,89 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream, local_kernel_ref) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (
+            session.id().to_string(),
+            app_locked.terminal_stream_store(),
+            app_locked.config().daemon_id.clone(),
+        )
+    };
+    let session_projection = SessionStateProjectionStore::default();
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        session_id: session_id.clone(),
+        agents: vec![
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("mixed-owned".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("mixed-local-kernel-ref".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: Some(local_kernel_ref),
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+        ],
+    });
+    let command = KernelCommand::from_local_request("mixed-agent-batch", None, None, &request);
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("mixed agent batch spawn should succeed");
+
+    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agents.len(), 2);
+    assert_eq!(agents[0].alias(), Some("mixed-owned"));
+    assert_eq!(agents[1].alias(), Some("mixed-local-kernel-ref"));
+    let projected = session_projection
+        .get(&session_id)
+        .expect("batch spawn should refresh session projection");
+    assert_eq!(projected.focused_agent_id(), Some(agents[1].id()));
+    assert_eq!(
+        projected
+            .agents()
+            .iter()
+            .filter(|agent| agent.state() == crate::agent::AgentState::Focused)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_create() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

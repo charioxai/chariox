@@ -307,6 +307,7 @@ impl KernelRuntimeState {
     pub(crate) async fn spawn_agents(
         &self,
         requests: Vec<crate::agent::CreateAgentRequest>,
+        caller_user_id: &str,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
         if requests.iter().all(|request| request.kernel_ref.is_none()) {
             let mut prepared_requests = Vec::with_capacity(requests.len());
@@ -316,9 +317,30 @@ impl KernelRuntimeState {
             return self.owned.spawn_agents(prepared_requests);
         }
 
-        let mut agents = Vec::with_capacity(requests.len());
-        for request in requests {
-            agents.push(self.spawn_agent(request).await?);
+        let mut ordered_agents = vec![None; requests.len()];
+        let mut local_requests = Vec::new();
+        let mut local_indices = Vec::new();
+        for (index, request) in requests.into_iter().enumerate() {
+            if request.kernel_ref.is_none() {
+                local_requests.push(self.prepare_local_agent_worktree_placement(request)?);
+                local_indices.push(index);
+            } else {
+                ordered_agents[index] = Some(self.spawn_agent(request).await?);
+            }
+        }
+        if !local_requests.is_empty() {
+            let local_agents = self.owned.spawn_agents(local_requests)?;
+            for (index, agent) in local_indices.into_iter().zip(local_agents.into_iter()) {
+                ordered_agents[index] = Some(agent);
+            }
+        }
+        let agents = ordered_agents
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .expect("every batch spawn slot should be populated");
+        if let Some(last_agent) = agents.last() {
+            self.owned
+                .focus_agent(last_agent.session_id(), last_agent.id(), caller_user_id)?;
         }
         Ok(agents)
     }
