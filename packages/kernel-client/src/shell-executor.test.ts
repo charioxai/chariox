@@ -913,6 +913,100 @@ test("executeShellCommand batch spawns agents with count option", async () => {
   assert.equal(fake.requests.length, 1)
 })
 
+test("executeShellCommand batch spawns and prompts agents with bounded concurrency", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attachment-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  })
+  const fake = fakeClient((request) => {
+    if ("SpawnAgents" in request) {
+      return {
+        AgentsSpawned: {
+          agents: [
+            makeAgent({ id: "agent-1", agent_ref: "agent-1", alias: "reviewer", provider: "opencode", model: "gpt-5.5", effort: "high" }),
+            makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer-2", provider: "opencode", model: "gpt-5.5", effort: "high" }),
+            makeAgent({ id: "agent-3", agent_ref: "agent-3", alias: "reviewer-3", provider: "opencode", model: "gpt-5.5", effort: "high" }),
+          ],
+        },
+      }
+    }
+    if ("LaunchProviderRun" in request) {
+      return { ProviderRunLaunched: { provider_run: { id: `run-${fake.requests.length}` } } }
+    }
+    if ("SubmitPrompt" in request) {
+      return { PromptSubmitted: { session: makeSession(), outcome: {} } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+
+  const result = await executeShellCommand(
+    parseShellCommand('agents spawn 3 reviewer --provider opencode --model gpt-5.5 --effort high --prompt "inspect the branch" --concurrency 2'),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /spawned 3 agents/)
+  assert.match(result.message ?? "", /prompted 3 agents with concurrency 2/)
+  assert.deepEqual(fake.requests[0], {
+    SpawnAgents: {
+      session_id: "session-1",
+      agents: [
+        {
+          provider: "opencode",
+          alias: "reviewer",
+          model: "gpt-5.5",
+          effort: "high",
+          execution_mode: null,
+          permission_level: null,
+          worktree_id: null,
+          kernel_ref: null,
+          slice_ref: null,
+          worktree_placement: null,
+        },
+        {
+          provider: "opencode",
+          alias: "reviewer-2",
+          model: "gpt-5.5",
+          effort: "high",
+          execution_mode: null,
+          permission_level: null,
+          worktree_id: null,
+          kernel_ref: null,
+          slice_ref: null,
+          worktree_placement: null,
+        },
+        {
+          provider: "opencode",
+          alias: "reviewer-3",
+          model: "gpt-5.5",
+          effort: "high",
+          execution_mode: null,
+          permission_level: null,
+          worktree_id: null,
+          kernel_ref: null,
+          slice_ref: null,
+          worktree_placement: null,
+        },
+      ],
+    },
+  })
+  const launchRequests = fake.requests.filter((request) => "LaunchProviderRun" in request)
+  const promptRequests = fake.requests.filter((request) => "SubmitPrompt" in request)
+  assert.equal(launchRequests.length, 3)
+  assert.equal(promptRequests.length, 3)
+  assert.deepEqual(promptRequests.map((request) => (request as { SubmitPrompt: { target_agent_id: string; prompt: string } }).SubmitPrompt), [
+    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-1", prompt: "inspect the branch\n", attachments: [] },
+    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
+    { session_id: "session-1", attachment_id: "attachment-1", target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
+  ])
+})
+
 test("executeShellCommand marks agents in Meta mode in agent lists", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

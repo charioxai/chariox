@@ -16,6 +16,7 @@ import {
   listSlicesRequest,
   spawnAgentRequest,
   spawnAgentsRequest,
+  submitPromptRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
@@ -43,12 +44,14 @@ import {
   shellSliceCreatesPlacement,
 } from "./shell-slice-placement.js"
 import { remoteKernelReadiness } from "./shell-remote-format.js"
+import { resolveShellAttachmentId } from "./shell-session-attachment.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
 
 const MAX_SHELL_BATCH_SPAWN_AGENTS = 200
+const MAX_SHELL_BATCH_SPAWN_CONCURRENCY = 50
 
 export type ShellAgentCommandDeps = ShellPlacementDeps & {
   client: ShellKernelClient
@@ -116,12 +119,12 @@ export async function executeAgentCommand(
       if (metaagent) {
         return { ok: false, message: "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode" }
       }
-      const countParse = parseAgentSpawnCount(args.filter((arg) => arg !== "--meta" && arg !== "--metaagent"))
-      if (!countParse.ok) {
-        return { ok: false, message: countParse.message }
+      const controlParse = parseAgentSpawnControlOptions(args.filter((arg) => arg !== "--meta" && arg !== "--metaagent"), parsed.command)
+      if (!controlParse.ok) {
+        return { ok: false, message: controlParse.message }
       }
-      const spawnArgs = countParse.args
-      const spawnCount = countParse.count
+      const spawnArgs = controlParse.args
+      const spawnCount = controlParse.count
       const parsedSpawn = parsePlacementOptions(spawnArgs, true)
       if (parsedSpawn.error) {
         return { ok: false, message: parsedSpawn.error }
@@ -132,6 +135,9 @@ export async function executeAgentCommand(
       }
       if (spawnCount > 1 && (parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "agent spawn --count does not accept --worktree/--branch; use --dir or create worktrees before spawning" }
+      }
+      if (controlParse.prompt && spawnCount > 1 && parsed.assignment) {
+        return { ok: false, message: "agent spawn --prompt with --count cannot bind one agent id assignment; omit `as <name>`" }
       }
       const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
       if (!resolvedMachineKernel.ok) {
@@ -158,36 +164,53 @@ export async function executeAgentCommand(
         remoteKernelRef,
       )
       if (spawnCount > 1) {
+        const provider = controlParse.provider ?? context.provider
+        const effectiveModel = controlParse.model ?? model ?? context.model
+        const effort = controlParse.effort ?? context.effort
         const response = await deps.client.send(spawnAgentsRequest(
           sessionId,
           Array.from({ length: spawnCount }, (_, index) => ({
-            provider: context.provider,
+            provider,
             alias: batchAgentAlias(alias, index),
-            model: model ?? context.model,
+            model: effectiveModel,
             worktreeId: worktree ?? null,
-            effort: context.effort,
+            effort,
             kernelRef: sliceRef ? null : remoteKernelRef ?? null,
             sliceRef: sliceRef ?? null,
           })),
         ))
         const agents = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsSpawned").agents
+        const promptSummary = controlParse.prompt
+          ? await launchAndPromptAgents({
+            sessionId,
+            agents,
+            provider,
+            model: effectiveModel,
+            effort,
+            prompt: controlParse.prompt,
+            concurrency: controlParse.concurrency,
+          }, context, deps)
+          : null
         const first = agents[0]
         const last = agents.at(-1) ?? first
         return resourceResult(
-          `spawned ${agents.length} agents${first?.agent_ref && last?.agent_ref ? ` (${first.agent_ref}..${last.agent_ref})` : ""}`,
+          [
+            `spawned ${agents.length} agents${first?.agent_ref && last?.agent_ref ? ` (${first.agent_ref}..${last.agent_ref})` : ""}`,
+            promptSummary ? `prompted ${promptSummary.prompted} agents with concurrency ${promptSummary.concurrency}` : null,
+          ].filter(Boolean).join("; "),
           parsed.assignment,
           last?.id ?? "",
           last ? { agentId: last.id } : {},
-          { agents },
+          { agents, promptSummary },
         )
       }
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
-        context.provider,
+        controlParse.provider ?? context.provider,
         alias,
-        model ?? context.model,
+        controlParse.model ?? model ?? context.model,
         worktree,
-        context.effort,
+        controlParse.effort ?? context.effort,
         undefined,
         undefined,
         sliceRef ? undefined : remoteKernelRef,
@@ -195,17 +218,28 @@ export async function executeAgentCommand(
         sliceRef,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
+      const promptSummary = controlParse.prompt
+        ? await launchAndPromptAgents({
+          sessionId,
+          agents: [agent],
+          provider: controlParse.provider ?? agent.provider ?? context.provider,
+          model: controlParse.model ?? agent.model ?? model ?? context.model,
+          effort: controlParse.effort ?? agent.effort ?? context.effort,
+          prompt: controlParse.prompt,
+          concurrency: 1,
+        }, context, deps)
+        : null
       const placement = agent.remote_execution
         ? sliceRef
           ? ` in slice ${sliceRef}`
           : ` on ${remoteKernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
-        `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
+        `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}${promptSummary ? "; prompted agent" : ""}`,
         parsed.assignment,
         agent.id,
         { agentId: agent.id },
-        { agent },
+        { agent, promptSummary },
       )
     }
     case "focus": {
@@ -359,33 +393,6 @@ export async function executeAgentCommand(
     default:
       return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
   }
-}
-
-function agentSpawnUsage(): string {
-  return "usage: agent spawn [alias] [model] [--count <n>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
-}
-
-function parseAgentSpawnCount(args: string[]): { ok: true; args: string[]; count: number } | { ok: false; message: string } {
-  const stripped: string[] = []
-  let count = 1
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]
-    if (arg === "--count" || arg === "-n") {
-      const rawCount = args[index + 1]
-      const parsed = Number.parseInt(rawCount ?? "", 10)
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_SHELL_BATCH_SPAWN_AGENTS) {
-        return { ok: false, message: `--count must be between 1 and ${MAX_SHELL_BATCH_SPAWN_AGENTS}` }
-      }
-      count = parsed
-      index += 1
-      continue
-    }
-    if (!arg) {
-      continue
-    }
-    stripped.push(arg)
-  }
-  return { ok: true, args: stripped, count }
 }
 
 function batchAgentAlias(alias: string | undefined, index: number): string | null {
@@ -592,6 +599,142 @@ function resourceResult(
     bindings: assignment ? { [assignment]: value } : undefined,
     contextUpdates,
   }
+}
+
+function agentSpawnUsage(): string {
+  return "usage: agents spawn <count> [alias] [model] [--provider <provider>] [--prompt <text>] [--concurrency <n>] [--dir <directory>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
+}
+
+type AgentSpawnControlOptions = {
+  readonly args: string[]
+  readonly count: number
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  readonly effort: string | undefined
+  readonly prompt: string | undefined
+  readonly concurrency: number
+}
+
+function parseAgentSpawnControlOptions(
+  args: string[],
+  command: string | undefined,
+): { ok: true } & AgentSpawnControlOptions | { ok: false; message: string } {
+  const stripped: string[] = []
+  let count = 1
+  let provider: string | undefined
+  let model: string | undefined
+  let effort: string | undefined
+  let prompt: string | undefined
+  let concurrency = 10
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (!arg) {
+      continue
+    }
+    const next = args[index + 1]
+    if (arg === "--count" || arg === "-n") {
+      const parsed = parseSpawnCount(next)
+      if (!parsed.ok) return parsed
+      count = parsed.count
+      index += 1
+    } else if (arg === "--provider" && next) {
+      provider = next
+      index += 1
+    } else if (arg === "--model" && next) {
+      model = next
+      index += 1
+    } else if ((arg === "--effort" || arg === "--variant") && next) {
+      effort = next
+      index += 1
+    } else if (arg === "--prompt" && next) {
+      prompt = next
+      index += 1
+    } else if (arg === "--concurrency" && next) {
+      const parsed = Number.parseInt(next, 10)
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_SHELL_BATCH_SPAWN_CONCURRENCY) {
+        return { ok: false, message: `--concurrency must be between 1 and ${MAX_SHELL_BATCH_SPAWN_CONCURRENCY}` }
+      }
+      concurrency = parsed
+      index += 1
+    } else {
+      stripped.push(arg)
+    }
+  }
+  const first = stripped[0]
+  if ((command === "agents" || count === 1) && first && /^\d+$/.test(first)) {
+    const parsed = parseSpawnCount(first)
+    if (!parsed.ok) return parsed
+    count = parsed.count
+    stripped.shift()
+  }
+  if (concurrency > count) {
+    concurrency = count
+  }
+  return { ok: true, args: stripped, count, provider, model, effort, prompt, concurrency }
+}
+
+function parseSpawnCount(value: string | undefined): { ok: true; count: number } | { ok: false; message: string } {
+  const parsed = Number.parseInt(value ?? "", 10)
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_SHELL_BATCH_SPAWN_AGENTS) {
+    return { ok: false, message: `--count must be between 1 and ${MAX_SHELL_BATCH_SPAWN_AGENTS}` }
+  }
+  return { ok: true, count: parsed }
+}
+
+async function launchAndPromptAgents(
+  input: {
+    readonly sessionId: string
+    readonly agents: readonly AgentInstance[]
+    readonly provider: string
+    readonly model: string
+    readonly effort: string
+    readonly prompt: string
+    readonly concurrency: number
+  },
+  context: ShellContext,
+  deps: ShellAgentCommandDeps,
+): Promise<{ readonly prompted: number; readonly concurrency: number }> {
+  const attachment = await resolveShellAttachmentId(context, deps)
+  if (!attachment.ok) {
+    throw new Error(attachment.message)
+  }
+  const promptText = input.prompt.endsWith("\n") ? input.prompt : `${input.prompt}\n`
+  await runBounded(input.agents, input.concurrency, async (agent) => {
+    await deps.client.send(launchProviderRunRequest(
+      input.sessionId,
+      input.provider,
+      "default",
+      input.model,
+      input.effort,
+      agent.id,
+    ))
+    await deps.client.send(submitPromptRequest(
+      input.sessionId,
+      attachment.attachmentId,
+      agent.id,
+      promptText,
+      [],
+    ))
+  })
+  return { prompted: input.agents.length, concurrency: input.concurrency }
+}
+
+async function runBounded<T>(
+  items: readonly T[],
+  concurrency: number,
+  run: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next]
+      next += 1
+      if (item !== undefined) {
+        await run(item)
+      }
+    }
+  })
+  await Promise.all(workers)
 }
 
 function parseSubstitutionTimeoutMs(value: string | null | undefined): number | undefined {
