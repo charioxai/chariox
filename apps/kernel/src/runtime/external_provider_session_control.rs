@@ -887,17 +887,23 @@ fn append_observed_external_turns_for_attached_target_with_options(
     let changed = appended;
     outcome.changed_count = changed;
     outcome.active_relevant_changed_count = active_relevant_appended;
+    let observation_policy = ExternalProviderObservationPolicy::for_provider(&provider);
     let latest_active_prompt = external_active_prompt_from_turns(
         &read.target,
         &candidate_turns,
         active_relevant_appended > 0,
         &arroba_owned_provider_turn_ids,
     );
-    let latest_observation_settles = ExternalProviderObservationPolicy::for_provider(&provider)
-        .latest_effective_turn_settles(&candidate_turns);
+    let latest_observation_settles =
+        observation_policy.latest_effective_turn_settles(&candidate_turns);
+    let has_active_relevant_observation = candidate_turns
+        .iter()
+        .any(|turn| !observation_policy.turn_is_passive_telemetry(turn));
     let should_sync_active_prompt = latest_active_prompt.is_some()
         || latest_observation_settles
-        || (changed == 0 && options.allow_external_active_prompt_settlement);
+        || (options.allow_external_active_prompt_settlement
+            && has_active_relevant_observation
+            && (changed == 0 || active_relevant_appended == 0));
     let active_prompt_changed = if should_sync_active_prompt {
         app.prompt_owner_sync_external_active_prompt(
             &read.target.session_id,
@@ -3174,6 +3180,84 @@ mod tests {
                 .expect("active prompt should load")
                 .is_none(),
             "Claude passive telemetry after assistant output must not keep the external turn working"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_claude_new_passive_telemetry_after_assistant_settles_immediately() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import,
+        );
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let assistant = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("assistant-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            text: "final external reply".to_string(),
+            observed_at_ms: Some(84),
+        };
+        let initial_outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone(), assistant.clone()],
+            },
+        )
+        .expect("observed Claude assistant turn should append");
+        assert_eq!(initial_outcome.changed_count, 2);
+        assert_eq!(initial_outcome.active_relevant_changed_count, 2);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "new assistant output should keep the external turn running through the grace window"
+        );
+
+        let telemetry = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("last-prompt-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "claude last-prompt {\"lastPrompt\":\"external prompt\"}".to_string(),
+            observed_at_ms: Some(126),
+        };
+        let telemetry_outcome = append_observed_external_turns_for_attached_target_with_options(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![prompt, assistant, telemetry],
+            },
+            AttachedExternalObserverAppendOptions {
+                allow_external_active_prompt_settlement: true,
+            },
+        )
+        .expect("new passive telemetry should append and settle the stable assistant turn");
+
+        assert_eq!(telemetry_outcome.changed_count, 1);
+        assert_eq!(telemetry_outcome.active_relevant_changed_count, 0);
+        assert!(telemetry_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "new Claude passive telemetry after a stable assistant message should settle immediately"
         );
     }
 
