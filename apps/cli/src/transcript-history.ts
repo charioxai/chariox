@@ -1,3 +1,6 @@
+import {
+  historyEntryExternalProviderObservedMetadata,
+} from "@arroba/kernel-client/external-provider-observation"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
   formatToolTranscriptUpdate,
@@ -444,17 +447,7 @@ function mergeStitchedHistoryMetadata(
 }
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {
-  if (entry.source !== "external_provider_observed") {
-    return {}
-  }
-  return {
-    source: entry.source,
-    externalProvider: entry.external_provider ?? null,
-    externalProviderSessionId: entry.external_provider_session_id ?? null,
-    externalProviderTurnId: entry.external_provider_turn_id ?? null,
-    observedAtMs: entry.observed_at_ms ?? null,
-    externalObservation: entry.external_observation ?? null,
-  }
+  return historyEntryExternalProviderObservedMetadata(entry) ?? {}
 }
 
 function historyEntryIdentityOptions(

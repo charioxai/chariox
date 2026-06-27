@@ -324,9 +324,7 @@ test("LocalIpcClient close cancels websocket handshakes that are still connectin
 
   const subscriptionPromise = client.subscribeToKernelEvents("session-1", "attachment-1")
   await new Promise((resolve) => setTimeout(resolve, 50))
-  await client.close()
-
-  const outcome = await Promise.race([
+  const outcomePromise = Promise.race([
     subscriptionPromise.then(
       () => "resolved",
       (error: unknown) => error instanceof Error ? error.message : String(error),
@@ -335,6 +333,8 @@ test("LocalIpcClient close cancels websocket handshakes that are still connectin
       setTimeout(() => resolve("timed out"), 1_000)
     }),
   ])
+  await client.close()
+  const outcome = await outcomePromise
 
   assert.equal(verifyClientCalls, 1)
   assert.notEqual(outcome, "resolved")
