@@ -1,10 +1,21 @@
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
+import type { AgentRuntimeActivityBusyInput } from "./agent-activity.js"
 
 export type SessionPromptWorkSummary = {
   readonly active: number
   readonly queued: number
   readonly busyAgents: number
+}
+
+export type AgentPromptStateLike = {
+  readonly active_prompt?: unknown | null
+  readonly queued_prompts?: readonly unknown[] | null
+}
+
+export type AgentRuntimeProjectionContext = {
+  readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
+  readonly promptStates?: Record<string, AgentPromptStateLike | null> | null | undefined
 }
 
 export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
@@ -64,17 +75,27 @@ export function sessionAgentRuntimeState(
   if (!session) {
     return legacyAgentRuntimeState(agent)
   }
-  if (session.agent_activity && !(agent.id in session.agent_activity)) {
+  return agentRuntimeStateFromProjection(agent, {
+    agentActivity: session.agent_activity,
+    promptStates: session.prompt_states,
+  })
+}
+
+export function agentRuntimeStateFromProjection(
+  agent: AgentInstance,
+  context: AgentRuntimeProjectionContext,
+): AgentInstance["state"] {
+  if (context.agentActivity && !(agent.id in context.agentActivity)) {
     return agent.state === "Error" ? "Error" : "Idle"
   }
-  const projected = session.agent_activity?.[agent.id]
+  const projected = context.agentActivity?.[agent.id]
   if (projected) {
     if (projected.status === "error") {
       return "Error"
     }
     return agentRuntimeActivityIsBusy(projected) ? "Working" : "Idle"
   }
-  const promptState = promptStateForAgent(session, agent.id)
+  const promptState = context.promptStates?.[agent.id]
   if (promptState !== undefined) {
     if (agent.state === "Error") {
       return "Error"

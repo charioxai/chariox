@@ -1,5 +1,9 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
-import { agentRuntimeActivityIsBusy, type AgentRuntimeActivityBusyInput } from "./agent-activity.js"
+import {
+  agentRuntimeStateFromProjection,
+  type AgentRuntimeProjectionContext,
+  type AgentPromptStateLike,
+} from "./shell-agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
@@ -24,19 +28,14 @@ export type ShellAgentProviderRunContext = {
   activeProviderRunLookupError?: string | null
 }
 
-type ShellAgentPromptState = {
-  readonly active_prompt?: unknown | null
-  readonly queued_prompts?: readonly unknown[] | null
-}
-
 export type ShellAgentSessionContext = {
   homeKernelId?: string | null
   homeMachineId?: string | null
   ownerUserId?: string | null
   workspaceLiveSyncMode?: "managed" | "tracked" | "unrestricted" | null
   workspaceLiveSyncWorktree?: string | null
-  agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null
-  promptStates?: Record<string, ShellAgentPromptState | null> | null
+  agentActivity?: AgentRuntimeProjectionContext["agentActivity"]
+  promptStates?: Record<string, AgentPromptStateLike | null> | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -355,26 +354,10 @@ function agentRuntimeStateForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
 ): AgentInstance["state"] {
-  if (sessionContext.agentActivity && !(agent.id in sessionContext.agentActivity)) {
-    return agent.state === "Error" ? "Error" : "Idle"
-  }
-  const activity = sessionContext.agentActivity?.[agent.id]
-  if (activity) {
-    if (activity.status === "error") {
-      return "Error"
-    }
-    return agentRuntimeActivityIsBusy(activity) ? "Working" : "Idle"
-  }
-  const promptState = sessionContext.promptStates?.[agent.id]
-  if (promptState !== undefined) {
-    if (agent.state === "Error") {
-      return "Error"
-    }
-    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
-      ? "Working"
-      : "Idle"
-  }
-  return agent.is_processing && agent.state !== "Error" ? "Working" : agent.state
+  return agentRuntimeStateFromProjection(agent, {
+    agentActivity: sessionContext.agentActivity,
+    promptStates: sessionContext.promptStates,
+  })
 }
 
 function agentProviderRunId(
