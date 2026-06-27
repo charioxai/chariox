@@ -16,6 +16,11 @@ const RUNTIME_AUTHORITY_INVARIANTS = Object.freeze({
     description: "The home kernel owns sessions, prompts, attachments, transcript history, runtime interactions, Workspace Live Sync policy, extension grants, and remote-agent leases.",
     requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "permission-interaction", "session-authority", "workspace-live-sync-state"]),
   },
+  "primary-provider-run-per-agent": {
+    owner: "kernel-authority",
+    description: "Each session-scoped agent has at most one active primary provider run unless an explicit multi-run model owns the extra runs, and duplicate or missing primary bindings are surfaced as health issues.",
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "lease-health", "provider-run-lifecycle", "session-authority"]),
+  },
   "projected-state-diagnostics": {
     owner: "kernel-authority",
     description: "Projected remote state with authority implications has kernel-owned health or audit projection and validation-platform runtime-signal coverage.",

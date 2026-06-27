@@ -16,6 +16,7 @@ test("defines stable runtime authority invariant ids", () => {
   assert.deepEqual(DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS, [
     "client-render-request",
     "home-session-authority",
+    "primary-provider-run-per-agent",
     "projected-state-diagnostics",
     "relay-cloud-transport-only",
     "shared-runtime-primitives",
@@ -32,6 +33,12 @@ test("writes and validates runtime authority manifest", () => {
   assert.equal(drillRuntimeAuthorityInvariantOwner("worker-execution-authority"), "worker-kernel")
   assert.deepEqual(drillRuntimeAuthorityInvariantSignals("relay-cloud-transport-only"), [
     "relay-target-freshness",
+    "session-authority",
+  ])
+  assert.deepEqual(drillRuntimeAuthorityInvariantSignals("primary-provider-run-per-agent"), [
+    "agent-lifecycle",
+    "lease-health",
+    "provider-run-lifecycle",
     "session-authority",
   ])
   assert.equal(isKnownDrillRuntimeAuthorityInvariant("shared-runtime-primitives"), true)
