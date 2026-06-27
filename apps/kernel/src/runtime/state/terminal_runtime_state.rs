@@ -150,15 +150,26 @@ impl KernelRuntimeState {
         }
         let mut terminal_outputs = Vec::with_capacity(request.outputs.len());
         let mut history_entries = Vec::new();
+        let mut provider_run_agent_cache =
+            std::collections::BTreeMap::<String, Option<String>>::new();
         for output in request.outputs {
-            let provider_run = self.owned.provider_store.get_run(&output.provider_run_id)?;
-            if provider_run.session_id() != request.session_id {
-                return Err(DaemonError::ProviderRunNotInSession {
-                    session_id: request.session_id,
-                    provider_run_id: output.provider_run_id,
-                });
-            }
-            let agent_id = provider_run.agent_instance_id().map(str::to_string);
+            let agent_id = match provider_run_agent_cache.get(&output.provider_run_id) {
+                Some(agent_id) => agent_id.clone(),
+                None => {
+                    let provider_run =
+                        self.owned.provider_store.get_run(&output.provider_run_id)?;
+                    if provider_run.session_id() != request.session_id {
+                        return Err(DaemonError::ProviderRunNotInSession {
+                            session_id: request.session_id,
+                            provider_run_id: output.provider_run_id,
+                        });
+                    }
+                    let agent_id = provider_run.agent_instance_id().map(str::to_string);
+                    provider_run_agent_cache
+                        .insert(output.provider_run_id.clone(), agent_id.clone());
+                    agent_id
+                }
+            };
             if output.kind != crate::terminal::TerminalOutputKind::PromptEcho {
                 history_entries.push(crate::history::SessionHistoryEntry::provider_output(
                     &request.session_id,
