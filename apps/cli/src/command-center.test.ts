@@ -107,6 +107,9 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
   }
 
   assert.equal(buildCommandCenterItems("/run missing", context).some((item) => item.value === "/kernel "), true)
+  assert.equal(buildCommandCenterItems("/manifest settling", context).some((item) => item.value === "/kernel "), true)
+  assert.equal(buildCommandCenterItems("/home proxy blocked", context).some((item) => item.value === "/kernel "), true)
+  assert.equal(buildCommandCenterItems("/worker run gap", context).some((item) => item.value === "/kernel "), true)
 
   const staleManifest = new Set(buildCommandCenterItems("/extension manifest stale", context).map((item) => item.value))
   assert.equal(staleManifest.has("/extension sync-status "), true)
