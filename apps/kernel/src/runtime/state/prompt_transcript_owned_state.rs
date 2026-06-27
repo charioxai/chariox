@@ -124,42 +124,50 @@ impl KernelRuntimeOwnedState {
             .attachment_store
             .list_session_attachment_ids(session_id);
         let mut trace_agent_ids = std::collections::BTreeSet::new();
-        let terminal_outputs = outputs
-            .into_iter()
-            .map(|output| {
-                let mut scoped_recipient_attachment_ids = self.private_recipient_attachment_ids(
-                    output.agent_id.as_deref(),
-                    recipient_attachment_ids.clone(),
-                );
-                scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-                    session_id,
-                    output.agent_id.as_deref(),
-                    scoped_recipient_attachment_ids,
-                );
-                if let Some(agent_id) = output.agent_id.as_deref() {
-                    trace_agent_ids.insert(agent_id.to_string());
-                }
-                if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
-                    if let Some(agent_id) = output.agent_id.as_deref() {
-                        self.record_workflow_thinking_trace(
-                            session_id,
-                            &output.provider_run_id,
-                            agent_id,
-                            output.text.clone(),
+        let mut recipient_scope_cache =
+            std::collections::BTreeMap::<Option<String>, Vec<String>>::new();
+        let mut terminal_outputs = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let agent_id = output.agent_id;
+            let scoped_recipient_attachment_ids = recipient_scope_cache
+                .entry(agent_id.clone())
+                .or_insert_with(|| {
+                    let mut scoped_recipient_attachment_ids = self
+                        .private_recipient_attachment_ids(
+                            agent_id.as_deref(),
+                            recipient_attachment_ids.clone(),
                         );
-                    }
+                    scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+                        session_id,
+                        agent_id.as_deref(),
+                        scoped_recipient_attachment_ids,
+                    );
+                    scoped_recipient_attachment_ids
+                })
+                .clone();
+            if let Some(agent_id) = agent_id.as_deref() {
+                trace_agent_ids.insert(agent_id.to_string());
+            }
+            if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    self.record_workflow_thinking_trace(
+                        session_id,
+                        &output.provider_run_id,
+                        agent_id,
+                        output.text.clone(),
+                    );
                 }
-                crate::terminal::TerminalOutputAppend {
-                    session_id: session_id.to_string(),
-                    provider_run_id: output.provider_run_id,
-                    agent_id: output.agent_id,
-                    kind: output.kind,
-                    merge_key: output.merge_key,
-                    recipient_attachment_ids: scoped_recipient_attachment_ids,
-                    bytes: output.text.into_bytes(),
-                }
-            })
-            .collect::<Vec<_>>();
+            }
+            terminal_outputs.push(crate::terminal::TerminalOutputAppend {
+                session_id: session_id.to_string(),
+                provider_run_id: output.provider_run_id,
+                agent_id,
+                kind: output.kind,
+                merge_key: output.merge_key,
+                recipient_attachment_ids: scoped_recipient_attachment_ids,
+                bytes: output.text.into_bytes(),
+            });
+        }
         let records = self.terminal_stream.fan_out_outputs(terminal_outputs);
         for agent_id in trace_agent_ids {
             self.notify_metaagent_trace_activity(session_id, Some(agent_id.as_str()));
