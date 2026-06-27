@@ -46,6 +46,26 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active p
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
 })
 
+test("syncQueuedPromptEntriesForAgent normalizes legacy external active prompt origins", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({
+      active_prompt: {
+        id: "prompt-external",
+        source_attachment_id: "attachment-external",
+        target_agent_id: "agent-1",
+        prompt: "external running",
+        status: "Running",
+        prompt_origin: " External ",
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
 test("syncQueuedPromptEntriesForAgent disables steering behind external active turns", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
@@ -59,6 +79,33 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active t
             prompt_id: "prompt-external",
             provider_run_id: "run-external",
             prompt_origin: "external",
+            status: "running",
+            phase: "streaming",
+            started_at_ms: 2,
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
+test("syncQueuedPromptEntriesForAgent normalizes projected external active turn origins", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-external",
+            provider_run_id: "run-external",
+            prompt_origin: " External ",
             status: "running",
             phase: "streaming",
             started_at_ms: 2,

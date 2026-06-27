@@ -37,7 +37,7 @@ export function syncQueuedPromptEntriesForAgent(
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
   const queuedIds = new Set(queuedPrompts.map((prompt) => prompt.id))
-  const steerDisabled = activePromptOrigin(session, agentId) === "external"
+  const steerDisabled = normalizePromptOrigin(activePromptOrigin(session, agentId)) === "external"
   let changed = false
   const retained = entries.flatMap((entry) => {
     if (!entry.queuedPrompt) {
@@ -138,6 +138,11 @@ function activePromptOrigin(session: RuntimeSession, agentId: string): string | 
     return session.active_prompt.prompt_origin ?? "arroba"
   }
   return null
+}
+
+function normalizePromptOrigin(origin: string | null | undefined): string | null {
+  const normalized = origin?.trim().toLowerCase()
+  return normalized || null
 }
 
 function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {
