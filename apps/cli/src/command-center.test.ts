@@ -76,10 +76,21 @@ test("buildCommandCenterItems includes session runtime status", () => {
     currentVariant: "high",
   }
   const items = buildCommandCenterItems("/session", context)
+  assert.equal(items.find((item) => item.value === "/session list")?.description, "List available sessions")
   assert.equal(items.find((item) => item.value === "/session status")?.description, "Show current session owner, runtime placement, live sync, and blockers")
 
   const discovered = new Set(buildCommandCenterItems("/session what is blocked", context).map((item) => item.value))
   assert.equal(discovered.has("/session status"), true)
+
+  const runtimeBlockers = new Set(buildCommandCenterItems("/session runtime blockers", context).map((item) => item.value))
+  assert.equal(runtimeBlockers.has("/session status"), true)
+
+  const remoteSliceSessions = new Set(buildCommandCenterItems("/session remote slice sessions", context).map((item) => item.value))
+  assert.equal(remoteSliceSessions.has("/session list"), true)
+
+  const workerRunGap = new Set(buildCommandCenterItems("/session worker run gap", context).map((item) => item.value))
+  assert.equal(workerRunGap.has("/session list"), true)
+  assert.equal(workerRunGap.has("/session status"), true)
 })
 
 test("buildCommandCenterItems describes home-proxy extension sync recovery", () => {
