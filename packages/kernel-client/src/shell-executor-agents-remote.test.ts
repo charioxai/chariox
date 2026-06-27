@@ -398,7 +398,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   assert.match(result.message ?? "", /live sync scope: \/repo \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(result.message ?? "", /provider run: session=run-session, worker=run-1/)
-  assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, display=headed, worktree=\/repo\/feature, agents=2\)/)
+  assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, owner=kernel-local@machine-local, authority=home-managed, display=headed, worktree=\/repo\/feature, agents=2\)/)
   assert.match(result.message ?? "", /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(result.message ?? "", /extensions: 2 grants \(active tools home-proxy; mcp=1, script=1\)/)
   assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)

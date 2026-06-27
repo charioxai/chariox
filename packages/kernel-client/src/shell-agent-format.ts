@@ -425,8 +425,19 @@ function formatSliceSummary(slice: SliceRecord): string {
   return `${slice.name || slice.id} (${[
     `id=${slice.id}`,
     `status=${slice.status}`,
+    `owner=${formatSliceOwner(slice)}`,
+    "authority=home-managed",
     `display=${slice.display_mode ?? "headless"}`,
     `worktree=${worktree}`,
     `agents=${slice.agent_ids?.length ?? 0}`,
   ].join(", ")})`
+}
+
+function formatSliceOwner(slice: SliceRecord): string {
+  const kernel = slice.owner_kernel_id?.trim() || ""
+  const machine = slice.owner_machine_id?.trim() || ""
+  if (kernel && machine) {
+    return `${kernel}@${machine}`
+  }
+  return kernel || machine || "unknown"
 }
