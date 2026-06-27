@@ -307,14 +307,14 @@ async fn provider_batch_launch_rejects_focused_and_explicit_duplicate_without_pa
 }
 
 #[test]
-fn provider_batch_launch_rejects_mixed_sessions_without_partial_launch() {
+fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request() {
     run_provider_projection_large_stack_test(
-        "provider-batch-launch-rejects-mixed-sessions",
-        provider_batch_launch_rejects_mixed_sessions_without_partial_launch_inner,
+        "provider-batch-launch-accepts-mixed-sessions",
+        provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner,
     );
 }
 
-async fn provider_batch_launch_rejects_mixed_sessions_without_partial_launch_inner() {
+async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -374,7 +374,7 @@ async fn provider_batch_launch_rejects_mixed_sessions_without_partial_launch_inn
     let response = router
         .dispatch(launch_command, launch_request)
         .await
-        .expect("provider batch mixed sessions should return indexed failures");
+        .expect("provider batch mixed sessions should be accepted");
     let LocalDaemonResponse::ProviderRunsLaunchAccepted {
         provider_runs,
         failures,
@@ -382,20 +382,35 @@ async fn provider_batch_launch_rejects_mixed_sessions_without_partial_launch_inn
     else {
         panic!("unexpected launch response");
     };
-    assert!(provider_runs.is_empty());
-    assert_eq!(failures.len(), 2);
-    assert!(failures
-        .iter()
-        .all(|failure| failure.message.contains("multiple sessions")));
+    assert!(failures.is_empty());
+    assert_eq!(provider_runs.len(), 2);
+    assert_eq!(provider_runs[0].index, 0);
+    assert_eq!(provider_runs[1].index, 1);
+    assert_eq!(
+        provider_runs[0].agent_id.as_deref(),
+        Some(first_agent_id.as_str())
+    );
+    assert_eq!(
+        provider_runs[1].agent_id.as_deref(),
+        Some(second_agent_id.as_str())
+    );
+    assert_eq!(
+        provider_runs[0].provider_run.session_id(),
+        first_session_id.as_str()
+    );
+    assert_eq!(
+        provider_runs[1].provider_run.session_id(),
+        second_session_id.as_str()
+    );
     let app = app.lock().await;
     assert!(app
         .providers()
         .get_latest_run_for_agent(&first_session_id, &first_agent_id)
-        .is_none());
+        .is_some());
     assert!(app
         .providers()
         .get_latest_run_for_agent(&second_session_id, &second_agent_id)
-        .is_none());
+        .is_some());
 }
 
 #[test]

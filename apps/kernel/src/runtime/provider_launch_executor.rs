@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -172,12 +172,6 @@ impl ProviderLaunchCommandExecutor {
             .unwrap_or(8)
             .clamp(1, request.launches.len());
         let mut launches = request.launches;
-        if let Some(failures) = provider_batch_session_preflight_failures(&launches) {
-            return Ok(LocalDaemonResponse::ProviderRunsLaunchAccepted {
-                provider_runs: Vec::new(),
-                failures,
-            });
-        }
         if let Err(error) = self
             .store
             .normalize_batch_launch_targets(&mut launches)
@@ -195,22 +189,23 @@ impl ProviderLaunchCommandExecutor {
             });
         }
 
-        let mut outcomes = futures_util::stream::iter(launches.into_iter().enumerate())
-            .map(|(index, launch_request)| {
-                let executor = self.clone();
-                let caller_user_id = caller_user_id.clone();
-                let command_trace = command_trace.clone();
-                async move {
-                    let agent_id = launch_request.agent_id.clone();
-                    let result = executor
-                        .execute(launch_request, caller_user_id, command_trace)
-                        .await;
-                    (index, agent_id, result)
-                }
-            })
-            .buffer_unordered(max_concurrency)
-            .collect::<Vec<_>>()
-            .await;
+        let mut outcomes =
+            futures_util::stream::iter(interleave_batch_launches_by_session(launches))
+                .map(|(index, launch_request)| {
+                    let executor = self.clone();
+                    let caller_user_id = caller_user_id.clone();
+                    let command_trace = command_trace.clone();
+                    async move {
+                        let agent_id = launch_request.agent_id.clone();
+                        let result = executor
+                            .execute(launch_request, caller_user_id, command_trace)
+                            .await;
+                        (index, agent_id, result)
+                    }
+                })
+                .buffer_unordered(max_concurrency)
+                .collect::<Vec<_>>()
+                .await;
         outcomes.sort_by_key(|(index, _, _)| *index);
 
         let mut provider_runs = Vec::new();
@@ -253,37 +248,13 @@ impl ProviderLaunchCommandExecutor {
     }
 }
 
-fn provider_batch_session_preflight_failures(
-    launches: &[LaunchProviderRunRequest],
-) -> Option<Vec<BatchOperationFailure>> {
-    let first_session_id = launches.first()?.session_id.as_str();
-    if launches
-        .iter()
-        .any(|launch| launch.session_id.as_str() != first_session_id)
-    {
-        return Some(
-            launches
-                .iter()
-                .enumerate()
-                .map(|(index, launch)| BatchOperationFailure {
-                    index,
-                    agent_id: launch.agent_id.clone(),
-                    message: "provider batch launch cannot span multiple sessions yet".to_string(),
-                })
-                .collect(),
-        );
-    }
-
-    None
-}
-
 fn provider_batch_target_preflight_failures(
     launches: &[LaunchProviderRunRequest],
 ) -> Option<Vec<BatchOperationFailure>> {
     let mut seen_targets = HashSet::new();
     let duplicate_target = launches.iter().any(|launch| {
         let target = launch.agent_id.as_deref().unwrap_or("__focused_agent__");
-        !seen_targets.insert(target)
+        !seen_targets.insert((launch.session_id.as_str(), target))
     });
     if duplicate_target {
         return Some(
@@ -300,6 +271,42 @@ fn provider_batch_target_preflight_failures(
     }
 
     None
+}
+
+fn interleave_batch_launches_by_session(
+    launches: Vec<LaunchProviderRunRequest>,
+) -> Vec<(usize, LaunchProviderRunRequest)> {
+    let mut session_order = Vec::new();
+    let mut launches_by_session: HashMap<String, VecDeque<(usize, LaunchProviderRunRequest)>> =
+        HashMap::new();
+    for (index, launch) in launches.into_iter().enumerate() {
+        if !launches_by_session.contains_key(&launch.session_id) {
+            session_order.push(launch.session_id.clone());
+        }
+        launches_by_session
+            .entry(launch.session_id.clone())
+            .or_default()
+            .push_back((index, launch));
+    }
+
+    let mut interleaved = Vec::new();
+    loop {
+        let mut advanced = false;
+        for session_id in &session_order {
+            let Some(queue) = launches_by_session.get_mut(session_id) else {
+                continue;
+            };
+            let Some(launch) = queue.pop_front() else {
+                continue;
+            };
+            interleaved.push(launch);
+            advanced = true;
+        }
+        if !advanced {
+            break;
+        }
+    }
+    interleaved
 }
 
 fn provider_batch_failures(
@@ -329,15 +336,22 @@ impl ProviderLaunchStore {
         if !launches.iter().any(|launch| launch.agent_id.is_none()) {
             return Ok(());
         }
-        let Some(session_id) = launches.first().map(|launch| launch.session_id.as_str()) else {
-            return Ok(());
-        };
-        let Some(focused_agent_id) = self.state.focused_agent_id(session_id).await? else {
-            return Ok(());
-        };
-        for launch in launches.iter_mut() {
+        let mut focused_agents_by_session = HashMap::new();
+        for launch in launches.iter().filter(|launch| launch.agent_id.is_none()) {
+            if focused_agents_by_session.contains_key(&launch.session_id) {
+                continue;
+            }
+            focused_agents_by_session.insert(
+                launch.session_id.clone(),
+                self.state.focused_agent_id(&launch.session_id).await?,
+            );
+        }
+        for launch in launches {
             if launch.agent_id.is_none() {
-                launch.agent_id = Some(focused_agent_id.clone());
+                launch.agent_id = focused_agents_by_session
+                    .get(&launch.session_id)
+                    .cloned()
+                    .flatten();
             }
         }
         Ok(())
@@ -460,6 +474,60 @@ impl ProviderLaunchPendingTracker {
     #[cfg(test)]
     pub(crate) async fn contains_for_tests(&self, session_id: &str) -> bool {
         self.sessions.lock().await.contains(session_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_launches_are_interleaved_by_session_without_losing_original_indexes() {
+        let launches = vec![
+            test_launch("session-a", "agent-a-1"),
+            test_launch("session-a", "agent-a-2"),
+            test_launch("session-a", "agent-a-3"),
+            test_launch("session-b", "agent-b-1"),
+            test_launch("session-b", "agent-b-2"),
+        ];
+
+        let interleaved = interleave_batch_launches_by_session(launches);
+
+        let order = interleaved
+            .iter()
+            .map(|(index, launch)| {
+                (
+                    *index,
+                    launch.session_id.as_str(),
+                    launch.agent_id.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                (0, "session-a", Some("agent-a-1")),
+                (3, "session-b", Some("agent-b-1")),
+                (1, "session-a", Some("agent-a-2")),
+                (4, "session-b", Some("agent-b-2")),
+                (2, "session-a", Some("agent-a-3")),
+            ]
+        );
+    }
+
+    fn test_launch(session_id: &str, agent_id: &str) -> LaunchProviderRunRequest {
+        LaunchProviderRunRequest {
+            session_id: session_id.to_string(),
+            agent_id: Some(agent_id.to_string()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
+        }
     }
 }
 
