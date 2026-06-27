@@ -107,7 +107,30 @@ function remoteMachineNextAction(machine: RemoteMachineRecord): string {
   if ((machine.available_providers ?? []).length === 0) {
     return `configure provider CLIs on ${machineLabel}`
   }
+  const accountRecovery = remoteMachineProviderAccountNextAction(machine)
+  if (accountRecovery) {
+    return accountRecovery
+  }
   return ""
+}
+
+function remoteMachineProviderAccountNextAction(machine: RemoteMachineRecord): string {
+  const providers = machine.available_providers ?? []
+  if (providers.length === 0) {
+    return ""
+  }
+  const accounts = machine.provider_accounts ?? []
+  const missingAccounts = accounts.length === 0
+  const attentionAccounts = accounts.some((account) => providerAccountNeedsAttention(account))
+  if (!missingAccounts && !attentionAccounts) {
+    return ""
+  }
+  const machineLabel = formatRemoteMachineLabel(machine)
+  return `run /machine kernels ${machineLabel}; configure/import or refresh provider accounts before spawning remote agents`
+}
+
+function providerAccountNeedsAttention(account: ProviderAccountSummary): boolean {
+  return account.state !== "authenticated"
 }
 
 function remoteKernelNextAction(kernel: RelayKernelPresence): string {

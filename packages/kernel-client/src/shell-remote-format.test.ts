@@ -34,7 +34,7 @@ test("remote machine formatter shows provider account identities", () => {
     provider_accounts: [],
   }])
 
-  assert.match(output, /mini id=machine-1 status=approved kernels=2 providers=codex,opencode accounts=codex=daily \(dev@example.com\),opencode=api\/state=not_configured/)
+  assert.match(output, /mini id=machine-1 status=approved kernels=2 providers=codex,opencode accounts=codex=daily \(dev@example.com\),opencode=api\/state=not_configured next: run \/machine kernels mini; configure\/import or refresh provider accounts before spawning remote agents/)
   assert.match(output, /offline-box id=machine-2 status=approved,offline kernels=0 providers=- accounts=none next: connect or restart the remote kernel on this machine/)
 })
 
