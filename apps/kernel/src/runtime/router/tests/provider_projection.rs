@@ -474,6 +474,109 @@ async fn list_provider_processes_uses_warmed_projection_without_app_lock_inner()
     }
 }
 
+#[test]
+fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock() {
+    run_provider_projection_large_stack_test(
+        "list-provider-processes-blocks-teardown-for-per-agent-active-prompt-without-app-lock",
+        list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock_inner,
+    );
+}
+
+async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock_inner(
+) {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let focused_agent_id = focused_agent.id().to_string();
+    let background_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("background"))
+        .expect("background agent should be created");
+    let background_agent_id = background_agent.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "client-1",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    launch_test_provider(
+        &mut app,
+        &session_id,
+        &background_agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    app.focus_agent(&session_id, &focused_agent_id)
+        .expect("focused agent should be restored");
+    app.detach(attachment.id())
+        .expect("detaching should remove attached-session teardown blocker");
+
+    let background_prompt = crate::session::PromptQueueItem::new(
+        "prompt-background-active",
+        attachment.id(),
+        &background_agent_id,
+        "background active prompt",
+        crate::session::PromptStatus::Running,
+    );
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            &session_id,
+            &background_agent_id,
+            Some(background_prompt),
+            std::collections::VecDeque::new(),
+        )
+        .expect("background prompt state should mirror");
+    let focused_queued_prompt = crate::session::PromptQueueItem::new(
+        "prompt-focused-queued",
+        attachment.id(),
+        &focused_agent_id,
+        "focused queued prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            &session_id,
+            &focused_agent_id,
+            None,
+            std::collections::VecDeque::from([focused_queued_prompt]),
+        )
+        .expect("focused prompt state should mirror");
+    let projected_session = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should exist");
+    assert!(
+        projected_session.active_prompt().is_none(),
+        "legacy focused prompt projection intentionally has no active prompt"
+    );
+    assert!(
+        projected_session.has_any_active_prompt(),
+        "per-agent prompt state still has active work"
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let _app_guard = app.lock().await;
+    let process_list = router.runtime_state.list_provider_processes(None);
+
+    assert_eq!(process_list.filtered_processes.len(), 1);
+    assert!(
+        !process_list.filtered_processes[0].teardown_safe,
+        "{:?}",
+        process_list.filtered_processes[0]
+    );
+    assert!(process_list.filtered_processes[0]
+        .attached_session_ids
+        .is_empty());
+    assert_eq!(
+        process_list.filtered_processes[0].teardown_blockers,
+        vec!["active prompt"]
+    );
+}
+
 #[tokio::test]
 async fn provider_process_projection_stores_canonical_unfiltered_snapshot() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
