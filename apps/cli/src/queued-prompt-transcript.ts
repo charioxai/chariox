@@ -35,11 +35,11 @@ export function queuedPromptsForAgent(session: RuntimeSession, agentId: string):
   if (promptStates) {
     return promptStates[agentId]?.queued_prompts ?? []
   }
-  const topLevelPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
-  if (!session.agent_activity) {
-    return topLevelPrompts
+  if (session.agent_activity) {
+    return null
   }
-  return topLevelPrompts.length ? topLevelPrompts : null
+  const topLevelPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+  return topLevelPrompts
 }
 
 export function syncQueuedPromptEntriesForAgent(
@@ -222,6 +222,9 @@ function activePromptOrigin(session: RuntimeSession, agentId: string): string | 
   const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
   if (stateActivePrompt) {
     return promptOriginFromRecord(stateActivePrompt, "arroba")
+  }
+  if (session.agent_activity) {
+    return null
   }
   if (session.active_prompt?.target_agent_id === agentId) {
     return promptOriginFromRecord(session.active_prompt, "arroba")

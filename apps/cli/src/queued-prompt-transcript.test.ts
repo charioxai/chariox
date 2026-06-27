@@ -356,6 +356,29 @@ test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected bu
   assert.deepEqual(synced.entries, existing)
 })
 
+test("syncQueuedPromptEntriesForAgent ignores top-level queued prompts when projected busy omits queue state", () => {
+  const session = sessionWithoutPromptStates({
+    queued_prompts: [{
+      id: "prompt-stale",
+      source_attachment_id: "attachment-stale",
+      target_agent_id: "agent-1",
+      prompt: "stale top-level queued",
+      status: "Queued",
+    }],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+      },
+    },
+  })
+  const synced = syncQueuedPromptEntriesForAgent([], session, "agent-1")
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(synced.entries, [])
+})
+
 test("syncQueuedPromptEntriesForAgent clears stale queued prompts when projected queue state is empty", () => {
   const existing: TranscriptEntry[] = [{
     id: 1,
