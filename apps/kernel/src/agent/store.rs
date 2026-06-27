@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{AgentInstance, AgentState};
 
@@ -6,6 +6,12 @@ use super::{AgentInstance, AgentState};
 pub struct AgentStore {
     agents: HashMap<String, AgentInstance>,
     next_id: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AgentSessionSummary {
+    pub(crate) count: usize,
+    pub(crate) aliases: HashSet<String>,
 }
 
 impl AgentStore {
@@ -21,6 +27,13 @@ impl AgentStore {
     pub fn insert(&mut self, agent: AgentInstance) -> AgentInstance {
         self.agents.insert(agent.id().to_string(), agent.clone());
         agent
+    }
+
+    pub(crate) fn insert_many(&mut self, agents: Vec<AgentInstance>) {
+        self.agents.reserve(agents.len());
+        for agent in agents {
+            self.agents.insert(agent.id().to_string(), agent);
+        }
     }
 
     pub fn insert_restored(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -83,6 +96,21 @@ impl AgentStore {
             .count()
     }
 
+    pub(crate) fn session_summary(&self, session_id: &str) -> AgentSessionSummary {
+        let mut summary = AgentSessionSummary::default();
+        for agent in self
+            .agents
+            .values()
+            .filter(|agent| agent.session_id() == session_id)
+        {
+            summary.count += 1;
+            if let Some(alias) = agent.alias() {
+                summary.aliases.insert(alias.to_lowercase());
+            }
+        }
+        summary
+    }
+
     pub fn focused_agent(&self, session_id: &str) -> Option<&AgentInstance> {
         self.agents
             .values()
@@ -113,5 +141,54 @@ impl AgentStore {
 
     pub fn is_empty(&self) -> bool {
         self.agents.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::GridPosition;
+
+    fn agent(id: &str, session_id: &str, alias: Option<&str>) -> AgentInstance {
+        AgentInstance::new(
+            id,
+            format!("ref-{id}"),
+            session_id,
+            alias.map(str::to_string),
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    #[test]
+    fn session_summary_counts_agents_and_normalizes_aliases_without_sorting() {
+        let mut store = AgentStore::new();
+        store.insert(agent("agent-1", "session-a", Some("Alpha")));
+        store.insert(agent("agent-2", "session-a", Some("BETA")));
+        store.insert(agent("agent-3", "session-a", None));
+        store.insert(agent("agent-4", "session-b", Some("alpha")));
+
+        let summary = store.session_summary("session-a");
+
+        assert_eq!(summary.count, 3);
+        assert!(summary.aliases.contains("alpha"));
+        assert!(summary.aliases.contains("beta"));
+        assert_eq!(summary.aliases.len(), 2);
+    }
+
+    #[test]
+    fn insert_many_stores_batch_without_recloning_inputs() {
+        let mut store = AgentStore::new();
+        store.insert_many(vec![
+            agent("agent-1", "session-a", Some("one")),
+            agent("agent-2", "session-a", Some("two")),
+        ]);
+
+        assert_eq!(store.len(), 2);
+        assert!(store.get("agent-1").is_some());
+        assert!(store.get("agent-2").is_some());
     }
 }

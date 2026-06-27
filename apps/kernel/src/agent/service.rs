@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
@@ -66,7 +65,8 @@ impl AgentService {
             });
         }
 
-        let current_count = self.store.count_by_session(session.id());
+        let mut session_summary = self.store.session_summary(session.id());
+        let current_count = session_summary.count;
         let new_count = requests.len();
         if current_count + new_count > session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
@@ -75,12 +75,6 @@ impl AgentService {
             });
         }
 
-        let mut aliases = self
-            .store
-            .get_by_session(session.id())
-            .into_iter()
-            .filter_map(|agent| agent.alias().map(|alias| alias.to_lowercase()))
-            .collect::<HashSet<_>>();
         for request in &requests {
             if request.role == crate::agent::AgentRole::Meta {
                 return Err(DaemonError::LocalTransport {
@@ -90,7 +84,7 @@ impl AgentService {
             }
             if let Some(alias) = request.alias.as_deref() {
                 let normalized = alias.trim().to_lowercase();
-                if !aliases.insert(normalized) {
+                if !session_summary.aliases.insert(normalized) {
                     return Err(DaemonError::AgentAliasConflict {
                         session_id: session.id().to_string(),
                         alias: alias.to_string(),
@@ -101,6 +95,7 @@ impl AgentService {
 
         let final_positions = calculate_agent_layout(current_count + new_count);
         let mut created_ids = Vec::with_capacity(new_count);
+        let mut created_agents = Vec::with_capacity(new_count);
         for (index, request) in requests.into_iter().enumerate() {
             let position = final_positions
                 .get(current_count + index)
@@ -125,8 +120,9 @@ impl AgentService {
             agent.set_execution_mode_override(request.execution_mode_override);
             agent.set_permission_level_override(request.permission_level_override);
             created_ids.push(agent.id().to_string());
-            self.store.insert(agent);
+            created_agents.push(agent);
         }
+        self.store.insert_many(created_agents);
 
         let focused_agent_id = created_ids.last().cloned();
         let mut session_agents = self.store.get_by_session(session.id());
