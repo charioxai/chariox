@@ -19,7 +19,7 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   let nextId = 0
 
   orderedOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
-    const turnId = turnIndex + 1
+    const turnId = outlineTurnDisplayId(turn, turnIndex)
     const externalMetadata = outlineTurnExternalMetadata(turn)
     const promptEntries = hydratePageEntries([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
@@ -88,6 +88,16 @@ function historyPageEntryIndex(pageEntry: SessionHistoryPageEntry): number {
 
 function historyBlobSequenceStart(blob: SessionHistoryOutlineBlob): number {
   return Number.isFinite(blob.sequence_start) ? blob.sequence_start : Number.MAX_SAFE_INTEGER
+}
+
+function outlineTurnDisplayId(
+  turn: SessionHistoryOutlineTurn,
+  turnIndex: number,
+): number {
+  const promptIndex = historyPageEntryIndex(turn.user_prompt)
+  return Number.isFinite(promptIndex) && promptIndex < Number.MAX_SAFE_INTEGER
+    ? promptIndex + 1
+    : turnIndex + 1
 }
 
 export function historyCursorStateForVisibleAgent(

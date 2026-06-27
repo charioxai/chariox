@@ -114,6 +114,49 @@ test("hydrateOutlineAgentEntries orders turns and turn items by history sequence
   ])
 })
 
+test("hydrateOutlineAgentEntries keeps turn ids stable when older turns are prepended", () => {
+  const currentOnlyEntries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-current",
+      prompt_id: "prompt-current",
+      started_at_ms: 20,
+      user_prompt: pageEntry(20, "user_prompt", "current prompt\n"),
+      entries: [pageEntry(21, "provider_output", "current reply\n")],
+      summary: null,
+      blobs: [],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+  const currentOnlyTurnId = currentOnlyEntries.find((entry) => entry.promptId === "prompt-current" && entry.role === "user")?.turnId
+
+  const prependedEntries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-older",
+      prompt_id: "prompt-older",
+      started_at_ms: 10,
+      user_prompt: pageEntry(10, "user_prompt", "older prompt\n"),
+      entries: [pageEntry(11, "provider_output", "older reply\n")],
+      summary: null,
+      blobs: [],
+    }, {
+      turn_id: "turn-current",
+      prompt_id: "prompt-current",
+      started_at_ms: 20,
+      user_prompt: pageEntry(20, "user_prompt", "current prompt\n"),
+      entries: [pageEntry(21, "provider_output", "current reply\n")],
+      summary: null,
+      blobs: [],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+  const prependedTurnId = prependedEntries.find((entry) => entry.promptId === "prompt-current" && entry.role === "user")?.turnId
+
+  assert.equal(currentOnlyTurnId, 21)
+  assert.equal(prependedTurnId, currentOnlyTurnId)
+})
+
 test("hydrateOutlineAgentEntries preserves prompt attachments and external observation metadata", () => {
   const entries = hydrateOutlineAgentEntries({
     agent_id: "agent-1",
