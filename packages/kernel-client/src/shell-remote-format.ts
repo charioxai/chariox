@@ -2,6 +2,7 @@ import type {
   PairedClientRecord,
   PairingInviteRecord,
   PairingJoinRecord,
+  ProviderAccountSummary,
   RelayKernelPresence,
   RelayStatus,
   RemoteMachineRecord,
@@ -15,9 +16,10 @@ export function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
   return machines.map((machine) => {
     const name = formatRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "-"
+    const accounts = formatProviderAccounts(machine.provider_accounts)
     const offline = machine.online ? "" : ",offline"
     const next = remoteMachineNextAction(machine)
-    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}${next ? ` next: ${next}` : ""}`
+    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers} accounts=${accounts}${next ? ` next: ${next}` : ""}`
   }).join("\n")
 }
 
@@ -73,7 +75,11 @@ export function formatRemoteKernels(kernels: RelayKernelPresence[], kernelRef: s
 }
 
 function formatRemoteKernelProviderAccounts(kernel: RelayKernelPresence): string {
-  const accounts = kernel.provider_accounts ?? []
+  return formatProviderAccounts(kernel.provider_accounts)
+}
+
+function formatProviderAccounts(accountsInput: readonly ProviderAccountSummary[] | null | undefined): string {
+  const accounts = accountsInput ?? []
   if (accounts.length === 0) {
     return "none"
   }
