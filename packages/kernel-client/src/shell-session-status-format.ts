@@ -26,7 +26,7 @@ export function formatSessionRuntimeStatus(
   const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? null
   const promptSummary = formatPromptSummary(session)
   const agentSummary = formatAgentSummary(session)
-  const remoteSummary = formatRemoteSummary(session)
+  const remoteSummary = formatRemoteSummary(session, options)
   const extensionSummary = formatRemoteExtensionSummary(session)
   const nextActions = formatSessionNextActions(session, options)
   const lines = [
@@ -194,11 +194,23 @@ function formatAgentSummary(session: RuntimeSession): string {
   return `${total} total, ${local} local, ${remote} remote/slice${slices ? `, ${slices} slice` : ""}`
 }
 
-function formatRemoteSummary(session: RuntimeSession): string {
+function formatRemoteSummary(
+  session: RuntimeSession,
+  options: SessionRuntimeStatusFormatOptions,
+): string {
   const remoteAgents = session.agents.filter((agent) => agent.remote_execution)
   if (remoteAgents.length === 0) {
     return "none"
   }
+  const slices = options.slices ?? []
+  const sliceRefs = new Set(remoteAgents.map((agent) => {
+    const slice = sliceForRemoteAgent(agent, slices)
+    if (slice) {
+      return slice.name || slice.id
+    }
+    const workerKernelId = agent.remote_execution?.worker_kernel_id ?? ""
+    return workerKernelId.startsWith("slice:") ? workerKernelId.slice("slice:".length) : null
+  }).filter(Boolean))
   const workerRunGaps = remoteAgents.filter((agent) => {
     if (agent.remote_execution?.active_worker_provider_run_id) return false
     return agent.state === "Working" || agent.is_processing
@@ -208,7 +220,13 @@ function formatRemoteSummary(session: RuntimeSession): string {
       || agent.remote_execution?.worker_kernel_id
       || "-"
   )))
-  return `${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}, ${workers.size} worker${workers.size === 1 ? "" : "s"}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"}`
+  const parts = [
+    `${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`,
+    `${workers.size} worker${workers.size === 1 ? "" : "s"}`,
+    sliceRefs.size > 0 ? `${sliceRefs.size} slice${sliceRefs.size === 1 ? "" : "s"}` : null,
+    `${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"}`,
+  ].filter(Boolean)
+  return parts.join(", ")
 }
 
 function formatRemoteExtensionSummary(session: RuntimeSession): string {

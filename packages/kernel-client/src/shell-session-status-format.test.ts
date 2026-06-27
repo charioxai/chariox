@@ -83,7 +83,7 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
   assert.match(rendered, /focused agent: agent-remote/)
   assert.match(rendered, /prompts: active=1, queued=1, busy_agents=1/)
   assert.match(rendered, /agents: 2 total, 1 local, 1 remote\/slice/)
-  assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
+  assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 slice, 1 worker run gap/)
   assert.match(rendered, /home-proxy extensions: 1 agent, 1 sync issue, 1 pending revoke/)
   assert.match(rendered, /agent runtime:\n  - agent-local: Idle opencode\/gpt-5\.2 worktree=\/repo placement=local extensions=none/)
   assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
