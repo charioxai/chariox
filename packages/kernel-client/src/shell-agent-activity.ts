@@ -14,11 +14,13 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
     : session.queued_prompts.length
 
   if (session.agent_activity) {
-    const activities = Object.values(session.agent_activity)
+    const activities = Object.entries(session.agent_activity)
     return {
-      active: activities.filter(agentRuntimeActivityHasActivePrompt).length,
+      active: activities.filter(([agentId, activity]) =>
+        agentRuntimeActivityHasActivePrompt(activity, promptStates?.[agentId]),
+      ).length,
       queued,
-      busyAgents: activities.filter(agentRuntimeActivityIsBusy).length,
+      busyAgents: activities.filter(([, activity]) => agentRuntimeActivityIsBusy(activity)).length,
     }
   }
 
@@ -126,9 +128,13 @@ function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: st
 
 function agentRuntimeActivityHasActivePrompt(
   activity: NonNullable<RuntimeSession["agent_activity"]>[string],
+  promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): boolean {
   if (activity.active_turn) {
     return activity.active_turn.status !== "none" && activity.active_turn.status !== "queued"
+  }
+  if (agentRuntimeActivityIsBusy(activity) && promptState?.active_prompt) {
+    return true
   }
   return activity.prompt_status === "running"
     || activity.prompt_status === "cancelling"

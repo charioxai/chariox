@@ -132,6 +132,53 @@ test("sessionPromptWorkSummary counts projected active turns and prompt state qu
   })
 })
 
+test("sessionPromptWorkSummary counts prompt state active prompt for sparse busy activity", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-stale",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-2",
+          prompt: "stale",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "none",
+        busy: true,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 0,
+    busyAgents: 1,
+  })
+})
+
 test("sessionHasActivePrompt follows projected active turn identity", () => {
   const session = makeSession({
     prompt_states: {
