@@ -223,15 +223,15 @@ impl TerminalStreamStore {
         if outputs.is_empty() {
             return Vec::new();
         }
-        let records = self
+        let fanout = self
             .inner
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .fan_out_outputs(outputs);
-        if !records.is_empty() {
-            self.record_change_for_records(&records);
+        if !fanout.records.is_empty() {
+            self.record_change_for_keys(fanout.changed_keys);
         }
-        records
+        fanout.records
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -409,16 +409,6 @@ impl TerminalStreamStore {
         self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
     }
 
-    fn record_change_for_records(&self, records: &[TerminalOutputRecord]) {
-        let mut keys = BTreeSet::new();
-        for record in records {
-            for attachment_id in &record.recipient_attachment_ids {
-                keys.insert((record.session_id.clone(), attachment_id.clone()));
-            }
-        }
-        self.record_change_for_keys(keys);
-    }
-
     fn record_change_for_notice(&self, record: &RuntimeNoticeRecord) {
         self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
     }
@@ -486,6 +476,12 @@ pub struct TerminalStreamService {
 struct StoredTerminalOutputRecord {
     record: TerminalOutputRecord,
     pending_recipient_count: usize,
+}
+
+#[derive(Debug)]
+struct TerminalOutputBatchFanout {
+    records: Vec<TerminalOutputRecord>,
+    changed_keys: BTreeSet<(String, String)>,
 }
 
 impl TerminalStreamService {
@@ -582,14 +578,15 @@ impl TerminalStreamService {
         record
     }
 
-    pub fn fan_out_outputs(
-        &mut self,
-        outputs: Vec<TerminalOutputAppend>,
-    ) -> Vec<TerminalOutputRecord> {
+    fn fan_out_outputs(&mut self, outputs: Vec<TerminalOutputAppend>) -> TerminalOutputBatchFanout {
         if outputs.is_empty() {
-            return Vec::new();
+            return TerminalOutputBatchFanout {
+                records: Vec::new(),
+                changed_keys: BTreeSet::new(),
+            };
         }
         let mut records = Vec::with_capacity(outputs.len());
+        let mut changed_keys = BTreeSet::new();
         for output in outputs {
             let record = TerminalOutputRecord {
                 session_id: output.session_id,
@@ -603,6 +600,9 @@ impl TerminalStreamService {
                 recipient_attachment_ids: output.recipient_attachment_ids,
                 bytes: output.bytes,
             };
+            for attachment_id in &record.recipient_attachment_ids {
+                changed_keys.insert((record.session_id.clone(), attachment_id.clone()));
+            }
 
             if !self.try_coalesce_output_record(&record) {
                 self.push_output_record(record.clone());
@@ -611,7 +611,10 @@ impl TerminalStreamService {
         }
         self.enforce_pending_output_record_limits();
         self.refresh_health();
-        records
+        TerminalOutputBatchFanout {
+            records,
+            changed_keys,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1363,8 +1366,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        scoped_output_record, terminal_output_record_scoped_json_bytes, TerminalOutputKind,
-        TerminalOutputRecord, TerminalStreamService, TerminalStreamStore,
+        scoped_output_record, terminal_output_record_scoped_json_bytes, TerminalOutputAppend,
+        TerminalOutputKind, TerminalOutputRecord, TerminalStreamService, TerminalStreamStore,
     };
 
     #[test]
@@ -2053,6 +2056,58 @@ mod tests {
             .await
             .is_err(),
             "unrelated attachment waiter should not wake"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_once() {
+        let terminal = TerminalStreamStore::new();
+        let changed_sequence = terminal.attachment_change_sequence("session-1", "attachment-1");
+        let unrelated_sequence = terminal.attachment_change_sequence("session-1", "attachment-2");
+        let waiter = {
+            let terminal = terminal.clone();
+            tokio::spawn(async move {
+                terminal
+                    .wait_for_attachment_change_after("session-1", "attachment-1", changed_sequence)
+                    .await;
+            })
+        };
+
+        let records = terminal.fan_out_outputs(vec![
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("batch-key".to_string()),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: b"one".to_vec(),
+            },
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("batch-key".to_string()),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: b"two".to_vec(),
+            },
+        ]);
+
+        assert_eq!(records.len(), 2);
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .expect("batch terminal stream waiter should wake")
+            .expect("batch terminal stream waiter task should complete");
+        assert_eq!(
+            terminal.attachment_change_sequence("session-1", "attachment-1"),
+            changed_sequence + 1,
+            "batch fanout should notify the changed attachment once per batch"
+        );
+        assert_eq!(
+            terminal.attachment_change_sequence("session-1", "attachment-2"),
+            unrelated_sequence,
+            "batch fanout should not wake unrelated attachment scopes"
         );
     }
 
