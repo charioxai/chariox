@@ -3,7 +3,7 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
-import { promptOriginIsExternal } from "./prompt-origin.js"
+import { promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"

@@ -10,7 +10,7 @@ import {
   type TranscriptEntry,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import { promptOriginIsExternal } from "./prompt-origin.js"
+import { promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
