@@ -19,6 +19,7 @@ import type {
   RemoteKernelView,
   RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
+import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import type { WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {
@@ -89,7 +90,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           deps.hasPromptWorkByAgent()[agent.id] ?? false,
           agent.id === deps.streamingAgentId(),
           deps.agentBusyLatch(agent.id),
-          !session.agent_activity,
+          !sessionHasProjectedRuntimeState(session),
         )
         return {
           id: agent.id,

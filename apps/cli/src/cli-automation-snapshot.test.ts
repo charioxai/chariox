@@ -261,7 +261,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
   })
 })
 
-test("buildCliAutomationSnapshot trusts projected idle activity over stale agent state", () => {
+test("buildCliAutomationSnapshot trusts projected idle runtime state over stale agent state", () => {
   const catalog = fallbackProviderCatalog()
   const agent = {
     id: "agent-1",
@@ -272,67 +272,82 @@ test("buildCliAutomationSnapshot trusts projected idle activity over stale agent
     state: "Working",
     is_processing: true,
   } as AgentInstance
-  const session = {
-    id: "session-1",
-    workspace_id: "/repo",
-    worktree_id: "/repo",
-    focused_agent_id: "agent-1",
-    agents: [agent],
-    agent_activity: {
-      "agent-1": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
+
+  for (const projection of [
+    {
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+        },
       },
     },
-    active_interactions: [],
-    workflows: [],
-    workflow_runs: [],
-  } as unknown as RuntimeSession
+    {
+      prompt_states: {
+        "agent-1": {
+          active_prompt: null,
+          queued_prompts: [],
+        },
+      },
+    },
+  ] satisfies Array<Partial<RuntimeSession>>) {
+    const session = {
+      id: "session-1",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+      focused_agent_id: "agent-1",
+      agents: [agent],
+      ...projection,
+      active_interactions: [],
+      workflows: [],
+      workflow_runs: [],
+    } as unknown as RuntimeSession
 
-  const snapshot = buildCliAutomationSnapshot({
-    workspaceScreenMode: () => "agents",
-    workflowScreenActive: () => false,
-    daemonDisconnected: () => false,
-    statusLine: () => "ready",
-    sessionState: () => session,
-    focusedAgentId: () => "agent-1",
-    agentActivityLabels: () => ({}),
-    hasPromptWorkByAgent: () => ({ "agent-1": false }),
-    streamingAgentId: () => null,
-    agentBusyLatch: () => false,
-    isAttached: () => true,
-    waitingRoomState: () => createWaitingRoomState([], catalog, "opencode", "default", "", "opencode", DEFAULT_THEME_REGISTRY),
-    availableSessions: () => [],
-    providerCatalogState: () => catalog,
-    waitingRoomCloudNotice: () => null,
-    waitingRoomInventoryStatus: () => "ready",
-    relayStatusState: () => null,
-    remoteMachinesState: () => [],
-    remoteKernelsState: () => [],
-    terminalsState: () => [],
-    externalProviderSessionsState: () => [],
-    externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
-    slicesState: () => [],
-    waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
-    themeRegistryState: () => DEFAULT_THEME_REGISTRY,
-    selectedWorkflowId: () => null,
-    selectedWorkflowNodeId: () => null,
-    workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
-    workspaceShellEntries: () => [],
-    visibleTranscriptAgentId: () => "agent-1",
-    transcriptEntries: () => [],
-    agentPaneEntries: () => ({}),
-    footerFlash: () => null,
-    interactionChoiceSelection: () => 0,
-    interactionCustomReply: () => "",
-    interactionCustomEditing: () => false,
-  })
+    const snapshot = buildCliAutomationSnapshot({
+      workspaceScreenMode: () => "agents",
+      workflowScreenActive: () => false,
+      daemonDisconnected: () => false,
+      statusLine: () => "ready",
+      sessionState: () => session,
+      focusedAgentId: () => "agent-1",
+      agentActivityLabels: () => ({}),
+      hasPromptWorkByAgent: () => ({ "agent-1": false }),
+      streamingAgentId: () => null,
+      agentBusyLatch: () => false,
+      isAttached: () => true,
+      waitingRoomState: () => createWaitingRoomState([], catalog, "opencode", "default", "", "opencode", DEFAULT_THEME_REGISTRY),
+      availableSessions: () => [],
+      providerCatalogState: () => catalog,
+      waitingRoomCloudNotice: () => null,
+      waitingRoomInventoryStatus: () => "ready",
+      relayStatusState: () => null,
+      remoteMachinesState: () => [],
+      remoteKernelsState: () => [],
+      terminalsState: () => [],
+      externalProviderSessionsState: () => [],
+      externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
+      slicesState: () => [],
+      waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
+      themeRegistryState: () => DEFAULT_THEME_REGISTRY,
+      selectedWorkflowId: () => null,
+      selectedWorkflowNodeId: () => null,
+      workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
+      workspaceShellEntries: () => [],
+      visibleTranscriptAgentId: () => "agent-1",
+      transcriptEntries: () => [],
+      agentPaneEntries: () => ({}),
+      footerFlash: () => null,
+      interactionChoiceSelection: () => 0,
+      interactionCustomReply: () => "",
+      interactionCustomEditing: () => false,
+    })
 
-  assert.deepEqual((snapshot.session as { agents: Array<{ badge: unknown }> }).agents[0]?.badge, {
-    label: "IDLE",
-    tone: "idle",
-  })
+    assert.deepEqual((snapshot.session as { agents: Array<{ badge: unknown }> }).agents[0]?.badge, {
+      label: "IDLE",
+      tone: "idle",
+    })
+  }
 })
 
 test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", () => {
