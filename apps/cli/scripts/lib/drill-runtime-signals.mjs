@@ -33,6 +33,10 @@ const RUNTIME_SIGNALS = Object.freeze({
     owner: "kernel-authority",
     description: "Kernel-owned read-model projection freshness, invariant checks, and stale projection reconciliation state.",
   },
+  "runtime-transition-audit": {
+    owner: "kernel-authority",
+    description: "Durable kernel-owned audit/event trail for session, agent, provider-run, relay lease, sync job, slice lifecycle, and remote extension transitions.",
+  },
   "session-authority": {
     owner: "kernel-authority",
     description: "Kernel-owned session state, prompt routing, attachments, history, and authority boundaries.",

@@ -53,6 +53,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
       "provider-run-lifecycle",
       "relay-target-freshness",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "session-authority",
       "slice-auth-state",
       "slice-runtime-state",
@@ -98,6 +99,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
       "provider-run-lifecycle",
       "relay-target-freshness",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "session-authority",
       "slice-auth-state",
       "slice-runtime-state",
@@ -199,6 +201,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
       "provider-run-lifecycle",
       "relay-target-freshness",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "slice-auth-state",
       "slice-runtime-state",
       "workspace-live-sync-state",
@@ -264,7 +267,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "native-provider-tui": Object.freeze({
     description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredRuntimeSignals: Object.freeze(["client-projection-health", "permission-interaction", "provider-run-lifecycle", "runtime-projection-health", "session-authority"]),
+    requiredRuntimeSignals: Object.freeze(["client-projection-health", "permission-interaction", "provider-run-lifecycle", "runtime-projection-health", "runtime-transition-audit", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "runtime-projection-health", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["native-provider-tui-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"]),
@@ -276,7 +279,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "remote-agent-runtime": Object.freeze({
     description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority"]),
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "runtime-transition-audit", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["cloud-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "runtime-projection-health", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-agent-runtime-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"]),
@@ -305,6 +308,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
       "permission-interaction",
       "provider-run-lifecycle",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "session-authority",
     ]),
     requiredFailureClassifications: Object.freeze([
@@ -365,7 +369,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "workspace-live-sync": Object.freeze({
     description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredRuntimeSignals: Object.freeze(["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
+    requiredRuntimeSignals: Object.freeze(["relay-target-freshness", "runtime-transition-audit", "session-authority", "workspace-live-sync-state"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
     requiredMatrices: Object.freeze(["workspace-live-sync-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
@@ -377,7 +381,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "remote-home-extension": Object.freeze({
     description: "Home-owned extension execution evidence for remote agents and collab authority checks.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "runtime-transition-audit", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
@@ -388,7 +392,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "slice-runtime": Object.freeze({
     description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state"]),
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "runtime-projection-health", "runtime-transition-audit", "session-authority", "slice-auth-state", "slice-runtime-state"]),
     requiredFailureClassifications: Object.freeze(["cloud-runtime", "docker-runtime", "kernel-authority", "runtime-projection-health", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["cloud-slice-runtime-matrix", "slice-runtime-matrix"]),
     requiredMatrixClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),

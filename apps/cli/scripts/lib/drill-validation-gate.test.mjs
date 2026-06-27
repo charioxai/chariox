@@ -39,7 +39,7 @@ test("describes validation gate presets", () => {
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["runtime-authority"] })[0].requiredRuntimeSignals,
-    ["agent-lifecycle", "client-projection-health", "lease-health", "permission-interaction", "provider-run-lifecycle", "runtime-projection-health", "session-authority"],
+    ["agent-lifecycle", "client-projection-health", "lease-health", "permission-interaction", "provider-run-lifecycle", "runtime-projection-health", "runtime-transition-audit", "session-authority"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-state-health"] })[0].requiredMatrices,
@@ -403,6 +403,7 @@ test("runtime authority preset gates shared kernel-owned path evidence", async (
       "permission-interaction",
       "provider-run-lifecycle",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "session-authority",
     ])
     assert.deepEqual(report.checks.matrices.requiredMatrices, [

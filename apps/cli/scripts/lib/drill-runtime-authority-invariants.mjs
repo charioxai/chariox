@@ -11,10 +11,15 @@ const RUNTIME_AUTHORITY_INVARIANTS = Object.freeze({
     description: "Clients render kernel projections and submit typed requests; they do not synthesize session, agent, provider-run, permission, history, or health state.",
     requiredRuntimeSignals: Object.freeze(["client-projection-health", "session-authority"]),
   },
+  "durable-runtime-transition-audit": {
+    owner: "kernel-authority",
+    description: "Important session, agent, provider-run, relay lease, sync job, slice lifecycle, and remote extension transitions have durable kernel-owned audit/event evidence with enough identity context to diagnose and replay ownership decisions.",
+    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "runtime-transition-audit", "session-authority", "slice-runtime-state", "workspace-live-sync-state"]),
+  },
   "home-session-authority": {
     owner: "kernel-authority",
     description: "The home kernel owns sessions, prompts, attachments, transcript history, runtime interactions, Workspace Live Sync policy, extension grants, and remote-agent leases.",
-    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "permission-interaction", "session-authority", "workspace-live-sync-state"]),
+    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "permission-interaction", "runtime-transition-audit", "session-authority", "workspace-live-sync-state"]),
   },
   "primary-provider-run-per-agent": {
     owner: "kernel-authority",
@@ -24,7 +29,7 @@ const RUNTIME_AUTHORITY_INVARIANTS = Object.freeze({
   "projected-state-diagnostics": {
     owner: "kernel-authority",
     description: "Projected remote state with authority implications has kernel-owned health or audit projection and validation-platform runtime-signal coverage.",
-    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"]),
+    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "runtime-transition-audit", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"]),
   },
   "session-scoped-agent-identity": {
     owner: "kernel-authority",

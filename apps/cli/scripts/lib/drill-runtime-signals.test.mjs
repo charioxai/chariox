@@ -27,6 +27,7 @@ test("defines stable distributed runtime signal ids", () => {
     "provider-run-lifecycle",
     "relay-target-freshness",
     "runtime-projection-health",
+    "runtime-transition-audit",
     "session-authority",
     "slice-auth-state",
     "slice-runtime-state",
@@ -40,6 +41,7 @@ test("writes and validates runtime signal manifest", () => {
   assert.equal(manifest.schema, DRILL_RUNTIME_SIGNALS_SCHEMA)
   assert.deepEqual(manifest.signals.map((signal) => signal.id), DRILL_RUNTIME_SIGNAL_IDS)
   assert.equal(drillRuntimeSignalOwner("session-authority"), "kernel-authority")
+  assert.equal(drillRuntimeSignalOwner("runtime-transition-audit"), "kernel-authority")
   assert.equal(drillRuntimeSignalOwner("slice-auth-state"), "provider-account")
   assert.equal(
     drillRuntimeSignalNextAction("lease-health"),
@@ -61,9 +63,10 @@ test("writes and validates runtime signal manifest", () => {
     "lease-health": 2,
     "provider-run-lifecycle": 1,
     "relay-target-freshness": 1,
+    "runtime-transition-audit": 2,
     "runtime-projection-health": 3,
   }), {
-    "kernel-authority": 5,
+    "kernel-authority": 7,
     "provider-runtime": 1,
     "runtime-network": 1,
   })

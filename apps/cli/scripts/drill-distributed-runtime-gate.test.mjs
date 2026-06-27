@@ -166,6 +166,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.equal(indexedRuntimeSignals.includes("home-extension-manifest-sync"), true)
     assert.equal(indexedRuntimeSignals.includes("provider-run-lifecycle"), true)
     assert.equal(indexedRuntimeSignals.includes("runtime-projection-health"), true)
+    assert.equal(indexedRuntimeSignals.includes("runtime-transition-audit"), true)
     assert.equal(indexedRuntimeSignals.includes("slice-auth-state"), true)
     assert.equal(indexedRuntimeSignals.includes("workspace-live-sync-state"), true)
     const indexedRuntimeSignalOwners = artifactIndex.metadata.runtimeSignalOwners.split(",")
@@ -1445,6 +1446,7 @@ const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
   "provider-run-lifecycle",
   "relay-target-freshness",
   "runtime-projection-health",
+  "runtime-transition-audit",
   "session-authority",
   "slice-auth-state",
   "slice-runtime-state",

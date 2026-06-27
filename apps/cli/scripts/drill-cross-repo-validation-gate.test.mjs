@@ -132,6 +132,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       "client-projection-health",
       "provider-run-lifecycle",
       "runtime-projection-health",
+      "runtime-transition-audit",
       "session-authority",
       "slice-auth-state",
       "slice-runtime-state",
