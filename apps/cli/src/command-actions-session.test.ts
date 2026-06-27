@@ -5,7 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, SliceRecord, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 test("session new can attach a new session in an existing directory", async () => {
@@ -94,6 +94,21 @@ test("session status renders home authority and runtime blockers", async () => {
     }),
     appendNotice: (message: string) => { notices.push(message) },
     flashFooter: (message: string, tone: string) => { footers.push(`${tone}:${message}`) },
+    listSlices: async () => [slice({
+      name: "linux-dev",
+      worktree_id: "worktree-1",
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      agent_ids: ["agent-remote"],
+      providers: ["opencode"],
+      provider_auth: [{
+        provider: "opencode",
+        state: "authenticated",
+        alias: "daily",
+        email: "daily@example.com",
+        source: "test",
+      }],
+    })],
   }))
 
   await handlers.handleSessionCommand({
@@ -108,7 +123,7 @@ test("session status renders home authority and runtime blockers", async () => {
   assert.match(notices[0] ?? "", /home kernel: home-kernel@home-machine/)
   assert.match(notices[0] ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(notices[0] ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
-  assert.match(notices[0] ?? "", /agent runtime:\n  - agent-remote: Working opencode\/openai\/gpt-5 worktree=worktree-1 placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=none/)
+  assert.match(notices[0] ?? "", /agent runtime:\n  - agent-remote: Working opencode\/openai\/gpt-5 worktree=worktree-1 placement=slice:linux-dev slice_status=running slice_worktree=worktree-1 slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=none/)
   assert.match(notices[0] ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
   assert.deepEqual(footers, ["info:session runtime status"])
 })
@@ -227,3 +242,19 @@ test("session status rejects refs in the attached TUI surface", async () => {
   )
   assert.equal(flashedMessage, "session session-1 aliased as work-session")
 })
+
+function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id: "slice-1",
+    name: "slice-1",
+    owner_kernel_id: "home-kernel",
+    owner_machine_id: "home-machine",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    worker_kernel_ref: "worker-kernel",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+    ...overrides,
+  }
+}

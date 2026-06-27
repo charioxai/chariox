@@ -48,7 +48,32 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
     },
   })
 
-  const rendered = formatSessionRuntimeStatus(session)
+  const rendered = formatSessionRuntimeStatus(session, {
+    slices: [{
+      id: "slice-1",
+      name: "linux-dev",
+      owner_kernel_id: "home-kernel",
+      owner_machine_id: "home-machine",
+      backend: "local_docker",
+      os: "linux",
+      status: "running",
+      worktree_id: "/repo/main",
+      worker_kernel_ref: "worker-kernel",
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      agent_ids: ["agent-remote"],
+      providers: ["opencode"],
+      provider_auth: [{
+        provider: "opencode",
+        state: "authenticated",
+        alias: "daily",
+        email: "daily@example.com",
+        source: "test",
+      }],
+      created_at_ms: 0,
+      updated_at_ms: 0,
+    }],
+  })
 
   assert.match(rendered, /^session runtime/)
   assert.match(rendered, /session: release \(session-1\)/)
@@ -61,7 +86,7 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
   assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
   assert.match(rendered, /home-proxy extensions: 1 agent, 1 sync issue, 1 pending revoke/)
   assert.match(rendered, /agent runtime:\n  - agent-local: Idle opencode\/gpt-5\.2 worktree=\/repo placement=local extensions=none/)
-  assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
+  assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
   assert.match(rendered, /collaboration: 1 collaborator, 1 mine, 1 others, 2 total/)
   assert.match(rendered, /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(rendered, /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)

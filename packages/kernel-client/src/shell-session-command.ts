@@ -3,12 +3,14 @@ import type {
   SessionConfigState,
   SessionInvite,
   SessionMember,
+  SliceRecord,
 } from "./kernel-types.js"
 import {
   createSessionInviteRequest,
   createSessionRequest,
   getSessionStateRequest,
   joinSessionInviteRequest,
+  listSlicesRequest,
   listSessionMembersRequest,
   listSessionsRequest,
   resolveSessionRequest,
@@ -78,22 +80,14 @@ export async function executeSessionCommand(
       if (sessionRef) {
         const response = await deps.client.send(resolveSessionRequest(sessionRef, context.workspace))
         const session = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved").session
-        return {
-          ok: true,
-          message: formatSessionRuntimeStatus(session),
-          data: { session },
-        }
+        return sessionStatusResult(session, deps)
       }
       if (!context.sessionId) {
         return { ok: false, message: "usage: session status [session-ref]" }
       }
       const response = await deps.client.send(getSessionStateRequest(context.sessionId))
       const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
-      return {
-        ok: true,
-        message: formatSessionRuntimeStatus(session),
-        data: { session },
-      }
+      return sessionStatusResult(session, deps)
     }
     case "new":
     case "create": {
@@ -301,6 +295,39 @@ function parseSessionCreateMetaagent(args: string[]): { metaagent: boolean; rest
     }
   }
   return { metaagent, rest }
+}
+
+async function sessionStatusResult(
+  session: RuntimeSession,
+  deps: ShellSessionCommandDeps,
+): Promise<ShellCommandResult> {
+  const { slices, sliceLookupError } = await loadSessionStatusSlices(session, deps)
+  return {
+    ok: true,
+    message: formatSessionRuntimeStatus(session, { slices, sliceLookupError }),
+    data: { session, slices },
+  }
+}
+
+async function loadSessionStatusSlices(
+  session: RuntimeSession,
+  deps: ShellSessionCommandDeps,
+): Promise<{ slices: readonly SliceRecord[]; sliceLookupError: string | null }> {
+  if (!session.agents.some((agent) => agent.remote_execution)) {
+    return { slices: [], sliceLookupError: null }
+  }
+  try {
+    const response = await deps.client.send(listSlicesRequest())
+    return {
+      slices: expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices,
+      sliceLookupError: null,
+    }
+  } catch (error) {
+    return {
+      slices: [],
+      sliceLookupError: error instanceof Error ? error.message : "slice lookup failed",
+    }
+  }
 }
 
 function resourceResult(

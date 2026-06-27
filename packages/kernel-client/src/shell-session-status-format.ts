@@ -1,12 +1,25 @@
-import type { RuntimeSession } from "./kernel-types.js"
+import type { RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
   formatExtensionGrantPlacementSummary,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import {
+  formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
+  formatSliceScope,
+} from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
-export function formatSessionRuntimeStatus(session: RuntimeSession): string {
+export type SessionRuntimeStatusFormatOptions = {
+  readonly slices?: readonly SliceRecord[]
+  readonly sliceLookupError?: string | null
+}
+
+export function formatSessionRuntimeStatus(
+  session: RuntimeSession,
+  options: SessionRuntimeStatusFormatOptions = {},
+): string {
   const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? null
   const promptSummary = formatPromptSummary(session)
   const agentSummary = formatAgentSummary(session)
@@ -32,7 +45,7 @@ export function formatSessionRuntimeStatus(session: RuntimeSession): string {
     `home-proxy extensions: ${extensionSummary}`,
     `provider run: ${session.active_provider_run_id ?? "-"}`,
     "agent runtime:",
-    ...formatAgentRuntimeLines(session),
+    ...formatAgentRuntimeLines(session, options),
   ]
   if (session.collaboration_agent_counts) {
     lines.push(`collaboration: ${formatCollaborationSummary(session)}`)
@@ -43,7 +56,10 @@ export function formatSessionRuntimeStatus(session: RuntimeSession): string {
   return lines.join("\n")
 }
 
-function formatAgentRuntimeLines(session: RuntimeSession): string[] {
+function formatAgentRuntimeLines(
+  session: RuntimeSession,
+  options: SessionRuntimeStatusFormatOptions,
+): string[] {
   if (session.agents.length === 0) {
     return ["  - none"]
   }
@@ -52,7 +68,7 @@ function formatAgentRuntimeLines(session: RuntimeSession): string[] {
     agent.state,
     formatAgentProvider(agent),
     `worktree=${agent.worktree_id ?? "-"}`,
-    formatAgentPlacement(agent),
+    formatAgentPlacement(agent, sliceForRemoteAgent(agent, options.slices ?? []), options.sliceLookupError),
     formatAgentExtensions(agent),
     formatAgentRemoteExtensionSync(agent),
   ].filter(Boolean).join(" "))
@@ -80,17 +96,28 @@ function formatAgentProvider(agent: RuntimeSession["agents"][number]): string {
   return model.startsWith(`${provider}/`) ? model : `${provider}/${model}`
 }
 
-function formatAgentPlacement(agent: RuntimeSession["agents"][number]): string {
+function formatAgentPlacement(
+  agent: RuntimeSession["agents"][number],
+  slice: SliceRecord | null,
+  sliceLookupError: string | null | undefined,
+): string {
   const remote = agent.remote_execution
   if (!remote) {
     return "placement=local"
   }
-  const sliceRef = remote.worker_kernel_id.startsWith("slice:")
+  const sliceRef = slice
+    ? slice.name || slice.id
+    : remote.worker_kernel_id.startsWith("slice:")
     ? remote.worker_kernel_id.slice("slice:".length)
     : null
   const placement = sliceRef ? `slice:${sliceRef}` : "remote"
   const parts = [
     `placement=${placement}`,
+    slice ? `slice_status=${slice.status}` : null,
+    slice ? `slice_worktree=${formatSliceScope(slice)}` : null,
+    slice ? `slice_auth=${formatSliceProviderAuthReadiness(slice)}` : null,
+    slice ? `slice_accounts=${formatSliceProviderAccounts(slice)}` : null,
+    !slice && sliceLookupError ? `slice_lookup_error=${sliceLookupError}` : null,
     remote.worker_machine_id ? `worker=${remote.worker_machine_id}` : null,
     remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
     remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
@@ -131,6 +158,22 @@ function formatAgentRemoteExtensionSync(agent: RuntimeSession["agents"][number])
     status.last_error ? `error=${status.last_error}` : null,
   ].filter(Boolean)
   return details.join(" ")
+}
+
+function sliceForRemoteAgent(
+  agent: RuntimeSession["agents"][number],
+  slices: readonly SliceRecord[],
+): SliceRecord | null {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return null
+  }
+  return slices.find((slice) => slice.agent_ids?.includes(agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id
+    ) ?? null
 }
 
 function formatPromptSummary(session: RuntimeSession): string {

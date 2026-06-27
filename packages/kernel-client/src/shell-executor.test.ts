@@ -847,8 +847,35 @@ test("executeShellCommand shows current session runtime status", async () => {
     agents: [remoteAgent],
   })
   const fake = fakeClient((request) => {
-    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
-    return { SessionState: { session } }
+    if ("GetSessionState" in request) {
+      assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+      return { SessionState: { session } }
+    }
+    assert.deepEqual(request, { ListSlices: null })
+    return { SlicesListed: { slices: [{
+      id: "slice-1",
+      name: "linux-dev",
+      owner_kernel_id: "home-kernel",
+      owner_machine_id: "home-machine",
+      backend: "local_docker",
+      os: "linux",
+      status: "running",
+      worktree_id: "/repo/main",
+      worker_kernel_ref: "worker-kernel",
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      agent_ids: ["agent-remote"],
+      providers: ["opencode"],
+      provider_auth: [{
+        provider: "opencode",
+        state: "authenticated",
+        email: "daily@example.com",
+        alias: "daily",
+        source: "test",
+      }],
+      created_at_ms: 0,
+      updated_at_ms: 0,
+    }] } }
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/main", sessionId: "session-1" })
 
@@ -861,7 +888,7 @@ test("executeShellCommand shows current session runtime status", async () => {
   assert.match(result.message ?? "", /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
   assert.match(result.message ?? "", /home-proxy extensions: 1 agent, 1 sync issue, 0 pending revokes/)
-  assert.match(result.message ?? "", /agent runtime:\n  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=remote worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; script=1\) manifest=stale hash=hash-1 error=worker offline/)
+  assert.match(result.message ?? "", /agent runtime:\n  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; script=1\) manifest=stale hash=hash-1 error=worker offline/)
   assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
   assert.match(result.message ?? "", /next: run \/extension sync-status agent-remote; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })

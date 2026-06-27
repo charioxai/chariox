@@ -2,6 +2,7 @@ import type {
   RuntimeAttachment,
   RuntimeSession,
   SessionConfigState,
+  SliceRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
@@ -12,7 +13,11 @@ import {
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import type { SessionListEntry } from "./sessions.js"
-import { formatSessionRuntimeStatus, type RuntimeSession as SharedRuntimeSession } from "@arroba/kernel-client"
+import {
+  formatSessionRuntimeStatus,
+  type RuntimeSession as SharedRuntimeSession,
+  type SliceRecord as SharedSliceRecord,
+} from "@arroba/kernel-client"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
@@ -49,6 +54,7 @@ export type SessionCommandHandlerDeps = {
   ) => Promise<void>
   resolveSession: (reference: string, workspace: string) => Promise<ResolveSessionResult>
   listSessions: () => Promise<RuntimeSession[]>
+  listSlices?: () => Promise<SliceRecord[]>
   deleteSessionByRef: (reference: string, workspace: string) => Promise<DeleteSessionResult>
   assignSessionAlias?: (sessionId: string, alias: string) => Promise<RuntimeSession>
   transitionToNoSession: (message: string) => void
@@ -168,9 +174,28 @@ async function showSessionStatus(deps: SessionCommandHandlerDeps, args: string[]
     deps.flashFooter("attach to a session before viewing session status", "error")
     return true
   }
-  deps.appendNotice(formatSessionRuntimeStatus(deps.sessionState() as unknown as SharedRuntimeSession))
+  const session = deps.sessionState()
+  const { slices, sliceLookupError } = await loadSessionStatusSlices(deps, session)
+  deps.appendNotice(formatSessionRuntimeStatus(session as unknown as SharedRuntimeSession, {
+    slices: slices as unknown as readonly SharedSliceRecord[],
+    sliceLookupError,
+  }))
   deps.flashFooter("session runtime status", "info")
   return true
+}
+
+async function loadSessionStatusSlices(
+  deps: SessionCommandHandlerDeps,
+  session: RuntimeSession,
+): Promise<{ slices: readonly SliceRecord[]; sliceLookupError: string | null }> {
+  if (!deps.listSlices || !session.agents.some((agent) => agent.remote_execution)) {
+    return { slices: [], sliceLookupError: null }
+  }
+  try {
+    return { slices: await deps.listSlices(), sliceLookupError: null }
+  } catch (error) {
+    return { slices: [], sliceLookupError: deps.formatError(error) }
+  }
 }
 
 async function setSessionMode(
