@@ -570,10 +570,15 @@ impl TerminalStreamService {
             bytes: bytes.to_vec(),
         };
 
+        let changed_keys = record
+            .pending_recipient_attachment_ids
+            .iter()
+            .map(|attachment_id| (record.session_id.clone(), attachment_id.clone()))
+            .collect::<BTreeSet<_>>();
         if !self.try_coalesce_output_record(&record) {
             self.push_output_record(record.clone());
         }
-        self.enforce_pending_output_record_limits();
+        self.enforce_pending_output_record_limits_for_keys(changed_keys);
         self.refresh_health();
         record
     }
@@ -609,7 +614,7 @@ impl TerminalStreamService {
             }
             records.push(record);
         }
-        self.enforce_pending_output_record_limits();
+        self.enforce_pending_output_record_limits_for_keys(changed_keys.clone());
         self.refresh_health();
         TerminalOutputBatchFanout {
             records,
@@ -641,10 +646,15 @@ impl TerminalStreamService {
             bytes: bytes.to_vec(),
         };
 
+        let changed_keys = record
+            .pending_recipient_attachment_ids
+            .iter()
+            .map(|attachment_id| (record.session_id.clone(), attachment_id.clone()))
+            .collect::<BTreeSet<_>>();
         if !self.try_coalesce_output_record(&record) {
             self.push_output_record(record.clone());
         }
-        self.enforce_pending_output_record_limits();
+        self.enforce_pending_output_record_limits_for_keys(changed_keys);
         self.refresh_health();
         record
     }
@@ -869,28 +879,33 @@ impl TerminalStreamService {
         stored.record.clone()
     }
 
-    fn enforce_pending_output_record_limits(&mut self) {
+    fn enforce_pending_output_record_limits_for_keys(&mut self, keys: BTreeSet<(String, String)>) {
+        if keys.is_empty() {
+            return;
+        }
         if self.pending_output_record_limit_per_attachment == 0 {
             let trimmed = self
                 .pending_output_by_attachment
-                .values()
-                .map(|queue| queue.len() as u64)
+                .iter()
+                .filter(|(key, _)| keys.contains(*key))
+                .map(|(_, queue)| queue.len() as u64)
                 .sum::<u64>();
             self.trimmed_pending_output_recipients = self
                 .trimmed_pending_output_recipients
                 .saturating_add(trimmed);
-            self.output_records.clear();
-            self.pending_output_by_attachment.clear();
-            self.last_output_record_id = None;
+            for key in keys {
+                if let Some(record_ids) = self.pending_output_by_attachment.remove(&key) {
+                    for record_id in record_ids {
+                        self.mark_output_record_drained_for_recipient(record_id, &key.1);
+                        self.remove_output_record_if_drained(record_id);
+                    }
+                }
+            }
+            self.last_output_record_id = self.output_records.keys().next_back().copied();
             return;
         }
 
         let mut trimmed = 0_u64;
-        let keys = self
-            .pending_output_by_attachment
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
         for key in keys {
             loop {
                 let should_trim =
@@ -1552,6 +1567,53 @@ mod tests {
         assert_eq!(fast_records.len(), 2);
         assert_eq!(fast_records[0].bytes, b"chunk-2");
         assert_eq!(fast_records[1].bytes, b"chunk-3");
+        assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn output_backlog_limit_enforcement_only_touches_changed_attachment_queues() {
+        let mut terminal =
+            TerminalStreamService::with_pending_output_record_limit_per_attachment(2);
+        for index in 0..2 {
+            terminal.fan_out_output(
+                "session-1",
+                "provider-run-a",
+                Some("agent-a"),
+                TerminalOutputKind::ProviderTool,
+                Some(format!("a-{index}")),
+                vec!["attachment-a".to_string()],
+                format!("a-{index}").as_bytes(),
+            );
+            terminal.fan_out_output(
+                "session-1",
+                "provider-run-b",
+                Some("agent-b"),
+                TerminalOutputKind::ProviderTool,
+                Some(format!("b-{index}")),
+                vec!["attachment-b".to_string()],
+                format!("b-{index}").as_bytes(),
+            );
+        }
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-a",
+            Some("agent-a"),
+            TerminalOutputKind::ProviderTool,
+            Some("a-2".to_string()),
+            vec!["attachment-a".to_string()],
+            b"a-2",
+        );
+
+        let b_records = terminal.drain_output_records("session-1", "attachment-b");
+        assert_eq!(b_records.len(), 2);
+        assert_eq!(b_records[0].bytes, b"b-0");
+        assert_eq!(b_records[1].bytes, b"b-1");
+
+        let a_records = terminal.drain_output_records("session-1", "attachment-a");
+        assert_eq!(a_records.len(), 2);
+        assert_eq!(a_records[0].bytes, b"a-1");
+        assert_eq!(a_records[1].bytes, b"a-2");
         assert!(terminal.output_records().is_empty());
     }
 
