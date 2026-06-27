@@ -222,6 +222,9 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
         | LocalDaemonResponse::InteractionResponded { session, .. }
+        | LocalDaemonResponse::PromptSubmitted { session, .. }
+        | LocalDaemonResponse::QueuedPromptSteered { session, .. }
+        | LocalDaemonResponse::QueuedPromptCancelled { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::MetaagentTaskUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
@@ -316,6 +319,7 @@ mod tests {
         AliasAgentRequest, CompletePromptRequest, DestroyAgentRequest, SendTerminalInputRequest,
         SpawnAgentRequest,
     };
+    use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
     #[test]
     fn focus_projection_refresh_tracks_agent_identity_changes() {
@@ -371,6 +375,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_responses_with_session_snapshots_refresh_session_projection() {
+        let session = runtime_session("session-prompt");
+        let prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "hello",
+            PromptStatus::Running,
+        );
+
+        let submitted = LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started {
+                prompt: prompt.clone(),
+            },
+            session: session.clone(),
+            agent_activity: BTreeMap::new(),
+            agent_activity_revision: 0,
+        };
+        let steered = LocalDaemonResponse::QueuedPromptSteered {
+            prompt: prompt.clone(),
+            session: session.clone(),
+            agent_activity: BTreeMap::new(),
+            agent_activity_revision: 0,
+        };
+        let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
+            prompt,
+            session: session.clone(),
+        };
+
+        for response in [submitted, steered, cancelled] {
+            assert_eq!(response_sessions(&response), vec![session.clone()]);
+        }
+    }
+
+    #[test]
+    fn prompt_submit_and_steer_do_not_overwrite_agent_runtime_projection_from_response() {
+        let session = runtime_session("session-agent-runtime");
+        let prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "hello",
+            PromptStatus::Running,
+        );
+
+        assert!(!should_update_agent_runtime_projection_from_response(
+            &LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Started {
+                    prompt: prompt.clone(),
+                },
+                session: session.clone(),
+                agent_activity: BTreeMap::new(),
+                agent_activity_revision: 0,
+            },
+        ));
+        assert!(!should_update_agent_runtime_projection_from_response(
+            &LocalDaemonResponse::QueuedPromptSteered {
+                prompt,
+                session,
+                agent_activity: BTreeMap::new(),
+                agent_activity_revision: 0,
+            },
+        ));
+    }
+
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
             session_id: "session-1".to_string(),
@@ -386,5 +456,9 @@ mod tests {
             worktree_placement: None,
             metaagent: false,
         }
+    }
+
+    fn runtime_session(id: &str) -> RuntimeSession {
+        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "kernel")
     }
 }

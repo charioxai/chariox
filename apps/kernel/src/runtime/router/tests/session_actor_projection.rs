@@ -1731,8 +1731,24 @@ async fn get_session_state_projection_tracks_prompt_completion_without_app_lock(
     }
 }
 
-#[tokio::test]
-async fn session_snapshot_refresh_tracks_agent_runtime_projection() {
+#[test]
+fn session_snapshot_refresh_tracks_agent_runtime_projection() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    runtime.block_on(async {
+        tokio::spawn(async move {
+            session_snapshot_refresh_tracks_agent_runtime_projection_inner().await
+        })
+        .await
+        .expect("test task should complete");
+    });
+}
+
+async fn session_snapshot_refresh_tracks_agent_runtime_projection_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
