@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -27,7 +29,31 @@ const MAX_OBSERVED_METADATA_TEXT_CHARS: usize = 16_000;
 const MAX_PROMPT_PREVIEW_CHARS: usize = 240;
 const MAX_TITLE_CHARS: usize = 80;
 
-static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<Mutex<BTreeMap<String, PathBuf>>> = OnceLock::new();
+static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<
+    Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static JSONL_PREFIX_READ_COUNT: Cell<usize> = const { Cell::new(0) };
+    static JSONL_RECENT_READ_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalProviderTranscriptIndexEntry {
+    provider_session_id: String,
+    path: PathBuf,
+    len: u64,
+    modified_at_ms: u64,
+    last_observed_offset: u64,
+    observed_turns: Option<Vec<ObservedExternalProviderTurn>>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct ProviderTranscriptFileFingerprint {
+    len: u64,
+    modified_at_ms: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedExternalProviderTurn {
@@ -210,7 +236,8 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn provider_transcript_path_index() -> &'static Mutex<BTreeMap<String, PathBuf>> {
+fn provider_transcript_path_index(
+) -> &'static Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>> {
     PROVIDER_TRANSCRIPT_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -224,14 +251,98 @@ fn cached_provider_transcript_path(provider: &str, provider_session_id: &str) ->
         .lock()
         .ok()?
         .get(&key)
-        .cloned()?;
+        .map(|entry| entry.path.clone())?;
     path.is_file().then_some(path)
 }
 
 fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, path: &Path) {
+    let Some(fingerprint) = provider_transcript_file_fingerprint(path) else {
+        return;
+    };
     let key = provider_transcript_path_index_key(provider, provider_session_id);
     if let Ok(mut index) = provider_transcript_path_index().lock() {
-        index.insert(key, path.to_path_buf());
+        let observed_turns = index.get(&key).and_then(|existing| {
+            (existing.path == path
+                && existing.len == fingerprint.len
+                && existing.modified_at_ms == fingerprint.modified_at_ms)
+                .then(|| existing.observed_turns.clone())
+                .flatten()
+        });
+        index.insert(
+            key,
+            ExternalProviderTranscriptIndexEntry {
+                provider_session_id: provider_session_id.to_string(),
+                path: path.to_path_buf(),
+                len: fingerprint.len,
+                modified_at_ms: fingerprint.modified_at_ms,
+                last_observed_offset: observed_turns
+                    .as_ref()
+                    .map(|_| fingerprint.len)
+                    .unwrap_or(0),
+                observed_turns,
+            },
+        );
+    }
+}
+
+fn cached_provider_observed_turns(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let entry = provider_transcript_path_index()
+        .lock()
+        .ok()?
+        .get(&key)
+        .cloned()?;
+    (entry.provider_session_id == provider_session_id
+        && entry.path == path
+        && entry.len == fingerprint.len
+        && entry.modified_at_ms == fingerprint.modified_at_ms)
+        .then(|| entry.observed_turns)
+        .flatten()
+}
+
+fn cached_provider_transcript_identity_matches(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> bool {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    provider_transcript_path_index()
+        .lock()
+        .ok()
+        .and_then(|index| index.get(&key).cloned())
+        .is_some_and(|entry| {
+            entry.provider_session_id == provider_session_id
+                && entry.path == path
+                && fingerprint.len >= entry.last_observed_offset
+        })
+}
+
+fn remember_provider_observed_turns(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+    turns: Vec<ObservedExternalProviderTurn>,
+) {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    if let Ok(mut index) = provider_transcript_path_index().lock() {
+        index.insert(
+            key,
+            ExternalProviderTranscriptIndexEntry {
+                provider_session_id: provider_session_id.to_string(),
+                path: path.to_path_buf(),
+                len: fingerprint.len,
+                modified_at_ms: fingerprint.modified_at_ms,
+                last_observed_offset: fingerprint.len,
+                observed_turns: Some(turns),
+            },
+        );
     }
 }
 
@@ -477,10 +588,19 @@ fn codex_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let parsed_session_id =
-        codex_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
-    if parsed_session_id != provider_session_id {
-        return None;
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(turns) =
+        cached_provider_observed_turns("codex", provider_session_id, path, fingerprint)
+    {
+        return Some(turns);
+    }
+    if !cached_provider_transcript_identity_matches("codex", provider_session_id, path, fingerprint)
+    {
+        let parsed_session_id =
+            codex_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
+        if parsed_session_id != provider_session_id {
+            return None;
+        }
     }
     remember_provider_transcript_path("codex", provider_session_id, path);
     let lines = read_recent_codex_jsonl_values(path);
@@ -493,9 +613,15 @@ fn codex_observed_turns_from_path(
             turns.push(turn);
         }
     }
-    Some(latest_observed_turns(deduplicate_codex_mirrored_turns(
-        turns,
-    )))
+    let turns = latest_observed_turns(deduplicate_codex_mirrored_turns(turns));
+    remember_provider_observed_turns(
+        "codex",
+        provider_session_id,
+        path,
+        fingerprint,
+        turns.clone(),
+    );
+    Some(turns)
 }
 
 fn codex_observed_turn_from_value(value: &Value) -> Option<ObservedExternalProviderTurn> {
@@ -805,10 +931,23 @@ fn claude_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let parsed_session_id =
-        claude_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
-    if parsed_session_id != provider_session_id {
-        return None;
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(turns) =
+        cached_provider_observed_turns("claude", provider_session_id, path, fingerprint)
+    {
+        return Some(turns);
+    }
+    if !cached_provider_transcript_identity_matches(
+        "claude",
+        provider_session_id,
+        path,
+        fingerprint,
+    ) {
+        let parsed_session_id =
+            claude_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
+        if parsed_session_id != provider_session_id {
+            return None;
+        }
     }
     remember_provider_transcript_path("claude", provider_session_id, path);
     let lines = read_recent_claude_jsonl_values(path);
@@ -816,7 +955,15 @@ fn claude_observed_turns_from_path(
     for value in &lines {
         turns.extend(claude_observed_turns_from_value(value));
     }
-    Some(latest_observed_turns(turns))
+    let turns = latest_observed_turns(turns);
+    remember_provider_observed_turns(
+        "claude",
+        provider_session_id,
+        path,
+        fingerprint,
+        turns.clone(),
+    );
+    Some(turns)
 }
 
 fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProviderTurn> {
@@ -1243,10 +1390,23 @@ fn opencode_jsonl_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let parsed_session_id =
-        opencode_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
-    if parsed_session_id != provider_session_id {
-        return None;
+    let fingerprint = provider_transcript_file_fingerprint(path)?;
+    if let Some(turns) =
+        cached_provider_observed_turns("opencode", provider_session_id, path, fingerprint)
+    {
+        return Some(turns);
+    }
+    if !cached_provider_transcript_identity_matches(
+        "opencode",
+        provider_session_id,
+        path,
+        fingerprint,
+    ) {
+        let parsed_session_id = opencode_session_id_from_values(&read_jsonl_values(path))
+            .or_else(|| file_stem(path))?;
+        if parsed_session_id != provider_session_id {
+            return None;
+        }
     }
     remember_provider_transcript_path("opencode", provider_session_id, path);
     let lines = read_recent_jsonl_values(path);
@@ -1254,7 +1414,15 @@ fn opencode_jsonl_observed_turns_from_path(
     for value in &lines {
         turns.extend(opencode_observed_turns_from_value(value));
     }
-    Some(latest_observed_turns(turns))
+    let turns = latest_observed_turns(turns);
+    remember_provider_observed_turns(
+        "opencode",
+        provider_session_id,
+        path,
+        fingerprint,
+        turns.clone(),
+    );
+    Some(turns)
 }
 
 fn opencode_session_id_from_values(lines: &[Value]) -> Option<String> {
@@ -1779,7 +1947,36 @@ fn signed_millis_to_u64(value: i64) -> Option<u64> {
     u64::try_from(value).ok()
 }
 
+#[cfg(test)]
+fn increment_jsonl_prefix_read_count() {
+    JSONL_PREFIX_READ_COUNT.with(|counter| counter.set(counter.get() + 1));
+}
+
+#[cfg(test)]
+fn increment_jsonl_recent_read_count() {
+    JSONL_RECENT_READ_COUNT.with(|counter| counter.set(counter.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_jsonl_read_counts() {
+    JSONL_PREFIX_READ_COUNT.with(|counter| counter.set(0));
+    JSONL_RECENT_READ_COUNT.with(|counter| counter.set(0));
+}
+
+#[cfg(test)]
+fn jsonl_prefix_read_count() -> usize {
+    JSONL_PREFIX_READ_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn jsonl_recent_read_count() -> usize {
+    JSONL_RECENT_READ_COUNT.with(Cell::get)
+}
+
 fn read_jsonl_values(path: &Path) -> Vec<Value> {
+    #[cfg(test)]
+    increment_jsonl_prefix_read_count();
+
     let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
@@ -1868,6 +2065,9 @@ fn claude_record_identity(value: &Value) -> Option<String> {
 }
 
 fn read_recent_jsonl_lines(path: &Path) -> Vec<String> {
+    #[cfg(test)]
+    increment_jsonl_recent_read_count();
+
     let Ok(mut file) = fs::File::open(path) else {
         return Vec::new();
     };
@@ -2161,12 +2361,23 @@ fn file_stem(path: &Path) -> Option<String> {
 }
 
 fn file_modified_ms(path: &Path) -> u64 {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as u64)
+    provider_transcript_file_fingerprint(path)
+        .map(|fingerprint| fingerprint.modified_at_ms)
         .unwrap_or_else(unix_epoch_ms)
+}
+
+fn provider_transcript_file_fingerprint(path: &Path) -> Option<ProviderTranscriptFileFingerprint> {
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| ProviderTranscriptFileFingerprint {
+            len: metadata.len(),
+            modified_at_ms: metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0),
+        })
 }
 
 fn parse_timestamp_millis(value: &str) -> Option<u64> {
@@ -2237,7 +2448,8 @@ fn deduplicate_external_sessions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
+    use std::fs::OpenOptions;
+    use std::io::{self, Write};
 
     #[test]
     fn observed_turn_model_derives_history_kind_and_external_keys() {
@@ -2568,6 +2780,58 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].text, "Indexed external prompt.");
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("indexed-user"));
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_from_unchanged_index_without_jsonl_reads() {
+        let temp = temp_dir("codex-observed-unchanged-index");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("indexed-unchanged.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-unchanged-index\",\"cwd\":\"/repo\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"indexed-user\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Indexed prompt before cache.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let sessions = discover_codex_external_sessions(root);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].external_session_id,
+            "codex:thread-unchanged-index"
+        );
+
+        reset_jsonl_read_counts();
+        let first = read_codex_observed_turns(root, "thread-unchanged-index");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "Indexed prompt before cache.");
+        assert_eq!(jsonl_prefix_read_count(), 0);
+        assert_eq!(jsonl_recent_read_count(), 1);
+
+        reset_jsonl_read_counts();
+        let unchanged = read_codex_observed_turns(root, "thread-unchanged-index");
+        assert_eq!(unchanged, first);
+        assert_eq!(jsonl_prefix_read_count(), 0);
+        assert_eq!(jsonl_recent_read_count(), 0);
+
+        let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"response_item\",\"payload\":{{\"id\":\"indexed-assistant\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Indexed assistant after append.\"}}]}}}}"
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        let appended = read_codex_observed_turns(root, "thread-unchanged-index");
+        assert_eq!(jsonl_prefix_read_count(), 0);
+        assert_eq!(jsonl_recent_read_count(), 1);
+        assert!(appended
+            .iter()
+            .any(|turn| turn.text == "Indexed assistant after append."));
     }
 
     #[test]
