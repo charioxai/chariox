@@ -859,15 +859,16 @@ impl TerminalStreamService {
 
     fn mark_output_record_drained_for_recipient(&mut self, record_id: u64, attachment_id: &str) {
         if let Some(stored) = self.output_records.get_mut(&record_id) {
-            let previous_len = stored.record.pending_recipient_attachment_ids.len();
-            stored
-                .record
-                .pending_recipient_attachment_ids
-                .retain(|id| id != attachment_id);
-            if stored.record.pending_recipient_attachment_ids.len() != previous_len {
-                stored.pending_recipient_count =
-                    stored.record.pending_recipient_attachment_ids.len();
+            let pending = &mut stored.record.pending_recipient_attachment_ids;
+            match pending.as_slice() {
+                [only] if only == attachment_id => pending.clear(),
+                _ => {
+                    if let Some(index) = pending.iter().position(|id| id == attachment_id) {
+                        pending.remove(index);
+                    }
+                }
             }
+            stored.pending_recipient_count = pending.len();
         }
     }
 
@@ -1455,6 +1456,45 @@ mod tests {
             vec!["attachment-2"]
         );
         assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn output_polling_drains_single_recipient_batch_records() {
+        let mut terminal = TerminalStreamService::new();
+        let records = terminal.fan_out_outputs(vec![
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("chunk-1".to_string()),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: b"one".to_vec(),
+            },
+            TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("chunk-2".to_string()),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: b"two".to_vec(),
+            },
+        ]);
+        assert_eq!(records.records.len(), 2);
+        assert_eq!(terminal.health_snapshot().pending_output_records, 2);
+
+        let drained = terminal.drain_output_records("session-1", "attachment-1");
+
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].recipient_attachment_ids, vec!["attachment-1"]);
+        assert_eq!(
+            drained[0].pending_recipient_attachment_ids,
+            vec!["attachment-1"]
+        );
+        assert_eq!(drained[1].bytes, b"two");
+        assert!(terminal.output_records().is_empty());
+        assert_eq!(terminal.health_snapshot().pending_output_records, 0);
     }
 
     #[test]
