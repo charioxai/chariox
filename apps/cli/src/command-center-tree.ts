@@ -271,7 +271,13 @@ export const COMMAND_TREE: CommandNode[] = [
         value: "/extension sync-retry ",
         searchAliases: ["home proxy retry", "home-proxy retry", "manifest retry", "manifest attention retry", "remote extension retry", "manifest stale", "manifest failed", "revoke pending", "sync manifest stale", "sync manifest failed", "sync revoke pending"],
       },
-      { id: "extension-audit", label: "audit", description: "Show home extension audit events, denials, and authority boundary", value: "/extension audit " },
+      {
+        id: "extension-audit",
+        label: "audit",
+        description: "Show home extension audit events, denials, and authority boundary",
+        value: "/extension audit ",
+        searchAliases: ["home extension audit", "extension audit", "home proxy audit", "home-proxy audit", "extension denial", "denial authority", "worker mismatch", "lease mismatch", "provider run mismatch", "authority boundary", "credential stayed home", "revoke acknowledged"],
+      },
     ],
   },
   {

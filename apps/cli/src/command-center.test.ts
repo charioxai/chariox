@@ -116,6 +116,12 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
   assert.equal(revokePending.has("/extension sync-status "), true)
   assert.equal(revokePending.has("/extension sync-retry "), true)
 
+  const workerMismatch = new Set(buildCommandCenterItems("/extension worker mismatch", context).map((item) => item.value))
+  assert.equal(workerMismatch.has("/extension audit "), true)
+
+  const denial = new Set(buildCommandCenterItems("/extension denial authority", context).map((item) => item.value))
+  assert.equal(denial.has("/extension audit "), true)
+
   const sliceMissing = new Set(buildCommandCenterItems("/slice missing", context).map((item) => item.value))
   assert.equal(sliceMissing.has("/slice doctor "), true)
   assert.equal(sliceMissing.has("/slice auth login "), true)
