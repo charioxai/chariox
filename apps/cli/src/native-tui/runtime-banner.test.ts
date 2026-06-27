@@ -18,6 +18,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
       alias: "Review",
       host_daemon_id: "home-kernel",
       host_machine_id: "home-machine",
+      owner_user_id: "alice",
       workspace_live_sync_mode: "tracked",
     }),
     agent: agent({
@@ -43,6 +44,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /arroba session: session-1 \(Review\)/)
   assert.match(banner, /arroba agent:   A1 \(builder\) \[id=agent-1\]/)
   assert.match(banner, /home kernel:    home-kernel@home-machine/)
+  assert.match(banner, /session owner:  alice/)
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)
   assert.match(banner, /placement:      slice linux-dev \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(banner, /slice:          linux-dev \(id=slice-1, status=running, display=headed, worktree=\/repo\/worktrees\/feature, agents=1\)/)
@@ -112,6 +114,7 @@ test("native TUI runtime banner renders local defaults without inventing state",
   })
 
   assert.match(banner, /home kernel:    -/)
+  assert.doesNotMatch(banner, /session owner:/)
   assert.match(banner, /worktree:       \/repo/)
   assert.match(banner, /placement:      worker-local/)
   assert.match(banner, /live sync:      config default/)

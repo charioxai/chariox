@@ -36,6 +36,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  arroba session: ${formatSession(input.session)}`,
     `  arroba agent:   ${formatAgent(input.agent)}`,
     `  home kernel:    ${formatHomeKernel(input.session)}`,
+    ...formatSessionOwnerLines(input.session),
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent, slice)}`,
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
@@ -158,6 +159,11 @@ function formatHomeKernel(session: RuntimeSession): string {
   const machine = session.host_machine_id?.trim()
   if (daemon && machine) return `${daemon}@${machine}`
   return daemon || machine || "-"
+}
+
+function formatSessionOwnerLines(session: RuntimeSession): string[] {
+  const owner = session.owner_user_id?.trim()
+  return owner ? [`  session owner:  ${owner}`] : []
 }
 
 function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
