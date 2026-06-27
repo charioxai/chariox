@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -136,7 +136,9 @@ impl AgentRuntime {
                 session,
             });
         }
-        if let Some(failures) = prompt_batch_preflight_failures(&request.prompts) {
+        if let Some(failures) =
+            prompt_batch_preflight_failures(&request.session_id, &request.prompts)
+        {
             let session = self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
                 results: Vec::new(),
@@ -170,14 +172,12 @@ impl AgentRuntime {
             .max_concurrency
             .unwrap_or(16)
             .clamp(1, request.prompts.len());
-        let session_id = request.session_id.clone();
-        let attachment_id = request.attachment_id.clone();
-        let mut outcomes = futures_util::stream::iter(request.prompts.into_iter().enumerate())
-            .map(|(index, item)| {
+        let response_session_id = request.session_id.clone();
+        let prompt_session_ids = prompt_batch_session_ids(&request);
+        let mut outcomes = futures_util::stream::iter(interleave_prompt_batch_by_session(request))
+            .map(|(index, session_id, attachment_id, item)| {
                 let runtime = self.clone();
                 let command = command.clone();
-                let session_id = session_id.clone();
-                let attachment_id = attachment_id.clone();
                 let agent_id = item.target_agent_id.clone();
                 async move {
                     let submit_request = item.into_submit_prompt_request(session_id, attachment_id);
@@ -225,9 +225,24 @@ impl AgentRuntime {
             }
         }
 
-        let session = self.store.session_snapshot(&session_id).await?;
-        self.session_projection.update(session.clone());
-        self.agent_runtime_projection.update_session(&session);
+        let mut response_session = None;
+        for session_id in prompt_session_ids {
+            let session = self.store.session_snapshot(&session_id).await?;
+            self.session_projection.update(session.clone());
+            self.agent_runtime_projection.update_session(&session);
+            if session_id == response_session_id {
+                response_session = Some(session);
+            }
+        }
+        let session = match response_session {
+            Some(session) => session,
+            None => {
+                let session = self.store.session_snapshot(&response_session_id).await?;
+                self.session_projection.update(session.clone());
+                self.agent_runtime_projection.update_session(&session);
+                session
+            }
+        };
         let agent_activity = self.store.agent_activity_for_session_sync(&session);
 
         Ok(LocalDaemonResponse::PromptsSubmitted {
@@ -346,12 +361,16 @@ impl AgentRuntime {
 }
 
 fn prompt_batch_preflight_failures(
+    default_session_id: &str,
     prompts: &[crate::local::SubmitPromptsRequestItem],
 ) -> Option<Vec<BatchOperationFailure>> {
     let mut seen_targets = HashSet::new();
-    let duplicate_target = prompts
-        .iter()
-        .any(|prompt| !seen_targets.insert(prompt.target_agent_id.as_str()));
+    let duplicate_target = prompts.iter().any(|prompt| {
+        !seen_targets.insert((
+            prompt.effective_session_id(default_session_id),
+            prompt.target_agent_id.as_str(),
+        ))
+    });
     if !duplicate_target {
         return None;
     }
@@ -366,6 +385,79 @@ fn prompt_batch_preflight_failures(
             })
             .collect(),
     )
+}
+
+fn prompt_batch_session_ids(request: &crate::local::SubmitPromptsRequest) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut session_ids = Vec::new();
+    if seen.insert(request.session_id.as_str()) {
+        session_ids.push(request.session_id.clone());
+    }
+    for prompt in &request.prompts {
+        let session_id = prompt.effective_session_id(&request.session_id);
+        if seen.insert(session_id) {
+            session_ids.push(session_id.to_string());
+        }
+    }
+    session_ids
+}
+
+fn interleave_prompt_batch_by_session(
+    request: crate::local::SubmitPromptsRequest,
+) -> Vec<(
+    usize,
+    String,
+    String,
+    crate::local::SubmitPromptsRequestItem,
+)> {
+    let mut session_order = Vec::new();
+    let mut prompts_by_session: HashMap<
+        String,
+        VecDeque<(
+            usize,
+            String,
+            String,
+            crate::local::SubmitPromptsRequestItem,
+        )>,
+    > = HashMap::new();
+    let default_session_id = request.session_id;
+    let default_attachment_id = request.attachment_id;
+    for (index, prompt) in request.prompts.into_iter().enumerate() {
+        let session_id = prompt
+            .session_id
+            .clone()
+            .unwrap_or_else(|| default_session_id.clone());
+        let attachment_id = prompt
+            .attachment_id
+            .clone()
+            .unwrap_or_else(|| default_attachment_id.clone());
+        if !prompts_by_session.contains_key(&session_id) {
+            session_order.push(session_id.clone());
+        }
+        prompts_by_session
+            .entry(session_id.clone())
+            .or_default()
+            .push_back((index, session_id, attachment_id, prompt));
+    }
+
+    let mut interleaved = Vec::new();
+    loop {
+        let mut advanced = false;
+        for session_id in &session_order {
+            let Some(queue) = prompts_by_session.get_mut(session_id) else {
+                continue;
+            };
+            let Some(prompt) = queue.pop_front() else {
+                continue;
+            };
+            interleaved.push(prompt);
+            advanced = true;
+        }
+        if !advanced {
+            break;
+        }
+    }
+    interleaved
 }
 
 #[derive(Clone)]
@@ -413,34 +505,52 @@ impl AgentRuntimeStore {
 
     async fn prompt_batch_authorization_failures(
         &self,
-        session_id: &str,
+        default_session_id: &str,
         caller_user_id: &str,
         prompts: &[crate::local::SubmitPromptsRequestItem],
     ) -> Vec<BatchOperationFailure> {
-        let session = match self.state.session_snapshot(session_id).await {
-            Ok(session) => session,
-            Err(error) => {
-                return prompts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, prompt)| BatchOperationFailure {
-                        index,
-                        agent_id: Some(prompt.target_agent_id.clone()),
-                        message: error.to_string(),
-                    })
-                    .collect();
+        let mut sessions = HashMap::new();
+        for prompt in prompts {
+            let session_id = prompt.effective_session_id(default_session_id);
+            if sessions.contains_key(session_id) {
+                continue;
             }
-        };
-        let agents_by_id = session
-            .agents()
-            .iter()
-            .map(|agent| (agent.id().to_string(), agent))
-            .collect::<HashMap<_, _>>();
+            match self.state.session_snapshot(session_id).await {
+                Ok(session) => {
+                    sessions.insert(session_id.to_string(), Ok(session));
+                }
+                Err(error) => {
+                    sessions.insert(session_id.to_string(), Err(error.to_string()));
+                }
+            }
+        }
         prompts
             .iter()
             .enumerate()
             .filter_map(|(index, prompt)| {
-                let Some(agent) = agents_by_id.get(prompt.target_agent_id.as_str()) else {
+                let session_id = prompt.effective_session_id(default_session_id);
+                let session = match sessions.get(session_id) {
+                    Some(Ok(session)) => session,
+                    Some(Err(message)) => {
+                        return Some(BatchOperationFailure {
+                            index,
+                            agent_id: Some(prompt.target_agent_id.clone()),
+                            message: message.clone(),
+                        });
+                    }
+                    None => {
+                        return Some(BatchOperationFailure {
+                            index,
+                            agent_id: Some(prompt.target_agent_id.clone()),
+                            message: format!("session `{session_id}` was not checked"),
+                        });
+                    }
+                };
+                let Some(agent) = session
+                    .agents()
+                    .iter()
+                    .find(|agent| agent.id() == prompt.target_agent_id.as_str())
+                else {
                     return Some(BatchOperationFailure {
                         index,
                         agent_id: Some(prompt.target_agent_id.clone()),

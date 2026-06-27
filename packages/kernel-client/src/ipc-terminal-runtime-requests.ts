@@ -132,6 +132,8 @@ export function submitPromptRequest(
 }
 
 export type SubmitPromptBatchItem = {
+  sessionId?: string | null
+  attachmentId?: string | null
   targetAgentId: string
   prompt: string
   attachments: PromptAttachmentPart[]
@@ -143,17 +145,31 @@ export function submitPromptsRequest(
   prompts: SubmitPromptBatchItem[],
   maxConcurrency?: number | null,
 ) {
+  validatePromptBatch(sessionId, prompts)
   return {
     SubmitPrompts: {
       session_id: sessionId,
       attachment_id: attachmentId,
       max_concurrency: maxConcurrency ?? null,
       prompts: prompts.map((prompt) => ({
+        session_id: prompt.sessionId ?? null,
+        attachment_id: prompt.attachmentId ?? null,
         target_agent_id: prompt.targetAgentId,
         prompt: prompt.prompt,
         attachments: prompt.attachments,
       })),
     },
+  }
+}
+
+function validatePromptBatch(sessionId: string, prompts: SubmitPromptBatchItem[]): void {
+  const seenTargets = new Set<string>()
+  for (const prompt of prompts) {
+    const targetKey = `${prompt.sessionId ?? sessionId}\0${prompt.targetAgentId}`
+    if (seenTargets.has(targetKey)) {
+      throw new Error("prompt batch contains duplicate target agents")
+    }
+    seenTargets.add(targetKey)
   }
 }
 

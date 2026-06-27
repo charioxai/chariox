@@ -21,6 +21,10 @@ pub struct SubmitPromptsRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitPromptsRequestItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
     pub target_agent_id: String,
     pub prompt: String,
     #[serde(default)]
@@ -41,12 +45,22 @@ impl SubmitPromptsRequestItem {
         attachment_id: String,
     ) -> SubmitPromptRequest {
         SubmitPromptRequest {
-            session_id,
-            attachment_id,
+            session_id: self.session_id.unwrap_or(session_id),
+            attachment_id: self.attachment_id.unwrap_or(attachment_id),
             target_agent_id: Some(self.target_agent_id),
             prompt: self.prompt,
             attachments: self.attachments,
         }
+    }
+
+    pub fn effective_session_id<'a>(&'a self, default_session_id: &'a str) -> &'a str {
+        self.session_id.as_deref().unwrap_or(default_session_id)
+    }
+
+    pub fn effective_attachment_id<'a>(&'a self, default_attachment_id: &'a str) -> &'a str {
+        self.attachment_id
+            .as_deref()
+            .unwrap_or(default_attachment_id)
     }
 }
 

@@ -61,6 +61,13 @@ pub(crate) async fn authorize_session_membership(
             ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
             Ok(user_id)
         }
+        SessionMembershipScope::SessionIds(session_ids) => {
+            for session_id in session_ids {
+                ensure_session_member(runtime_state, session_projection, &session_id, &user_id)
+                    .await?;
+            }
+            Ok(user_id)
+        }
         SessionMembershipScope::SessionRef {
             session_ref,
             workspace_id,

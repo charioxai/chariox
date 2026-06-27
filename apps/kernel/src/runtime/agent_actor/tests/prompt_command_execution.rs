@@ -803,11 +803,15 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
         max_concurrency: Some(2),
         prompts: vec![
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: first_agent_id.clone(),
                 prompt: "batch prompt one".to_string(),
                 attachments: Vec::new(),
             },
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: second_agent_id.clone(),
                 prompt: "batch prompt two".to_string(),
                 attachments: Vec::new(),
@@ -902,11 +906,15 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
         max_concurrency: Some(2),
         prompts: vec![
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: agent_id.clone(),
                 prompt: "duplicate batch prompt one".to_string(),
                 attachments: Vec::new(),
             },
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: agent_id.clone(),
                 prompt: "duplicate batch prompt two".to_string(),
                 attachments: Vec::new(),
@@ -995,11 +1003,15 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
         max_concurrency: Some(2),
         prompts: vec![
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: agent_id.clone(),
                 prompt: "valid prompt must not partially start".to_string(),
                 attachments: Vec::new(),
             },
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: "missing-agent".to_string(),
                 prompt: "invalid prompt".to_string(),
                 attachments: Vec::new(),
@@ -1045,7 +1057,7 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
 }
 
 #[tokio::test]
-async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
+async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -1059,28 +1071,41 @@ async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
             "worktree-owned-submit-batch-mixed-2",
         ))
         .expect("second session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
+    let first_attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
             first_session.id(),
             "client-owned-submit-batch-mixed",
             ClientCapabilityLevel::FullTerminal,
         ))
-        .expect("attachment should attach");
+        .expect("first attachment should attach");
+    let second_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            second_session.id(),
+            "client-owned-submit-batch-mixed-second",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("second attachment should attach");
     launch_dev_stub_provider(&mut app, first_session.id(), first_agent.id(), "sonnet");
     launch_dev_stub_provider(&mut app, second_session.id(), second_agent.id(), "sonnet");
     let first_snapshot = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(first_session.id())
         .expect("first session snapshot should be available");
+    let second_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(second_session.id())
+        .expect("second session snapshot should be available");
     let session_projection = app.session_state_projection_store();
     session_projection.update(first_snapshot.clone());
+    session_projection.update(second_snapshot.clone());
     let agent_runtime_projection = app.agent_runtime_projection_store();
     agent_runtime_projection.update_session(&first_snapshot);
+    agent_runtime_projection.update_session(&second_snapshot);
     let prompt_state_owner = app.prompt_state_owner();
     let first_session_id = first_session.id().to_string();
     let second_session_id = second_session.id().to_string();
     let first_agent_id = first_agent.id().to_string();
     let second_agent_id = second_agent.id().to_string();
-    let attachment_id = attachment.id().to_string();
+    let first_attachment_id = first_attachment.id().to_string();
+    let second_attachment_id = second_attachment.id().to_string();
     let app = Arc::new(Mutex::new(app));
     let runtime = AgentRuntime::new(
         owned_runtime_state(&app).await,
@@ -1094,15 +1119,19 @@ async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
 
     let request = crate::local::SubmitPromptsRequest {
         session_id: first_session_id.clone(),
-        attachment_id,
+        attachment_id: first_attachment_id,
         max_concurrency: Some(2),
         prompts: vec![
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: first_agent_id.clone(),
                 prompt: "valid prompt must not partially start".to_string(),
                 attachments: Vec::new(),
             },
             crate::local::SubmitPromptsRequestItem {
+                session_id: Some(second_session_id.clone()),
+                attachment_id: Some(second_attachment_id),
                 target_agent_id: second_agent_id.clone(),
                 prompt: "mixed session prompt".to_string(),
                 attachments: Vec::new(),
@@ -1119,7 +1148,7 @@ async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
     let response = runtime
         .dispatch_prompt_submit_batch(&command, request)
         .await
-        .expect("mixed-session prompt batch should return indexed failures");
+        .expect("mixed-session prompt batch should succeed");
 
     let LocalDaemonResponse::PromptsSubmitted {
         results,
@@ -1130,15 +1159,13 @@ async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
     else {
         panic!("unexpected response");
     };
-    assert!(results.is_empty());
-    assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].index, 1);
-    assert_eq!(
-        failures[0].agent_id.as_deref(),
-        Some(second_agent_id.as_str())
-    );
-    assert!(failures[0].message.contains(&second_agent_id));
-    assert!(session.active_prompt_for_agent(&first_agent_id).is_none());
+    assert!(failures.is_empty());
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].index, 0);
+    assert_eq!(results[1].index, 1);
+    assert_eq!(results[0].agent_id, first_agent_id);
+    assert_eq!(results[1].agent_id, second_agent_id);
+    assert!(session.active_prompt_for_agent(&first_agent_id).is_some());
     let app = app.lock().await;
     let first_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&first_session_id)
@@ -1148,10 +1175,10 @@ async fn prompt_submit_batch_rejects_mixed_sessions_without_partial_submit() {
         .expect("second session should remain available");
     assert!(first_after
         .active_prompt_for_agent(&first_agent_id)
-        .is_none());
+        .is_some());
     assert!(second_after
         .active_prompt_for_agent(&second_agent_id)
-        .is_none());
+        .is_some());
 }
 
 #[tokio::test]
@@ -1233,11 +1260,15 @@ async fn prompt_submit_batch_projects_final_queued_prompt_state() {
         max_concurrency: Some(2),
         prompts: vec![
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: first_agent_id.clone(),
                 prompt: "queued batch prompt one".to_string(),
                 attachments: Vec::new(),
             },
             crate::local::SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
                 target_agent_id: second_agent_id.clone(),
                 prompt: "queued batch prompt two".to_string(),
                 attachments: Vec::new(),

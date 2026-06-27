@@ -1088,9 +1088,9 @@ test("executeShellCommand batch spawns and prompts agents with bounded concurren
   const promptRequest = fake.requests[2] as { SubmitPrompts: { max_concurrency: number; prompts: Array<{ target_agent_id: string; prompt: string; attachments: unknown[] }> } }
   assert.equal(promptRequest.SubmitPrompts.max_concurrency, 2)
   assert.deepEqual(promptRequest.SubmitPrompts.prompts, [
-    { target_agent_id: "agent-1", prompt: "inspect the branch\n", attachments: [] },
-    { target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
-    { target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
+    { session_id: null, attachment_id: null, target_agent_id: "agent-1", prompt: "inspect the branch\n", attachments: [] },
+    { session_id: null, attachment_id: null, target_agent_id: "agent-2", prompt: "inspect the branch\n", attachments: [] },
+    { session_id: null, attachment_id: null, target_agent_id: "agent-3", prompt: "inspect the branch\n", attachments: [] },
   ])
 })
 
