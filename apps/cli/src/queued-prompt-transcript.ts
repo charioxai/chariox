@@ -115,6 +115,7 @@ export function syncQueuedPromptEntriesByAgent(
   const agentIds = new Set([
     ...session.agents.map((agent) => agent.id),
     ...Object.keys(session.prompt_states ?? {}),
+    ...Object.keys(session.agent_activity ?? {}),
   ])
   if (session.prompt_states || session.agent_activity) {
     for (const [agentId, entries] of Object.entries(entriesByAgent)) {

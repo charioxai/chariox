@@ -454,6 +454,31 @@ test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from autho
   assert.deepEqual(synced.previews["agent-stale"], "")
 })
 
+test("syncQueuedPromptEntriesByAgent projects activity-only agents", () => {
+  const session = sessionWithoutPromptStates({
+    agents: [],
+    agent_activity: {
+      "agent-stale": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+  })
+  const synced = syncQueuedPromptEntriesByAgent({
+    "agent-stale": [{
+      id: 1,
+      role: "user",
+      text: "stale queued",
+      queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
+    }],
+  }, session)
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entriesByAgent["agent-stale"], [])
+  assert.deepEqual(synced.previews["agent-stale"], "")
+})
+
 test("syncQueuedPromptEntriesByAgent preserves stale queued prompt panes without authoritative projection", () => {
   const session = sessionWithoutPromptStates({
     agents: [{
