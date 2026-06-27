@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "../cli-types.js"
-import { promptForAgent } from "./claude-bridge.js"
+import { extractSubmittedPromptId, promptForAgent } from "./claude-bridge.js"
 
 test("native Claude bridge ignores stale prompts when projected activity is idle", () => {
   const stalePrompt = prompt("prompt-stale", "agent-1")
@@ -101,6 +101,60 @@ test("native Claude bridge prefers explicit prompt state over stale top-level pr
       },
     },
   }), "agent-1"), null)
+})
+
+test("native Claude bridge applies projected activity from prompt submission payloads", () => {
+  const stalePrompt = prompt("prompt-stale", "agent-1")
+
+  assert.equal(extractSubmittedPromptId({
+    PromptSubmitted: {
+      outcome: {},
+      session: session({
+        active_prompt: stalePrompt,
+        prompt_states: {
+          "agent-1": {
+            active_prompt: stalePrompt,
+            queued_prompts: [],
+          },
+        },
+      }),
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+        },
+      },
+      agent_activity_revision: 7,
+    },
+  }, "agent-1"), null)
+
+  assert.equal(extractSubmittedPromptId({
+    PromptSubmitted: {
+      outcome: {},
+      session: session({
+        prompt_states: {
+          "agent-1": {
+            active_prompt: stalePrompt,
+            queued_prompts: [],
+          },
+        },
+      }),
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-stale",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+      agent_activity_revision: 8,
+    },
+  }, "agent-1"), "prompt-stale")
 })
 
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {

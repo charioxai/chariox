@@ -1,5 +1,6 @@
 import {
   normalizeRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity,
   normalizeRuntimeSessions,
   type RuntimeAttachment,
   type RuntimeSession,
@@ -100,8 +101,12 @@ export async function attachToSession(
 
 export async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-  return normalizeRuntimeSession(payload.session)
+  const payload = expectVariant<{
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+  }>(response, "SessionState")
+  return normalizeRuntimeSessionWithAgentActivity(payload)
 }
 
 export async function updateMetaagentTask(

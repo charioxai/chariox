@@ -3,7 +3,7 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import {
-  normalizeRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity,
   type PromptQueueItem,
   type RuntimeSession,
 } from "../cli-types.js"
@@ -212,8 +212,13 @@ export function promptForAgent(session: RuntimeSession, agentId: string): Prompt
   return prompt
 }
 
-function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
-  const payload = response.PromptSubmitted as { outcome?: Record<string, unknown>; session?: RuntimeSession } | undefined
+export function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
+  const payload = response.PromptSubmitted as {
+    outcome?: Record<string, unknown>
+    session?: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+  } | undefined
   if (!payload) return null
   for (const variant of Object.values(payload.outcome ?? {})) {
     const prompt = variant && typeof variant === "object"
@@ -221,13 +226,19 @@ function extractSubmittedPromptId(response: Record<string, unknown>, agentId: st
       : null
     if (prompt?.id) return prompt.id
   }
-  const session = payload.session ? normalizeRuntimeSession(payload.session) : null
+  const session = payload.session ? normalizeRuntimeSessionWithAgentActivity(payload) : null
   return session ? promptForAgent(session, agentId)?.id ?? null : null
 }
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
-  return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionState").session)
+  return normalizeRuntimeSessionWithAgentActivity(
+    expectVariant<{
+      session: RuntimeSession
+      agent_activity?: RuntimeSession["agent_activity"] | null
+      agent_activity_revision?: number | null
+    }>(response, "SessionState"),
+  )
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -1370,6 +1370,24 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
   return normalized
 }
 
+export function normalizeRuntimeSessionWithAgentActivity(payload: {
+  session: RuntimeSession
+  agent_activity?: RuntimeSession["agent_activity"] | null
+  agent_activity_revision?: number | null
+}): RuntimeSession {
+  const normalized = normalizeRuntimeSession(payload.session)
+  if (!payload.agent_activity) {
+    return normalized
+  }
+  return {
+    ...normalized,
+    agent_activity: payload.agent_activity,
+    ...(typeof payload.agent_activity_revision === "number"
+      ? { agent_activity_revision: payload.agent_activity_revision }
+      : {}),
+  }
+}
+
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
   return sessions.map((session) => normalizeRuntimeSession(session))
 }

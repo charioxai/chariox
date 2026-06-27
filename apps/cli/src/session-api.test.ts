@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { createSession } from "./session-api.js"
+import { createSession, getSessionState } from "./session-api.js"
 
 test("createSession forwards workspace live sync mode to the kernel request", async () => {
   const sent: Record<string, unknown>[] = []
@@ -106,6 +106,35 @@ test("createSession forwards worktree placement to the kernel request", async ()
       },
     },
   }])
+})
+
+test("getSessionState merges projected agent activity into the returned session", async () => {
+  const client = {
+    send: async () => ({
+      SessionState: {
+        session: runtimeSession(),
+        agent_activity: {
+          "agent-1": {
+            status: "working",
+            prompt_status: "running",
+            busy: true,
+          },
+        },
+        agent_activity_revision: 9,
+      },
+    }),
+  } as unknown as LocalIpcClient
+
+  const session = await getSessionState(client, "session-1")
+
+  assert.deepEqual(session.agent_activity, {
+    "agent-1": {
+      status: "working",
+      prompt_status: "running",
+      busy: true,
+    },
+  })
+  assert.equal(session.agent_activity_revision, 9)
 })
 
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
