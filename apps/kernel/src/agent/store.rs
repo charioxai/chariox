@@ -1,6 +1,7 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use super::{AgentInstance, AgentState};
+use super::{calculate_agent_layout, AgentInstance, AgentState};
 
 #[derive(Debug, Default, Clone)]
 pub struct AgentStore {
@@ -90,22 +91,32 @@ impl AgentStore {
     }
 
     pub fn get_by_session(&self, session_id: &str) -> Vec<AgentInstance> {
-        let mut agents = self
-            .session_agent_ids(session_id)
-            .map_or_else(Vec::new, |ids| {
-                ids.iter()
-                    .filter_map(|agent_id| self.agents.get(agent_id).cloned())
-                    .collect::<Vec<_>>()
-            });
-        agents.sort_by(|left, right| {
-            left.position()
-                .row
-                .cmp(&right.position().row)
-                .then_with(|| left.position().col.cmp(&right.position().col))
-                .then_with(|| left.created_at_ms().cmp(&right.created_at_ms()))
-                .then_with(|| left.id().cmp(right.id()))
-        });
-        agents
+        self.sorted_session_agent_ids(session_id)
+            .into_iter()
+            .filter_map(|agent_id| self.agents.get(&agent_id).cloned())
+            .collect()
+    }
+
+    pub(crate) fn apply_session_layout_and_focus(
+        &mut self,
+        session_id: &str,
+        focused_agent_id: Option<&str>,
+    ) {
+        let agent_ids = self.sorted_session_agent_ids(session_id);
+        let positions = calculate_agent_layout(agent_ids.len());
+        for (index, agent_id) in agent_ids.iter().enumerate() {
+            if let Some(agent) = self.agents.get_mut(agent_id) {
+                if let Some(position) = positions.get(index) {
+                    agent.set_position(position.clone());
+                }
+                let next_state = if focused_agent_id == Some(agent.id()) {
+                    AgentState::Focused
+                } else {
+                    AgentState::Idle
+                };
+                agent.set_state(next_state);
+            }
+        }
     }
 
     pub fn list(&self) -> Vec<AgentInstance> {
@@ -166,6 +177,30 @@ impl AgentStore {
 
     fn session_agent_ids(&self, session_id: &str) -> Option<&HashSet<String>> {
         self.agent_ids_by_session.get(session_id)
+    }
+
+    fn sorted_session_agent_ids(&self, session_id: &str) -> Vec<String> {
+        let Some(agent_ids) = self.session_agent_ids(session_id) else {
+            return Vec::new();
+        };
+        let mut agent_ids = agent_ids.iter().cloned().collect::<Vec<_>>();
+        agent_ids.sort_by(|left, right| self.compare_agent_order(left, right));
+        agent_ids
+    }
+
+    fn compare_agent_order(&self, left_id: &str, right_id: &str) -> Ordering {
+        match (self.agents.get(left_id), self.agents.get(right_id)) {
+            (Some(left), Some(right)) => left
+                .position()
+                .row
+                .cmp(&right.position().row)
+                .then_with(|| left.position().col.cmp(&right.position().col))
+                .then_with(|| left.created_at_ms().cmp(&right.created_at_ms()))
+                .then_with(|| left.id().cmp(right.id())),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left_id.cmp(right_id),
+        }
     }
 
     fn remove_session_index_entry(&mut self, session_id: &str, agent_id: &str) {
@@ -266,5 +301,40 @@ mod tests {
         assert!(store.get("agent-2").is_none());
         assert!(store.get("agent-3").is_some());
         assert_eq!(store.count_by_session("session-b"), 1);
+    }
+
+    #[test]
+    fn apply_session_layout_and_focus_updates_indexed_session_only() {
+        let mut store = AgentStore::new();
+        store.insert_many(vec![
+            agent("agent-1", "session-a", Some("one")),
+            agent("agent-2", "session-a", Some("two")),
+            agent("agent-3", "session-a", Some("three")),
+            agent("agent-4", "session-b", Some("four")),
+        ]);
+
+        store.apply_session_layout_and_focus("session-a", Some("agent-2"));
+
+        let session_agents = store.get_by_session("session-a");
+        assert_eq!(
+            session_agents
+                .iter()
+                .map(|agent| agent.id())
+                .collect::<Vec<_>>(),
+            vec!["agent-1", "agent-2", "agent-3"]
+        );
+        assert_eq!(session_agents[0].position(), &GridPosition::new(0, 0, 1, 1));
+        assert_eq!(session_agents[1].position(), &GridPosition::new(0, 1, 1, 1));
+        assert_eq!(session_agents[2].position(), &GridPosition::new(1, 0, 1, 1));
+        assert_eq!(session_agents[0].state(), AgentState::Idle);
+        assert_eq!(session_agents[1].state(), AgentState::Focused);
+        assert_eq!(session_agents[2].state(), AgentState::Idle);
+
+        let other_session_agent = store.get("agent-4").expect("agent should remain stored");
+        assert_eq!(other_session_agent.state(), AgentState::Idle);
+        assert_eq!(
+            other_session_agent.position(),
+            &GridPosition::new(0, 0, 1, 1)
+        );
     }
 }

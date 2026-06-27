@@ -125,19 +125,8 @@ impl AgentService {
         self.store.insert_many(created_agents);
 
         let focused_agent_id = created_ids.last().cloned();
-        let mut session_agents = self.store.get_by_session(session.id());
-        recalculate_positions(&mut session_agents);
-        for agent in &session_agents {
-            if let Some(stored) = self.store.get_mut(agent.id()) {
-                stored.set_position(agent.position().clone());
-                let next_state = if Some(agent.id()) == focused_agent_id.as_deref() {
-                    AgentState::Focused
-                } else {
-                    AgentState::Idle
-                };
-                stored.set_state(next_state);
-            }
-        }
+        self.store
+            .apply_session_layout_and_focus(session.id(), focused_agent_id.as_deref());
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
         Ok(created_ids
@@ -211,28 +200,8 @@ impl AgentService {
 
         self.store.insert(agent);
 
-        // Recalculate all positions
-        let mut session_agents = self.store.get_by_session(&session_id);
-        recalculate_positions(&mut session_agents);
-
-        // Update stored positions
-        for agent in &session_agents {
-            if let Some(stored) = self.store.get_mut(agent.id()) {
-                stored.set_position(agent.position().clone());
-            }
-        }
-
-        // Focus the newly created agent so the next prompt targets it.
-        for agent in &session_agents {
-            if let Some(stored) = self.store.get_mut(agent.id()) {
-                let next_state = if agent.id() == agent_id {
-                    AgentState::Focused
-                } else {
-                    AgentState::Idle
-                };
-                stored.set_state(next_state);
-            }
-        }
+        self.store
+            .apply_session_layout_and_focus(&session_id, Some(&agent_id));
         Ok(self
             .store
             .get(&agent_id)
