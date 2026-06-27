@@ -13,7 +13,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "agent list|spawn|focus|inspect|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
-          "slice list|create|status|doctor|logs|audit|start|stop|delete|auth import|auth remove|auth login|auth alias|screen",
+          "slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|auth alias|screen",
           "  slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label",
           "relay status",
           "config show|path|keys|schema|set|unset|workspace-live-sync off|managed|tracked",

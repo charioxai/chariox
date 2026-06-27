@@ -349,14 +349,39 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice doctor "), true)
   assert.equal(values.has("/slice logs "), true)
   assert.equal(values.has("/slice audit "), true)
+  assert.equal(values.has("/slice state "), true)
+  assert.equal(values.has("/slice save-state "), true)
+  assert.equal(values.has("/slice backup "), true)
+  assert.equal(values.has("/slice reset-state "), true)
   assert.equal(values.has("/slice start "), true)
   assert.equal(values.has("/slice stop "), true)
   assert.equal(values.has("/slice delete "), true)
   assert.equal(values.has("/slice auth login "), true)
+  assert.equal(items.find((item) => item.value === "/slice state ")?.description, "Show saved slice state and restart requirements")
+  assert.equal(items.find((item) => item.value === "/slice save-state ")?.description, "Save slice state after shutdown or agent restart")
+  assert.equal(items.find((item) => item.value === "/slice backup ")?.description, "Create a recoverable slice state backup")
+  assert.equal(items.find((item) => item.value === "/slice reset-state ")?.description, "Reset saved slice state after agents are detached")
   assert.equal(items.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
   assert.equal(items.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
   assert.equal(items.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
   assert.equal(items.find((item) => item.value === "/slice auth alias ")?.description, "Set an Arroba display alias when the provider account label is unclear")
+
+  assert.equal(buildCommandCenterItems("/slice snapshot", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }).some((item) => item.value === "/slice save-state "), true)
+  assert.equal(buildCommandCenterItems("/slice recover state", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }).some((item) => item.value === "/slice backup "), true)
 })
 
 test("buildCommandCenterItems filters model options", () => {
