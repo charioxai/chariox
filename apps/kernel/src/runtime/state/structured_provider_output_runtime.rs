@@ -167,6 +167,7 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run.agent_instance_id().map(str::to_string);
         if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
             if let Some(agent_id) = provider_run.agent_instance_id() {
                 let agent = owned.agent_store.set_agent_runtime_profile(
@@ -272,25 +273,34 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(provider_run_id, message.to_string())?;
             owned.provider_run_projection.update(run);
         }
-        let records = poll_result
+        let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
+        let terminal_outputs = poll_result
             .chunks
             .into_iter()
-            .filter_map(|chunk| {
-                let record = owned.fan_out_terminal_output(
-                    session_id,
-                    provider_run_id,
-                    chunk.kind,
-                    chunk.merge_key,
-                    recipient_attachment_ids.clone(),
-                    &chunk.bytes,
-                );
-                if record.pending_recipient_attachment_ids.is_empty() && record.bytes.is_empty() {
-                    None
-                } else {
-                    Some(record)
+            .map(|chunk| {
+                let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
+                if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
+                    history_entries.push(crate::history::SessionHistoryEntry::provider_output(
+                        session_id,
+                        provider_run_id,
+                        agent_id.as_deref(),
+                        chunk.kind.clone(),
+                        chunk.merge_key.clone(),
+                        history_text.clone(),
+                    ));
+                }
+                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: agent_id.clone(),
+                    kind: chunk.kind,
+                    merge_key: chunk.merge_key,
+                    bytes: chunk.bytes,
+                    history_text: Some(history_text),
                 }
             })
             .collect::<Vec<_>>();
+        let records = owned.fan_out_terminal_outputs(session_id, terminal_outputs);
+        owned.append_history_entries(session_id, history_entries);
         if let Some(message) = terminal_failure {
             self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
                 .await?;

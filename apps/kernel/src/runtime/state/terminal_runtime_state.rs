@@ -186,7 +186,8 @@ impl KernelRuntimeState {
                     agent_id,
                     kind: output.kind,
                     merge_key: output.merge_key,
-                    text: output.text,
+                    bytes: output.text.into_bytes(),
+                    history_text: None,
                 },
             );
         }

@@ -7,7 +7,8 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) agent_id: Option<String>,
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
-    pub(super) text: String,
+    pub(super) bytes: Vec<u8>,
+    pub(super) history_text: Option<String>,
 }
 
 impl KernelRuntimeOwnedState {
@@ -150,11 +151,15 @@ impl KernelRuntimeOwnedState {
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
+                    let message = output
+                        .history_text
+                        .clone()
+                        .unwrap_or_else(|| String::from_utf8_lossy(&output.bytes).into_owned());
                     self.record_workflow_thinking_trace(
                         session_id,
                         &output.provider_run_id,
                         agent_id,
-                        output.text.clone(),
+                        message,
                     );
                 }
             }
@@ -165,7 +170,7 @@ impl KernelRuntimeOwnedState {
                 kind: output.kind,
                 merge_key: output.merge_key,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
-                bytes: output.text.into_bytes(),
+                bytes: output.bytes,
             });
         }
         let records = self.terminal_stream.fan_out_outputs(terminal_outputs);
