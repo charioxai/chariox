@@ -1490,6 +1490,8 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
           slice: {
             id: "slice-1",
             name: "linux-a",
+            owner_kernel_id: "home-kernel",
+            owner_machine_id: "home-machine",
             backend: "local_docker",
             os: "linux",
             status: "unhealthy",
@@ -1526,6 +1528,7 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
 
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /slice doctor linux-a id=slice-1/)
+  assert.match(result.message ?? "", /ok owner: home-kernel@home-machine/)
   assert.match(result.message ?? "", /fail lifecycle: unhealthy/)
   assert.match(result.message ?? "", /ok relay: shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /fail display: headed/)
@@ -1543,6 +1546,8 @@ test("executeShellCommand does not infer shared slice relay authority", async ()
           slice: {
             id: "slice-1",
             name: "linux-a",
+            owner_kernel_id: "home-kernel",
+            owner_machine_id: "home-machine",
             backend: "local_docker",
             os: "linux",
             status: "running",
@@ -1571,6 +1576,7 @@ test("executeShellCommand does not infer shared slice relay authority", async ()
   const result = await executeShellCommand(parseShellCommand("slice status linux-a"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /owner=home-kernel@home-machine authority=home-managed/)
   assert.match(result.message ?? "", /relay=unknown:wss:\/\/relay.example\/slice/)
 })
 
@@ -1582,6 +1588,8 @@ test("executeShellCommand renders concrete slice storage recovery", async () => 
           slice: {
             id: "slice-1",
             name: "linux-a",
+            owner_kernel_id: "home-kernel",
+            owner_machine_id: "home-machine",
             backend: "local_docker",
             os: "linux",
             status: "unhealthy",
@@ -1631,6 +1639,8 @@ test("executeShellCommand renders slice account recovery hints", async () => {
           slices: [{
             id: "slice-1",
             name: "linux-a",
+            owner_kernel_id: "home-kernel",
+            owner_machine_id: "home-machine",
             backend: "local_docker",
             os: "linux",
             status: "running",
@@ -1689,6 +1699,7 @@ test("executeShellCommand renders slice account recovery hints", async () => {
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
+  assert.match(result.message ?? "", /owner=home-kernel@home-machine authority=home-managed/)
   assert.match(result.message ?? "", /auth_status=missing codex/)
   assert.match(result.message ?? "", /providers=codex auth_status=missing codex auth=-/)
   assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex or \/slice auth login linux-a codex/)

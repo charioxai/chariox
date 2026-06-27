@@ -517,7 +517,7 @@ function formatSlice(slice: SliceRecord): string {
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
   const diagnostics = formatSliceDiagnostics(slice)
   const next = sliceNextAction(slice)
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth_status=${authStatus} auth=${auth}${diagnostics}${display}${next ? ` next=${next}` : ""}`
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} owner=${formatSliceOwner(slice)} authority=home-managed worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth_status=${authStatus} auth=${auth}${diagnostics}${display}${next ? ` next=${next}` : ""}`
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
@@ -527,6 +527,7 @@ function formatSliceDoctor(slice: SliceRecord): string {
   const providerAuth = slice.provider_auth ?? []
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
+    doctorCheck("owner", Boolean(formatSliceOwner(slice, false)), formatSliceOwner(slice)),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
     doctorCheck("relay", slice.status !== "running" || Boolean(slice.relay_endpoint?.url), relay),
     doctorCheck("scope", scope !== "missing", scope),
@@ -540,9 +541,19 @@ function formatSliceDoctor(slice: SliceRecord): string {
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
 
+function formatSliceOwner(slice: SliceRecord, fallback = true): string {
+  const kernel = slice.owner_kernel_id?.trim() || ""
+  const machine = slice.owner_machine_id?.trim() || ""
+  if (kernel && machine) {
+    return `${kernel}@${machine}`
+  }
+  return kernel || machine || (fallback ? "unknown" : "")
+}
+
 function sliceDoctorHealthy(slice: SliceRecord): boolean {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || ""
   return slice.status !== "unhealthy"
+    && Boolean(formatSliceOwner(slice, false))
     && (slice.status !== "running" || Boolean(slice.worker_kernel_id))
     && (slice.status !== "running" || Boolean(slice.relay_endpoint?.url))
     && Boolean(scope)
