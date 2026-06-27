@@ -63,7 +63,11 @@ pub struct SessionHistoryExternalObservation {
 
 impl SessionHistoryExternalObservation {
     pub fn useful(self) -> Option<Self> {
-        (self.settles_active_prompt || self.passive_telemetry).then_some(self)
+        let normalized = Self {
+            settles_active_prompt: self.settles_active_prompt,
+            passive_telemetry: !self.settles_active_prompt && self.passive_telemetry,
+        };
+        (normalized.settles_active_prompt || normalized.passive_telemetry).then_some(normalized)
     }
 }
 

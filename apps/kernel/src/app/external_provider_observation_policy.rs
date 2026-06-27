@@ -205,6 +205,18 @@ mod tests {
                 Some(true),
                 "{provider} status should be marked as settling"
             );
+            assert_eq!(
+                policy
+                    .observation_for_turn(&ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Status,
+                        text: text.to_string(),
+                        provider_turn_id: None,
+                        observed_at_ms: None,
+                    })
+                    .map(|observation| observation.passive_telemetry),
+                Some(false),
+                "{provider} settling status should not be passive telemetry"
+            );
         }
     }
 
