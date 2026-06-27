@@ -26,6 +26,12 @@ impl KernelRuntimeOwnedState {
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };
+        let session = self.session_store.get_session(&session_id)?;
+        let outcome = self.prompt_state_owner.submit_prepared_prompt(
+            &session,
+            prepared.prompt.clone(),
+            prepared.force_queue,
+        )?;
         self.append_user_prompt_history(
             &session_id,
             &attachment_id,
@@ -35,12 +41,6 @@ impl KernelRuntimeOwnedState {
             Some(prepared.prompt.id()),
             prepared.prompt.workflow_run_id(),
             prepared.prompt.workflow_node_run_id(),
-        )?;
-        let session = self.session_store.get_session(&session_id)?;
-        let outcome = self.prompt_state_owner.submit_prepared_prompt(
-            &session,
-            prepared.prompt.clone(),
-            prepared.force_queue,
         )?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }

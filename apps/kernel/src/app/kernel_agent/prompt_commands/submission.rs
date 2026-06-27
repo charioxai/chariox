@@ -30,8 +30,8 @@ impl<'a> KernelAgentService<'a> {
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
         let admission = self.prepare_prompt_admission(prepared)?;
-        self.spawn_prompt_history_append(&admission)?;
         let submitted = self.submit_admitted_prompt_to_owner(admission)?;
+        self.spawn_prompt_history_append(&submitted.admission)?;
         let (dispatch, remote_dispatch) = self.prepare_prompt_submission_effects(&submitted)?;
         let session = crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&submitted.admission.session_id)?;
@@ -115,8 +115,8 @@ impl<'a> KernelAgentService<'a> {
                     .to_string(),
             });
         }
-        self.spawn_prompt_history_append(&admission)?;
         let submitted = self.submit_admitted_prompt_to_owner(admission)?;
+        self.spawn_prompt_history_append(&submitted.admission)?;
         let provider_run_id = submitted.admission.provider_run_id.clone();
         let (dispatch, _) = self.prepare_local_prompt_submission_effects(&submitted)?;
         if matches!(submitted.outcome, PromptSubmissionOutcome::Started { .. }) {

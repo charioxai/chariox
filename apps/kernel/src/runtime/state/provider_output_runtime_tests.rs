@@ -351,6 +351,107 @@ async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
 }
 
 #[tokio::test]
+async fn rejected_owned_local_prompt_does_not_persist_history() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-queue-overflow",
+            "worktree-owned-queue-overflow",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-owned-queue-overflow",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .expect("provider run should launch");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let submit = |prompt_id: String, prompt: String| {
+        runtime
+            .owned
+            .submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: crate::session::PromptQueueItem::new(
+                    prompt_id,
+                    attachment.id(),
+                    agent.id(),
+                    prompt,
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+            })
+    };
+
+    submit(
+        "prompt-overflow-active".to_string(),
+        "active accepted prompt".to_string(),
+    )
+    .expect("active prompt should submit")
+    .expect("local prompt should be handled");
+    for index in 0..crate::runtime::prompt_state::PROMPT_QUEUE_LIMIT {
+        submit(
+            format!("prompt-overflow-queued-{index}"),
+            format!("queued accepted prompt {index}"),
+        )
+        .expect("queued prompt should submit while under queue limit")
+        .expect("local prompt should be handled");
+    }
+
+    let error = match submit(
+        "prompt-overflow-rejected".to_string(),
+        "rejected prompt must not be history".to_string(),
+    ) {
+        Ok(_) => panic!("queue overflow should reject prompt before history append"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("agent prompt queue overloaded"));
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session should snapshot");
+    assert_eq!(
+        session_state
+            .queued_prompts_for_agent(agent.id())
+            .map(|queued| queued.len()),
+        Some(crate::runtime::prompt_state::PROMPT_QUEUE_LIMIT)
+    );
+    let history_entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("history should load");
+    assert!(
+        history_entries
+            .iter()
+            .all(|entry| entry.text != "rejected prompt must not be history"),
+        "rejected prompt should not be visible after reload"
+    );
+    assert_eq!(
+        history_entries
+            .iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt)
+            .count(),
+        crate::runtime::prompt_state::PROMPT_QUEUE_LIMIT + 1
+    );
+}
+
+#[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");

@@ -52,6 +52,12 @@ impl KernelRuntimeOwnedState {
             .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting);
 
+        let force_queue = prepared.force_queue || provider_run_is_starting;
+        let outcome = self.prompt_state_owner.submit_prepared_prompt(
+            &session,
+            prepared.prompt.clone(),
+            force_queue,
+        )?;
         self.append_user_prompt_history(
             &session_id,
             &attachment_id,
@@ -61,12 +67,6 @@ impl KernelRuntimeOwnedState {
             Some(prepared.prompt.id()),
             prepared.prompt.workflow_run_id(),
             prepared.prompt.workflow_node_run_id(),
-        )?;
-        let force_queue = prepared.force_queue || provider_run_is_starting;
-        let outcome = self.prompt_state_owner.submit_prepared_prompt(
-            &session,
-            prepared.prompt.clone(),
-            force_queue,
         )?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
