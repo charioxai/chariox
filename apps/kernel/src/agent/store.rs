@@ -26,16 +26,69 @@ impl AgentStore {
         format!("agent-{}", self.next_id)
     }
 
+    pub(crate) fn next_agent_ids(&mut self, count: usize) -> Vec<String> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let start = self.next_id + 1;
+        self.next_id += count as u64;
+        (start..=self.next_id)
+            .map(|id| format!("agent-{id}"))
+            .collect()
+    }
+
     pub fn insert(&mut self, agent: AgentInstance) -> AgentInstance {
         self.insert_owned(agent.clone());
         agent
     }
 
-    pub(crate) fn insert_many(&mut self, agents: Vec<AgentInstance>) {
-        self.agents.reserve(agents.len());
-        for agent in agents {
-            self.insert_owned(agent);
+    pub(crate) fn insert_session_batch_and_apply_layout(
+        &mut self,
+        session_id: &str,
+        mut agents: Vec<AgentInstance>,
+        focused_agent_id: Option<&str>,
+    ) -> Vec<AgentInstance> {
+        let existing_agent_ids = self.sorted_session_agent_ids(session_id);
+        let positions = calculate_agent_layout(existing_agent_ids.len() + agents.len());
+
+        for (index, agent_id) in existing_agent_ids.iter().enumerate() {
+            if let Some(agent) = self.agents.get_mut(agent_id) {
+                if let Some(position) = positions.get(index) {
+                    agent.set_position(position.clone());
+                }
+                agent.set_state(if focused_agent_id == Some(agent.id()) {
+                    AgentState::Focused
+                } else {
+                    AgentState::Idle
+                });
+            }
         }
+
+        self.agents.reserve(agents.len());
+        let session_index = self
+            .agent_ids_by_session
+            .entry(session_id.to_string())
+            .or_default();
+        session_index.reserve(agents.len());
+
+        let existing_count = existing_agent_ids.len();
+        let mut stored_agents = Vec::with_capacity(agents.len());
+        for (index, mut agent) in agents.drain(..).enumerate() {
+            debug_assert_eq!(agent.session_id(), session_id);
+            if let Some(position) = positions.get(existing_count + index) {
+                agent.set_position(position.clone());
+            }
+            agent.set_state(if focused_agent_id == Some(agent.id()) {
+                AgentState::Focused
+            } else {
+                AgentState::Idle
+            });
+            let agent_id = agent.id().to_string();
+            session_index.insert(agent_id.clone());
+            stored_agents.push(agent.clone());
+            self.agents.insert(agent_id, agent);
+        }
+        stored_agents
     }
 
     fn insert_owned(&mut self, agent: AgentInstance) {
@@ -253,19 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn insert_many_stores_batch_without_recloning_inputs() {
-        let mut store = AgentStore::new();
-        store.insert_many(vec![
-            agent("agent-1", "session-a", Some("one")),
-            agent("agent-2", "session-a", Some("two")),
-        ]);
-
-        assert_eq!(store.len(), 2);
-        assert!(store.get("agent-1").is_some());
-        assert!(store.get("agent-2").is_some());
-    }
-
-    #[test]
     fn session_index_updates_when_agent_moves_or_is_removed() {
         let mut store = AgentStore::new();
         store.insert(agent("agent-1", "session-a", Some("one")));
@@ -306,12 +346,10 @@ mod tests {
     #[test]
     fn apply_session_layout_and_focus_updates_indexed_session_only() {
         let mut store = AgentStore::new();
-        store.insert_many(vec![
-            agent("agent-1", "session-a", Some("one")),
-            agent("agent-2", "session-a", Some("two")),
-            agent("agent-3", "session-a", Some("three")),
-            agent("agent-4", "session-b", Some("four")),
-        ]);
+        store.insert(agent("agent-1", "session-a", Some("one")));
+        store.insert(agent("agent-2", "session-a", Some("two")));
+        store.insert(agent("agent-3", "session-a", Some("three")));
+        store.insert(agent("agent-4", "session-b", Some("four")));
 
         store.apply_session_layout_and_focus("session-a", Some("agent-2"));
 
@@ -336,5 +374,38 @@ mod tests {
             other_session_agent.position(),
             &GridPosition::new(0, 0, 1, 1)
         );
+    }
+
+    #[test]
+    fn insert_session_batch_applies_layout_in_batch_order_without_resorting_new_agents() {
+        let mut store = AgentStore::new();
+        store.insert(agent("agent-1", "session-a", Some("existing")));
+
+        let created = store.insert_session_batch_and_apply_layout(
+            "session-a",
+            vec![
+                agent("agent-2", "session-a", Some("first")),
+                agent("agent-10", "session-a", Some("second")),
+            ],
+            Some("agent-10"),
+        );
+
+        assert_eq!(
+            created.iter().map(|agent| agent.id()).collect::<Vec<_>>(),
+            vec!["agent-2", "agent-10"]
+        );
+        let session_agents = store.get_by_session("session-a");
+        assert_eq!(
+            session_agents
+                .iter()
+                .map(|agent| agent.id())
+                .collect::<Vec<_>>(),
+            vec!["agent-1", "agent-2", "agent-10"]
+        );
+        assert_eq!(session_agents[0].position(), &GridPosition::new(0, 0, 1, 1));
+        assert_eq!(session_agents[1].position(), &GridPosition::new(0, 1, 1, 1));
+        assert_eq!(session_agents[2].position(), &GridPosition::new(1, 0, 1, 1));
+        assert_eq!(session_agents[2].state(), AgentState::Focused);
+        assert_eq!(store.count_by_session("session-a"), 3);
     }
 }

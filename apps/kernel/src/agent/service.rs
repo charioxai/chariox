@@ -104,17 +104,12 @@ impl AgentService {
             }
         }
 
-        let final_positions = calculate_agent_layout(current_count + new_count);
-        let mut created_ids = Vec::with_capacity(new_count);
+        let agent_ids = self.store.next_agent_ids(new_count);
         let mut created_agents = Vec::with_capacity(new_count);
-        for (index, request) in requests.into_iter().enumerate() {
-            let position = final_positions
-                .get(current_count + index)
-                .cloned()
-                .unwrap_or_else(|| GridPosition::new(0, 0, 1, 1));
+        for (agent_id, request) in agent_ids.into_iter().zip(requests.into_iter()) {
             let agent_ref = generate_agent_ref();
             let mut agent = AgentInstance::new(
-                self.store.next_agent_id(),
+                agent_id,
                 agent_ref,
                 request.session_id,
                 request.alias,
@@ -122,7 +117,7 @@ impl AgentService {
                 request.model,
                 request.effort,
                 request.worktree_id,
-                position,
+                GridPosition::new(0, 0, 1, 1),
             );
             agent.set_owner_user_id(request.owner_user_id);
             agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
@@ -130,20 +125,18 @@ impl AgentService {
             agent.set_account_profile(request.account_profile);
             agent.set_execution_mode_override(request.execution_mode_override);
             agent.set_permission_level_override(request.permission_level_override);
-            created_ids.push(agent.id().to_string());
             created_agents.push(agent);
         }
-        self.store.insert_many(created_agents);
 
-        let focused_agent_id = created_ids.last().cloned();
-        self.store
-            .apply_session_layout_and_focus(session.id(), focused_agent_id.as_deref());
+        let focused_agent_id = created_agents.last().map(|agent| agent.id().to_string());
+        let created_agents = self.store.insert_session_batch_and_apply_layout(
+            session.id(),
+            created_agents,
+            focused_agent_id.as_deref(),
+        );
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
-        Ok(created_ids
-            .into_iter()
-            .filter_map(|agent_id| self.store.get(&agent_id).cloned())
-            .collect())
+        Ok(created_agents)
     }
 
     pub(crate) fn create_agent_for_session(
