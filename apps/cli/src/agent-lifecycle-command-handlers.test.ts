@@ -203,6 +203,23 @@ test("agent inspect summary calls out missing slice provider auth", () => {
   assert.match(summary, /slice provider accounts: none/)
 })
 
+test("agent inspect summary gives recovery for slice lookup failures", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "slice:linux-dev",
+      worker_machine_id: "hetzner",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  }), [], {}, {}, "kernel did not return slice inventory")
+
+  assert.match(summary, /placement: remote \(worker=hetzner, kernel=slice:linux-dev, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(summary, /slice lookup: kernel did not return slice inventory/)
+  assert.match(summary, /slice next: run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
+})
+
 test("remote skill-only agent summaries do not report pending home-proxy manifest", () => {
   const remoteSkillOnlyAgent = agent({
     id: "agent-remote",

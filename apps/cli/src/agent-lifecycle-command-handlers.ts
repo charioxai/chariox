@@ -146,11 +146,12 @@ export function formatAgentInspectSummary(
   slices: readonly SliceRecord[] = [],
   providerRunContext: AgentProviderRunContext = {},
   sessionContext: AgentSessionContext = {},
+  sliceLookupError?: string | null,
 ): string {
   return formatSharedAgentInspectSummary(
     agent as SharedAgentInstance,
     slices as readonly SharedSliceRecord[],
-    null,
+    sliceLookupError ?? null,
     providerRunContext,
     sessionContext,
   )

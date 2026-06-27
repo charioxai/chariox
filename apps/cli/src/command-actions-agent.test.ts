@@ -338,6 +338,40 @@ test("agent inspect renders diagnostics as a notice with concise footer", async 
   assert.match(notices[0] ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker offline/)
 })
 
+test("agent inspect preserves slice lookup failures with recovery guidance", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "slice:linux-dev",
+      worker_machine_id: "hetzner",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const notices: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => makeSession({ focused_agent_id: agent.id, agents: [agent] }),
+    focusedAgentId: () => agent.id,
+    resolveSessionAgent: () => ({ agent }),
+    appendNotice: (message: string) => {
+      notices.push(message)
+    },
+    listSlices: async () => {
+      throw new Error("kernel did not return slice inventory")
+    },
+    formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
+  }))
+
+  await handlers.handleAgentCommand({ kind: "agent", raw: "/agent inspect", args: ["inspect"] })
+
+  assert.equal(notices.length, 1)
+  assert.match(notices[0] ?? "", /placement: remote \(worker=hetzner, kernel=slice:linux-dev, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(notices[0] ?? "", /slice lookup: kernel did not return slice inventory/)
+  assert.match(notices[0] ?? "", /slice next: run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
+})
+
 test("agent spawn count inherits session defaults for each spawn", async () => {
   const sourceAgent = makeAgent({
     id: "agent-source",

@@ -209,6 +209,7 @@ export function formatAgentInspectSummary(
       `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
     ] : sliceLookupError ? [
       `slice lookup: ${sliceLookupError}`,
+      ...formatSliceLookupNextLines(agent),
     ] : []),
     `extensions: ${formatAgentExtensionSummary(agent)}`,
     `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
@@ -226,6 +227,19 @@ export function formatAgentInspectSummary(
   lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
   lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
   return lines.join("\n")
+}
+
+function formatSliceLookupNextLines(agent: AgentInstance): string[] {
+  const workerKernelId = agent.remote_execution?.worker_kernel_id?.trim() ?? ""
+  const sliceRef = workerKernelId.startsWith("slice:") ? workerKernelId.slice("slice:".length).trim() : ""
+  if (sliceRef) {
+    return [
+      `slice next: run /slice list; run /slice doctor ${sliceRef} if listed; run /kernel remote-runtime if slice inventory stays unavailable`,
+    ]
+  }
+  return [
+    "slice next: run /slice list; run /kernel remote-runtime if slice inventory stays unavailable",
+  ]
 }
 
 function formatHomeKernel(context: ShellAgentSessionContext): string {

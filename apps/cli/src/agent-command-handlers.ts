@@ -115,7 +115,13 @@ export async function handleAgentSlashCommand(
         deps.flashFooter(resolved.error ?? "usage: /agent inspect [agent-ref]", "error")
         return
       }
-      const slices = deps.listSlices ? await deps.listSlices().catch(() => []) : []
+      let sliceLookupError: string | null = null
+      const slices = deps.listSlices
+        ? await deps.listSlices().catch((error) => {
+            sliceLookupError = deps.formatError(error)
+            return []
+          })
+        : []
       const session = deps.sessionState()
       const providerRun = deps.providerRunState()
       deps.appendNotice(formatAgentInspectSummary(resolved.agent, slices, {
@@ -127,7 +133,7 @@ export async function handleAgentSlashCommand(
         ownerUserId: session.owner_user_id ?? null,
         workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
         workspaceLiveSyncWorktree: session.worktree_id ?? null,
-      }))
+      }, sliceLookupError))
       deps.flashFooter(`showing agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
       return
     }
