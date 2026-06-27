@@ -223,15 +223,15 @@ test("sessionHasActivePrompt does not invent prompt identity from anonymous proj
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
 })
 
-test("session prompt helpers ignore stale legacy prompts when projected activity has no active turn", () => {
+test("session prompt helpers use prompt state identity when projected activity is busy without active turn", () => {
   const session = makeSession({
     prompt_states: {
       "agent-1": {
         active_prompt: {
-          id: "prompt-stale",
+          id: "prompt-1",
           source_attachment_id: "attach-1",
           target_agent_id: "agent-1",
-          prompt: "stale",
+          prompt: "running",
           status: "Running",
         },
         queued_prompts: [],
@@ -248,8 +248,8 @@ test("session prompt helpers ignore stale legacy prompts when projected activity
   })
 
   assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
-  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
-  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), true)
+  assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "prompt-1")
 })
 
 test("sessionHasActivePrompt follows projected active turn even when prompt state is absent", () => {
