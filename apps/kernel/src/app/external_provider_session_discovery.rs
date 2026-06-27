@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, OpenFlags};
@@ -25,6 +26,8 @@ const MAX_OBSERVED_METADATA_OBJECT_FIELDS: usize = 80;
 const MAX_OBSERVED_METADATA_TEXT_CHARS: usize = 16_000;
 const MAX_PROMPT_PREVIEW_CHARS: usize = 240;
 const MAX_TITLE_CHARS: usize = 80;
+
+static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<Mutex<BTreeMap<String, PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedExternalProviderTurn {
@@ -207,6 +210,31 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn provider_transcript_path_index() -> &'static Mutex<BTreeMap<String, PathBuf>> {
+    PROVIDER_TRANSCRIPT_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn provider_transcript_path_index_key(provider: &str, provider_session_id: &str) -> String {
+    format!("{provider}:{provider_session_id}")
+}
+
+fn cached_provider_transcript_path(provider: &str, provider_session_id: &str) -> Option<PathBuf> {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let path = provider_transcript_path_index()
+        .lock()
+        .ok()?
+        .get(&key)
+        .cloned()?;
+    path.is_file().then_some(path)
+}
+
+fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, path: &Path) {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    if let Ok(mut index) = provider_transcript_path_index().lock() {
+        index.insert(key, path.to_path_buf());
+    }
+}
+
 fn deduplicate_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     paths
@@ -333,9 +361,16 @@ fn file_candidates(root: &Path, max_depth: usize, extensions: &[&str]) -> Vec<Pa
 }
 
 fn sort_file_candidates_by_recent_modified(files: &mut [PathBuf]) {
+    let modified_by_path = files
+        .iter()
+        .map(|path| (path.clone(), file_modified_ms(path)))
+        .collect::<BTreeMap<_, _>>();
     files.sort_by(|left, right| {
-        file_modified_ms(right)
-            .cmp(&file_modified_ms(left))
+        modified_by_path
+            .get(right)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&modified_by_path.get(left).copied().unwrap_or(0))
             .then_with(|| left.cmp(right))
     });
 }
@@ -405,6 +440,7 @@ fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> 
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
+    remember_provider_transcript_path("codex", &provider_session_id, path);
     let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "codex",
@@ -422,6 +458,11 @@ fn read_codex_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
+    if let Some(path) = cached_provider_transcript_path("codex", provider_session_id) {
+        if let Some(turns) = codex_observed_turns_from_path(&path, provider_session_id) {
+            return turns;
+        }
+    }
     let mut candidates = jsonl_candidates(&root.join("archived_sessions"), 4);
     candidates.extend(jsonl_candidates(&root.join("sessions"), 4));
     sort_file_candidates_by_recent_modified(&mut candidates);
@@ -441,6 +482,7 @@ fn codex_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
+    remember_provider_transcript_path("codex", provider_session_id, path);
     let lines = read_recent_codex_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -728,6 +770,7 @@ fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord>
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
+    remember_provider_transcript_path("claude", &provider_session_id, path);
     let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "claude",
@@ -745,6 +788,11 @@ fn read_claude_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
+    if let Some(path) = cached_provider_transcript_path("claude", provider_session_id) {
+        if let Some(turns) = claude_observed_turns_from_path(&path, provider_session_id) {
+            return turns;
+        }
+    }
     let mut candidates = jsonl_candidates(&root.join("projects"), 3);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
@@ -762,6 +810,7 @@ fn claude_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
+    remember_provider_transcript_path("claude", provider_session_id, path);
     let lines = read_recent_claude_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -1113,6 +1162,7 @@ fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRec
     let value = serde_json::from_str::<Value>(&payload).ok()?;
     let provider_session_id = string_field(&value, &["id", "sessionID", "sessionId", "session_id"])
         .or_else(|| file_stem(path))?;
+    remember_provider_transcript_path("opencode", &provider_session_id, path);
     let title = string_field(&value, &["title", "name"]);
     let first_prompt = title.clone().or_else(|| opencode_user_prompt(&value));
     let worktree_path = string_field(&value, &["cwd", "path", "workspace"]);
@@ -1142,6 +1192,11 @@ fn read_opencode_observed_turns(
     if !sqlite_turns.is_empty() {
         return latest_observed_turns(sqlite_turns);
     }
+    if let Some(path) = cached_provider_transcript_path("opencode", provider_session_id) {
+        if let Some(turns) = opencode_observed_turns_from_path(&path, provider_session_id) {
+            return turns;
+        }
+    }
     let mut candidates = session_json_candidates(root, 5);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
@@ -1170,6 +1225,7 @@ fn opencode_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
+    remember_provider_transcript_path("opencode", provider_session_id, path);
     let messages = value
         .get("messages")
         .or_else(|| value.get("conversation"))
@@ -1192,6 +1248,7 @@ fn opencode_jsonl_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
+    remember_provider_transcript_path("opencode", provider_session_id, path);
     let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
@@ -1723,13 +1780,14 @@ fn signed_millis_to_u64(value: i64) -> Option<u64> {
 }
 
 fn read_jsonl_values(path: &Path) -> Vec<Value> {
-    let Ok(payload) = fs::read_to_string(path) else {
+    let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
-    payload
+    BufReader::new(file)
         .lines()
+        .map_while(Result::ok)
         .take(MAX_JSONL_LINES)
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
         .collect()
 }
 
@@ -2475,6 +2533,41 @@ mod tests {
                 .and_then(|turn| turn.provider_turn_id.as_deref()),
             Some("u-tail")
         );
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_from_indexed_path_before_candidate_scan() {
+        let temp = temp_dir("codex-observed-index");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("indexed-target.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-indexed\",\"cwd\":\"/repo\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"indexed-user\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Indexed external prompt.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let sessions = discover_codex_external_sessions(root);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].external_session_id, "codex:thread-indexed");
+
+        for index in 0..=MAX_PROVIDER_FILES {
+            fs::write(
+                session_dir.join(format!("newer-decoy-{index}.jsonl")),
+                format!(
+                    "{{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"decoy-{index}\"}}}}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let turns = read_codex_observed_turns(root, "thread-indexed");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "Indexed external prompt.");
+        assert_eq!(turns[0].provider_turn_id.as_deref(), Some("indexed-user"));
     }
 
     #[test]
