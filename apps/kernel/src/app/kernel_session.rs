@@ -241,6 +241,35 @@ mod tests {
     }
 
     #[test]
+    fn destroy_agent_writes_durable_state_event() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let spawned = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("agent should spawn");
+
+        let destroyed = crate::app::KernelSessionService::new(&mut app)
+            .destroy_agent(spawned.id())
+            .expect("agent should destroy");
+
+        assert_eq!(destroyed.id(), spawned.id());
+        let events = app
+            .durable_state_store()
+            .load_events_after(0)
+            .expect("durable state events should load");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session.created", "agent.created", "agent.deleted"]
+        );
+        assert_eq!(events[2].subject_id.as_deref(), Some(spawned.id()));
+    }
+
+    #[test]
     fn workflow_code_apply_spawns_generated_agents_and_creates_workflow() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -2216,6 +2245,13 @@ impl<'a> KernelSessionService<'a> {
         self.app
             .external_provider_session_index_store()
             .detach_agent(&session_id, agent_id);
+        self.app.durable_state_store().append_event(
+            "agent.deleted",
+            Some(destroyed.id().to_string()),
+            serde_json::json!({
+                "agent": &destroyed,
+            }),
+        )?;
         Ok(destroyed)
     }
 

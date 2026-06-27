@@ -30,6 +30,92 @@ async fn runtime_agent_skill_grant_survives_kernel_restart() {
 }
 
 #[tokio::test]
+async fn runtime_destroy_agent_survives_kernel_restart() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, default_agent_id, destroyed_agent_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let spawned = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("agent should spawn");
+        let updated = app
+            .agents_mut()
+            .set_agent_runtime_profile(
+                spawned.id(),
+                "codex",
+                None,
+                None,
+                crate::provider::ProviderResumeState::from_codex_thread_id("thread-deleted"),
+            )
+            .expect("agent resume state should update");
+        app.durable_state_store()
+            .append_event(
+                "agent.updated",
+                Some(updated.id().to_string()),
+                serde_json::json!({ "agent": &updated }),
+            )
+            .expect("agent update should persist");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        router
+            .runtime_state
+            .destroy_agent(spawned.id(), DEFAULT_LOCAL_USER_ID)
+            .await
+            .expect("agent destroy should persist");
+        (
+            session.id().to_string(),
+            default_agent.id().to_string(),
+            spawned.id().to_string(),
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    assert!(app.agents.get_agent(&destroyed_agent_id).is_err());
+    assert_eq!(
+        app.agents
+            .get_agent(&default_agent_id)
+            .expect("remaining default agent should restore")
+            .session_id(),
+        session_id
+    );
+    assert!(app
+        .agents
+        .get_session_agents(&session_id)
+        .iter()
+        .all(|agent| agent.id() != destroyed_agent_id));
+    let external_sessions = app.external_provider_session_index_store();
+    external_sessions.upsert(crate::local::ExternalProviderSessionRecord {
+        external_session_id: "codex:thread-deleted".to_string(),
+        provider: "codex".to_string(),
+        provider_session_id: "thread-deleted".to_string(),
+        title: Some("thread-deleted".to_string()),
+        title_source: Some("test".to_string()),
+        first_prompt_preview: None,
+        created_at_ms: None,
+        last_modified_at_ms: 30,
+        worktree_path: None,
+        account_profile: None,
+        capabilities: crate::local::ExternalProviderSessionCapabilities {
+            ..crate::local::ExternalProviderSessionCapabilities::default()
+        },
+        attached_to_arroba: false,
+        attached_session_ids: Vec::new(),
+        attached_agent_ids: Vec::new(),
+    });
+    let page = external_sessions.list(&crate::local::ListExternalProviderSessionsRequest {
+        provider: Some("codex".to_string()),
+        cursor: None,
+        limit: None,
+    });
+    assert_eq!(page.sessions.len(), 1);
+    assert!(
+        page.sessions[0].is_attachable_to_arroba(),
+        "deleted agents must not restore stale provider-session attachments after restart"
+    );
+}
+
+#[tokio::test]
 async fn runtime_agent_capability_grants_accept_agent_id_or_public_ref() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

@@ -500,6 +500,10 @@ impl KernelRuntimeState {
                 serde_json::json!({ "slice": &slice }),
             )?;
         }
+        if agent.remote_execution().is_none() {
+            self.append_agent_durable_event("agent.deleted", &destroyed, None)
+                .await?;
+        }
         Ok(destroyed)
     }
 

@@ -7,6 +7,7 @@ use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
 use crate::session::RuntimeSession;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn decode_durable_payload_field<T>(
@@ -35,6 +36,106 @@ where
             event.event_id, event.kind
         ),
     })
+}
+
+#[derive(Default)]
+struct RestoredExternalProviderAttachmentState {
+    live_session_ids: BTreeSet<String>,
+    live_agents: BTreeMap<String, AgentInstance>,
+}
+
+impl RestoredExternalProviderAttachmentState {
+    fn restore_snapshot(&mut self, snapshot: DurableKernelSnapshotPayload) {
+        self.live_session_ids = snapshot
+            .sessions
+            .iter()
+            .map(|session| session.id().to_string())
+            .collect();
+        self.live_agents = snapshot
+            .agents
+            .into_iter()
+            .filter(|agent| self.live_session_ids.contains(agent.session_id()))
+            .map(|agent| (agent.id().to_string(), agent))
+            .collect();
+    }
+
+    fn apply_event(&mut self, event: &DurableStateEvent) {
+        match event.kind.as_str() {
+            "session.created" => {
+                if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
+                    event,
+                    "session",
+                    "durable_state.scan_external_provider_attachment_session",
+                ) {
+                    self.live_session_ids.insert(session.id().to_string());
+                }
+                if let Ok(agent) = decode_durable_payload_field::<AgentInstance>(
+                    event,
+                    "default_agent",
+                    "durable_state.scan_external_provider_attachment_default_agent",
+                ) {
+                    self.restore_agent_if_session_live(agent);
+                }
+            }
+            "session.updated" => {
+                if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
+                    event,
+                    "session",
+                    "durable_state.scan_external_provider_attachment_session_update",
+                ) {
+                    self.live_session_ids.insert(session.id().to_string());
+                }
+            }
+            "agent.created"
+            | "agent.mcp_granted"
+            | "agent.mcp_revoked"
+            | "agent.skill_granted"
+            | "agent.skill_revoked"
+            | "agent.extension_granted"
+            | "agent.extension_revoked"
+            | "agent.runtime_profile_updated"
+            | "agent.updated" => {
+                if let Ok(agent) = decode_durable_payload_field::<AgentInstance>(
+                    event,
+                    "agent",
+                    "durable_state.scan_external_provider_attachment_agent",
+                ) {
+                    self.restore_agent_if_session_live(agent);
+                }
+            }
+            "agent.deleted" => {
+                if let Ok(agent) = decode_durable_payload_field::<AgentInstance>(
+                    event,
+                    "agent",
+                    "durable_state.scan_external_provider_attachment_agent_deleted",
+                ) {
+                    self.live_agents.remove(agent.id());
+                }
+            }
+            "session.ended" | "session.deleted" => {
+                if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
+                    event,
+                    "session",
+                    "durable_state.scan_external_provider_attachment_session_removed",
+                ) {
+                    self.remove_session(session.id());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn restore_agent_if_session_live(&mut self, agent: AgentInstance) {
+        if self.live_session_ids.contains(agent.session_id()) {
+            self.live_agents.insert(agent.id().to_string(), agent);
+        }
+    }
+
+    fn remove_session(&mut self, session_id: &str) {
+        self.live_session_ids.remove(session_id);
+        self.live_agents
+            .retain(|_, agent| agent.session_id() != session_id);
+    }
 }
 
 impl DaemonApp {
@@ -201,41 +302,29 @@ impl DaemonApp {
         state_path: &Path,
     ) -> Result<usize, DaemonError> {
         let store = DurableKernelStateStore::open(state_path.to_path_buf())?;
+        let mut attachment_state = RestoredExternalProviderAttachmentState::default();
+        let replay_after_sequence = match store.latest_snapshot()? {
+            Some(snapshot) => {
+                let payload: DurableKernelSnapshotPayload =
+                    serde_json::from_value(snapshot.payload).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "durable_state.scan_external_provider_attachment_snapshot",
+                            message: error.to_string(),
+                        }
+                    })?;
+                attachment_state.restore_snapshot(payload);
+                snapshot.sequence
+            }
+            None => 0,
+        };
+        for event in store.load_events_after(replay_after_sequence)? {
+            attachment_state.apply_event(&event);
+        }
         let mut marker_count = 0usize;
-        for event in store.load_events_after(0)? {
-            marker_count += self.mark_external_provider_attachments_from_event(&event);
+        for agent in attachment_state.live_agents.values() {
+            marker_count += self.mark_agent_external_provider_sessions_attached_counted(agent);
         }
         Ok(marker_count)
-    }
-
-    fn mark_external_provider_attachments_from_event(&self, event: &DurableStateEvent) -> usize {
-        match event.kind.as_str() {
-            "session.created" => decode_durable_payload_field::<AgentInstance>(
-                event,
-                "default_agent",
-                "durable_state.restore_external_provider_attachment",
-            )
-            .ok()
-            .map(|agent| self.mark_agent_external_provider_sessions_attached_counted(&agent))
-            .unwrap_or(0),
-            "agent.created"
-            | "agent.mcp_granted"
-            | "agent.mcp_revoked"
-            | "agent.skill_granted"
-            | "agent.skill_revoked"
-            | "agent.extension_granted"
-            | "agent.extension_revoked"
-            | "agent.runtime_profile_updated"
-            | "agent.updated" => decode_durable_payload_field::<AgentInstance>(
-                event,
-                "agent",
-                "durable_state.restore_external_provider_attachment",
-            )
-            .ok()
-            .map(|agent| self.mark_agent_external_provider_sessions_attached_counted(&agent))
-            .unwrap_or(0),
-            _ => 0,
-        }
     }
 
     fn mark_agent_external_provider_sessions_attached_counted(
@@ -443,6 +532,7 @@ impl DaemonApp {
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }
+                self.external_provider_sessions.detach_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.restore_session(session.clone());
@@ -457,12 +547,32 @@ impl DaemonApp {
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }
+                self.external_provider_sessions.detach_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
                 self.session_projection.remove(session.id());
                 self.history_projection.remove(session.id());
                 self.agent_runtime_projection.update_session(&session);
+            }
+            "agent.deleted" => {
+                let agent: AgentInstance = decode_durable_payload_field(
+                    &event,
+                    "agent",
+                    "durable_state.restore_deleted_agent",
+                )?;
+                let session_id = agent.session_id().to_string();
+                self.external_provider_sessions
+                    .detach_agent(&session_id, agent.id());
+                self.prompt_state_owner
+                    .remove_agent(&session_id, agent.id());
+                if self.sessions.get_session(&session_id).is_ok() {
+                    let session_store = self.session_state_store();
+                    let mut sessions = session_store.write();
+                    let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
+                    drop(sessions);
+                    self.refresh_restored_agent_session_projection(&session_id)?;
+                }
             }
             "slice.created" | "slice.updated" => {
                 let slice: crate::slice::SliceRecord =
