@@ -1,6 +1,7 @@
 import { resolve as resolvePath } from "node:path"
 
 import type {
+  RecallEvent,
   RuntimeSession,
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
@@ -15,8 +16,11 @@ import {
   setUserConfigValueRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
+import { queryRecallRequest } from "./ipc-recall-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatWorkspaceLiveSyncAudit,
+  formatWorkspaceLiveSyncDoctor,
   formatWorkspaceLiveSyncTargets,
   formatWorkspaceLiveSyncStatus,
   formatWorkspaceLinkDetails,
@@ -45,7 +49,7 @@ export async function executeWorkspaceCommand(
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link or workspace link create|list|show|attach|detach" }
+    return { ok: false, message: workspaceUsage() }
   }
   const sessionId = context.sessionId
   if (!sessionId) {
@@ -146,6 +150,11 @@ async function executeWorkspaceSyncCommand(
     const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
     return { ok: true, message: formatWorkspaceLiveSyncStatus(payload.status), data: payload }
   }
+  if (action === "doctor") {
+    const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
+    const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
+    return { ok: true, message: formatWorkspaceLiveSyncDoctor(payload.status), data: payload }
+  }
   if (action === "targets") {
     const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
     const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
@@ -178,6 +187,20 @@ async function executeWorkspaceSyncCommand(
         ...payload.status.ignore.rules.map((pattern) => `rule ${pattern}`),
         ...payload.status.ignore.force_excludes.map((pattern) => `force-exclude ${pattern}`),
       ].join("\n"),
+      data: payload,
+    }
+  }
+  if (action === "audit") {
+    const limit = readNumberOption(args, "--limit") ?? 20
+    const response = await deps.client.send(queryRecallRequest({
+      session_id: sessionId,
+      kind: "workspace_live_sync_mode_changed",
+      limit,
+    }))
+    const payload = expectVariant<{ events?: RecallEvent[] }>(response, "RecallEvents")
+    return {
+      ok: true,
+      message: formatWorkspaceLiveSyncAudit(payload.events ?? []),
       data: payload,
     }
   }
@@ -255,9 +278,26 @@ async function executeWorkspaceSyncCommand(
     }
   }
   if (args.length > 0) {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link" }
+    return { ok: false, message: workspaceSyncUsage() }
   }
-  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link" }
+  return { ok: false, message: workspaceSyncUsage() }
+}
+
+function workspaceUsage(): string {
+  return `usage: ${workspaceSyncUsage()} or workspace link create|list|show|attach|detach`
+}
+
+function workspaceSyncUsage(): string {
+  return "workspace sync status|doctor|targets|conflicts|ignore|audit|off|managed|tracked|default|link"
+}
+
+function readNumberOption(args: string[], flag: string): number | null {
+  const index = args.indexOf(flag)
+  if (index === -1) return null
+  const value = args[index + 1]
+  if (!value || value.startsWith("--")) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
