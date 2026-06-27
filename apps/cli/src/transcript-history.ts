@@ -552,5 +552,7 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
 }
 
 function shouldRenderHistoryProviderStatus(entry: SessionHistoryEntry): boolean {
-  return sessionHistoryEntryIsExternalProviderObserved(entry) && shouldRenderProviderStatus(entry.text)
+  return sessionHistoryEntryIsExternalProviderObserved(entry)
+    && entry.external_observation?.passive_telemetry !== true
+    && shouldRenderProviderStatus(entry.text)
 }

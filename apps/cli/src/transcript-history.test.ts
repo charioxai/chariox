@@ -236,6 +236,24 @@ test("hydrateTranscriptEntries renders only externally observed provider statuse
         external_provider_turn_id: "turn-aborted",
       },
     },
+    {
+      entry_index: 3,
+      fragment_start: 0,
+      fragment_end: 34,
+      total_chars: 34,
+      entry: {
+        kind: "provider_status",
+        text: "codex token_count {\"total\":42}",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "token-count",
+        external_observation: {
+          settles_active_prompt: false,
+          passive_telemetry: true,
+        },
+      },
+    },
   ])
 
   assert.deepEqual(entries.map((entry) => entry.text), [
@@ -254,7 +272,20 @@ test("previewLineForHistoryEntry suppresses non-external provider statuses", () 
     kind: "provider_status",
     text: "codex token_count {\"total\":42}",
     source: "external_provider_observed",
-  }), "Stat: codex token_count {\"total\":42}")
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), null)
+  assert.equal(previewLineForHistoryEntry({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: "external_provider_observed",
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), "Stat: codex event turn_aborted {\"reason\":\"user\"}")
 })
 
 test("hydrateTranscriptEntries preserves prompt identity, attachment identity, and external observation metadata", () => {

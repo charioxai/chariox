@@ -32,8 +32,13 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
     }
 
     pub(crate) fn status_is_passive_telemetry(self, text: &str) -> bool {
-        self.provider == "claude"
-            && (text.starts_with("claude last-prompt") || text.starts_with("claude ai-title"))
+        match self.provider {
+            "codex" => text.starts_with("codex token_count"),
+            "claude" => {
+                text.starts_with("claude last-prompt") || text.starts_with("claude ai-title")
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn turn_is_passive_telemetry(self, turn: &ObservedExternalProviderTurn) -> bool {
@@ -268,6 +273,27 @@ mod tests {
                 observed_at_ms: None,
             },
         ]));
+    }
+
+    #[test]
+    fn codex_token_count_is_passive_telemetry_and_does_not_settle() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let token_count = ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
+                .to_string(),
+            provider_turn_id: None,
+            observed_at_ms: None,
+        };
+
+        assert!(policy.turn_is_passive_telemetry(&token_count));
+        assert!(!policy.latest_effective_turn_settles(std::slice::from_ref(&token_count)));
+        assert_eq!(
+            policy
+                .observation_for_turn(&token_count)
+                .map(|observation| observation.passive_telemetry),
+            Some(true)
+        );
     }
 
     #[test]
