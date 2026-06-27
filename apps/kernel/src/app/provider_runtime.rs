@@ -1071,6 +1071,64 @@ mod tests {
     }
 
     #[test]
+    fn provider_processes_do_not_teardown_with_per_agent_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider launch should succeed");
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "active prompt\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+        app.detach(attachment.id())
+            .expect("detaching should leave active prompt state");
+
+        let processes = app
+            .list_provider_processes(None)
+            .expect("provider processes should list");
+        assert_eq!(processes.len(), 1);
+        assert!(!processes[0].teardown_safe);
+        assert!(processes[0].attached_session_ids.is_empty());
+        assert_eq!(processes[0].teardown_blockers, vec!["active prompt"]);
+
+        let torn_down = app
+            .teardown_provider_processes(None, false)
+            .expect("safe teardown should succeed");
+        assert!(torn_down.is_empty());
+        assert_eq!(
+            app.providers()
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Running,
+        );
+    }
+
+    #[test]
     fn provider_launch_runtime_profile_survives_kernel_restart() {
         let config = DaemonConfig::for_tests();
         let (agent_id, run_model) = {
