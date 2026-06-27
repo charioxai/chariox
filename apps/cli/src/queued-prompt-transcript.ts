@@ -147,10 +147,10 @@ function activePromptOrigin(session: RuntimeSession, agentId: string): string | 
   }
   const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
   if (stateActivePrompt) {
-    return stateActivePrompt.prompt_origin ?? "arroba"
+    return promptOriginFromRecord(stateActivePrompt, "arroba")
   }
   if (session.active_prompt?.target_agent_id === agentId) {
-    return session.active_prompt.prompt_origin ?? "arroba"
+    return promptOriginFromRecord(session.active_prompt, "arroba")
   }
   return null
 }

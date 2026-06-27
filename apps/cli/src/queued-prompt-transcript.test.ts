@@ -149,6 +149,36 @@ test("syncQueuedPromptEntriesForAgent infers external ownership from active turn
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
 })
 
+test("syncQueuedPromptEntriesForAgent infers external ownership from prompt state metadata", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({
+      active_prompt: activePromptWithExternalMetadata(),
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
+test("syncQueuedPromptEntriesForAgent infers external ownership from top-level active prompt metadata", () => {
+  const session = sessionWithoutPromptStates({
+    active_prompt: activePromptWithExternalMetadata(),
+    queued_prompts: [{
+      id: "prompt-queued",
+      source_attachment_id: "attachment-queued",
+      target_agent_id: "agent-1",
+      prompt: "queued after external",
+      status: "Queued",
+    }],
+  })
+  const synced = syncQueuedPromptEntriesForAgent([], session, "agent-1")
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
 test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when projected activity exists", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
@@ -418,5 +448,20 @@ function sessionWithQueuedPrompt(
       values: {},
     },
     ...sessionOverrides,
+  }
+}
+
+function activePromptWithExternalMetadata(): NonNullable<RuntimeSession["active_prompt"]> & {
+  external_provider: string
+  external_provider_session_id: string
+} {
+  return {
+    id: "prompt-external",
+    source_attachment_id: "attachment-external",
+    target_agent_id: "agent-1",
+    prompt: "external running",
+    status: "Running",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
   }
 }
