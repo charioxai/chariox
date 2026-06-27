@@ -27,6 +27,42 @@ test("kernel session snapshot refreshes changed provider run and panes after pro
   ])
 })
 
+test("kernel session snapshot detects prompt completion from projected prompt states", async () => {
+  const harness = createHarness({
+    session: session({
+      active_prompt: {
+        ...activePrompt(),
+        id: "prompt-stale",
+        target_agent_id: "agent-1",
+      },
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            ...activePrompt(),
+            target_agent_id: "agent-1",
+          },
+          queued_prompts: [],
+        },
+      },
+    }),
+    shouldRefreshAgentPanesForSessionChange: () => false,
+  })
+
+  await harness.controller.apply(session({
+    active_prompt: {
+      ...activePrompt(),
+      id: "prompt-stale",
+      target_agent_id: "agent-1",
+    },
+    prompt_states: {},
+  }), null)
+
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "refreshAgentPanes:session-1",
+  ])
+})
+
 test("kernel session snapshot clears missing provider run and recovers polling transport", async () => {
   const harness = createHarness({
     providerRun: providerRun("run-1"),
@@ -76,7 +112,6 @@ function createHarness(options: {
     getProviderRun: () => harness.providerRun,
     projectSession: (nextSession) => nextSession,
     shouldRefreshAgentPanesForSessionChange: options.shouldRefreshAgentPanesForSessionChange ?? (() => false),
-    sessionHasPromptWork: (nextSession) => Boolean(nextSession.active_prompt || nextSession.queued_prompts.length > 0),
     applySessionState: (nextSession) => {
       calls.push(`applySessionState:${nextSession.id}`)
       harness.session = nextSession

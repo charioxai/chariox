@@ -48,6 +48,32 @@ test("cli polling controller clears stale provider run on benign terminal-output
   ])
 })
 
+test("cli polling controller keeps provider run on terminal-output miss while projected activity is busy", async () => {
+  const run = providerRun("run-1")
+  const harness = createHarness({
+    providerRun: run,
+    sessionState: session({
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+        },
+      },
+    }),
+    pumpTerminalOutput: async () => {
+      throw new Error("Session has no active provider run")
+    },
+  })
+
+  await assert.rejects(harness.controller.pollOutput(), /Session has no active provider run/)
+
+  assert.equal(harness.providerRun, run)
+  assert.deepEqual(harness.calls, [
+    "pumpTerminalOutput:session-1:attachment-1",
+  ])
+})
+
 test("cli polling controller appends runtime notices", async () => {
   const harness = createHarness({
     pollRuntimeNotices: async () => [{ message: "heads up" }],
@@ -176,7 +202,6 @@ function createHarness(options: {
       return options.pollRuntimeNotices?.() ?? []
     },
     appendNotice: (message) => calls.push(`notice:${message}`),
-    sessionHasPromptWork: (nextSession) => Boolean(nextSession.active_prompt || nextSession.queued_prompts.length > 0),
     getSessionState: async (sessionId) => {
       calls.push(`getSessionState:${sessionId}`)
       return options.nextSession ?? harness.sessionState

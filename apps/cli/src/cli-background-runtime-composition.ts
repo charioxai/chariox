@@ -288,7 +288,6 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     getProviderRun: deps.providerRunState,
     projectSession: applyProviderRunProfileToSession,
     shouldRefreshAgentPanesForSessionChange: deps.shouldRefreshAgentPanesForSessionChange,
-    sessionHasPromptWork,
     applySessionState: deps.applySessionState,
     sameProviderRun,
     logProviderRunDebug: deps.logProviderRunDebug,
@@ -541,7 +540,6 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     pumpTerminalOutput: deps.pumpTerminalOutput,
     pollRuntimeNotices: deps.pollRuntimeNotices,
     appendNotice: (message) => deps.appendNotice(message),
-    sessionHasPromptWork,
     getSessionState: deps.getSessionState,
     ...(deps.getWorkspaceLiveSyncStatus && deps.setWorkspaceLiveSyncStatus
       ? {

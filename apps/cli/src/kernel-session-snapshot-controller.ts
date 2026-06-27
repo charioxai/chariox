@@ -2,6 +2,9 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
+import {
+  sessionHasPromptWork,
+} from "./session-state.js"
 
 type KernelSessionSnapshotControllerDeps = {
   getSession: () => RuntimeSession
@@ -11,7 +14,6 @@ type KernelSessionSnapshotControllerDeps = {
     providerRun: RuntimeProviderRun | null,
   ) => RuntimeSession
   shouldRefreshAgentPanesForSessionChange: (session: RuntimeSession) => boolean
-  sessionHasPromptWork: (session: RuntimeSession) => boolean
   applySessionState: (session: RuntimeSession) => void
   sameProviderRun: (left: RuntimeProviderRun, right: RuntimeProviderRun) => boolean
   logProviderRunDebug: (
@@ -36,8 +38,8 @@ export function createKernelSessionSnapshotController(
     const previousSession = deps.getSession()
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
     const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-    const promptJustCompleted = deps.sessionHasPromptWork(previousSession)
-      && !deps.sessionHasPromptWork(projectedSession)
+    const promptJustCompleted = sessionHasPromptWork(previousSession)
+      && !sessionHasPromptWork(projectedSession)
 
     deps.applySessionState(projectedSession)
 
@@ -57,7 +59,7 @@ export function createKernelSessionSnapshotController(
       })
       deps.setProviderRun(null)
       deps.updateSessionChrome()
-      if (!deps.supportsKernelEventStream() && deps.sessionHasPromptWork(projectedSession)) {
+      if (!deps.supportsKernelEventStream() && sessionHasPromptWork(projectedSession)) {
         void deps.recoverProviderRun("missing active provider run")
       }
     }

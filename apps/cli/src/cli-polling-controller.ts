@@ -8,6 +8,9 @@ import type {
 } from "./cli-types.js"
 import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
+import {
+  sessionHasPromptWork,
+} from "./session-state.js"
 
 type PollLoop = typeof defaultRunPollingLoop
 
@@ -35,7 +38,6 @@ type CliPollingControllerDeps = {
   pumpTerminalOutput: (sessionId: string, attachmentId: string) => Promise<TerminalOutputRecord[]>
   pollRuntimeNotices: (sessionId: string, attachmentId: string) => Promise<RuntimeNoticeRecord[]>
   appendNotice: (message: string) => void
-  sessionHasPromptWork: (session: RuntimeSession) => boolean
   getSessionState: (sessionId: string) => Promise<RuntimeSession>
   getWorkspaceLiveSyncStatus?: (sessionId: string) => Promise<WorkspaceLiveSyncStatus>
   setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
@@ -86,7 +88,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           records = await deps.pumpTerminalOutput(deps.getSession().id, attachment.id)
         } catch (error) {
           const message = deps.formatError(error)
-          if (/has no active provider run/i.test(message) && !deps.sessionHasPromptWork(deps.getSession())) {
+          if (/has no active provider run/i.test(message) && !sessionHasPromptWork(deps.getSession())) {
             deps.setProviderRun(null)
             deps.updateSessionChrome()
             return
@@ -134,8 +136,8 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         deps.recordDaemonActivity("session_state_poll")
         const projectedSession = deps.projectSession(session, deps.getProviderRun())
         const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-        const promptJustCompleted = deps.sessionHasPromptWork(previousSession)
-          && !deps.sessionHasPromptWork(projectedSession)
+        const promptJustCompleted = sessionHasPromptWork(previousSession)
+          && !sessionHasPromptWork(projectedSession)
         deps.applySessionState(projectedSession)
         if (shouldRefreshPanes || promptJustCompleted) {
           await deps.refreshAgentPanes(projectedSession)
@@ -185,7 +187,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           })
           deps.setProviderRun(null)
           deps.updateSessionChrome()
-          if (deps.sessionHasPromptWork(session)) {
+          if (sessionHasPromptWork(session)) {
             void deps.recoverProviderRun("missing active provider run")
           }
         }
