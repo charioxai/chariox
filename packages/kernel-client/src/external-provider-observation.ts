@@ -11,6 +11,12 @@ export type ExternalProviderObservedTranscriptMetadata = {
   externalObservation: SessionHistoryExternalObservation | null
 }
 
+export function sessionHistoryEntryIsExternalProviderObserved(
+  entry: Pick<SessionHistoryEntry, "source">,
+): boolean {
+  return entry.source === EXTERNAL_PROVIDER_OBSERVED_SOURCE
+}
+
 export function historyEntryExternalProviderObservedMetadata(
   entry: Pick<
     SessionHistoryEntry,
@@ -22,7 +28,7 @@ export function historyEntryExternalProviderObservedMetadata(
     | "external_observation"
   >,
 ): ExternalProviderObservedTranscriptMetadata | null {
-  if (entry.source !== EXTERNAL_PROVIDER_OBSERVED_SOURCE) {
+  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return null
   }
   return {

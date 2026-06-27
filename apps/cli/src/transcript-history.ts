@@ -1,5 +1,6 @@
 import {
   historyEntryExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
@@ -549,5 +550,5 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
 }
 
 function shouldRenderHistoryProviderStatus(entry: SessionHistoryEntry): boolean {
-  return entry.source === "external_provider_observed" && shouldRenderProviderStatus(entry.text)
+  return sessionHistoryEntryIsExternalProviderObserved(entry) && shouldRenderProviderStatus(entry.text)
 }

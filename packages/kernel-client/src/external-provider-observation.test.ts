@@ -4,7 +4,17 @@ import test from "node:test"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   historyEntryExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
+
+test("external provider observed predicate requires kernel observed source", () => {
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }), true)
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: null,
+  }), false)
+})
 
 test("external provider observed metadata projects kernel history fields", () => {
   assert.deepEqual(historyEntryExternalProviderObservedMetadata({
