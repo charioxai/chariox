@@ -107,6 +107,9 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
   const workspaceCollision = new Set(buildCommandCenterItems("/workspace sync collision", context).map((item) => item.value))
   assert.equal(workspaceCollision.has("/workspace sync conflicts"), true)
 
+  const workspaceHealth = new Set(buildCommandCenterItems("/workspace sync health", context).map((item) => item.value))
+  assert.equal(workspaceHealth.has("/workspace sync doctor"), true)
+
   const ignoreRules = new Set(buildCommandCenterItems("/workspace sync arrobaignore", context).map((item) => item.value))
   assert.equal(ignoreRules.has("/workspace sync ignore"), true)
 
@@ -170,6 +173,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   const values = new Set(items.map((item) => item.value))
 
   assert.equal(values.has("/workspace sync status"), true)
+  assert.equal(values.has("/workspace sync doctor"), true)
   assert.equal(values.has("/workspace sync targets"), true)
   assert.equal(values.has("/workspace sync conflicts"), true)
   assert.equal(values.has("/workspace sync ignore"), true)
@@ -184,6 +188,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync disable"), false)
   assert.equal(values.has("/workspace sync mode "), false)
   assert.equal(items.find((item) => item.value === "/workspace sync off")?.description, "Disable live sync for this session; other repositories stay unrestricted")
+  assert.equal(items.find((item) => item.value === "/workspace sync doctor")?.description, "Diagnose workspace live sync health, blockers, and recovery commands")
   assert.equal(items.find((item) => item.value === "/workspace sync audit")?.description, "Show workspace live sync mode audit events")
   assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted")

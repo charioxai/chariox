@@ -428,7 +428,7 @@ export const COMMAND_TREE: CommandNode[] = [
         value: "/workspace sync status",
         searchAliases: ["live sync status", "workspace sync status", "sync readiness", "sync tracked", "sync managed", "workspace-live-sync", "external changes"],
       },
-      { id: "workspace-sync-doctor", label: "sync doctor", description: "Diagnose workspace live sync health, blockers, and recovery commands", value: "/workspace sync doctor" },
+      { id: "workspace-sync-doctor", label: "sync doctor", description: "Diagnose workspace live sync health, blockers, and recovery commands", value: "/workspace sync doctor", searchAliases: ["live sync health", "workspace sync health", "workspace sync blockers", "sync recovery", "sync doctor"] },
       { id: "workspace-sync-targets", label: "sync targets", description: "List workspace live sync targets", value: "/workspace sync targets", searchAliases: ["sync target", "workspace sync target", "synced worktree"] },
       { id: "workspace-sync-conflicts", label: "sync conflicts", description: "List workspace live sync conflicts", value: "/workspace sync conflicts", searchAliases: ["live sync collision", "workspace collision", "collisions", "conflict"] },
       { id: "workspace-sync-ignore", label: "sync ignore", description: "Show workspace live sync ignore rules", value: "/workspace sync ignore", searchAliases: ["arrobaignore", ".arrobaignore", "sync arrobaignore", "sync ignore", "ignored paths"] },
