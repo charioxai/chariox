@@ -202,6 +202,97 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, metaagent_id, terminal_stream, metaagent_events) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let metaagent = crate::app::KernelSessionService::new(&mut app_locked)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+            .expect("metaagent should spawn");
+        let metaagent = app_locked
+            .agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("metaagent mode should activate");
+        (
+            session.id().to_string(),
+            metaagent.id().to_string(),
+            app_locked.terminal_stream_store(),
+            app_locked.metaagent_event_store(),
+        )
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        session_id: session_id.clone(),
+        agents: (0..3)
+            .map(|index| crate::local::SpawnAgentsRequestItem {
+                alias: Some(format!("compact-batch-{index}")),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            })
+            .collect(),
+    });
+    let command =
+        KernelCommand::from_local_request("compact-lifecycle-agent-batch", None, None, &request);
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("agent batch spawn should succeed");
+    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agents.len(), 3);
+
+    let compact_events = metaagent_events.list(&metaagent_id, Some("agents.spawned"), None, 10);
+    assert_eq!(
+        compact_events.len(),
+        1,
+        "batch spawn should emit one compact lifecycle event"
+    );
+    assert_eq!(
+        compact_events[0]
+            .detail
+            .get("agent_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        compact_events[0]
+            .detail
+            .get("agents")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(3)
+    );
+    assert!(
+        metaagent_events
+            .list(&metaagent_id, Some("agent.spawned"), None, 10)
+            .is_empty(),
+        "batch spawn should not emit one lifecycle event per agent"
+    );
+}
+
+#[tokio::test]
 async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
     let config = DaemonConfig::for_tests();
     let (session_id, first_agent_id, second_agent_id) = {

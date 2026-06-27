@@ -495,16 +495,16 @@ impl SessionRuntimeStore {
                     return self.with_session_projection_action_result(Err(error)).await;
                 }
             }
-            if caller_metaagent_id.is_none() && !agent.is_metaagent() {
-                let _ = self
-                    .state
-                    .inject_metaagent_agent_lifecycle_event_for_agent(
-                        agent.session_id(),
-                        agent,
-                        "agent.spawned",
-                    )
-                    .await;
-            }
+        }
+        if caller_metaagent_id.is_none() {
+            let _ = self
+                .state
+                .inject_metaagent_agent_lifecycle_event_for_agents(
+                    &request.session_id,
+                    &agents,
+                    "agents.spawned",
+                )
+                .await;
         }
         self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {
             agents,
