@@ -146,9 +146,25 @@ function formatSliceLines(
     ]
   }
   if (agent.remote_execution && sliceLookupError) {
-    return [`  slice lookup:   ${sliceLookupError}`]
+    return [
+      `  slice lookup:   ${sliceLookupError}`,
+      ...formatSliceLookupNextLines(agent),
+    ]
   }
   return []
+}
+
+function formatSliceLookupNextLines(agent: AgentInstance): string[] {
+  const workerKernelId = agent.remote_execution?.worker_kernel_id?.trim() ?? ""
+  const sliceRef = workerKernelId.startsWith("slice:") ? workerKernelId.slice("slice:".length).trim() : ""
+  if (sliceRef) {
+    return [
+      `  slice next:     run /slice list; run /slice doctor ${sliceRef} if listed; run /kernel remote-runtime if slice inventory stays unavailable`,
+    ]
+  }
+  return [
+    "  slice next:     run /slice list; run /kernel remote-runtime if slice inventory stays unavailable",
+  ]
 }
 
 function formatSliceNextLines(slice: SliceRecord): string[] {

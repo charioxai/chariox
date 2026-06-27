@@ -133,7 +133,7 @@ test("native TUI runtime banner can show explicit slice lookup failures", () => 
     session: session({ workspace_live_sync_mode: "tracked" }),
     agent: agent({
       remote_execution: {
-        worker_kernel_id: "worker-kernel",
+        worker_kernel_id: "slice:linux-dev",
         worker_machine_id: "hetzner",
         execution_lease_id: "lease-1",
         leased_agent_id: "leased-agent-1",
@@ -143,8 +143,9 @@ test("native TUI runtime banner can show explicit slice lookup failures", () => 
     sliceLookupError: "kernel did not return slice inventory",
   })
 
-  assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(banner, /placement:      remote \(worker=hetzner, kernel=slice:linux-dev, lease=lease-1, leased_agent=leased-agent-1\)/)
   assert.match(banner, /slice lookup:   kernel did not return slice inventory/)
+  assert.match(banner, /slice next:     run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
 })
 
 test("native TUI runtime banner renders local defaults without inventing state", () => {
