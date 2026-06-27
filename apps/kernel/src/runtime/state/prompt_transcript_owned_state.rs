@@ -55,75 +55,26 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
-    pub(super) fn fan_out_terminal_output(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-        kind: crate::terminal::TerminalOutputKind,
-        merge_key: Option<String>,
-        recipient_attachment_ids: Vec<String>,
-        bytes: &[u8],
-    ) -> crate::terminal::TerminalOutputRecord {
-        let agent_id = self
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-            session_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-        );
-        let record = self.terminal_stream.fan_out_output(
-            session_id,
-            provider_run_id,
-            agent_id.as_deref(),
-            kind.clone(),
-            merge_key.clone(),
-            recipient_attachment_ids,
-            bytes,
-        );
-        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
-        if kind != crate::terminal::TerminalOutputKind::PromptEcho {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
-                if let Some(agent_id) = agent_id.as_deref() {
-                    self.record_workflow_thinking_trace(
-                        session_id,
-                        provider_run_id,
-                        agent_id,
-                        text.clone(),
-                    );
-                }
-            }
-            self.append_history_entry(
-                session_id,
-                SessionHistoryEntry::provider_output(
-                    session_id,
-                    provider_run_id,
-                    agent_id.as_deref(),
-                    kind,
-                    merge_key,
-                    text,
-                ),
-            );
-        }
-        record
-    }
-
     pub(super) fn fan_out_terminal_outputs(
         &self,
         session_id: &str,
         outputs: Vec<TerminalOutputBatchAppend>,
     ) -> Vec<crate::terminal::TerminalOutputRecord> {
-        if outputs.is_empty() {
-            return Vec::new();
-        }
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id);
+        self.fan_out_terminal_outputs_to_recipients(session_id, recipient_attachment_ids, outputs)
+    }
+
+    pub(super) fn fan_out_terminal_outputs_to_recipients(
+        &self,
+        session_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        outputs: Vec<TerminalOutputBatchAppend>,
+    ) -> Vec<crate::terminal::TerminalOutputRecord> {
+        if outputs.is_empty() {
+            return Vec::new();
+        }
         let mut trace_agent_ids = std::collections::BTreeSet::new();
         let mut recipient_scope_cache =
             std::collections::BTreeMap::<Option<String>, Vec<String>>::new();
@@ -219,10 +170,6 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-    }
-
-    pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        self.append_history_entries(session_id, vec![entry]);
     }
 
     pub(super) fn append_history_entries(

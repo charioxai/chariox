@@ -123,19 +123,37 @@ impl KernelRuntimeState {
         let records = if provider_run.provider() == "claude-headless" {
             Vec::new()
         } else {
-            chunks
+            let agent_id = provider_run.agent_instance_id().map(str::to_string);
+            let mut history_entries = Vec::with_capacity(chunks.len());
+            let terminal_outputs = chunks
                 .into_iter()
                 .map(|chunk| {
-                    owned.fan_out_terminal_output(
+                    let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
+                    history_entries.push(crate::history::SessionHistoryEntry::provider_output(
                         session_id,
                         provider_run_id,
+                        agent_id.as_deref(),
                         crate::terminal::TerminalOutputKind::ProviderOutput,
                         None,
-                        recipient_attachment_ids.clone(),
-                        &chunk.bytes,
-                    )
+                        history_text.clone(),
+                    ));
+                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: None,
+                        bytes: chunk.bytes,
+                        history_text: Some(history_text),
+                    }
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let records = owned.fan_out_terminal_outputs_to_recipients(
+                session_id,
+                recipient_attachment_ids,
+                terminal_outputs,
+            );
+            owned.append_history_entries(session_id, history_entries);
+            records
         };
         if let Some(message) = terminal_failure {
             let run = owned

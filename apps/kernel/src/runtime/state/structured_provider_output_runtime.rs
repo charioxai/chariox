@@ -299,7 +299,11 @@ impl KernelRuntimeState {
                 }
             })
             .collect::<Vec<_>>();
-        let records = owned.fan_out_terminal_outputs(session_id, terminal_outputs);
+        let records = owned.fan_out_terminal_outputs_to_recipients(
+            session_id,
+            recipient_attachment_ids,
+            terminal_outputs,
+        );
         owned.append_history_entries(session_id, history_entries);
         if let Some(message) = terminal_failure {
             self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
