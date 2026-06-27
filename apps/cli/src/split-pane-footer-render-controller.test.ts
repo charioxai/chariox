@@ -9,7 +9,7 @@ test("split-pane footer render controller renders current footer projection", ()
   const rendered: SplitPaneFooterRenderOptions[] = []
   let attached = true
   let workflowActive = false
-  let hasProjectedActivity = true
+  let hasProjectedRuntimeState = true
   let visibleAgents: Array<AgentInstance | null | undefined> = [agent("agent-a")]
   const controller = createSplitPaneFooterRenderController({
     renderer: "renderer" as unknown as SplitPaneFooterRenderOptions["renderer"],
@@ -28,7 +28,7 @@ test("split-pane footer render controller renders current footer projection", ()
     hasPromptWorkByAgent: () => ({ "agent-a": true }),
     streamingAgentId: () => "agent-a",
     agentBusyLatch: (agentId) => agentId === "agent-a",
-    hasProjectedAgentActivity: () => hasProjectedActivity,
+    hasProjectedRuntimeState: () => hasProjectedRuntimeState,
     sessionConfigValues: () => ({ sandbox: "workspace-write" }),
     agentLocationLabel: (value) => value?.id ?? null,
     badgeWidth: 8,
@@ -41,7 +41,7 @@ test("split-pane footer render controller renders current footer projection", ()
   controller.render()
   attached = false
   workflowActive = true
-  hasProjectedActivity = false
+  hasProjectedRuntimeState = false
   visibleAgents = []
   controller.render()
 
@@ -54,14 +54,14 @@ test("split-pane footer render controller renders current footer projection", ()
   assert.deepEqual(first.currentProviderSelection, { model: "default", effort: "" })
   assert.deepEqual(first.agentActivityLabels, { "agent-a": "working" })
   assert.deepEqual(first.hasPromptWorkByAgent, { "agent-a": true })
-  assert.equal(first.hasProjectedAgentActivity, true)
+  assert.equal(first.hasProjectedRuntimeState, true)
   assert.equal(first.agentBusyLatch("agent-a"), true)
   assert.deepEqual(first.sessionConfigValues, { sandbox: "workspace-write" })
   assert.equal(first.agentLocationLabel(agent("agent-a")), "agent-a")
   assert.equal(first.badgeWidth, 8)
   assert.equal(first.animationFrame, 4)
   assert.equal(rendered[1]!.showAgentFooters, false)
-  assert.equal(rendered[1]!.hasProjectedAgentActivity, false)
+  assert.equal(rendered[1]!.hasProjectedRuntimeState, false)
 })
 
 function agent(id: string): AgentInstance {

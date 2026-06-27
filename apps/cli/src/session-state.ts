@@ -128,6 +128,10 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
   return Boolean(session.active_prompt) || session.queued_prompts.length > 0
 }
 
+export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolean {
+  return Boolean(session.agent_activity || session.prompt_states)
+}
+
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
   if (session.agent_activity) {
     return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
