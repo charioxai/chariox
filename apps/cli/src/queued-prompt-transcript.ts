@@ -129,7 +129,14 @@ function queuedPromptTranscriptEntry(
 
 function activePromptOrigin(session: RuntimeSession, agentId: string): string | null {
   if (session.agent_activity) {
-    return session.agent_activity[agentId]?.active_turn?.prompt_origin ?? null
+    const projectedActivity = session.agent_activity[agentId]
+    const activeTurnOrigin = projectedActivity?.active_turn?.prompt_origin
+    if (activeTurnOrigin) {
+      return activeTurnOrigin
+    }
+    if (projectedActivity && !agentRuntimeActivityIsBusy(projectedActivity)) {
+      return null
+    }
   }
   const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
   if (stateActivePrompt) {

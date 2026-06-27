@@ -156,6 +156,34 @@ test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when pr
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
 })
 
+test("syncQueuedPromptEntriesForAgent uses prompt state origin when projected activity is busy without active turn", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({
+      active_prompt: {
+        id: "prompt-external",
+        source_attachment_id: "attachment-external",
+        target_agent_id: "agent-1",
+        prompt: "external running",
+        status: "Running",
+        prompt_origin: "external",
+      },
+    }, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
 test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projected activity is idle", () => {
   const existing: TranscriptEntry[] = [{
     id: 1,
