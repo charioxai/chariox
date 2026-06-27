@@ -241,6 +241,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::SpawnAgent(request) => {
             LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::SpawnAgents(request) => {
+            LocalRequestMetadata::new("agents.spawn", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::UndoTurn(request) => {
             LocalRequestMetadata::new("turn.undo", Interactive).session(&request.session_id)
         }
@@ -541,6 +544,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
+        LocalDaemonRequest::SpawnAgents(_) => "agents.spawn",
         LocalDaemonRequest::UndoTurn(_) => "turn.undo",
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",

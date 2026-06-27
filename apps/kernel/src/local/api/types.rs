@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 199;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -327,6 +327,7 @@ pub enum LocalDaemonRequest {
     AliasSession(AliasSessionRequest),
     AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
+    SpawnAgents(SpawnAgentsRequest),
     UndoTurn(UndoTurnRequest),
     ForkAgent(ForkAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
@@ -1059,6 +1060,9 @@ pub enum LocalDaemonResponse {
     },
     AgentSpawned {
         agent: AgentInstance,
+    },
+    AgentsSpawned {
+        agents: Vec<AgentInstance>,
     },
     TurnUndone {
         result: TurnUndoResult,

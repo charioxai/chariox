@@ -62,6 +62,7 @@ export async function executeShellCommand(
     case "session":
       return executeSessionCommand(parsed, context, deps)
     case "agent":
+    case "agents":
       return executeAgentCommand(parsed, context, deps)
     case "kernel":
       return executeKernelCommand(parsed, context, deps)

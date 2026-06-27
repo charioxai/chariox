@@ -67,6 +67,93 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let session_projection = SessionStateProjectionStore::default();
+    let agent_runtime_projection = AgentRuntimeProjectionStore::default();
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        session_projection.clone(),
+        agent_runtime_projection.clone(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        session_id: session_id.clone(),
+        agents: vec![
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("owned-agent-1".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+            crate::local::SpawnAgentsRequestItem {
+                alias: Some("owned-agent-2".to_string()),
+                provider: Some("dev-stub".to_string()),
+                model: Some("default".to_string()),
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: Some("worktree".to_string()),
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            },
+        ],
+    });
+    let command =
+        KernelCommand::from_local_request("owned-local-agent-batch-spawn", None, None, &request);
+    let _locked_app = app.lock().await;
+    let response = timeout(
+        Duration::from_millis(100),
+        runtime.dispatch_session_command(command, request),
+    )
+    .await
+    .expect("owned local batch spawn should not wait for the app lock")
+    .expect("agent batch spawn should succeed");
+
+    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agents.len(), 2);
+    assert_eq!(agents[0].session_id(), session_id);
+    assert_eq!(agents[0].alias(), Some("owned-agent-1"));
+    assert_eq!(agents[1].alias(), Some("owned-agent-2"));
+    let projected = session_projection
+        .get(&session_id)
+        .expect("batch spawn should refresh session projection");
+    assert_eq!(projected.focused_agent_id(), Some(agents[1].id()));
+    for agent in &agents {
+        assert!(
+            agent_runtime_projection
+                .get(agent.id())
+                .filter(|projection| projection.session_id == session_id)
+                .is_some(),
+            "batch spawn should refresh agent-runtime projection"
+        );
+    }
+}
+
+#[tokio::test]
 async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
     let repo = temp_git_repo("agent-placement");
     let target = repo.with_file_name(format!(

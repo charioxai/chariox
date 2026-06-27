@@ -4,14 +4,16 @@ use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
     AliasAgentRequest, DestroyAgentRequest, ForkAgentRequest, LocalDaemonResponse,
-    SpawnAgentRequest, UndoTurnRequest, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
-    UpdateAgentSubstitutesRequest,
+    SpawnAgentRequest, SpawnAgentsRequest, UndoTurnRequest, UpdateAgentConfigRequest,
+    UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
 };
 
 use super::super::projection_policy::SessionProjectionAction;
 use super::SessionRuntimeStore;
 
 impl SessionRuntimeStore {
+    const MAX_BATCH_SPAWN_AGENTS: usize = 500;
+
     pub(in crate::runtime::session_actor) async fn update_agent_config(
         &self,
         request: UpdateAgentConfigRequest,
@@ -324,6 +326,69 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn spawn_agents(
+        &self,
+        request: SpawnAgentsRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        if request.agents.len() > Self::MAX_BATCH_SPAWN_AGENTS {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agents.spawn",
+                    message: format!(
+                        "batch spawn is limited to {} agents per request",
+                        Self::MAX_BATCH_SPAWN_AGENTS
+                    ),
+                }))
+                .await;
+        }
+        if request.agents.is_empty() {
+            let projection_action = self
+                .state
+                .session_snapshot(&request.session_id)
+                .await
+                .ok()
+                .map(SessionProjectionAction::Update);
+            return (
+                Ok(LocalDaemonResponse::AgentsSpawned { agents: Vec::new() }),
+                projection_action,
+            );
+        }
+        let mut agents = Vec::with_capacity(request.agents.len());
+        for item in request.agents {
+            let spawn_request = item.into_spawn_agent_request(request.session_id.clone());
+            let (result, _) = self
+                .spawn_agent(
+                    spawn_request,
+                    caller_user_id.clone(),
+                    caller_metaagent_id.clone(),
+                )
+                .await;
+            match result {
+                Ok(LocalDaemonResponse::AgentSpawned { agent }) => agents.push(agent),
+                Ok(other) => {
+                    return self
+                        .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                            operation: "agents.spawn",
+                            message: format!("unexpected spawn response: {other:?}"),
+                        }))
+                        .await;
+                }
+                Err(error) => {
+                    return self.with_session_projection_action_result(Err(error)).await;
+                }
+            }
+        }
+        self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {
+            agents,
+        }))
+        .await
     }
 
     pub(in crate::runtime::session_actor) async fn undo_turn(

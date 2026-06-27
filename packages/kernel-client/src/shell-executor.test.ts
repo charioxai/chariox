@@ -841,6 +841,78 @@ test("executeShellCommand rejects deprecated metaagent spawns before slice handl
   assert.equal(fake.requests.length, 0)
 })
 
+test("executeShellCommand batch spawns agents with count option", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, {
+      SpawnAgents: {
+        session_id: "session-1",
+        agents: [
+          {
+            provider: "codex",
+            alias: "reviewer",
+            model: "gpt-5.4",
+            effort: "medium",
+            execution_mode: null,
+            permission_level: null,
+            worktree_id: null,
+            kernel_ref: null,
+            slice_ref: null,
+            worktree_placement: null,
+          },
+          {
+            provider: "codex",
+            alias: "reviewer-2",
+            model: "gpt-5.4",
+            effort: "medium",
+            execution_mode: null,
+            permission_level: null,
+            worktree_id: null,
+            kernel_ref: null,
+            slice_ref: null,
+            worktree_placement: null,
+          },
+          {
+            provider: "codex",
+            alias: "reviewer-3",
+            model: "gpt-5.4",
+            effort: "medium",
+            execution_mode: null,
+            permission_level: null,
+            worktree_id: null,
+            kernel_ref: null,
+            slice_ref: null,
+            worktree_placement: null,
+          },
+        ],
+      },
+    })
+    return {
+      AgentsSpawned: {
+        agents: [
+          makeAgent({ id: "agent-1", agent_ref: "agent-1", alias: "reviewer" }),
+          makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer-2" }),
+          makeAgent({ id: "agent-3", agent_ref: "agent-3", alias: "reviewer-3" }),
+        ],
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agents spawn reviewer --count 3"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /spawned 3 agents \(agent-1..agent-3\)/)
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-3" })
+  assert.equal(fake.requests.length, 1)
+})
+
 test("executeShellCommand marks agents in Meta mode in agent lists", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

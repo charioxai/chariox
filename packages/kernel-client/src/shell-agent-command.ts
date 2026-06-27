@@ -15,6 +15,7 @@ import {
   listRemoteMachineKernelsRequest,
   listSlicesRequest,
   spawnAgentRequest,
+  spawnAgentsRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
@@ -46,6 +47,8 @@ import { remoteKernelReadiness } from "./shell-remote-format.js"
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
+
+const MAX_SHELL_BATCH_SPAWN_AGENTS = 200
 
 export type ShellAgentCommandDeps = ShellPlacementDeps & {
   client: ShellKernelClient
@@ -113,14 +116,22 @@ export async function executeAgentCommand(
       if (metaagent) {
         return { ok: false, message: "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode" }
       }
-      const spawnArgs = args.filter((arg) => arg !== "--meta" && arg !== "--metaagent")
+      const countParse = parseAgentSpawnCount(args.filter((arg) => arg !== "--meta" && arg !== "--metaagent"))
+      if (!countParse.ok) {
+        return { ok: false, message: countParse.message }
+      }
+      const spawnArgs = countParse.args
+      const spawnCount = countParse.count
       const parsedSpawn = parsePlacementOptions(spawnArgs, true)
       if (parsedSpawn.error) {
         return { ok: false, message: parsedSpawn.error }
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
+        return { ok: false, message: agentSpawnUsage() }
+      }
+      if (spawnCount > 1 && (parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
+        return { ok: false, message: "agent spawn --count does not accept --worktree/--branch; use --dir or create worktrees before spawning" }
       }
       const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
       if (!resolvedMachineKernel.ok) {
@@ -146,6 +157,30 @@ export async function executeAgentCommand(
         parsedSpawn.options.sliceDisplayMode,
         remoteKernelRef,
       )
+      if (spawnCount > 1) {
+        const response = await deps.client.send(spawnAgentsRequest(
+          sessionId,
+          Array.from({ length: spawnCount }, (_, index) => ({
+            provider: context.provider,
+            alias: batchAgentAlias(alias, index),
+            model: model ?? context.model,
+            worktreeId: worktree ?? null,
+            effort: context.effort,
+            kernelRef: sliceRef ? null : remoteKernelRef ?? null,
+            sliceRef: sliceRef ?? null,
+          })),
+        ))
+        const agents = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsSpawned").agents
+        const first = agents[0]
+        const last = agents.at(-1) ?? first
+        return resourceResult(
+          `spawned ${agents.length} agents${first?.agent_ref && last?.agent_ref ? ` (${first.agent_ref}..${last.agent_ref})` : ""}`,
+          parsed.assignment,
+          last?.id ?? "",
+          last ? { agentId: last.id } : {},
+          { agents },
+        )
+      }
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
         context.provider,
@@ -324,6 +359,40 @@ export async function executeAgentCommand(
     default:
       return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
   }
+}
+
+function agentSpawnUsage(): string {
+  return "usage: agent spawn [alias] [model] [--count <n>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
+}
+
+function parseAgentSpawnCount(args: string[]): { ok: true; args: string[]; count: number } | { ok: false; message: string } {
+  const stripped: string[] = []
+  let count = 1
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === "--count" || arg === "-n") {
+      const rawCount = args[index + 1]
+      const parsed = Number.parseInt(rawCount ?? "", 10)
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_SHELL_BATCH_SPAWN_AGENTS) {
+        return { ok: false, message: `--count must be between 1 and ${MAX_SHELL_BATCH_SPAWN_AGENTS}` }
+      }
+      count = parsed
+      index += 1
+      continue
+    }
+    if (!arg) {
+      continue
+    }
+    stripped.push(arg)
+  }
+  return { ok: true, args: stripped, count }
+}
+
+function batchAgentAlias(alias: string | undefined, index: number): string | null {
+  if (!alias) {
+    return null
+  }
+  return index === 0 ? alias : `${alias}-${index + 1}`
 }
 
 async function resolveMachineSpawnKernelRef(

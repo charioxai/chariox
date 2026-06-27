@@ -23,7 +23,9 @@ pub(crate) enum FocusProjectionRefresh {
 
 pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
     match request {
-        LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
+        LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::SpawnAgents(_) => {
+            FocusProjectionRefresh::AgentSpawn
+        }
         LocalDaemonRequest::AliasAgent(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
@@ -64,6 +66,12 @@ pub(crate) async fn apply_focus_projection_refresh(
                 focus_projection
                     .update(agent.session_id(), Some(agent.id()))
                     .await;
+            } else if let Ok(LocalDaemonResponse::AgentsSpawned { agents }) = result {
+                if let Some(agent) = agents.last() {
+                    focus_projection
+                        .update(agent.session_id(), Some(agent.id()))
+                        .await;
+                }
             }
         }
         FocusProjectionRefresh::SnapshotSession { session_id } => {
@@ -109,6 +117,10 @@ impl SessionProjectionRefresh {
                 LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
                     vec![agent.session_id().to_string()]
                 }
+                LocalDaemonResponse::AgentsSpawned { agents } => agents
+                    .iter()
+                    .map(|agent| agent.session_id().to_string())
+                    .collect(),
                 _ => Vec::new(),
             },
         }
@@ -123,6 +135,7 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
         | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::SpawnAgent(_)
+        | LocalDaemonRequest::SpawnAgents(_)
         | LocalDaemonRequest::AliasAgent(_)
         | LocalDaemonRequest::UpdateAgentConfig(_)
         | LocalDaemonRequest::UpdateAgentProfile(_)
@@ -315,13 +328,20 @@ mod tests {
     use super::*;
     use crate::local::{
         AliasAgentRequest, CompletePromptRequest, DestroyAgentRequest, SendTerminalInputRequest,
-        SpawnAgentRequest,
+        SpawnAgentRequest, SpawnAgentsRequest,
     };
 
     #[test]
     fn focus_projection_refresh_tracks_agent_identity_changes() {
         assert_eq!(
             focus_projection_refresh(&LocalDaemonRequest::SpawnAgent(spawn_request())),
+            FocusProjectionRefresh::AgentSpawn,
+        );
+        assert_eq!(
+            focus_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                session_id: "session-1".to_string(),
+                agents: Vec::new(),
+            })),
             FocusProjectionRefresh::AgentSpawn,
         );
         assert_eq!(
@@ -349,6 +369,13 @@ mod tests {
     fn session_projection_refresh_snapshots_agent_mutations_only() {
         assert_eq!(
             session_projection_refresh(&LocalDaemonRequest::SpawnAgent(spawn_request())),
+            SessionProjectionRefresh::SnapshotAgentResponse,
+        );
+        assert_eq!(
+            session_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                session_id: "session-1".to_string(),
+                agents: Vec::new(),
+            })),
             SessionProjectionRefresh::SnapshotAgentResponse,
         );
         assert_eq!(
