@@ -107,6 +107,35 @@ pub async fn wait_for_response(
     .expect("timed out waiting for kernel websocket response")
 }
 
+pub async fn wait_for_response_and_event(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    request_id: &str,
+    event_name: &str,
+) -> (Value, Value) {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        let mut response = None;
+        let mut event = None;
+        loop {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] == "response" && frame["request_id"] == request_id {
+                assert!(
+                    frame["error"].is_null(),
+                    "kernel websocket response should not contain an error: {frame}"
+                );
+                response = Some(frame);
+            } else if frame["type"] == "event" && frame["event"]["event"] == event_name {
+                event = Some(frame);
+            }
+            if let (Some(response), Some(event)) = (response.clone(), event.clone()) {
+                return (response, event);
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for kernel websocket response and event")
+}
+
 pub async fn wait_for_responses(
     socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     request_ids: &[&str],
@@ -134,6 +163,33 @@ pub async fn wait_for_responses(
     })
     .await
     .expect("timed out waiting for kernel websocket responses")
+}
+
+pub async fn wait_for_first_response(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    request_ids: &[&str],
+    deadline: Duration,
+) -> Value {
+    timeout(deadline, async {
+        loop {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] != "response" {
+                continue;
+            }
+            let Some(request_id) = frame["request_id"].as_str() else {
+                continue;
+            };
+            if request_ids.contains(&request_id) {
+                assert!(
+                    frame["error"].is_null(),
+                    "kernel websocket response should not contain an error: {frame}"
+                );
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for first kernel websocket response")
 }
 
 pub async fn wait_for_response_with_timeout(

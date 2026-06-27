@@ -51,8 +51,11 @@ pub(crate) fn sanitize_resume_state_for_launch(
     let agent_model = agent
         .model()
         .map(|model| normalize_resume_model_for_adapter(&request.adapter_key, model));
-    let model_or_variant_changed = agent_model.as_deref() != Some(requested_model.as_str())
-        || agent_variant != requested_variant;
+    let model_changed = agent_model
+        .as_deref()
+        .is_some_and(|model| model != requested_model);
+    let variant_changed = agent_variant != requested_variant;
+    let model_or_variant_changed = model_changed || variant_changed;
     if !model_or_variant_changed {
         return resume_state;
     }

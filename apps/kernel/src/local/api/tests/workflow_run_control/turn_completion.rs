@@ -154,7 +154,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         _ => panic!("unexpected local response"),
     };
     let active_prompt = invoke_session
-        .active_prompt()
+        .active_prompt_for_agent(first_agent.id())
         .expect("workflow invoke should create an active prompt");
     let active_mechanics = workflow_mechanics_text(active_prompt);
     assert!(active_prompt

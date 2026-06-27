@@ -737,9 +737,9 @@ mod tests {
                             session_id: slow_session_id,
                             attachment_id: slow_attachment_id,
                             command: "sh".to_string(),
-                            args: vec!["-c".to_string(), "sleep 0.5".to_string()],
+                            args: vec!["-c".to_string(), "sleep 2".to_string()],
                             working_directory: None,
-                            timeout_ms: Some(1_000),
+                            timeout_ms: Some(3_000),
                         },
                     ))
                 });
@@ -759,11 +759,23 @@ mod tests {
                         attachments: Vec::new(),
                     }))
                 });
-                let submit_response = tokio::time::timeout(Duration::from_millis(250), submit_task)
-                    .await
-                    .expect("prompt submit should not wait for slow shell")
-                    .expect("prompt submit task should join")
-                    .expect("prompt submit should succeed");
+                tokio::pin!(slow_task);
+                tokio::pin!(submit_task);
+                let submit_response = tokio::time::timeout(Duration::from_secs(3), async {
+                    tokio::select! {
+                        submit = &mut submit_task => submit
+                            .expect("prompt submit task should join")
+                            .expect("prompt submit should succeed"),
+                        shell = &mut slow_task => {
+                            let shell_response = shell
+                                .expect("slow shell task should join")
+                                .expect("slow shell request should succeed");
+                            panic!("prompt submit should finish before slow shell completes: {shell_response:?}");
+                        }
+                    }
+                })
+                .await
+                .expect("prompt submit should respond before slow shell completes");
                 assert!(matches!(
                     submit_response,
                     LocalDaemonResponse::PromptSubmitted { .. }

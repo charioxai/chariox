@@ -267,6 +267,12 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
                     .expect("session should still exist")
                     .active_prompt()
                     .is_none()
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_provider_run_id()
+                    == Some(reviewer_run.id())
         },
     );
 

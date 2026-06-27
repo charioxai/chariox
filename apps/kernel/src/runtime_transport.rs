@@ -894,33 +894,7 @@ async fn handle_incoming_payload(
                     ReplaySubscriptionResult::Complete | ReplaySubscriptionResult::NoCursor => None,
                 }
             };
-            {
-                let mut state = connection_state.lock().await;
-                if let Some(task) = state.watch_task.take() {
-                    task.abort();
-                }
-                if state.subscription.is_none() {
-                    runtime.transport_health.record_subscription_opened();
-                }
-                state.subscription = Some(KernelSubscription {
-                    session_id: session_id.clone(),
-                    attachment_id: attachment_id.clone(),
-                    subscription_scope: scope.clone(),
-                });
-                state.watch_task = Some(tokio::spawn(run_subscription_loop(
-                    Arc::clone(router),
-                    Arc::clone(runtime),
-                    outgoing_tx.clone(),
-                    close_tx.clone(),
-                    Arc::clone(close_requested),
-                    KernelSubscription {
-                        session_id: session_id.clone(),
-                        attachment_id: attachment_id.clone(),
-                        subscription_scope: scope,
-                    },
-                )));
-            }
-            let _ = try_send_outgoing_frame(
+            if !try_send_outgoing_frame(
                 outgoing_tx,
                 close_tx,
                 close_requested,
@@ -950,7 +924,35 @@ async fn handle_incoming_payload(
                 } else {
                     Some(&attachment_id)
                 },
-            );
+            ) {
+                return;
+            }
+            {
+                let mut state = connection_state.lock().await;
+                if let Some(task) = state.watch_task.take() {
+                    task.abort();
+                }
+                if state.subscription.is_none() {
+                    runtime.transport_health.record_subscription_opened();
+                }
+                state.subscription = Some(KernelSubscription {
+                    session_id: session_id.clone(),
+                    attachment_id: attachment_id.clone(),
+                    subscription_scope: scope.clone(),
+                });
+                state.watch_task = Some(tokio::spawn(run_subscription_loop(
+                    Arc::clone(router),
+                    Arc::clone(runtime),
+                    outgoing_tx.clone(),
+                    close_tx.clone(),
+                    Arc::clone(close_requested),
+                    KernelSubscription {
+                        session_id: session_id.clone(),
+                        attachment_id: attachment_id.clone(),
+                        subscription_scope: scope,
+                    },
+                )));
+            }
         }
         KernelIncomingFrame::Unsubscribe { request_id } => {
             crate::logging::info_with_fields(

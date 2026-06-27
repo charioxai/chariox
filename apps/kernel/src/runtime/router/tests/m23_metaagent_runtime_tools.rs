@@ -259,8 +259,15 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code() {
+#[test]
+fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code() {
+    run_large_stack_async_test(
+        "metaagent-runtime-tools-create-validate-apply-and-delete-workflow-code",
+        metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_inner,
+    );
+}
+
+async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_inner() {
     if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
         eprintln!("skipping meta workflow-code tool test because Node.js is unavailable: {error}");
         return;
@@ -970,8 +977,15 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     );
 }
 
-#[tokio::test]
-async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern() {
+#[test]
+fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern() {
+    run_large_stack_async_test(
+        "metaagent-workflow-code-applies-and-runs-canonical-routing-pattern",
+        metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inner,
+    );
+}
+
+async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inner() {
     if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
         eprintln!(
             "skipping meta workflow-code routing pattern test because Node.js is unavailable: {error}"
@@ -1543,8 +1557,15 @@ async fn metaagent_workflow_code_applies_canonical_fan_out_pattern() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding() {
+#[test]
+fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding() {
+    run_large_stack_async_test(
+        "metaagent-workflow-code-validate-rejects-unauthorized-existing-agent-binding",
+        metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding_inner,
+    );
+}
+
+async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding_inner() {
     if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
         eprintln!(
             "skipping meta workflow-code existing-agent validation test because Node.js is unavailable: {error}"
@@ -2594,8 +2615,15 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
     );
 }
 
-#[tokio::test]
-async fn local_metaagent_task_update_notifies_metaagent() {
+#[test]
+fn local_metaagent_task_update_notifies_metaagent() {
+    run_large_stack_async_test(
+        "local-metaagent-task-update-notifies-metaagent",
+        local_metaagent_task_update_notifies_metaagent_inner,
+    );
+}
+
+async fn local_metaagent_task_update_notifies_metaagent_inner() {
     let env = TestMetaRuntimeEnv::new("local-task-update-notify");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -7070,8 +7098,15 @@ async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_e
     );
 }
 
-#[tokio::test]
-async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own() {
+#[test]
+fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own() {
+    run_large_stack_async_test(
+        "metaagent-can-resolve-owned-regular-agent-interactions-but-not-its-own",
+        metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_inner,
+    );
+}
+
+async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_inner() {
     let env = TestMetaRuntimeEnv::new("interaction");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");

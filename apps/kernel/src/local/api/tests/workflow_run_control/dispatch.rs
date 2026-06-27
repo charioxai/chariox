@@ -294,6 +294,13 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
 
 #[test]
 fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node() {
+    run_with_large_test_stack(
+        "workflow-join-input-scheduling",
+        local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node_inner,
+    );
+}
+
+fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -927,4 +934,14 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
         retried_run.node_runs()[0].status(),
         WorkflowNodeRunStatus::Running
     );
+}
+
+fn run_with_large_test_stack(name: &'static str, test: fn()) {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(test)
+        .unwrap_or_else(|error| panic!("{name} test thread should spawn: {error}"))
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }

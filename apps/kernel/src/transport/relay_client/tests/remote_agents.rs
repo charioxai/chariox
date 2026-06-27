@@ -545,12 +545,11 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
 
-    let worker_attachments = {
-        let mut app = app_worker.lock().await;
-        RemoteLeaseRuntime::new(&mut app)
-            .leased_agent_active_prompt_attachments(&remote_leased_agent_id)
-            .expect("worker prompt attachments should be available")
-    };
+    let worker_attachments = wait_for_leased_agent_active_prompt_attachments(
+        app_worker.clone(),
+        &remote_leased_agent_id,
+    )
+    .await;
     assert_eq!(worker_attachments.len(), 1);
     let materialized = &worker_attachments[0];
     assert_eq!(materialized.filename(), Some("note.txt"));
@@ -574,6 +573,28 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+async fn wait_for_leased_agent_active_prompt_attachments(
+    app: Arc<Mutex<DaemonApp>>,
+    leased_agent_id: &str,
+) -> Vec<crate::session::PromptAttachment> {
+    for _ in 0..80 {
+        let attachments = {
+            let mut app = app.lock().await;
+            RemoteLeaseRuntime::new(&mut app)
+                .leased_agent_active_prompt_attachments(leased_agent_id)
+                .expect("worker prompt attachments should be available")
+        };
+        if !attachments.is_empty() {
+            return attachments;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "worker prompt attachments did not become available for leased agent `{leased_agent_id}`"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;

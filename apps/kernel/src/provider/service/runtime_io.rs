@@ -79,12 +79,12 @@ impl ProviderProcessService {
                 self.run_actor_mailbox
                     .insert_opencode_runtime(run_id.to_string(), binding.state);
                 let run_mut = self.get_run_mut(run_id)?;
-                run_mut.set_resume_state(binding.resume_state.clone());
+                let resume_state = run_mut
+                    .resume_state()
+                    .with_opencode_resume_state(&binding.resume_state);
+                run_mut.set_resume_state(resume_state.clone());
                 run_mut.set_provider_session_id(
-                    binding
-                        .resume_state
-                        .opencode_session_id()
-                        .map(str::to_string),
+                    resume_state.opencode_session_id().map(str::to_string),
                 );
                 self.apply_opencode_run_selection(run_id, binding.selection)?;
             }

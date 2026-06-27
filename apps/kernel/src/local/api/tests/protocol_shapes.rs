@@ -3157,8 +3157,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
         cancel_disabled_reason: None,
     };
 
-    let snapshot =
-        serde_json::to_value(control).expect("queued prompt control should serialize");
+    let snapshot = serde_json::to_value(control).expect("queued prompt control should serialize");
     assert_eq!(
         snapshot.pointer("/prompt_id"),
         Some(&serde_json::json!("prompt-queued"))
@@ -3208,8 +3207,7 @@ fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
         last_completed_turn: None,
     };
 
-    let snapshot =
-        serde_json::to_value(activity).expect("agent runtime activity should serialize");
+    let snapshot = serde_json::to_value(activity).expect("agent runtime activity should serialize");
     assert_eq!(
         snapshot.pointer("/active_prompt_count"),
         Some(&serde_json::json!(1))

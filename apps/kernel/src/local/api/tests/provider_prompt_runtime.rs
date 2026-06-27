@@ -557,43 +557,26 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         other => panic!("unexpected local response: {other:?}"),
     };
-    let provider_run = match harness
-        .dispatch(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: Some(agent.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: Some("default".to_string()),
-                structured_endpoint: None,
-                provider_session_id: None,
-                native_tui: true,
-            },
-        ))
+    let provider_run = harness.with_app_mut(|app| {
+        app.launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "managed-dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_variant(Some("default".to_string()))
+            .with_agent_id(agent.id())
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+        )
         .expect("provider launch should succeed")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run }
-        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
-        other => panic!("unexpected provider launch response: {other:?}"),
-    };
+    });
     assert!(
         provider_run.tracks_workspace_live_sync(),
         "tracked session should launch a tracked provider run"
     );
-    harness.with_app_mut(|app| {
-        if app
-            .providers()
-            .get_run(provider_run.id())
-            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
-        {
-            app.providers_mut()
-                .mark_run_running(provider_run.id())
-                .expect("provider run should be marked running");
-        }
-    });
-
     let prompt = match harness
         .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
@@ -662,6 +645,13 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
 
 #[test]
 fn queued_native_tui_turn_projects_undo_action_after_provider_launch() {
+    run_with_large_test_stack(
+        "queued-native-tui-turn-actions",
+        queued_native_tui_turn_projects_undo_action_after_provider_launch_inner,
+    );
+}
+
+fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
     let root = temp_git_repo("queued-native-tui-turn-actions");
     let proof_path = root.join("web-terminal-undo-proof.txt");
     let mut config = DaemonConfig::for_tests();
@@ -781,6 +771,13 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch() {
 
 #[test]
 fn undo_turn_request_restores_workspace_states_and_preserves_head() {
+    run_with_large_test_stack(
+        "turn-undo-restores-workspace",
+        undo_turn_request_restores_workspace_states_and_preserves_head_inner,
+    );
+}
+
+fn undo_turn_request_restores_workspace_states_and_preserves_head_inner() {
     let root = temp_git_repo("turn-undo-restores-workspace");
     fs::create_dir_all(root.join("src")).expect("src directory should be created");
     fs::write(root.join("src/existing.txt"), "existing before\n")
@@ -919,6 +916,13 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head() {
 
 #[test]
 fn undo_turn_request_allows_noop_turns_without_workspace_changes() {
+    run_with_large_test_stack(
+        "turn-undo-noop",
+        undo_turn_request_allows_noop_turns_without_workspace_changes_inner,
+    );
+}
+
+fn undo_turn_request_allows_noop_turns_without_workspace_changes_inner() {
     let root = temp_git_repo("turn-undo-noop");
     fs::write(root.join("README.md"), "seed\n").expect("seed file should be written");
     run_git(&root, &["add", "."]);
@@ -1042,6 +1046,13 @@ fn undo_turn_request_allows_noop_turns_without_workspace_changes() {
 
 #[test]
 fn undo_turn_request_conflict_fails_without_partial_writes() {
+    run_with_large_test_stack(
+        "turn-undo-conflict",
+        undo_turn_request_conflict_fails_without_partial_writes_inner,
+    );
+}
+
+fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
     let root = temp_git_repo("turn-undo-conflict");
     fs::create_dir_all(root.join("src")).expect("src directory should be created");
     fs::write(root.join("src/conflict.txt"), "before\n").expect("conflict seed should write");
@@ -1072,37 +1083,20 @@ fn undo_turn_request_conflict_fails_without_partial_writes() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         other => panic!("unexpected local response: {other:?}"),
     };
-    let provider_run = match harness
-        .dispatch(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: Some(agent.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: None,
-                structured_endpoint: None,
-                provider_session_id: None,
-                native_tui: true,
-            },
-        ))
+    let _provider_run = harness.with_app_mut(|app| {
+        app.launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "managed-dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent.id())
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+        )
         .expect("provider launch should succeed")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run }
-        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
-        other => panic!("unexpected provider launch response: {other:?}"),
-    };
-    harness.with_app_mut(|app| {
-        if app
-            .providers()
-            .get_run(provider_run.id())
-            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
-        {
-            app.providers_mut()
-                .mark_run_running(provider_run.id())
-                .expect("provider run should be marked running");
-        }
     });
 
     match harness
@@ -1280,37 +1274,22 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         other => panic!("unexpected local response: {other:?}"),
     };
-    let source_run = match harness
-        .dispatch(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: Some(source.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "model-source".to_string(),
-                variant: Some("high".to_string()),
-                structured_endpoint: None,
-                provider_session_id: None,
-                native_tui: false,
-            },
-        ))
-        .expect("source provider should launch")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run }
-        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
-        other => panic!("unexpected provider launch response: {other:?}"),
-    };
-    harness.with_app_mut(|app| {
-        if app
-            .providers()
-            .get_run(source_run.id())
-            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
-        {
-            app.providers_mut()
-                .mark_run_running(source_run.id())
-                .expect("source provider run should be running");
-        }
+    let source_run = harness.with_app_mut(|app| {
+        app.providers_mut()
+            .launch_run_detached(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model-source",
+                )
+                .with_agent_id(source.id())
+                .with_variant(Some("high".to_string()))
+                .with_execution_mode(AgentExecutionMode::Plan)
+                .with_permission_level(AgentPermissionLevel::Required),
+            )
+            .expect("source provider run should be available for fork setup")
     });
 
     match harness
@@ -1349,7 +1328,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         .dispatch(LocalDaemonRequest::ForkAgent(
             crate::local::ForkAgentRequest {
                 session_id: session.id().to_string(),
-                source_agent_ref: Some("source".to_string()),
+                source_agent_ref: Some(source.id().to_string()),
                 alias: Some("forked".to_string()),
             },
         ))
@@ -1568,6 +1547,13 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
 
 #[test]
 fn local_request_api_rejects_invalid_provider_adapter() {
+    run_with_large_test_stack(
+        "invalid-provider-adapter",
+        local_request_api_rejects_invalid_provider_adapter_inner,
+    );
+}
+
+fn local_request_api_rejects_invalid_provider_adapter_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -1836,6 +1822,16 @@ fn temp_git_repo(label: &str) -> std::path::PathBuf {
     run_git(&root, &["add", "README.md"]);
     run_git(&root, &["commit", "-m", "initial"]);
     root
+}
+
+fn run_with_large_test_stack(name: &'static str, test: fn()) {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(test)
+        .unwrap_or_else(|error| panic!("{name} test thread should spawn: {error}"))
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }
 
 fn run_git(cwd: &std::path::Path, args: &[&str]) {

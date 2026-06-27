@@ -459,7 +459,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
         &history_request,
     );
     let history_router = router.clone();
-    let history_task = tokio::spawn(async move {
+    let mut history_task = tokio::spawn(async move {
         history_router
             .dispatch(history_command, history_request)
             .await
@@ -479,13 +479,22 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-during-history", None, None, &prompt_request);
-    let prompt_response = timeout(
-        Duration::from_millis(75),
-        router.dispatch(prompt_command, prompt_request),
-    )
+    let prompt_dispatch = router.dispatch(prompt_command, prompt_request);
+    tokio::pin!(prompt_dispatch);
+    let prompt_response = timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            prompt_response = &mut prompt_dispatch => {
+                prompt_response.expect("prompt submit should succeed")
+            }
+            history_response = &mut history_task => {
+                panic!(
+                    "prompt submit waited behind slow history; history resolved first: {history_response:?}"
+                );
+            }
+        }
+    })
     .await
-    .expect("prompt submit should not wait behind slow history")
-    .expect("prompt submit should succeed");
+    .expect("prompt submit should not stall while history loads");
     assert!(matches!(
         prompt_response,
         LocalDaemonResponse::PromptSubmitted { .. }

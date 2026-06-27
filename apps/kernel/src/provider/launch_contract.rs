@@ -96,6 +96,14 @@ impl ProviderResumeState {
             claude_session_id: None,
         }
     }
+
+    pub fn with_opencode_resume_state(&self, opencode_resume_state: &Self) -> Self {
+        Self {
+            opencode_session_id: opencode_resume_state.opencode_session_id.clone(),
+            codex_thread_id: self.codex_thread_id.clone(),
+            claude_session_id: self.claude_session_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

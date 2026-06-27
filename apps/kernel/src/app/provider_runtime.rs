@@ -455,6 +455,30 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_resume_state_keeps_resume_when_agent_model_is_unknown() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let resume_state = ProviderResumeState::from_codex_thread_id("thread-1");
+        agent.set_provider_resume_state(resume_state.clone());
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+
+        assert_eq!(
+            sanitize_resume_state_for_launch(&request, &agent),
+            resume_state
+        );
+    }
+
+    #[test]
     fn sanitize_resume_state_clears_opencode_resume_when_model_changes() {
         let mut agent = AgentInstance::new(
             "agent-1",

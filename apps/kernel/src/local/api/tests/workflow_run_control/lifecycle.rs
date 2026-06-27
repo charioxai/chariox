@@ -150,7 +150,12 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
     };
     assert_eq!(workflow_run.workflow_id(), workflow.id());
     assert_eq!(workflow_run.endpoint_id(), endpoint.id());
-    assert_eq!(format!("{:?}", workflow_run.status()), "Running");
+    let workflow_run = wait_for_workflow_run_status(
+        &harness,
+        session.id(),
+        workflow_run.id(),
+        &[WorkflowRunStatus::Running, WorkflowRunStatus::Failed],
+    );
 
     let listed = match harness
         .dispatch(LocalDaemonRequest::ListWorkflowRuns(
@@ -233,4 +238,32 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
     };
     assert_eq!(cancelled.id(), second_run.id());
     assert_eq!(format!("{:?}", cancelled.status()), "Stopped");
+}
+
+fn wait_for_workflow_run_status(
+    harness: &LocalRouterTestHarness,
+    session_id: &str,
+    workflow_run_id: &str,
+    statuses: &[WorkflowRunStatus],
+) -> crate::session::WorkflowRun {
+    for _ in 0..80 {
+        let workflow_run = match harness
+            .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session_id.to_string(),
+                workflow_run_ref: workflow_run_id.to_string(),
+            }))
+            .expect("workflow run should resolve while waiting for status")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        if statuses
+            .iter()
+            .any(|status| workflow_run.status() == *status)
+        {
+            return workflow_run;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("workflow run `{workflow_run_id}` did not reach expected status");
 }

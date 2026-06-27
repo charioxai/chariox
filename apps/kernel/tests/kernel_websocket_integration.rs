@@ -238,17 +238,20 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
         Some(session_id.as_str())
     );
 
-    let _delete_response = send_request(
+    send_frame(
         &mut socket,
-        "delete-session",
-        LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
-            session_ref: session_id,
-            workspace_id: Some("workspace-kernel-ws".to_string()),
+        json!({
+            "type": "request",
+            "request_id": "delete-session",
+            "request": LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: session_id,
+                workspace_id: Some("workspace-kernel-ws".to_string()),
+            }),
         }),
     )
     .await;
-
-    let unavailable_event = wait_for_event(&mut socket, "session_unavailable").await;
+    let (_delete_response, unavailable_event) =
+        wait_for_response_and_event(&mut socket, "delete-session", "session_unavailable").await;
     assert_eq!(
         unavailable_event["event"]["message"].as_str(),
         Some("Current session is no longer available.")
@@ -393,17 +396,26 @@ async fn kernel_websocket_streams_workflow_run_updates() {
         .as_str()
         .expect("endpoint id should be present")
         .to_string();
-    let invoke_response = send_request(
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "invoke-workflow-endpoint",
+            "request": LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
+                session_id: session_id.clone(),
+                workflow_ref: workflow_id.clone(),
+                endpoint_ref: endpoint_id,
+                prompt: Some("stream workflow run update".to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            }),
+        }),
+    )
+    .await;
+    let (invoke_response, run_update_event) = wait_for_response_and_event(
         &mut socket,
         "invoke-workflow-endpoint",
-        LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
-            session_id: session_id.clone(),
-            workflow_ref: workflow_id.clone(),
-            endpoint_ref: endpoint_id,
-            prompt: Some("stream workflow run update".to_string()),
-            queue_ref: None,
-            publication_invocation: None,
-        }),
+        "workflow_run_updated",
     )
     .await;
     let expected_run_id = response_variant(&invoke_response, "WorkflowRunInvoked")["workflow_run"]
@@ -412,7 +424,6 @@ async fn kernel_websocket_streams_workflow_run_updates() {
         .expect("workflow run id should be present")
         .to_string();
 
-    let run_update_event = wait_for_event(&mut socket, "workflow_run_updated").await;
     assert_eq!(
         run_update_event["event"]["session_id"].as_str(),
         Some(session_id.as_str())
@@ -439,8 +450,8 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = unused_tcp_port();
-    config.kernel_websocket_queue_capacity = 4;
-    config.kernel_websocket_write_delay_ms = 200;
+    config.kernel_websocket_queue_capacity = 2;
+    config.kernel_websocket_write_delay_ms = 400;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -498,7 +509,7 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
     .await;
     let _subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
 
-    for index in 0..12 {
+    for index in 0..64 {
         send_frame(
             &mut socket,
             json!({

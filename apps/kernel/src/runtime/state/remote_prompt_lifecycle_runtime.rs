@@ -21,7 +21,7 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        match self
+        let cancellation_response = self
             .with_app_side_effect(|app| {
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
@@ -37,19 +37,38 @@ impl KernelRuntimeState {
                     ),
                 )
             })
-            .await?
-        {
-            RelayPeerResponse::LeasedPromptCancelled { .. } => {
+            .await;
+        match cancellation_response {
+            Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {
                 Ok(Some(owned.begin_remote_prompt_cancellation(
                     session_id,
                     target_agent_id,
                     attachment_id,
                 )?))
             }
-            other => Err(DaemonError::LocalTransport {
+            Ok(other) => Err(DaemonError::LocalTransport {
                 operation: "cancel remote prompt",
                 message: format!("unexpected remote prompt cancellation response: {other:?}"),
             }),
+            Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt cancellation already settled on worker",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": target_agent_id,
+                        "worker_kernel_id": remote_execution.worker_kernel_id,
+                        "leased_agent_id": remote_execution.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                Ok(Some(owned.begin_remote_prompt_cancellation(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                )?))
+            }
+            Err(error) => Err(error),
         }
     }
 

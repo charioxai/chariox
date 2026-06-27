@@ -25,7 +25,7 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = unused_tcp_port();
-    config.operational_history_read_delay_ms = 500;
+    config.operational_history_read_delay_ms = 2_000;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -126,15 +126,24 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
         }),
     )
     .await;
-    let submit_response =
-        wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
-            .await;
+    let submit_response = wait_for_first_response(
+        &mut socket,
+        &["submit-prompt", "slow-history"],
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        submit_response["request_id"].as_str(),
+        Some("submit-prompt"),
+        "prompt should respond before the delayed history read completes: {submit_response}"
+    );
     assert!(
         response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
         "prompt should start before the delayed history read completes: {submit_response}"
     );
 
-    let history_response = wait_for_response(&mut socket, "slow-history").await;
+    let history_response =
+        wait_for_response_with_timeout(&mut socket, "slow-history", Duration::from_secs(10)).await;
     assert!(
         response_variant(&history_response, "SessionHistoryOutline")["agents"].is_array(),
         "history response should still complete: {history_response}"
@@ -153,7 +162,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = unused_tcp_port();
-    config.provider_catalog_read_delay_ms = 500;
+    config.provider_catalog_read_delay_ms = 2_000;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -249,15 +258,28 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         }),
     )
     .await;
-    let submit_response =
-        wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
-            .await;
+    let submit_response = wait_for_first_response(
+        &mut socket,
+        &["submit-prompt", "slow-provider-catalog"],
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        submit_response["request_id"].as_str(),
+        Some("submit-prompt"),
+        "prompt should respond before the delayed provider catalog completes: {submit_response}"
+    );
     assert!(
         response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
         "prompt should start before the delayed provider catalog completes: {submit_response}"
     );
 
-    let _catalog_response = wait_for_request_completion(&mut socket, "slow-provider-catalog").await;
+    let _catalog_response = wait_for_response_with_timeout(
+        &mut socket,
+        "slow-provider-catalog",
+        Duration::from_secs(10),
+    )
+    .await;
 
     let _ = shutdown_tx.send(());
     server
@@ -416,7 +438,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = unused_tcp_port();
-    config.provider_process_list_delay_ms = 500;
+    config.provider_process_list_delay_ms = 2_000;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -514,16 +536,28 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
         }),
     )
     .await;
-    let submit_response =
-        wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
-            .await;
+    let submit_response = wait_for_first_response(
+        &mut socket,
+        &["submit-prompt", "slow-provider-process-list"],
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        submit_response["request_id"].as_str(),
+        Some("submit-prompt"),
+        "prompt should respond before the delayed provider process list completes: {submit_response}"
+    );
     assert!(
         response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
         "prompt should start before the delayed provider process list completes: {submit_response}"
     );
 
-    let _process_response =
-        wait_for_request_completion(&mut socket, "slow-provider-process-list").await;
+    let _process_response = wait_for_response_with_timeout(
+        &mut socket,
+        "slow-provider-process-list",
+        Duration::from_secs(10),
+    )
+    .await;
 
     let _ = shutdown_tx.send(());
     server
@@ -1285,9 +1319,9 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
                 session_id: session_id.clone(),
                 attachment_id: attachment_id.clone(),
                 command: "sh".to_string(),
-                args: vec!["-c".to_string(), "sleep 0.5".to_string()],
+                args: vec!["-c".to_string(), "sleep 2".to_string()],
                 working_directory: None,
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(3_000),
             }),
         }),
     )
@@ -1309,15 +1343,24 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         }),
     )
     .await;
-    let submit_response =
-        wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
-            .await;
+    let submit_response = wait_for_first_response(
+        &mut socket,
+        &["submit-prompt", "slow-shell"],
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        submit_response["request_id"].as_str(),
+        Some("submit-prompt"),
+        "prompt should respond before the shell capability completes: {submit_response}"
+    );
     assert!(
         response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
         "prompt should start before the shell capability completes: {submit_response}"
     );
 
-    let shell_response = wait_for_response(&mut socket, "slow-shell").await;
+    let shell_response =
+        wait_for_response_with_timeout(&mut socket, "slow-shell", Duration::from_secs(10)).await;
     assert!(
         response_variant(&shell_response, "ShellCommandCompleted")["result"].is_object(),
         "shell capability should still complete: {shell_response}"

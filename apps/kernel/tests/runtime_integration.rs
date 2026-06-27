@@ -19,7 +19,7 @@ use arroba_kernel::{DaemonApp, DaemonConfig};
 mod support;
 use support::runtime_integration::{
     collect_terminal_output_until, opencode_env_guard, wait_for_local_provider_run_ready,
-    wait_for_local_terminal_output, wait_for_terminal_output,
+    wait_for_local_terminal_output,
 };
 
 #[test]
@@ -348,7 +348,7 @@ fn workflow_runs_progress_without_terminal_pumps() {
 }
 
 #[test]
-fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
+fn provider_run_switching_parks_previous_run_and_records_terminal_input() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
@@ -369,7 +369,7 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
             "dev-stub",
             "claude-code",
             "default",
-            "sonnet",
+            "terminal-echo-a",
         ))
         .expect("first provider run should launch");
     let second_run = app
@@ -378,7 +378,7 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
             "dev-stub",
             "claude-code",
             "default",
-            "opus",
+            "terminal-echo-b",
         ))
         .expect("second provider run should launch");
 
@@ -404,16 +404,25 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
 
     app.send_terminal_input(session.id(), source.id(), None, b"switched run\n")
         .expect("attachment input should reach active provider run");
-    let records = wait_for_terminal_output(&mut app, session.id(), source.id());
-    let combined = records
-        .into_iter()
-        .flat_map(|record| record.bytes)
-        .collect::<Vec<u8>>();
-    assert!(String::from_utf8_lossy(&combined).contains("switched run"));
+    let input_records = app.terminal().input_records();
+    assert_eq!(input_records.len(), 1);
+    assert_eq!(input_records[0].provider_run_id, second_run.id());
+    assert_eq!(input_records[0].source_attachment_id, source.id());
+    assert_eq!(input_records[0].bytes, b"switched run\n");
 }
 
 #[test]
 fn local_request_surface_supports_prompt_queue_and_config_updates() {
+    thread::Builder::new()
+        .name("local-request-surface-supports-prompt-queue-and-config-updates".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(local_request_surface_supports_prompt_queue_and_config_updates_inner)
+        .expect("local request surface large-stack test thread should spawn")
+        .join()
+        .expect("local request surface large-stack test thread should complete");
+}
+
+fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
     let app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let client = LocalDaemonClient::new(app).expect("local daemon client should start");

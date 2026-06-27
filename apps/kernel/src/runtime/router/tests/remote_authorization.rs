@@ -298,8 +298,15 @@ async fn remote_session_list_is_filtered_to_memberships() {
     }
 }
 
-#[tokio::test]
-async fn remote_owned_session_objects_record_caller_user() {
+#[test]
+fn remote_owned_session_objects_record_caller_user() {
+    run_remote_authorization_large_stack_test(
+        "remote-owned-session-objects-record-caller-user",
+        remote_owned_session_objects_record_caller_user_inner,
+    );
+}
+
+async fn remote_owned_session_objects_record_caller_user_inner() {
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
         .sessions_mut()

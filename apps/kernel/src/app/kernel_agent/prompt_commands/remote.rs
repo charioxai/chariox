@@ -78,6 +78,18 @@ fn remote_git_turn_context_for_prompt(
     }
 }
 
+fn remote_prompt_error_is_already_settled(error: &DaemonError) -> bool {
+    match error {
+        DaemonError::NoActivePrompt { .. } => true,
+        DaemonError::LocalTransport { message, .. } => {
+            message.contains("no active prompt")
+                || message.contains("NoActivePrompt")
+                || message.contains("no_active_prompt")
+        }
+        _ => false,
+    }
+}
+
 impl<'a> KernelAgentService<'a> {
     pub(super) fn cancel_remote_active_prompt(
         &mut self,
@@ -90,26 +102,41 @@ impl<'a> KernelAgentService<'a> {
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
-        match self
-            .app
-            .block_on_relay_future(send_peer_request_via_temporary_connection(
-                &relay_config,
-                ClientTarget {
-                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                    daemon_alias: None,
-                },
-                RelayPeerRequest::CancelLeasedPrompt {
-                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                },
-            ))? {
-            RelayPeerResponse::LeasedPromptCancelled { .. } => {}
-            other => {
+        let cancellation_response =
+            self.app
+                .block_on_relay_future(send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    ClientTarget {
+                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::CancelLeasedPrompt {
+                        leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    },
+                ));
+        match cancellation_response {
+            Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {}
+            Ok(other) => {
                 return Err(DaemonError::LocalTransport {
                     operation: "cancel remote prompt",
                     message: format!("unexpected remote prompt cancellation response: {other:?}"),
                 });
             }
-        }
+            Err(error) if remote_prompt_error_is_already_settled(&error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt cancellation already settled on worker",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "worker_kernel_id": remote_execution.worker_kernel_id,
+                        "leased_agent_id": remote_execution.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+            Err(error) => return Err(error),
+        };
         let prompt = self
             .app
             .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
@@ -203,9 +230,8 @@ impl<'a> KernelAgentService<'a> {
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
-        let remote_provider_run_id =
-            match self
-                .app
+        let completion_response =
+            self.app
                 .block_on_relay_future(send_peer_request_via_temporary_connection(
                     &relay_config,
                     ClientTarget {
@@ -215,7 +241,9 @@ impl<'a> KernelAgentService<'a> {
                     RelayPeerRequest::CompleteLeasedPrompt {
                         leased_agent_id: remote_execution.leased_agent_id.clone(),
                     },
-                ))? {
+                ));
+        let remote_provider_run_id = match completion_response {
+            Ok(response) => match response {
                 RelayPeerResponse::LeasedPromptCompleted {
                     provider_run_id,
                     git_observations,
@@ -240,7 +268,23 @@ impl<'a> KernelAgentService<'a> {
                         message: format!("unexpected remote prompt completion response: {other:?}"),
                     });
                 }
-            };
+            },
+            Err(error) if remote_prompt_error_is_already_settled(&error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt completion already settled on worker",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "worker_kernel_id": remote_execution.worker_kernel_id,
+                        "leased_agent_id": remote_execution.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let completed = self
             .app
             .prompt_owner_complete_active_prompt_only(&session_id, &agent_id)?;

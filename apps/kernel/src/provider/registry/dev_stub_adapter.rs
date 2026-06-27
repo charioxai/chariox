@@ -27,7 +27,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let pty_args = dev_stub_pty_args(request.model.as_str());
         let pty_env = dev_stub_pty_env(request);
-        let pty_target = if is_dev_stub_workflow_drill_model(request.model.as_str()) {
+        let pty_target = if is_dev_stub_unique_pty_model(request.model.as_str()) {
             format!(
                 "stub-pty:{}:{}",
                 request.session_id,
@@ -134,6 +134,9 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
         "metaagent-workflow-code-author" => Some(dev_stub_metaagent_workflow_code_author_script()),
+        "terminal-echo-a" | "terminal-echo-b" => Some(dev_stub_terminal_echo_script()),
+        "model-source" | "workflow-test-idle" => Some(dev_stub_native_tui_idle_script()),
+        "native-tui-idle" => Some(dev_stub_native_tui_idle_script()),
         _ => None,
     }
     .unwrap_or_else(|| "cat".to_string());
@@ -156,6 +159,20 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
             | "large-output-drill"
             | "metaagent-workflow-code-author"
     )
+}
+
+fn is_dev_stub_unique_pty_model(model: &str) -> bool {
+    is_dev_stub_workflow_drill_model(model)
+        || matches!(model, "terminal-echo-a" | "terminal-echo-b")
+}
+
+fn dev_stub_terminal_echo_script() -> String {
+    "while IFS= read -r line; do printf '%s\\n' \"$line\"; done".to_string()
+}
+
+fn dev_stub_native_tui_idle_script() -> String {
+    "stty -echo 2>/dev/null || true; (sleep 60; kill $$ 2>/dev/null) & while :; do IFS= read -r _line || sleep 1; done"
+        .to_string()
 }
 
 fn dev_stub_workflow_html_final_script() -> String {
