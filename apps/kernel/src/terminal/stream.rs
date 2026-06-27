@@ -652,6 +652,7 @@ impl TerminalStreamService {
         }
         let mut records = Vec::with_capacity(outputs.len());
         let mut changed_keys = BTreeSet::new();
+        let mut last_single_recipient_key: Option<(String, String)> = None;
         for output in outputs {
             let record = TerminalOutputRecord {
                 session_id: output.session_id,
@@ -665,8 +666,17 @@ impl TerminalStreamService {
                 recipient_attachment_ids: output.recipient_attachment_ids,
                 bytes: output.bytes,
             };
-            for attachment_id in &record.recipient_attachment_ids {
-                changed_keys.insert((record.session_id.clone(), attachment_id.clone()));
+            if let [attachment_id] = record.recipient_attachment_ids.as_slice() {
+                let key = (record.session_id.clone(), attachment_id.clone());
+                if last_single_recipient_key.as_ref() != Some(&key) {
+                    changed_keys.insert(key.clone());
+                    last_single_recipient_key = Some(key);
+                }
+            } else {
+                last_single_recipient_key = None;
+                for attachment_id in &record.recipient_attachment_ids {
+                    changed_keys.insert((record.session_id.clone(), attachment_id.clone()));
+                }
             }
 
             if !self.try_coalesce_output_record(&record) {
@@ -1540,6 +1550,36 @@ mod tests {
         assert_eq!(drained[1].bytes, b"two");
         assert!(terminal.output_records().is_empty());
         assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+    }
+
+    #[test]
+    fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
+        let mut terminal = TerminalStreamService::new();
+        let records = terminal.fan_out_outputs(
+            (0..64)
+                .map(|index| TerminalOutputAppend {
+                    session_id: "session-1".to_string(),
+                    provider_run_id: format!("provider-run-{index}"),
+                    agent_id: Some(format!("agent-{index}")),
+                    kind: TerminalOutputKind::ProviderTool,
+                    merge_key: Some(format!("chunk-{index}")),
+                    recipient_attachment_ids: vec!["attachment-1".to_string()],
+                    bytes: format!("chunk-{index}").into_bytes(),
+                })
+                .collect(),
+        );
+
+        assert_eq!(records.records.len(), 64);
+        assert_eq!(records.changed_keys.len(), 1);
+        assert!(records
+            .changed_keys
+            .contains(&("session-1".to_string(), "attachment-1".to_string())));
+
+        let drained = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(drained.len(), 64);
+        assert_eq!(drained[0].bytes, b"chunk-0");
+        assert_eq!(drained[63].bytes, b"chunk-63");
+        assert!(terminal.output_records().is_empty());
     }
 
     #[test]
