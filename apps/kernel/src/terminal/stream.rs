@@ -662,8 +662,7 @@ impl TerminalStreamService {
                 self.pop_pending_output_queue_front(&key);
                 continue;
             };
-            let scoped = scoped_output_record(record, attachment_id);
-            let scoped_json_bytes = terminal_output_record_json_bytes(&scoped);
+            let scoped_json_bytes = terminal_output_record_scoped_json_bytes(record, attachment_id);
             let candidate_json_bytes = if drained.is_empty() {
                 2_usize.saturating_add(scoped_json_bytes)
             } else {
@@ -674,6 +673,7 @@ impl TerminalStreamService {
             if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
                 break;
             }
+            let scoped = scoped_output_record(record, attachment_id);
             self.pop_pending_output_queue_front(&key);
             drained_json_bytes = candidate_json_bytes;
             drained.push(scoped);
@@ -939,10 +939,18 @@ fn scoped_output_record(
     record: &TerminalOutputRecord,
     attachment_id: &str,
 ) -> TerminalOutputRecord {
-    let mut scoped = record.clone();
-    scoped.recipient_attachment_ids = vec![attachment_id.to_string()];
-    scoped.pending_recipient_attachment_ids = vec![attachment_id.to_string()];
-    scoped
+    TerminalOutputRecord {
+        session_id: record.session_id.clone(),
+        provider_run_id: record.provider_run_id.clone(),
+        agent_id: record.agent_id.clone(),
+        prompt_id: record.prompt_id.clone(),
+        source_attachment_id: record.source_attachment_id.clone(),
+        kind: record.kind.clone(),
+        merge_key: record.merge_key.clone(),
+        recipient_attachment_ids: vec![attachment_id.to_string()],
+        pending_recipient_attachment_ids: vec![attachment_id.to_string()],
+        bytes: record.bytes.clone(),
+    }
 }
 
 fn scoped_notice_record(record: &RuntimeNoticeRecord, attachment_id: &str) -> RuntimeNoticeRecord {
@@ -964,15 +972,147 @@ fn scoped_completion_record(
     scoped
 }
 
-fn terminal_output_record_json_bytes(record: &TerminalOutputRecord) -> usize {
-    serde_json::to_vec(record)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX)
+fn terminal_output_record_scoped_json_bytes(
+    record: &TerminalOutputRecord,
+    attachment_id: &str,
+) -> usize {
+    let mut total = 2_usize;
+    let mut field_count = 0_usize;
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "session_id",
+        json_string_len(&record.session_id),
+    );
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "provider_run_id",
+        json_string_len(&record.provider_run_id),
+    );
+    if let Some(agent_id) = &record.agent_id {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "agent_id",
+            json_string_len(agent_id),
+        );
+    }
+    if let Some(prompt_id) = &record.prompt_id {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "prompt_id",
+            json_string_len(prompt_id),
+        );
+    }
+    if let Some(source_attachment_id) = &record.source_attachment_id {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "source_attachment_id",
+            json_string_len(source_attachment_id),
+        );
+    }
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "kind",
+        json_string_len(terminal_output_kind_json(&record.kind)),
+    );
+    if let Some(merge_key) = &record.merge_key {
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "merge_key",
+            json_string_len(merge_key),
+        );
+    }
+    let scoped_attachment_array_len = json_string_array_len(std::slice::from_ref(&attachment_id));
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "recipient_attachment_ids",
+        scoped_attachment_array_len,
+    );
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "pending_recipient_attachment_ids",
+        scoped_attachment_array_len,
+    );
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "bytes",
+        json_byte_array_len(&record.bytes),
+    );
+    total
+}
+
+fn add_json_field(total: &mut usize, field_count: &mut usize, field: &str, value_len: usize) {
+    if *field_count > 0 {
+        *total = total.saturating_add(1);
+    }
+    *field_count = field_count.saturating_add(1);
+    *total = total
+        .saturating_add(json_string_len(field))
+        .saturating_add(1)
+        .saturating_add(value_len);
+}
+
+fn terminal_output_kind_json(kind: &TerminalOutputKind) -> &'static str {
+    match kind {
+        TerminalOutputKind::ProviderOutput => "provider_output",
+        TerminalOutputKind::PromptEcho => "prompt_echo",
+        TerminalOutputKind::ProviderReasoning => "provider_reasoning",
+        TerminalOutputKind::ProviderTool => "provider_tool",
+        TerminalOutputKind::ProviderError => "provider_error",
+        TerminalOutputKind::ProviderStatus => "provider_status",
+    }
+}
+
+fn json_string_array_len(values: &[&str]) -> usize {
+    let commas = values.len().saturating_sub(1);
+    2_usize
+        .saturating_add(commas)
+        .saturating_add(values.iter().fold(0_usize, |total, value| {
+            total.saturating_add(json_string_len(value))
+        }))
+}
+
+fn json_string_len(value: &str) -> usize {
+    value.chars().fold(2_usize, |total, character| {
+        total.saturating_add(match character {
+            '"' | '\\' => 2,
+            '\u{08}' | '\u{0c}' | '\n' | '\r' | '\t' => 2,
+            character if character <= '\u{1f}' => 6,
+            character => character.len_utf8(),
+        })
+    })
+}
+
+fn json_byte_array_len(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 2;
+    }
+    2_usize
+        .saturating_add(bytes.len().saturating_sub(1))
+        .saturating_add(bytes.iter().fold(0_usize, |total, byte| {
+            total.saturating_add(match byte {
+                0..=9 => 1,
+                10..=99 => 2,
+                _ => 3,
+            })
+        }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalOutputKind, TerminalStreamService, TerminalStreamStore};
+    use super::{
+        scoped_output_record, terminal_output_record_scoped_json_bytes, TerminalOutputKind,
+        TerminalOutputRecord, TerminalStreamService, TerminalStreamStore,
+    };
 
     #[test]
     fn records_terminal_input_and_fans_out_output() {
@@ -1095,6 +1235,36 @@ mod tests {
             Some(expected_next_chunk.as_str())
         );
         assert!(terminal.output_records().len() < 4);
+    }
+
+    #[test]
+    fn output_drain_size_estimator_bounds_scoped_json() {
+        let record = TerminalOutputRecord {
+            session_id: "session-\n1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            agent_id: Some("agent-\"1\"".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            source_attachment_id: Some("attachment-source".to_string()),
+            kind: TerminalOutputKind::ProviderReasoning,
+            merge_key: Some("merge\\key".to_string()),
+            recipient_attachment_ids: vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            pending_recipient_attachment_ids: vec![
+                "attachment-1".to_string(),
+                "attachment-2".to_string(),
+            ],
+            bytes: vec![0, 9, 10, 99, 100, 255],
+        };
+
+        let scoped = scoped_output_record(&record, "attachment-2");
+        let actual_len = serde_json::to_vec(&scoped)
+            .expect("scoped terminal output should serialize")
+            .len();
+        let estimated_len = terminal_output_record_scoped_json_bytes(&record, "attachment-2");
+
+        assert!(
+            estimated_len >= actual_len,
+            "estimated scoped JSON length {estimated_len} should bound actual length {actual_len}"
+        );
     }
 
     #[test]
