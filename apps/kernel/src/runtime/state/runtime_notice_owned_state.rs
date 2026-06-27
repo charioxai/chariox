@@ -57,8 +57,8 @@ impl KernelRuntimeOwnedState {
                     "error": error.to_string(),
                 }),
             );
-        } else {
-            self.history_projection.append(entry);
         }
+        self.append_operational_history_entry(&entry, None, None, None);
+        self.history_projection.append(entry);
     }
 }

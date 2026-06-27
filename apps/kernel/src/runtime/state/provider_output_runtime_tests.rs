@@ -299,6 +299,58 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
 }
 
 #[tokio::test]
+async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let legacy_history_root = config.session_history_root.clone();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-notice-legacy-history-fail",
+            "worktree-owned-notice-legacy-history-fail",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+
+    let _ = fs::remove_dir_all(&legacy_history_root);
+    fs::write(&legacy_history_root, b"not a directory")
+        .expect("fixture should block legacy history writes");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.record_notice(
+        session.id(),
+        Some(run.id()),
+        Vec::new(),
+        "owned notice reload me",
+    );
+
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].kind,
+        crate::history::SessionHistoryEntryKind::Notice
+    );
+    assert_eq!(entries[0].text.trim_end(), "owned notice reload me");
+
+    let _ = fs::remove_file(&legacy_history_root);
+}
+
+#[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
