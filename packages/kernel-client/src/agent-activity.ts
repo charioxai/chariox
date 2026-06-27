@@ -11,7 +11,9 @@ export function agentRuntimeActivityIsBusy(
   return Boolean(activity && (
     activity.busy === true
     || activity.status === "working"
-    || activity.prompt_status !== "none"
+    || (activity.prompt_status !== undefined
+      && activity.prompt_status !== null
+      && activity.prompt_status !== "none")
     || activity.active_turn
   ))
 }
