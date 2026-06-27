@@ -1013,6 +1013,7 @@ export type SessionHistoryOutlineTurn = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   started_at_ms: number
+  completed_at_ms?: number | null
   user_prompt: SessionHistoryPageEntry
   entries: SessionHistoryPageEntry[]
   summary?: SessionHistoryPageEntry | null

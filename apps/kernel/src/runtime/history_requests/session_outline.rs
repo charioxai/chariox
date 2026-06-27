@@ -266,6 +266,8 @@ fn outline_turn_from_events(
 ) -> Option<SessionHistoryOutlineTurn> {
     let user_prompt = page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
+    let prompt_origin = outline_turn_prompt_origin(prompt);
+    let completed_at_ms = outline_turn_completed_at_ms(prompt, &events, prompt_origin);
     let summary_sequence = events
         .iter()
         .rev()
@@ -301,7 +303,7 @@ fn outline_turn_from_events(
             .or_else(|| prompt.prompt_id.clone())
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
-        prompt_origin: outline_turn_prompt_origin(prompt),
+        prompt_origin,
         external_provider: external_identity
             .as_ref()
             .map(|identity| identity.provider.clone()),
@@ -310,11 +312,39 @@ fn outline_turn_from_events(
             .map(|identity| identity.provider_session_id.clone()),
         external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
+        completed_at_ms,
         user_prompt,
         entries,
         summary,
         blobs,
     })
+}
+
+fn outline_turn_completed_at_ms(
+    prompt: &HistoryEvent,
+    events: &[HistoryEvent],
+    prompt_origin: PromptOrigin,
+) -> Option<u64> {
+    if prompt_origin == PromptOrigin::External {
+        return events
+            .iter()
+            .filter_map(|event| {
+                let entry = event.to_session_history_entry()?;
+                let observation = entry.external_observation.as_ref()?;
+                observation
+                    .settles_active_prompt
+                    .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
+            })
+            .max();
+    }
+    Some(
+        events
+            .iter()
+            .filter(|event| has_content(event))
+            .map(|event| event.timestamp_ms)
+            .max()
+            .unwrap_or(prompt.timestamp_ms),
+    )
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
@@ -635,6 +665,7 @@ mod tests {
             Some("thread-1")
         );
         assert_eq!(turn.external_provider_turn_id.as_deref(), Some("done-1"));
+        assert_eq!(turn.completed_at_ms, Some(15));
         assert_eq!(turn.entries.len(), 2);
         assert_eq!(
             turn.entries[0].entry.kind,
@@ -667,6 +698,99 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
         );
+    }
+
+    #[test]
+    fn outline_external_turn_without_settlement_stays_incomplete() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external prompt",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let external_assistant = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "partial output",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_100),
+        );
+        let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+        let assistant = HistoryEvent::transcript(11, &external_assistant, context);
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant])
+            .expect("external active turn should be outlined");
+
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.completed_at_ms, None);
+        assert_eq!(
+            turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+            Some("partial output")
+        );
+    }
+
+    #[test]
+    fn outline_external_turn_uses_settlement_observed_time_as_completion() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external prompt",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let mut external_status = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "codex task_complete",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_200),
+        );
+        external_status.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: true,
+                passive_telemetry: false,
+            });
+        let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+        let status = HistoryEvent::transcript(11, &external_status, context);
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), status])
+            .expect("external completed turn should be outlined");
+
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.completed_at_ms, Some(2_200));
     }
 
     #[test]

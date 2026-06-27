@@ -45,6 +45,8 @@ pub struct SessionHistoryOutlineTurn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_turn_id: Option<String>,
     pub started_at_ms: u64,
+    #[serde(default)]
+    pub completed_at_ms: Option<u64>,
     pub user_prompt: SessionHistoryPageEntry,
     pub entries: Vec<SessionHistoryPageEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
