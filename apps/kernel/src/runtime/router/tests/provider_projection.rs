@@ -21,8 +21,15 @@ where
         .expect("provider projection test thread should not panic");
 }
 
-#[tokio::test]
-async fn provider_launch_rejects_cross_session_agent_before_acceptance() {
+#[test]
+fn provider_launch_rejects_cross_session_agent_before_acceptance() {
+    run_provider_projection_large_stack_test(
+        "provider-launch-rejects-cross-session-agent-before-acceptance",
+        provider_launch_rejects_cross_session_agent_before_acceptance_inner,
+    );
+}
+
+async fn provider_launch_rejects_cross_session_agent_before_acceptance_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))

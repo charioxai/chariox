@@ -299,16 +299,17 @@ impl PromptRuntimeState {
     }
 
     fn refresh_prompt_projection(&mut self, focused_agent_id: Option<&str>) {
-        let projected_agent_id = focused_agent_id
-            .map(str::to_string)
-            .filter(|agent_id| self.prompt_states.contains_key(agent_id))
-            .or_else(|| {
-                self.prompt_states
-                    .iter()
-                    .find(|(_, state)| state.active_prompt.is_some())
-                    .map(|(agent_id, _)| agent_id.clone())
-            })
-            .or_else(|| self.prompt_states.keys().next().cloned());
+        let projected_agent_id = if let Some(focused_agent_id) = focused_agent_id {
+            self.prompt_states
+                .contains_key(focused_agent_id)
+                .then(|| focused_agent_id.to_string())
+        } else {
+            let mut prompt_state_agent_ids = self.prompt_states.keys();
+            match (prompt_state_agent_ids.next(), prompt_state_agent_ids.next()) {
+                (Some(agent_id), None) => Some(agent_id.clone()),
+                _ => None,
+            }
+        };
         if let Some(agent_id) = projected_agent_id {
             if let Some(state) = self.prompt_states.get(&agent_id) {
                 self.active_prompt = state.active_prompt.clone();
@@ -329,5 +330,108 @@ impl PromptRuntimeState {
         if should_remove {
             self.prompt_states.remove(agent_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::PromptStatus;
+
+    fn prompt(id: &str, agent_id: &str, status: PromptStatus) -> PromptQueueItem {
+        PromptQueueItem::new(id, "attachment-1", agent_id, "prompt", status)
+    }
+
+    #[test]
+    fn focused_idle_agent_keeps_background_prompt_out_of_legacy_projection() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.mirror_agent_prompt_state(
+            "agent-background",
+            Some(prompt(
+                "prompt-background",
+                "agent-background",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+            Some("agent-focused"),
+        );
+
+        assert!(runtime.active_prompt().is_none());
+        assert!(runtime.queued_prompts().is_empty());
+        assert!(runtime.has_any_active_prompt());
+        assert_eq!(
+            runtime
+                .active_prompt_for_agent("agent-background")
+                .map(PromptQueueItem::id),
+            Some("prompt-background")
+        );
+    }
+
+    #[test]
+    fn focused_queued_agent_projects_only_the_focused_queue() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.mirror_agent_prompt_state(
+            "agent-background",
+            Some(prompt(
+                "prompt-background",
+                "agent-background",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+            Some("agent-focused"),
+        );
+        runtime.mirror_agent_prompt_state(
+            "agent-focused",
+            None,
+            VecDeque::from([prompt(
+                "prompt-focused-queued",
+                "agent-focused",
+                PromptStatus::Queued,
+            )]),
+            Some("agent-focused"),
+        );
+
+        assert!(runtime.active_prompt().is_none());
+        assert_eq!(runtime.queued_prompts().len(), 1);
+        assert_eq!(runtime.queued_prompts()[0].id(), "prompt-focused-queued");
+        assert!(runtime.has_any_active_prompt());
+    }
+
+    #[test]
+    fn unfocused_multiple_agent_prompt_work_clears_ambiguous_legacy_projection() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.mirror_agent_prompt_state(
+            "agent-a",
+            Some(prompt("prompt-a", "agent-a", PromptStatus::Running)),
+            VecDeque::new(),
+            None,
+        );
+        runtime.mirror_agent_prompt_state(
+            "agent-b",
+            Some(prompt("prompt-b", "agent-b", PromptStatus::Running)),
+            VecDeque::new(),
+            None,
+        );
+
+        assert!(runtime.active_prompt().is_none());
+        assert!(runtime.queued_prompts().is_empty());
+        assert!(runtime.has_any_active_prompt());
+    }
+
+    #[test]
+    fn unfocused_single_agent_prompt_work_still_projects_for_legacy_clients() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.mirror_agent_prompt_state(
+            "agent-a",
+            Some(prompt("prompt-a", "agent-a", PromptStatus::Running)),
+            VecDeque::new(),
+            None,
+        );
+
+        assert_eq!(
+            runtime.active_prompt().map(PromptQueueItem::id),
+            Some("prompt-a")
+        );
+        assert!(runtime.has_any_active_prompt());
     }
 }
