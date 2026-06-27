@@ -631,6 +631,7 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, SteerQueuedPromptRequest, SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
+    use crate::runtime::agent_actor::interleave_prompt_batch_by_session;
     use crate::runtime::agent_actor::prompt_attachment_materialization::{
         materialize_inline_prompt_attachments, INLINE_PROMPT_ATTACHMENT_DIR,
     };
@@ -645,6 +646,60 @@ mod tests {
     };
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn prompt_batch_interleaves_explicit_sessions_without_losing_indexes() {
+        let request = crate::local::SubmitPromptsRequest {
+            session_id: "session-a".to_string(),
+            attachment_id: "attachment-a".to_string(),
+            max_concurrency: Some(4),
+            prompts: vec![
+                test_prompt(None, None, "agent-a-1"),
+                test_prompt(None, None, "agent-a-2"),
+                test_prompt(Some("session-b"), Some("attachment-b"), "agent-b-1"),
+                test_prompt(Some("session-b"), Some("attachment-b"), "agent-b-2"),
+                test_prompt(Some("session-c"), Some("attachment-c"), "agent-c-1"),
+            ],
+        };
+
+        let interleaved = interleave_prompt_batch_by_session(request);
+
+        let order = interleaved
+            .iter()
+            .map(|(index, session_id, attachment_id, prompt)| {
+                (
+                    *index,
+                    session_id.as_str(),
+                    attachment_id.as_str(),
+                    prompt.target_agent_id.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                (0, "session-a", "attachment-a", "agent-a-1"),
+                (2, "session-b", "attachment-b", "agent-b-1"),
+                (4, "session-c", "attachment-c", "agent-c-1"),
+                (1, "session-a", "attachment-a", "agent-a-2"),
+                (3, "session-b", "attachment-b", "agent-b-2"),
+            ]
+        );
+    }
+
+    fn test_prompt(
+        session_id: Option<&str>,
+        attachment_id: Option<&str>,
+        agent_id: &str,
+    ) -> crate::local::SubmitPromptsRequestItem {
+        crate::local::SubmitPromptsRequestItem {
+            session_id: session_id.map(str::to_string),
+            attachment_id: attachment_id.map(str::to_string),
+            target_agent_id: agent_id.to_string(),
+            prompt: format!("prompt {agent_id}"),
+            attachments: Vec::new(),
+        }
+    }
 
     fn launch_dev_stub_provider(
         app: &mut DaemonApp,
