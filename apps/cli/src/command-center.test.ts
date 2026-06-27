@@ -23,7 +23,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/view"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
-  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions (6)")
+  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions (7)")
 })
 
 test("buildCommandCenterItems includes config subcommands", () => {
@@ -105,6 +105,15 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
 
   assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-authoritative manifest sync, worker projection, and recovery for an agent")
   assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry worker projection of a home-authoritative extension manifest")
+  assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs and skills from provider configs into Arroba")
+  assert.equal(buildCommandCenterItems("/extension import provider mcp", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }).some((item) => item.value === "/extension import providers "), true)
 })
 
 test("buildCommandCenterItems finds runtime recovery commands by user-facing terms", () => {

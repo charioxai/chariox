@@ -233,6 +233,7 @@ function printUsage() {
     "  /agent list           list all agents in the session",
     "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",
+    "  /extension import     import provider MCPs and skills into Arroba",
     "  /extension grant      grant mcp, skill, script, or connector capabilities to an agent",
     "  /extension revoke     revoke an extension from an agent",
     "  /extension grants     show worker-local, home-proxy, and skill snapshot grants",

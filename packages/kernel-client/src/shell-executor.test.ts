@@ -41,7 +41,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invite\|join\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
-  assert.match(result.message ?? "", /extension grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
+  assert.match(result.message ?? "", /extension import providers\|grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
   assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|audit\|off\|managed\|tracked\|default\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
   assert.match(result.message ?? "", /slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label/)

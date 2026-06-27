@@ -276,6 +276,7 @@ export const COMMAND_TREE: CommandNode[] = [
     description: "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions",
     value: "/extension ",
     children: [
+      { id: "extension-import-providers", label: "import providers", description: "Import MCPs and skills from provider configs into Arroba", value: "/extension import providers ", searchAliases: ["extension import", "import provider extensions", "import provider mcp", "import provider skill", "import mcp", "import skill", "provider mcp import", "provider skill import"] },
       { id: "extension-grant", label: "grant", description: "Grant an extension to an agent", value: "/extension grant " },
       { id: "extension-revoke", label: "revoke", description: "Revoke an extension from an agent", value: "/extension revoke " },
       { id: "extension-grants", label: "grants", description: "Show extension grants", value: "/extension grants " },
