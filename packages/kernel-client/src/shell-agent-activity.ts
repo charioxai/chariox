@@ -25,14 +25,7 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    if (projected.active_turn) {
-      return projected.active_turn.prompt_id === promptId
-    }
-    if (!projected.busy && projected.prompt_status === "none") {
-      return false
-    }
-    const prompt = legacyPromptForAgent(session, agentId)
-    return prompt ? prompt.id === promptId : false
+    return projected.active_turn?.prompt_id === promptId
   }
   return legacySessionHasPrompt(session, agentId, promptId)
 }
@@ -43,15 +36,12 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    if (!projected.busy && projected.prompt_status === "none" && !projected.active_turn) {
+    const activeTurnPromptId = projected.active_turn?.prompt_id
+    if (!activeTurnPromptId) {
       return null
     }
     const prompt = legacyPromptForAgent(session, agentId)
-    const activeTurnPromptId = projected.active_turn?.prompt_id
-    if (activeTurnPromptId && prompt?.id !== activeTurnPromptId) {
-      return null
-    }
-    return prompt
+    return prompt?.id === activeTurnPromptId ? prompt : null
   }
   return legacyPromptForAgent(session, agentId)
 }
