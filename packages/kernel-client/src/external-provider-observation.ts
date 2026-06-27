@@ -25,11 +25,11 @@ export function historyEntryExternalProviderObservedMetadata(
   }
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: entry.external_provider ?? null,
-    externalProviderSessionId: entry.external_provider_session_id ?? null,
-    externalProviderTurnId: entry.external_provider_turn_id ?? null,
-    observedAtMs: entry.observed_at_ms ?? null,
-    externalObservation: entry.external_observation ?? null,
+    externalProvider: nonBlankString(entry.external_provider),
+    externalProviderSessionId: nonBlankString(entry.external_provider_session_id),
+    externalProviderTurnId: nonBlankString(entry.external_provider_turn_id),
+    observedAtMs: finiteNumber(entry.observed_at_ms),
+    externalObservation: normalizedExternalObservation(entry.external_observation),
   }
 }
 
@@ -40,4 +40,25 @@ export type ExternalProviderObservedKernelFields = {
   readonly external_provider_turn_id?: string | null | undefined
   readonly observed_at_ms?: number | null | undefined
   readonly external_observation?: SessionHistoryExternalObservation | null | undefined
+}
+
+function nonBlankString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+function finiteNumber(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function normalizedExternalObservation(
+  value: SessionHistoryExternalObservation | null | undefined,
+): SessionHistoryExternalObservation | null {
+  if (!value) {
+    return null
+  }
+  return {
+    settles_active_prompt: value.settles_active_prompt === true,
+    passive_telemetry: value.passive_telemetry === true,
+  }
 }

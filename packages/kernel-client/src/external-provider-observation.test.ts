@@ -40,6 +40,30 @@ test("external provider observed metadata projects kernel history fields", () =>
   })
 })
 
+test("external provider observed metadata normalizes nullable fields", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: " codex ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: "",
+    observed_at_ms: Number.NaN,
+    external_observation: {
+      settles_active_prompt: "true" as unknown as boolean,
+      passive_telemetry: true,
+    },
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+    observedAtMs: null,
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+})
+
 test("external provider observed metadata ignores ordinary history entries", () => {
   assert.equal(historyEntryExternalProviderObservedMetadata({
     source: null,
