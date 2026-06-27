@@ -85,8 +85,8 @@ test("remote kernel formatter summarizes worker readiness", () => {
     },
   ], "machine-1")
 
-  assert.match(output, /^machine machine-1 worker readiness: 1\/4 ready, 1 needs provider, 1 blocked, 1 unknown; next: spawn a remote agent with a ready worker kernel/)
-  assert.match(output, /ready-kernel id=kernel-ready machine=mini readiness=ready providers=codex accounts=codex=daily \(auth missing\)\/state=not_configured accepting_remote_leases=true leased_agents=1 local_sessions=2 next: configure\/import or refresh provider accounts on ready-kernel before spawning remote agents/)
+  assert.match(output, /^machine machine-1 worker readiness: 0\/4 ready, 1 needs provider, 1 needs account, 1 blocked, 1 unknown; next: fix the listed kernel readiness issue or choose another machine/)
+  assert.match(output, /ready-kernel id=kernel-ready machine=mini readiness=needs-account providers=codex accounts=codex=daily \(auth missing\)\/state=not_configured accepting_remote_leases=true leased_agents=1 local_sessions=2 next: configure\/import or refresh provider accounts on ready-kernel before spawning remote agents/)
   assert.match(output, /blocked-kernel id=kernel-blocked machine=mini readiness=blocked providers=opencode accounts=opencode=api\/state=not_configured accepting_remote_leases=false leased_agents=0 local_sessions=0 next: run \/machine kernels mini; enable remote leases on blocked-kernel or choose another worker/)
   assert.match(output, /provider-kernel id=kernel-provider machine=mini readiness=needs-provider providers=- accounts=none accepting_remote_leases=true leased_agents=0 local_sessions=0 next: run \/machine kernels mini; configure provider CLIs on provider-kernel/)
   assert.match(output, /unknown-kernel id=kernel-unknown machine=mini readiness=unknown providers=claude accounts=none accepting_remote_leases=unknown leased_agents=0 local_sessions=0 next: run \/machine kernels mini; refresh unknown-kernel readiness or reconnect that worker before launching remote agents/)

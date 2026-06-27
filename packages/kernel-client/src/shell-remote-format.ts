@@ -173,15 +173,18 @@ function remoteKernelProviderAccountNextAction(kernel: RelayKernelPresence): str
   return `configure/import or refresh provider accounts on ${remoteKernelLabel(kernel)} before spawning remote agents`
 }
 
+type RemoteKernelReadiness = "ready" | "blocked" | "needs-provider" | "needs-account" | "unknown"
+
 function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: string): string {
-  const counts = kernels.reduce<Record<ReturnType<typeof remoteKernelReadiness>, number>>((acc, kernel) => {
+  const counts = kernels.reduce<Record<RemoteKernelReadiness, number>>((acc, kernel) => {
     const readiness = remoteKernelReadiness(kernel)
     acc[readiness] += 1
     return acc
-  }, { ready: 0, blocked: 0, "needs-provider": 0, unknown: 0 })
+  }, { ready: 0, blocked: 0, "needs-provider": 0, "needs-account": 0, unknown: 0 })
   const total = kernels.length
   const parts = [`${counts.ready}/${total} ready`]
   if (counts["needs-provider"] > 0) parts.push(`${counts["needs-provider"]} needs provider`)
+  if (counts["needs-account"] > 0) parts.push(`${counts["needs-account"]} needs account`)
   if (counts.blocked > 0) parts.push(`${counts.blocked} blocked`)
   if (counts.unknown > 0) parts.push(`${counts.unknown} unknown`)
   const next = counts.ready > 0
@@ -190,12 +193,18 @@ function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: st
   return `machine ${kernelRef} worker readiness: ${parts.join(", ")}; next: ${next}`
 }
 
-export function remoteKernelReadiness(kernel: RelayKernelPresence): "ready" | "blocked" | "needs-provider" | "unknown" {
+export function remoteKernelReadiness(kernel: RelayKernelPresence): RemoteKernelReadiness {
   if (kernel.accepting_remote_leases === false) return "blocked"
   if ((kernel.available_providers ?? []).length === 0) {
     return kernel.accepting_remote_leases === undefined ? "unknown" : "needs-provider"
   }
   if (kernel.accepting_remote_leases === undefined) return "unknown"
+  if (
+    "provider_accounts" in kernel
+    && providerAccountsNeedRecovery(kernel.available_providers ?? [], kernel.provider_accounts ?? [])
+  ) {
+    return "needs-account"
+  }
   return "ready"
 }
 

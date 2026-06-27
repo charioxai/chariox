@@ -41,7 +41,6 @@ import {
   resolveShellSliceRef,
   shellSliceCreatesPlacement,
 } from "./shell-slice-placement.js"
-import { remoteKernelReadiness } from "./shell-remote-format.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -339,11 +338,11 @@ async function resolveMachineSpawnKernelRef(
   if (kernels.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no live worker kernels; next: run /machine kernels ${machineRef}; reconnect that machine or choose another worker` }
   }
-  const ready = kernels.filter((kernel) => remoteKernelReadiness(kernel) === "ready")
-  if (ready.length === 0) {
+  const leaseReady = kernels.filter((kernel) => remoteKernelAcceptsRemoteLeases(kernel))
+  if (leaseReady.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}; fix the listed readiness/account issue or choose another worker` }
   }
-  const providerCandidates = ready.filter((kernel) => (kernel.available_providers ?? []).includes(provider))
+  const providerCandidates = leaseReady.filter((kernel) => (kernel.available_providers ?? []).includes(provider))
   if (providerCandidates.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: run /machine kernels ${machineRef}; choose a ready worker with ${provider}, configure/import its provider account, or change the agent provider` }
   }
@@ -352,6 +351,10 @@ async function resolveMachineSpawnKernelRef(
     return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel with an authenticated ${provider} account; next: run /machine kernels ${machineRef}; configure/import or refresh the ${provider} account, or choose another worker` }
   }
   return { ok: true, kernelRef: providerReady.kernel_id }
+}
+
+function remoteKernelAcceptsRemoteLeases(kernel: RelayKernelPresence): boolean {
+  return kernel.accepting_remote_leases === true
 }
 
 function remoteKernelHasAuthenticatedProviderAccount(kernel: RelayKernelPresence, provider: string): boolean {
