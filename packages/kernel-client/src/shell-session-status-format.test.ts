@@ -166,5 +166,44 @@ test("formatSessionRuntimeStatus uses projected activity over stale legacy promp
 
   assert.match(rendered, /prompts: active=0, queued=0, busy_agents=0/)
   assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 slice, 0 worker run gaps/)
+  assert.match(rendered, /agent runtime:\n  - agent-1: Idle /)
+  assert.doesNotMatch(rendered, /agent runtime:\n  - agent-1: Working /)
   assert.doesNotMatch(rendered, /next: run \/kernel remote-runtime/)
+})
+
+test("formatSessionRuntimeStatus renders projected busy activity over stale idle agent state", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          provider_run_id: "run-1",
+          prompt_origin: "external",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({
+      id: "agent-1",
+      agent_ref: "agent-1",
+      state: "Idle",
+      is_processing: false,
+    })],
+  })
+
+  const rendered = formatSessionRuntimeStatus(session)
+
+  assert.match(rendered, /prompts: active=1, queued=0, busy_agents=1/)
+  assert.match(rendered, /agent runtime:\n  - agent-1: Working /)
 })

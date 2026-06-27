@@ -3,11 +3,12 @@ import test from "node:test"
 
 import {
   sessionAgentIsBusy,
+  sessionAgentRuntimeState,
   sessionHasActivePrompt,
   sessionPromptForAgent,
   sessionPromptWorkSummary,
 } from "./shell-agent-activity.js"
-import { makeSession } from "./shell-executor.test-support.js"
+import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
 test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", () => {
   const session = makeSession({
@@ -34,6 +35,11 @@ test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", ()
   })
 
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionAgentRuntimeState(session, makeAgent({
+    id: "agent-1",
+    state: "Working",
+    is_processing: true,
+  })), "Idle")
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
   assert.deepEqual(sessionPromptWorkSummary(session), {
@@ -211,6 +217,11 @@ test("sessionHasActivePrompt follows projected active turn identity", () => {
   })
 
   assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
+  assert.equal(sessionAgentRuntimeState(session, makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  })), "Working")
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-2"), true)
   assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "prompt-2")
