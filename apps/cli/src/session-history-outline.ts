@@ -9,7 +9,7 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import { EXTERNAL_PROVIDER_OBSERVED_SOURCE } from "@arroba/kernel-client/external-provider-observation"
-import { normalizePromptOrigin, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
+import { promptOriginFromRecord, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { hydrateTranscriptEntries } from "./transcript-history.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
@@ -183,10 +183,7 @@ function outlineTurnExternalMetadata(
   const externalProvider = nonBlankString(turn.external_provider)
   const externalProviderSessionId = nonBlankString(turn.external_provider_session_id)
   const externalProviderTurnId = nonBlankString(turn.external_provider_turn_id)
-  const promptOrigin = normalizePromptOrigin(turn.prompt_origin)
-  const isExternal = promptOriginIsExternal(promptOrigin)
-    || (!promptOrigin && Boolean(externalProvider && externalProviderSessionId && externalProviderTurnId))
-  if (!isExternal) {
+  if (!promptOriginIsExternal(promptOriginFromRecord(outlineTurnPromptOriginRecord(turn)))) {
     return null
   }
   return {
@@ -194,6 +191,20 @@ function outlineTurnExternalMetadata(
     externalProvider,
     externalProviderSessionId,
     externalProviderTurnId,
+  }
+}
+
+function outlineTurnPromptOriginRecord(
+  turn: SessionHistoryOutlineTurn,
+): {
+  readonly prompt_origin?: string | null
+  readonly external_provider?: string | null
+  readonly external_provider_session_id?: string | null
+} {
+  return {
+    prompt_origin: turn.prompt_origin,
+    external_provider: turn.external_provider,
+    external_provider_session_id: turn.external_provider_session_id,
   }
 }
 

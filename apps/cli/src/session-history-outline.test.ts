@@ -250,6 +250,46 @@ test("hydrateOutlineAgentEntries uses prompt origin to mark external turns with 
   assert.equal(prompt?.externalProviderTurnId, undefined)
 })
 
+test("hydrateOutlineAgentEntries infers external turns from provider session metadata", () => {
+  const entries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: null,
+      external_provider: " codex ",
+      external_provider_session_id: " thread-1 ",
+      external_provider_turn_id: null,
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_output", "external reply\n")],
+      summary: null,
+      blobs: [{
+        blob_id: "blob-1",
+        kind: "provider_tool",
+        title: "tool",
+        summary: "1 tool called",
+        sequence_start: 2,
+        sequence_end: 3,
+        entry_count: 1,
+        total_chars: 80,
+        timestamp_ms: 1,
+      }],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const prompt = entries.find((entry) => entry.role === "user")
+  const assistant = entries.find((entry) => entry.role === "assistant")
+  const blob = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(assistant?.source, "external_provider_observed")
+  assert.equal(blob?.source, "external_provider_observed")
+  assert.equal(prompt?.externalProvider, "codex")
+  assert.equal(prompt?.externalProviderSessionId, "thread-1")
+  assert.equal(prompt?.externalProviderTurnId, undefined)
+})
+
 test("hydrateOutlineAgentEntries does not infer external ownership for arroba-origin turns", () => {
   const entries = hydrateOutlineAgentEntries({
     agent_id: "agent-1",
