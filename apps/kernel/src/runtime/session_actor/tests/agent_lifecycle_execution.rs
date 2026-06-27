@@ -72,6 +72,12 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
         .load_events_after(0)
         .expect("durable state events should load");
     assert!(
+        durable_events
+            .iter()
+            .all(|event| event.kind != "agents.created"),
+        "single-agent spawn should preserve the agent.created durable event shape"
+    );
+    assert!(
         durable_events.iter().any(|event| {
             event.kind == "agent.created"
                 && event.subject_id.as_deref() == Some(agent.id())

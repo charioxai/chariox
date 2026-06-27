@@ -30,17 +30,28 @@ impl AgentService {
         request: CreateAgentRequest,
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
-        // Validate session exists and is not ended
-        let session = sessions.get_session(&request.session_id)?;
-        let agent = self.create_agent_for_session(request, &session)?;
-        sessions.set_focused_agent(agent.session_id(), Some(agent.id().to_string()))?;
-        Ok(agent)
+        self.create_agents_with_operation(vec![request], sessions, "create agent")?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "create agent",
+                message: "single-agent create returned no agent".to_string(),
+            })
     }
 
     pub fn create_agents(
         &mut self,
         requests: Vec<CreateAgentRequest>,
         sessions: &mut SessionService,
+    ) -> Result<Vec<AgentInstance>, DaemonError> {
+        self.create_agents_with_operation(requests, sessions, "create agents")
+    }
+
+    fn create_agents_with_operation(
+        &mut self,
+        requests: Vec<CreateAgentRequest>,
+        sessions: &mut SessionService,
+        operation: &'static str,
     ) -> Result<Vec<AgentInstance>, DaemonError> {
         let Some(first) = requests.first() else {
             return Ok(Vec::new());
@@ -51,7 +62,7 @@ impl AgentService {
             .any(|request| request.session_id.as_str() != session_id)
         {
             return Err(DaemonError::LocalTransport {
-                operation: "create agents",
+                operation,
                 message: "batch create requires all agents to target the same session".to_string(),
             });
         }
@@ -61,7 +72,7 @@ impl AgentService {
             return Err(DaemonError::SessionOperationNotAllowed {
                 session_id,
                 status: session.status(),
-                operation: "create agents",
+                operation,
             });
         }
 
@@ -78,7 +89,7 @@ impl AgentService {
         for request in &requests {
             if request.role == crate::agent::AgentRole::Meta {
                 return Err(DaemonError::LocalTransport {
-                    operation: "create agents",
+                    operation,
                     message: "creating separate metaagents is deprecated; create a regular agent and send `/meta <task>` to enter meta mode".to_string(),
                 });
             }
