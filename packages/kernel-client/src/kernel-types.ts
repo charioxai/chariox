@@ -1498,7 +1498,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 201
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 202
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1706,6 +1706,9 @@ export type SessionHistoryOutlineCursor = {
 export type SessionHistoryOutlineTurn = {
   turn_id: string
   prompt_id?: string | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
   started_at_ms: number
   user_prompt: SessionHistoryPageEntry
   entries: SessionHistoryPageEntry[]

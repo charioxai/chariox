@@ -264,6 +264,7 @@ fn outline_turn_from_events(
     events: Vec<HistoryEvent>,
 ) -> Option<SessionHistoryOutlineTurn> {
     let user_prompt = page_entry_from_event(prompt.clone())?;
+    let external_identity = outline_turn_external_identity(&events);
     let summary_sequence = events
         .iter()
         .rev()
@@ -299,12 +300,47 @@ fn outline_turn_from_events(
             .or_else(|| prompt.prompt_id.clone())
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
+        external_provider: external_identity
+            .as_ref()
+            .map(|identity| identity.provider.clone()),
+        external_provider_session_id: external_identity
+            .as_ref()
+            .map(|identity| identity.provider_session_id.clone()),
+        external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
         user_prompt,
         entries,
         summary,
         blobs,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutlineExternalIdentity {
+    provider: String,
+    provider_session_id: String,
+    provider_turn_id: String,
+}
+
+fn outline_turn_external_identity(events: &[HistoryEvent]) -> Option<OutlineExternalIdentity> {
+    events
+        .iter()
+        .filter_map(|event| event.to_session_history_entry())
+        .find_map(|entry| {
+            if !entry.is_external_provider_observed() {
+                return None;
+            }
+            Some(OutlineExternalIdentity {
+                provider: entry.external_provider?.trim().to_string(),
+                provider_session_id: entry.external_provider_session_id?.trim().to_string(),
+                provider_turn_id: entry.external_provider_turn_id?.trim().to_string(),
+            })
+            .filter(|identity| {
+                !identity.provider.is_empty()
+                    && !identity.provider_session_id.is_empty()
+                    && !identity.provider_turn_id.is_empty()
+            })
+        })
 }
 
 fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {

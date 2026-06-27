@@ -2486,6 +2486,12 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].turns.len(), 1);
         let turn = &agents[0].turns[0];
+        assert_eq!(turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            turn.external_provider_session_id.as_deref(),
+            Some("thread-observed")
+        );
+        assert_eq!(turn.external_provider_turn_id.as_deref(), Some("user-1"));
         assert_eq!(turn.user_prompt.entry.text, "external prompt");
         assert_eq!(
             turn.user_prompt.entry.source,
