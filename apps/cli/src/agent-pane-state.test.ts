@@ -654,6 +654,56 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
   assert.equal(result.visibleCursor, null)
 })
 
+test("refreshAgentPaneState stops backfill when older cursor repeats without duplicating entries", async () => {
+  const requestedCursors: Array<string | null> = []
+  const result = await refreshAgentPaneState<
+    { id: string },
+    { role: string; turnId?: number; text: string },
+    { id?: number; role: string; turnId?: number; text: string },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "first question" },
+        { role: "assistant", turnId: 1, text: "first answer" },
+        { role: "user", turnId: 2, text: "second question" },
+        { role: "assistant", turnId: 2, text: "second answer" },
+        { role: "user", turnId: 3, text: "third question" },
+        { role: "assistant", turnId: 3, text: "third answer" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (_agentId, cursor) => {
+      requestedCursors.push(cursor)
+      return {
+        entries: [
+          { role: "user", turnId: 3, text: "third question" },
+          { role: "assistant", turnId: 3, text: "third answer" },
+        ],
+        nextCursor: "older",
+      }
+    },
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(requestedCursors, [null, "older"])
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["third question", "third answer"],
+  )
+  assert.equal(result.visibleCursor, null)
+})
+
 test("refreshAgentPaneState preserves richer live pane entries while prompt work is active", async () => {
   const result = await refreshAgentPaneState<
     { id: string },

@@ -56,6 +56,10 @@ function countRenderablePaneEntries<TEntry extends { role: string }>(entries: re
   return entries.filter((entry) => entry.role !== "turn_toggle").length
 }
 
+function historyCursorKey(cursor: unknown): string {
+  return JSON.stringify(cursor)
+}
+
 function totalPaneTextLength<TEntry extends { text: string }>(entries: readonly TEntry[]) {
   return entries.reduce((sum, entry) => sum + entry.text.length, 0)
 }
@@ -140,6 +144,43 @@ function entriesShareLineage<TEntry extends {
   return currentEntries
     .filter((entry) => entry.role !== "turn_toggle")
     .some((entry) => entryLineageKeys(entry).some((key) => refreshedKeys.has(key)))
+}
+
+function prependHistoryEntriesWithoutDuplicates<TEntry extends {
+  role: string
+  text: string
+  turnId?: number
+  source?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+}>(
+  olderEntries: readonly TEntry[],
+  currentEntries: readonly TEntry[],
+): TEntry[] {
+  const admittedKeys = new Set(
+    currentEntries
+      .filter((entry) => entry.role !== "turn_toggle")
+      .flatMap(entryLineageKeys),
+  )
+  const prepend: TEntry[] = []
+  for (const entry of olderEntries) {
+    if (entry.role !== "turn_toggle") {
+      const keys = entryLineageKeys(entry)
+      if (keys.some((key) => admittedKeys.has(key))) {
+        continue
+      }
+      for (const key of keys) {
+        admittedKeys.add(key)
+      }
+    }
+    prepend.push(entry)
+  }
+  return [...prepend, ...currentEntries]
 }
 
 function entryLineageKeys(entry: {
@@ -282,16 +323,23 @@ export async function refreshAgentPaneState<
     let historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
+    const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
       !options.hasPromptWork
       && historyPage.nextCursor
       && currentRenderableCount > countRenderablePaneEntries(resolvedHistoryEntries)
     ) {
+      const cursorKey = historyCursorKey(historyPage.nextCursor)
+      if (requestedHistoryCursorKeys.has(cursorKey)) {
+        historyPage = { ...historyPage, nextCursor: null }
+        break
+      }
+      requestedHistoryCursorKeys.add(cursorKey)
       historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
-      resolvedHistoryEntries = [
-        ...options.hydrateEntries(historyPage.entries),
-        ...resolvedHistoryEntries,
-      ]
+      resolvedHistoryEntries = prependHistoryEntriesWithoutDuplicates(
+        options.hydrateEntries(historyPage.entries),
+        resolvedHistoryEntries,
+      )
     }
 
     const availableTurnIds = new Set(
