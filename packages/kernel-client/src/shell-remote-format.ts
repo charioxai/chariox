@@ -6,6 +6,7 @@ import type {
   RelayStatus,
   RemoteMachineRecord,
 } from "./kernel-types.js"
+import { formatSliceProviderAuth } from "./slice-format.js"
 
 export function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
   if (machines.length === 0) {
@@ -63,11 +64,23 @@ export function formatRemoteKernels(kernels: RelayKernelPresence[], kernelRef: s
     ...kernels.map((kernel) => {
       const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
       const providers = (kernel.available_providers ?? []).join(",") || "-"
+      const accounts = formatRemoteKernelProviderAccounts(kernel)
       const next = remoteKernelNextAction(kernel)
       const readiness = remoteKernelReadiness(kernel)
-      return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} readiness=${readiness} providers=${providers} accepting_remote_leases=${formatAcceptingRemoteLeases(kernel.accepting_remote_leases)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
+      return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} readiness=${readiness} providers=${providers} accounts=${accounts} accepting_remote_leases=${formatAcceptingRemoteLeases(kernel.accepting_remote_leases)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
     }),
   ].join("\n")
+}
+
+function formatRemoteKernelProviderAccounts(kernel: RelayKernelPresence): string {
+  const accounts = kernel.provider_accounts ?? []
+  if (accounts.length === 0) {
+    return "none"
+  }
+  return accounts.map((entry) => formatSliceProviderAuth(entry, {
+    separator: "=",
+    includeOrgPlan: false,
+  })).join(",")
 }
 
 function formatAcceptingRemoteLeases(value: boolean | undefined): string {
