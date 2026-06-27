@@ -148,6 +148,7 @@ impl AgentRuntime {
         }
         let caller_user_id = command_agent_actor_user_id(command);
         let authorization_failures = self
+            .store
             .prompt_batch_authorization_failures(
                 &request.session_id,
                 &caller_user_id,
@@ -236,44 +237,6 @@ impl AgentRuntime {
             agent_activity,
             agent_activity_revision: self.session_projection.change_sequence(),
         })
-    }
-
-    async fn prompt_batch_authorization_failures(
-        &self,
-        session_id: &str,
-        caller_user_id: &str,
-        prompts: &[crate::local::SubmitPromptsRequestItem],
-    ) -> Vec<BatchOperationFailure> {
-        let mut failures = Vec::new();
-        for (index, prompt) in prompts.iter().enumerate() {
-            match self
-                .store
-                .ensure_agent_prompt_access(
-                    &prompt.target_agent_id,
-                    caller_user_id,
-                    "submit prompt batch",
-                )
-                .await
-            {
-                Ok(agent) if agent.session_id() != session_id => {
-                    failures.push(BatchOperationFailure {
-                        index,
-                        agent_id: Some(prompt.target_agent_id.clone()),
-                        message: format!(
-                            "prompt batch target agent belongs to session `{}`, not `{session_id}`",
-                            agent.session_id()
-                        ),
-                    })
-                }
-                Ok(_) => {}
-                Err(error) => failures.push(BatchOperationFailure {
-                    index,
-                    agent_id: Some(prompt.target_agent_id.clone()),
-                    message: error.to_string(),
-                }),
-            }
-        }
-        failures
     }
 
     pub(crate) async fn dispatch_prompt_cancel(
@@ -446,6 +409,63 @@ impl AgentRuntimeStore {
         self.state
             .ensure_agent_prompt_access(agent_id, caller_user_id, operation)
             .await
+    }
+
+    async fn prompt_batch_authorization_failures(
+        &self,
+        session_id: &str,
+        caller_user_id: &str,
+        prompts: &[crate::local::SubmitPromptsRequestItem],
+    ) -> Vec<BatchOperationFailure> {
+        let session = match self.state.session_snapshot(session_id).await {
+            Ok(session) => session,
+            Err(error) => {
+                return prompts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, prompt)| BatchOperationFailure {
+                        index,
+                        agent_id: Some(prompt.target_agent_id.clone()),
+                        message: error.to_string(),
+                    })
+                    .collect();
+            }
+        };
+        let agents_by_id = session
+            .agents()
+            .iter()
+            .map(|agent| (agent.id().to_string(), agent))
+            .collect::<HashMap<_, _>>();
+        prompts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, prompt)| {
+                let Some(agent) = agents_by_id.get(prompt.target_agent_id.as_str()) else {
+                    return Some(BatchOperationFailure {
+                        index,
+                        agent_id: Some(prompt.target_agent_id.clone()),
+                        message: DaemonError::AgentNotFound {
+                            agent_id: prompt.target_agent_id.clone(),
+                        }
+                        .to_string(),
+                    });
+                };
+                if !session.can_prompt_agent_owned_by(caller_user_id, agent.owner_user_id()) {
+                    return Some(BatchOperationFailure {
+                        index,
+                        agent_id: Some(prompt.target_agent_id.clone()),
+                        message: DaemonError::OwnershipAccessDenied {
+                            user_id: caller_user_id.to_string(),
+                            owner_user_id: agent.owner_user_id().to_string(),
+                            resource: format!("agent `{}`", prompt.target_agent_id),
+                            operation: "submit prompt batch",
+                        }
+                        .to_string(),
+                    });
+                }
+                None
+            })
+            .collect()
     }
 
     async fn session_snapshot(
