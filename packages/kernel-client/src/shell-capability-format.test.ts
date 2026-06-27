@@ -95,6 +95,12 @@ test("home extension audit policy gives binding-specific recovery for worker den
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
     status: "denied",
     error: "worker mismatch",
+    agent_ref: "agent-ref-1",
+    worker_machine_id: "machine-1",
+  }), "run /extension sync-status agent-ref-1; run /machine kernels machine-1; inspect /agent inspect agent-ref-1; retry only after the worker lease and provider run match the current home grant")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
+    status: "denied",
+    error: "worker mismatch",
   }), "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant")
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
     status: "denied",

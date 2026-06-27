@@ -29,7 +29,10 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
       if (isConcreteHomeExtensionAuditAgentRef(agentRef)) {
-        return `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
+        const workerMachine = homeExtensionAuditWorkerMachine(payload)
+        return workerMachine
+          ? `run /extension sync-status ${agentRef}; run /machine kernels ${workerMachine}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
+          : `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
       }
       return "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant"
     }
