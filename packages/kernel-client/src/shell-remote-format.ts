@@ -120,13 +120,21 @@ function remoteMachineProviderAccountNextAction(machine: RemoteMachineRecord): s
     return ""
   }
   const accounts = machine.provider_accounts ?? []
-  const missingAccounts = accounts.length === 0
-  const attentionAccounts = accounts.some((account) => providerAccountNeedsAttention(account))
-  if (!missingAccounts && !attentionAccounts) {
+  if (!providerAccountsNeedRecovery(providers, accounts)) {
     return ""
   }
   const machineLabel = formatRemoteMachineLabel(machine)
   return `run /machine kernels ${machineLabel}; configure/import or refresh provider accounts before spawning remote agents`
+}
+
+function providerAccountsNeedRecovery(
+  providers: readonly string[],
+  accounts: readonly ProviderAccountSummary[],
+): boolean {
+  return providers.some((provider) => {
+    const account = accounts.find((entry) => entry.provider === provider)
+    return !account || providerAccountNeedsAttention(account)
+  })
 }
 
 function providerAccountNeedsAttention(account: ProviderAccountSummary): boolean {
@@ -146,7 +154,23 @@ function remoteKernelNextAction(kernel: RelayKernelPresence): string {
   if ((kernel.available_providers ?? []).length === 0) {
     return `${inspect}configure provider CLIs on ${kernelLabel}`
   }
+  const accountRecovery = remoteKernelProviderAccountNextAction(kernel)
+  if (accountRecovery) {
+    return accountRecovery
+  }
   return ""
+}
+
+function remoteKernelProviderAccountNextAction(kernel: RelayKernelPresence): string {
+  const providers = kernel.available_providers ?? []
+  if (providers.length === 0) {
+    return ""
+  }
+  const accounts = kernel.provider_accounts ?? []
+  if (!providerAccountsNeedRecovery(providers, accounts)) {
+    return ""
+  }
+  return `configure/import or refresh provider accounts on ${remoteKernelLabel(kernel)} before spawning remote agents`
 }
 
 function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: string): string {
