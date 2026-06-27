@@ -217,6 +217,9 @@ export function agentPromptState(
       ? normalizeAgentPromptState(promptStates[agentId])
       : null
   }
+  if (session.agent_activity) {
+    return null
+  }
   if (session.active_prompt?.target_agent_id === agentId || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId)) {
     return {
       active_prompt: session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null,

@@ -496,6 +496,38 @@ test("prompt_states suppress stale legacy prompt activity even when empty", () =
   assert.equal(agentPromptState(nextSession, "agent-a"), null)
 })
 
+test("agent_activity suppresses stale legacy prompt state even when prompt_states are absent", () => {
+  const nextSession = session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale top-level prompt",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale queued prompt",
+      status: "queued",
+    }],
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+
+  assert.equal(agentPromptState(nextSession, "agent-a"), null)
+  assert.equal(activePromptIdForAgent(nextSession, "agent-a"), null)
+  assert.equal(sessionHasPromptWork(nextSession), true)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
+})
+
 test("explicit empty agent prompt state suppresses stale top-level prompts", () => {
   const nextSession = session({
     active_prompt: {
