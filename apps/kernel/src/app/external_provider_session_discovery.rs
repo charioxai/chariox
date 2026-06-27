@@ -262,6 +262,15 @@ fn cached_provider_transcript_path(provider: &str, provider_session_id: &str) ->
     path.is_file().then_some(path)
 }
 
+fn cached_provider_transcript_path_in_root(
+    provider: &str,
+    provider_session_id: &str,
+    root: &Path,
+) -> Option<PathBuf> {
+    let path = cached_provider_transcript_path(provider, provider_session_id)?;
+    path.starts_with(root).then_some(path)
+}
+
 fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, path: &Path) {
     let Some(fingerprint) = provider_transcript_file_fingerprint(path) else {
         return;
@@ -308,6 +317,22 @@ fn cached_provider_observed_turns(
         && entry.path == path
         && entry.len == fingerprint.len
         && entry.modified_at_ms == fingerprint.modified_at_ms)
+        .then(|| entry.observed_turns)
+        .flatten()
+}
+
+fn cached_provider_observed_turns_for_path(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+) -> Option<Vec<ObservedExternalProviderTurn>> {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let entry = provider_transcript_path_index()
+        .lock()
+        .ok()?
+        .get(&key)
+        .cloned()?;
+    (entry.provider_session_id == provider_session_id && entry.path == path)
         .then(|| entry.observed_turns)
         .flatten()
 }
@@ -578,7 +603,8 @@ fn read_codex_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
-    if let Some(path) = cached_provider_transcript_path("codex", provider_session_id) {
+    if let Some(path) = cached_provider_transcript_path_in_root("codex", provider_session_id, root)
+    {
         if let Some(turns) = codex_observed_turns_from_path(&path, provider_session_id) {
             return turns;
         }
@@ -923,7 +949,8 @@ fn read_claude_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
-    if let Some(path) = cached_provider_transcript_path("claude", provider_session_id) {
+    if let Some(path) = cached_provider_transcript_path_in_root("claude", provider_session_id, root)
+    {
         if let Some(turns) = claude_observed_turns_from_path(&path, provider_session_id) {
             return turns;
         }
@@ -958,12 +985,15 @@ fn claude_observed_turns_from_path(
             return None;
         }
     }
+    let previous_turns =
+        cached_provider_observed_turns_for_path("claude", provider_session_id, path);
     remember_provider_transcript_path("claude", provider_session_id, path);
     let lines = read_recent_claude_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
         turns.extend(claude_observed_turns_from_value(value));
     }
+    prepend_claude_user_anchor_from_cache_or_prefix(path, previous_turns.as_deref(), &mut turns);
     let turns = latest_observed_turns(turns);
     remember_provider_observed_turns(
         "claude",
@@ -973,6 +1003,43 @@ fn claude_observed_turns_from_path(
         turns.clone(),
     );
     Some(turns)
+}
+
+fn prepend_claude_user_anchor_from_cache_or_prefix(
+    path: &Path,
+    previous_turns: Option<&[ObservedExternalProviderTurn]>,
+    turns: &mut Vec<ObservedExternalProviderTurn>,
+) {
+    if turns
+        .iter()
+        .any(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+    {
+        return;
+    }
+    let anchor = previous_turns
+        .and_then(latest_observed_user_turn)
+        .cloned()
+        .or_else(|| claude_user_anchor_from_prefix(path));
+    if let Some(anchor) = anchor {
+        turns.insert(0, anchor);
+    }
+}
+
+fn latest_observed_user_turn(
+    turns: &[ObservedExternalProviderTurn],
+) -> Option<&ObservedExternalProviderTurn> {
+    turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+}
+
+fn claude_user_anchor_from_prefix(path: &Path) -> Option<ObservedExternalProviderTurn> {
+    read_jsonl_values(path).into_iter().rev().find_map(|value| {
+        claude_observed_turns_from_value(&value)
+            .into_iter()
+            .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+    })
 }
 
 fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProviderTurn> {
@@ -1348,7 +1415,9 @@ fn read_opencode_observed_turns(
     if !sqlite_turns.is_empty() {
         return latest_observed_turns(sqlite_turns);
     }
-    if let Some(path) = cached_provider_transcript_path("opencode", provider_session_id) {
+    if let Some(path) =
+        cached_provider_transcript_path_in_root("opencode", provider_session_id, root)
+    {
         if let Some(turns) = opencode_observed_turns_from_path(&path, provider_session_id) {
             return turns;
         }
@@ -2048,44 +2117,10 @@ fn read_recent_codex_jsonl_values(path: &Path) -> Vec<Value> {
 fn read_recent_claude_jsonl_values(path: &Path) -> Vec<Value> {
     let lines = read_recent_jsonl_lines(path);
     let start = lines.len().saturating_sub(MAX_JSONL_LINES);
-    let recent = lines[start..]
+    lines[start..]
         .iter()
         .filter_map(|line| serde_json::from_str::<Value>(line.as_str()).ok())
-        .collect::<Vec<_>>();
-    let anchor = read_jsonl_values(path).into_iter().rev().find(|value| {
-        claude_observed_turns_from_value(value)
-            .into_iter()
-            .any(|turn| turn.role == ObservedExternalProviderTurnRole::User)
-    });
-    let Some(anchor) = anchor else {
-        return recent;
-    };
-    let anchor_id = claude_record_identity(&anchor);
-    let already_in_recent = anchor_id.as_ref().is_some_and(|anchor_id| {
-        recent
-            .iter()
-            .filter_map(claude_record_identity)
-            .any(|recent_id| &recent_id == anchor_id)
-    });
-    if already_in_recent {
-        return recent;
-    }
-    let mut values = Vec::with_capacity(recent.len() + 1);
-    values.push(anchor);
-    values.extend(recent);
-    values
-}
-
-fn claude_record_identity(value: &Value) -> Option<String> {
-    string_field(value, &["uuid", "id", "message_id"])
-        .or_else(|| string_field(value.get("message").unwrap_or(value), &["id"]))
-        .or_else(|| {
-            string_field(value, &["sessionId", "session_id"]).and_then(|session_id| {
-                let timestamp = string_field(value, &["timestamp"])?;
-                let record_type = string_field(value, &["type"])?;
-                Some(format!("{session_id}:{record_type}:{timestamp}"))
-            })
-        })
+        .collect()
 }
 
 fn read_recent_jsonl_lines(path: &Path) -> Vec<String> {
@@ -3039,6 +3074,48 @@ mod tests {
         assert!(turns
             .iter()
             .any(|turn| turn.text.starts_with("claude message completed")));
+    }
+
+    #[test]
+    fn reads_changed_claude_observed_turns_reuses_cached_user_anchor() {
+        let temp = temp_dir("claude-observed-cached-user");
+        let root = temp.path();
+        let session_dir = root.join("projects").join("-repo");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("session-1.jsonl");
+        let mut lines = vec![
+            "{\"type\":\"user\",\"uuid\":\"u-window\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run a long cached Claude external drill.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}".to_string(),
+        ];
+        for index in 0..MAX_JSONL_LINES + 25 {
+            lines.push(format!(
+                "{{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:02.{index:03}Z\"}}"
+            ));
+        }
+        fs::write(&transcript, format!("{}\n", lines.join("\n"))).unwrap();
+
+        reset_jsonl_read_counts();
+        let first = read_claude_observed_turns(root, "session-1");
+        assert_eq!(jsonl_prefix_read_count(), 2);
+        assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(first[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(first[0].text, "Run a long cached Claude external drill.");
+
+        let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(
+            file,
+            "{{\"type\":\"assistant\",\"uuid\":\"a-after-cache\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{{\"type\":\"text\",\"text\":\"CACHE_REUSED_CLAUDE_REPLY\"}}]}},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}}"
+        )
+        .unwrap();
+
+        reset_jsonl_read_counts();
+        let appended = read_claude_observed_turns(root, "session-1");
+        assert_eq!(jsonl_prefix_read_count(), 0);
+        assert_eq!(jsonl_recent_read_count(), 1);
+        assert_eq!(appended[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(appended[0].text, "Run a long cached Claude external drill.");
+        assert!(appended
+            .iter()
+            .any(|turn| turn.text == "CACHE_REUSED_CLAUDE_REPLY"));
     }
 
     #[test]
