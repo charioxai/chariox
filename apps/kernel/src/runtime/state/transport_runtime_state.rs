@@ -43,10 +43,32 @@ impl KernelRuntimeState {
         self.owned.terminal_stream.change_sequence()
     }
 
+    pub(crate) fn terminal_attachment_change_sequence(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> u64 {
+        self.owned
+            .terminal_stream
+            .attachment_change_sequence(session_id, attachment_id)
+    }
+
     pub(crate) async fn wait_for_terminal_stream_change_after(&self, sequence: u64) {
         self.owned
             .terminal_stream
             .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_terminal_attachment_change_after(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        sequence: u64,
+    ) {
+        self.owned
+            .terminal_stream
+            .wait_for_attachment_change_after(session_id, attachment_id, sequence)
             .await;
     }
 

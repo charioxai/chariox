@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -115,6 +115,7 @@ impl TerminalStreamHealthStore {
 pub struct TerminalStreamStore {
     inner: Arc<StdMutex<TerminalStreamService>>,
     changes: Arc<TerminalStreamChangeSignal>,
+    attachment_changes: Arc<StdMutex<BTreeMap<(String, String), Arc<TerminalStreamChangeSignal>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -128,6 +129,7 @@ impl TerminalStreamStore {
         Self {
             inner: Arc::new(StdMutex::new(TerminalStreamService::new())),
             changes: Arc::new(TerminalStreamChangeSignal::default()),
+            attachment_changes: Arc::new(StdMutex::new(BTreeMap::new())),
         }
     }
 
@@ -141,6 +143,29 @@ impl TerminalStreamStore {
         }
         let notified = self.changes.notify.notified();
         if self.change_sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+
+    pub fn attachment_change_sequence(&self, session_id: &str, attachment_id: &str) -> u64 {
+        self.attachment_signal(session_id, attachment_id)
+            .sequence
+            .load(Ordering::Acquire)
+    }
+
+    pub async fn wait_for_attachment_change_after(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        sequence: u64,
+    ) {
+        let signal = self.attachment_signal(session_id, attachment_id);
+        if signal.sequence.load(Ordering::Acquire) != sequence {
+            return;
+        }
+        let notified = signal.notify.notified();
+        if signal.sequence.load(Ordering::Acquire) != sequence {
             return;
         }
         notified.await;
@@ -190,7 +215,7 @@ impl TerminalStreamStore {
                 recipient_attachment_ids,
                 bytes,
             );
-        self.record_change();
+        self.record_change_for_record(&record);
         record
     }
 
@@ -204,7 +229,7 @@ impl TerminalStreamStore {
             .expect("terminal stream lock should not be poisoned")
             .fan_out_outputs(outputs);
         if !records.is_empty() {
-            self.record_change();
+            self.record_change_for_records(&records);
         }
         records
     }
@@ -233,7 +258,7 @@ impl TerminalStreamStore {
                 recipient_attachment_ids,
                 bytes,
             );
-        self.record_change();
+        self.record_change_for_record(&record);
         record
     }
 
@@ -256,7 +281,7 @@ impl TerminalStreamStore {
                 recipient_attachment_ids,
                 message,
             );
-        self.record_change();
+        self.record_change_for_notice(&record);
         record
     }
 
@@ -318,7 +343,7 @@ impl TerminalStreamStore {
                 message_id,
                 completed_at_ms,
             );
-        self.record_change();
+        self.record_change_for_completion(&record);
         record
     }
 
@@ -349,6 +374,10 @@ impl TerminalStreamStore {
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .remove_session(session_id);
+        self.attachment_changes
+            .lock()
+            .expect("terminal attachment change lock should not be poisoned")
+            .retain(|(signal_session_id, _), _| signal_session_id != session_id);
         self.record_change();
     }
 
@@ -359,6 +388,10 @@ impl TerminalStreamStore {
             .expect("terminal stream lock should not be poisoned")
             .remove_attachment(session_id, attachment_id);
         if changed {
+            self.attachment_changes
+                .lock()
+                .expect("terminal attachment change lock should not be poisoned")
+                .remove(&(session_id.to_string(), attachment_id.to_string()));
             self.record_change();
         }
     }
@@ -370,6 +403,61 @@ impl TerminalStreamStore {
     fn record_change(&self) {
         self.changes.sequence.fetch_add(1, Ordering::AcqRel);
         self.changes.notify.notify_waiters();
+    }
+
+    fn record_change_for_record(&self, record: &TerminalOutputRecord) {
+        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+    }
+
+    fn record_change_for_records(&self, records: &[TerminalOutputRecord]) {
+        let mut keys = BTreeSet::new();
+        for record in records {
+            for attachment_id in &record.recipient_attachment_ids {
+                keys.insert((record.session_id.clone(), attachment_id.clone()));
+            }
+        }
+        self.record_change_for_keys(keys);
+    }
+
+    fn record_change_for_notice(&self, record: &RuntimeNoticeRecord) {
+        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+    }
+
+    fn record_change_for_completion(&self, record: &AssistantMessageCompletionRecord) {
+        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
+    }
+
+    fn record_change_for_attachment_ids(&self, session_id: &str, attachment_ids: &[String]) {
+        let keys = attachment_ids
+            .iter()
+            .map(|attachment_id| (session_id.to_string(), attachment_id.clone()))
+            .collect::<BTreeSet<_>>();
+        self.record_change_for_keys(keys);
+    }
+
+    fn record_change_for_keys(&self, keys: BTreeSet<(String, String)>) {
+        if keys.is_empty() {
+            self.record_change();
+            return;
+        }
+        for (session_id, attachment_id) in keys {
+            let signal = self.attachment_signal(&session_id, &attachment_id);
+            signal.sequence.fetch_add(1, Ordering::AcqRel);
+            signal.notify.notify_waiters();
+        }
+    }
+
+    fn attachment_signal(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Arc<TerminalStreamChangeSignal> {
+        self.attachment_changes
+            .lock()
+            .expect("terminal attachment change lock should not be poisoned")
+            .entry((session_id.to_string(), attachment_id.to_string()))
+            .or_default()
+            .clone()
     }
 }
 
@@ -1882,11 +1970,13 @@ mod tests {
     #[tokio::test]
     async fn terminal_stream_store_notifies_waiters_on_output() {
         let terminal = TerminalStreamStore::new();
-        let sequence = terminal.change_sequence();
+        let sequence = terminal.attachment_change_sequence("session-1", "attachment-1");
         let waiter = {
             let terminal = terminal.clone();
             tokio::spawn(async move {
-                terminal.wait_for_change_after(sequence).await;
+                terminal
+                    .wait_for_attachment_change_after("session-1", "attachment-1", sequence)
+                    .await;
             })
         };
 
@@ -1904,7 +1994,33 @@ mod tests {
             .await
             .expect("terminal stream waiter should wake")
             .expect("terminal stream waiter task should complete");
-        assert!(terminal.change_sequence() > sequence);
+        assert!(terminal.attachment_change_sequence("session-1", "attachment-1") > sequence);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_does_not_wake_unrelated_attachment_waiters() {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.attachment_change_sequence("session-1", "attachment-2");
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            None,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"output",
+        );
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                terminal.wait_for_attachment_change_after("session-1", "attachment-2", sequence),
+            )
+            .await
+            .is_err(),
+            "unrelated attachment waiter should not wake"
+        );
     }
 
     #[tokio::test]

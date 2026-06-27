@@ -325,7 +325,9 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        let terminal_change_sequence = router.terminal_stream_change_sequence();
+        let terminal_attachment_change_sequence =
+            router.terminal_attachment_change_sequence(&session_id, &attachment_id);
+        let terminal_global_change_sequence = router.terminal_stream_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -564,7 +566,12 @@ pub(super) async fn run_relay_subscription_loop(
             Duration::from_millis(wait_ms),
             async {
                 tokio::select! {
-                    _ = router.wait_for_terminal_stream_change_after(terminal_change_sequence) => {}
+                    _ = router.wait_for_terminal_attachment_change_after(
+                        &session_id,
+                        &attachment_id,
+                        terminal_attachment_change_sequence
+                    ) => {}
+                    _ = router.wait_for_terminal_stream_change_after(terminal_global_change_sequence) => {}
                     _ = router.wait_for_session_projection_change_after(session_projection_change_sequence) => {}
                 }
             },
