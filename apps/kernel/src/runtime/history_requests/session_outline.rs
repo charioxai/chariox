@@ -794,6 +794,80 @@ mod tests {
     }
 
     #[test]
+    fn outline_external_turn_uses_hidden_state_settlement_without_rendering_it() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external prompt",
+            "claude",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let external_assistant = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "final output",
+            "claude",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_100),
+        );
+        let mut hidden_settlement = SessionHistoryEntry::external_provider_observed_with_merge_key(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "",
+            "claude",
+            "thread-1",
+            Some(crate::history::external_provider_observed_state_merge_key(
+                "claude",
+                "thread-1",
+                "active_prompt_settled",
+                "external:claude:thread-1:assistant-1",
+            )),
+            Some("turn-1".to_string()),
+            Some(2_200),
+        );
+        hidden_settlement.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: true,
+                passive_telemetry: false,
+            });
+        let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+        let assistant = HistoryEvent::transcript(11, &external_assistant, context.clone());
+        let settlement = HistoryEvent::transcript(12, &hidden_settlement, context);
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant, settlement])
+            .expect("external completed turn should be outlined");
+
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.completed_at_ms, Some(2_200));
+        assert!(
+            turn.entries.is_empty(),
+            "hidden state rows should not render"
+        );
+        assert!(turn.blobs.is_empty(), "hidden state rows should not render");
+        assert_eq!(
+            turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+            Some("final output")
+        );
+    }
+
+    #[test]
     fn agent_outline_makes_legacy_duplicate_turn_ids_unique() {
         let path = std::env::temp_dir().join(format!(
             "arroba-duplicate-turn-outline-{}-{}.db",

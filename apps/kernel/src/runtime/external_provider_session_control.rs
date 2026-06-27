@@ -11,8 +11,8 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::history::{
-    ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntrySource,
-    SessionHistoryExternalObservation,
+    external_provider_observed_state_merge_key, ExternalImportHistoryEntry, SessionHistoryEntry,
+    SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -917,6 +917,16 @@ fn append_observed_external_turns_for_attached_target_with_options(
         active_prompt_changed && latest_active_prompt.is_none();
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
+    if outcome.external_active_prompt_settled && !latest_observation_settles {
+        persist_observed_external_settlement_history_signal(
+            app,
+            &read.target,
+            provider_run_id.as_deref(),
+            state_signal_merge_key.as_deref(),
+            visible_provider_turn_id.as_deref(),
+            last_cursor.last_observed_at_ms,
+        );
+    }
     if changed > 0 || cursor_changed {
         persist_attached_external_observer_cursor(app, &read.target, last_cursor)?;
         let _ = crate::app::KernelSessionReadService::new(app)
@@ -939,6 +949,45 @@ fn append_observed_external_turns_for_attached_target_with_options(
         );
     }
     Ok(outcome)
+}
+
+fn persist_observed_external_settlement_history_signal(
+    app: &DaemonApp,
+    target: &AttachedExternalObserverTarget,
+    provider_run_id: Option<&str>,
+    latest_merge_key: Option<&str>,
+    provider_turn_id: Option<&str>,
+    observed_at_ms: Option<u64>,
+) {
+    let Some(latest_merge_key) = latest_merge_key else {
+        return;
+    };
+    let Some(provider_turn_id) = provider_turn_id else {
+        return;
+    };
+    let merge_key = external_provider_observed_state_merge_key(
+        &target.provider,
+        &target.provider_session_id,
+        "active_prompt_settled",
+        latest_merge_key,
+    );
+    let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
+        &target.session_id,
+        provider_run_id,
+        &target.agent_id,
+        SessionHistoryEntryKind::ProviderStatus,
+        "",
+        &target.provider,
+        &target.provider_session_id,
+        Some(merge_key.clone()),
+        Some(provider_turn_id.to_string()),
+        observed_at_ms.or_else(|| Some(crate::session::unix_epoch_ms())),
+    );
+    entry.external_observation = Some(SessionHistoryExternalObservation {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+    });
+    app.replace_history_entry_by_merge_key_or_append(&target.session_id, &merge_key, entry);
 }
 
 fn latest_observed_external_turns_by_merge_key(
@@ -3180,6 +3229,39 @@ mod tests {
                 .expect("active prompt should load")
                 .is_none(),
             "Claude passive telemetry after assistant output must not keep the external turn working"
+        );
+        let events = app
+            .operational_history_store()
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(agent.id().to_string()),
+                limit: Some(20),
+                ..crate::history::HistoryEventQuery::default()
+            })
+            .expect("history events should load");
+        let settlement = events
+            .iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .find(|entry| {
+                entry
+                    .merge_key
+                    .as_deref()
+                    .is_some_and(|merge_key| merge_key.contains(":state:active_prompt_settled:"))
+            })
+            .expect("implicit Claude settlement must be durable history");
+        assert_eq!(settlement.text, "");
+        assert_eq!(
+            settlement.external_provider_turn_id.as_deref(),
+            Some("user-1"),
+            "durable settlement must group with the external prompt turn"
+        );
+        assert_eq!(settlement.observed_at_ms, Some(126));
+        assert_eq!(
+            settlement
+                .external_observation
+                .as_ref()
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
         );
     }
 
