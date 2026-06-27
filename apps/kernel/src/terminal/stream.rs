@@ -382,6 +382,7 @@ pub struct TerminalStreamService {
     last_output_record_id: Option<u64>,
     notice_records: BTreeMap<u64, RuntimeNoticeRecord>,
     pending_notice_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
+    pending_broadcast_notice_by_session: BTreeMap<String, VecDeque<u64>>,
     next_notice_record_id: u64,
     completion_records: BTreeMap<u64, AssistantMessageCompletionRecord>,
     pending_completion_by_attachment: BTreeMap<(String, String), VecDeque<u64>>,
@@ -621,11 +622,20 @@ impl TerminalStreamService {
     fn push_notice_record(&mut self, record: RuntimeNoticeRecord) -> u64 {
         let record_id = self.next_notice_record_id;
         self.next_notice_record_id = self.next_notice_record_id.saturating_add(1);
-        for attachment_id in &record.pending_recipient_attachment_ids {
-            self.pending_notice_by_attachment
-                .entry((record.session_id.clone(), attachment_id.clone()))
+        if record.recipient_attachment_ids.is_empty()
+            && record.pending_recipient_attachment_ids.is_empty()
+        {
+            self.pending_broadcast_notice_by_session
+                .entry(record.session_id.clone())
                 .or_default()
                 .push_back(record_id);
+        } else {
+            for attachment_id in &record.pending_recipient_attachment_ids {
+                self.pending_notice_by_attachment
+                    .entry((record.session_id.clone(), attachment_id.clone()))
+                    .or_default()
+                    .push_back(record_id);
+            }
         }
         self.notice_records.insert(record_id, record);
         record_id
@@ -891,14 +901,9 @@ impl TerminalStreamService {
             .map(|queue| queue.iter().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         notice_ids.extend(
-            self.notice_records
-                .iter()
-                .filter_map(|(record_id, record)| {
-                    (record.session_id == session_id
-                        && record.recipient_attachment_ids.is_empty()
-                        && record.pending_recipient_attachment_ids.is_empty())
-                    .then_some(*record_id)
-                }),
+            self.pending_broadcast_notice_by_session
+                .remove(session_id)
+                .unwrap_or_default(),
         );
         notice_ids.sort_unstable();
         notice_ids.dedup();
@@ -974,6 +979,7 @@ impl TerminalStreamService {
             .retain(|_, record| record.session_id != session_id);
         self.pending_notice_by_attachment
             .retain(|(pending_session_id, _), _| pending_session_id != session_id);
+        self.pending_broadcast_notice_by_session.remove(session_id);
         self.completion_records
             .retain(|_, record| record.session_id != session_id);
         self.pending_completion_by_attachment
@@ -1007,13 +1013,9 @@ impl TerminalStreamService {
             }
         }
         let broadcast_notice_ids = self
-            .notice_records
-            .iter()
-            .filter_map(|(record_id, record)| {
-                (record.session_id == session_id && record.recipient_attachment_ids.is_empty())
-                    .then_some(*record_id)
-            })
-            .collect::<Vec<_>>();
+            .pending_broadcast_notice_by_session
+            .remove(session_id)
+            .unwrap_or_default();
         changed |= !broadcast_notice_ids.is_empty();
         for record_id in broadcast_notice_ids {
             self.notice_records.remove(&record_id);
@@ -1677,6 +1679,39 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert!(terminal.pending_notice_by_attachment.is_empty());
         assert!(terminal.notice_records().is_empty());
+    }
+
+    #[test]
+    fn broadcast_notice_pending_index_tracks_session_drain() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_notice("session-1", None, None, Vec::new(), "broadcast notice");
+        terminal.record_notice("session-2", None, None, Vec::new(), "other session notice");
+
+        assert_eq!(
+            terminal
+                .pending_broadcast_notice_by_session
+                .get("session-1")
+                .map(VecDeque::len),
+            Some(1)
+        );
+        assert_eq!(
+            terminal
+                .pending_broadcast_notice_by_session
+                .get("session-2")
+                .map(VecDeque::len),
+            Some(1)
+        );
+
+        let first = terminal.drain_notice_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].message, "broadcast notice");
+        assert!(!terminal
+            .pending_broadcast_notice_by_session
+            .contains_key("session-1"));
+        assert!(terminal
+            .pending_broadcast_notice_by_session
+            .contains_key("session-2"));
+        assert_eq!(terminal.notice_records().len(), 1);
     }
 
     #[test]
