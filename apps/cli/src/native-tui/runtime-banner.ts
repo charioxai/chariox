@@ -10,7 +10,13 @@ import {
   formatExtensionGrantRuntimeDetail,
 } from "@arroba/kernel-client/extension-grant-placement"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
-import { formatSliceProviderAccounts, formatSliceProviderAuthReadiness, formatSliceScope } from "../slice-format.js"
+import {
+  formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
+  formatSliceProviderList,
+  formatSliceScope,
+  sliceProviderAuthCoverage,
+} from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
 
@@ -136,10 +142,29 @@ function formatSliceLines(
       `  slice:          ${formatSliceSummary(slice)}`,
       `  slice auth:     ${formatSliceProviderAuthReadiness(slice)}`,
       `  slice accounts: ${formatSliceProviderAccounts(slice)}`,
+      ...formatSliceAuthNextLines(slice),
     ]
   }
   if (agent.remote_execution && sliceLookupError) {
     return [`  slice lookup:   ${sliceLookupError}`]
+  }
+  return []
+}
+
+function formatSliceAuthNextLines(slice: SliceRecord): string[] {
+  const coverage = sliceProviderAuthCoverage(slice)
+  const sliceRef = slice.name || slice.id
+  if (coverage.missingProviders.length > 0) {
+    const provider = coverage.missingProviders[0]!
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.missingProviders)} with /slice auth import ${sliceRef} ${provider} or /slice auth login ${sliceRef} ${provider}`,
+    ]
+  }
+  if (coverage.staleProviders.length > 0) {
+    const provider = coverage.staleProviders[0]!
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.staleProviders)} with /slice auth login ${sliceRef} ${provider}`,
+    ]
   }
   return []
 }

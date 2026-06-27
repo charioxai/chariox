@@ -50,6 +50,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /slice:          linux-dev \(id=slice-1, status=running, display=headed, worktree=\/repo\/worktrees\/feature, agents=1\)/)
   assert.match(banner, /slice auth:     ready codex/)
   assert.match(banner, /slice accounts: codex=work \(work@example.com\)/)
+  assert.doesNotMatch(banner, /slice next:/)
   assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
@@ -83,6 +84,7 @@ test("native TUI runtime banner calls out missing slice provider auth", () => {
   assert.match(banner, /placement:      slice linux-dev/)
   assert.match(banner, /slice auth:     missing codex, opencode:openai/)
   assert.match(banner, /slice accounts: none/)
+  assert.match(banner, /slice next:     run \/slice doctor linux-dev; configure missing provider accounts codex, opencode:openai with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
 })
 
 test("native TUI runtime banner can show explicit slice lookup failures", () => {
