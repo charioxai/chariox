@@ -93,6 +93,17 @@ impl ExternalProviderSessionAttachment {
         self.agent_ids_by_session_id.remove(session_id).is_some()
     }
 
+    fn remove_agent(&mut self, session_id: &str, agent_id: &str) -> bool {
+        let Some(agent_ids) = self.agent_ids_by_session_id.get_mut(session_id) else {
+            return false;
+        };
+        let removed = agent_ids.remove(agent_id);
+        if agent_ids.is_empty() {
+            self.agent_ids_by_session_id.remove(session_id);
+        }
+        removed
+    }
+
     fn is_empty(&self) -> bool {
         self.agent_ids_by_session_id.is_empty()
     }
@@ -211,6 +222,30 @@ impl ExternalProviderSessionIndexStore {
         let mut changed_external_session_ids = Vec::new();
         index.attached.retain(|external_session_id, attachment| {
             if attachment.remove_session(session_id) {
+                changed_external_session_ids.push(external_session_id.clone());
+            }
+            !attachment.is_empty()
+        });
+        for external_session_id in changed_external_session_ids {
+            let attachment = index.attached.get(&external_session_id).cloned();
+            if let Some(session) = index.sessions.get_mut(&external_session_id) {
+                if let Some(attachment) = attachment.as_ref() {
+                    apply_attachment_marker(session, attachment);
+                } else {
+                    clear_attachment_marker(session);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn detach_agent(&self, session_id: &str, agent_id: &str) {
+        let mut index = self
+            .inner
+            .write()
+            .expect("external provider session index poisoned");
+        let mut changed_external_session_ids = Vec::new();
+        index.attached.retain(|external_session_id, attachment| {
+            if attachment.remove_agent(session_id, agent_id) {
                 changed_external_session_ids.push(external_session_id.clone());
             }
             !attachment.is_empty()
@@ -492,6 +527,60 @@ mod tests {
             })
             .sessions
             .is_empty());
+    }
+
+    #[test]
+    fn detach_agent_returns_provider_session_to_attachable_list() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 30));
+        store.mark_attached("codex:thread-1", "session-1", "agent-1");
+
+        store.detach_agent("session-1", "agent-1");
+
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        });
+        assert_eq!(page.sessions.len(), 1);
+        assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+        assert!(page.sessions[0].is_attachable_to_arroba());
+        assert_eq!(page.sessions[0].first_attached_session_id(), None);
+        assert_eq!(page.sessions[0].first_attached_agent_id(), None);
+    }
+
+    #[test]
+    fn detach_agent_preserves_other_agent_attachments() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 30));
+        store.mark_attached("codex:thread-1", "session-1", "agent-1");
+        store.mark_attached("codex:thread-1", "session-1", "agent-2");
+        store.mark_attached("codex:thread-1", "session-2", "agent-3");
+
+        store.detach_agent("session-1", "agent-1");
+
+        let session = store
+            .get("codex:thread-1")
+            .expect("session should remain indexed");
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.attached_session_ids, vec!["session-1", "session-2"]);
+        assert_eq!(session.attached_agent_ids, vec!["agent-2", "agent-3"]);
+        assert!(store
+            .list(&ListExternalProviderSessionsRequest {
+                provider: Some("codex".to_string()),
+                cursor: None,
+                limit: None,
+            })
+            .sessions
+            .is_empty());
+
+        store.detach_agent("session-1", "agent-2");
+        let session = store
+            .get("codex:thread-1")
+            .expect("session should remain indexed");
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.attached_session_ids, vec!["session-2"]);
+        assert_eq!(session.attached_agent_ids, vec!["agent-3"]);
     }
 
     fn record(

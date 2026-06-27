@@ -55,9 +55,11 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
-        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
-        UpdateAgentConfigRequest, UpdateSessionConfigRequest,
+        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
+        ExternalProviderSessionCapabilities, ExternalProviderSessionRecord, FocusAgentRequest,
+        ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+        PollRuntimeNoticesRequest, ResizeTerminalRequest, UpdateAgentConfigRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
     use crate::runtime::command::KernelCommand;

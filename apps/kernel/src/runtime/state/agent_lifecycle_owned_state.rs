@@ -263,7 +263,11 @@ impl KernelRuntimeOwnedState {
             std::collections::VecDeque::new(),
         )?;
         let mut sessions = self.session_store.write();
-        self.agent_store.destroy_agent(agent_id, &mut sessions)
+        let destroyed = self.agent_store.destroy_agent(agent_id, &mut sessions)?;
+        drop(sessions);
+        self.external_provider_sessions
+            .detach_agent(&session_id, agent_id);
+        Ok(destroyed)
     }
 
     pub(super) fn focus_agent(

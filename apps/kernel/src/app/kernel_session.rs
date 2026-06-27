@@ -2208,9 +2208,15 @@ impl<'a> KernelSessionService<'a> {
                 ),
             )?;
         }
+        let session_id = agent.session_id().to_string();
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        self.app.agents.destroy_agent(agent_id, &mut sessions)
+        let destroyed = self.app.agents.destroy_agent(agent_id, &mut sessions)?;
+        drop(sessions);
+        self.app
+            .external_provider_session_index_store()
+            .detach_agent(&session_id, agent_id);
+        Ok(destroyed)
     }
 
     pub(crate) fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {

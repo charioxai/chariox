@@ -243,6 +243,20 @@ impl KernelRuntimeState {
         metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
+        let external_provider_sessions = {
+            let started = Instant::now();
+            loop {
+                if let Ok(app) = app.try_lock() {
+                    break app.external_provider_session_index_store();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!(
+                        "KernelRuntimeState could not acquire the app lock for external provider sessions during bootstrap"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         Self::new_with_owned_state_and_lanes(
             app,
             ProviderRunOperationLanes::default(),
@@ -252,7 +266,7 @@ impl KernelRuntimeState {
             attachment_store,
             provider_store,
             provider_process_tracking,
-            ExternalProviderSessionIndexStore::default(),
+            external_provider_sessions,
             slice_store,
             session_projection,
             provider_run_projection,

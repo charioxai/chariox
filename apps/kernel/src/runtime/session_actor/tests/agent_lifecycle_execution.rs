@@ -442,6 +442,17 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
             .expect("extra agent should be created");
         let provider_run =
             launch_dev_stub_provider(&mut app_locked, session.id(), extra_agent.id(), "opus");
+        let external_sessions = app_locked.external_provider_session_index_store();
+        external_sessions.upsert(external_provider_session_record(
+            "codex",
+            "destroyed-agent-thread",
+            30,
+        ));
+        external_sessions.mark_attached(
+            "codex:destroyed-agent-thread",
+            session.id(),
+            extra_agent.id(),
+        );
         assert_ne!(default_agent.id(), extra_agent.id());
         (
             session.id().to_string(),
@@ -514,6 +525,22 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
         crate::provider::ProviderRunState::Ended,
         "destroying an agent should end its provider run"
     );
+    let page = _locked_app.external_provider_session_index_store().list(
+        &ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        },
+    );
+    assert_eq!(
+        page.sessions
+            .iter()
+            .map(|session| session.external_session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["codex:destroyed-agent-thread"],
+        "destroying an attached agent should return its provider thread to the unattached list"
+    );
+    assert!(page.sessions[0].is_attachable_to_arroba());
 }
 
 #[tokio::test]
@@ -621,6 +648,31 @@ fn temp_git_repo(label: &str) -> std::path::PathBuf {
     run_git(&root, &["add", "README.md"]);
     run_git(&root, &["commit", "-m", "initial"]);
     root
+}
+
+fn external_provider_session_record(
+    provider: &str,
+    provider_session_id: &str,
+    last_modified_at_ms: u64,
+) -> ExternalProviderSessionRecord {
+    ExternalProviderSessionRecord {
+        external_session_id: format!("{provider}:{provider_session_id}"),
+        provider: provider.to_string(),
+        provider_session_id: provider_session_id.to_string(),
+        title: Some(provider_session_id.to_string()),
+        title_source: Some("test".to_string()),
+        first_prompt_preview: None,
+        created_at_ms: None,
+        last_modified_at_ms,
+        worktree_path: None,
+        account_profile: None,
+        capabilities: ExternalProviderSessionCapabilities {
+            ..ExternalProviderSessionCapabilities::default()
+        },
+        attached_to_arroba: false,
+        attached_session_ids: Vec::new(),
+        attached_agent_ids: Vec::new(),
+    }
 }
 
 fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
