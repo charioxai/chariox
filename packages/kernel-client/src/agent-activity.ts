@@ -8,12 +8,29 @@ export type AgentRuntimeActivityBusyInput = {
 export function agentRuntimeActivityIsBusy(
   activity: AgentRuntimeActivityBusyInput | null | undefined,
 ): boolean {
+  const status = normalizeAgentRuntimeActivityStatus(activity?.status)
+  const promptStatus = normalizeAgentRuntimePromptStatus(activity?.prompt_status)
   return Boolean(activity && (
     activity.busy === true
-    || activity.status === "working"
-    || (activity.prompt_status !== undefined
-      && activity.prompt_status !== null
-      && activity.prompt_status !== "none")
+    || status === "working"
+    || agentRuntimePromptStatusIsActive(promptStatus)
     || activity.active_turn
   ))
+}
+
+function normalizeAgentRuntimeActivityStatus(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase()
+  return normalized || null
+}
+
+function normalizeAgentRuntimePromptStatus(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase()
+  return normalized || null
+}
+
+function agentRuntimePromptStatusIsActive(value: string | null): boolean {
+  return value === "queued"
+    || value === "running"
+    || value === "cancelling"
+    || value === "settling"
 }

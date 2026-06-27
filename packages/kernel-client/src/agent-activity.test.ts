@@ -23,10 +23,35 @@ test("agent activity busy helper follows kernel projected activity semantics", (
     busy: false,
   }), true)
   assert.equal(agentRuntimeActivityIsBusy({
+    status: " Working ",
+    prompt_status: "none",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
     prompt_status: "settling",
     busy: false,
   }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: " Cancelling ",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "completed",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "cancelled",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "unknown",
+    busy: false,
+  }), false)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
     prompt_status: "none",
