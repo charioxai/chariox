@@ -390,7 +390,10 @@ mod tests {
     use crate::provider::{
         LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
     };
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults};
+    use crate::session::{
+        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        SessionAgentDefaults,
+    };
 
     use super::*;
     use crate::app::sanitize_resume_state_for_launch;
@@ -1125,6 +1128,101 @@ mod tests {
                 .expect("run should still exist")
                 .state(),
             ProviderRunState::Running,
+        );
+    }
+
+    #[test]
+    fn detaching_last_attachment_keeps_background_active_prompt_run_running() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let background_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("background"))
+            .expect("background agent should spawn");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        let background_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(background_agent.id()),
+            )
+            .expect("background provider launch should succeed");
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            PromptQueueItem::new(
+                "prompt-background-active",
+                attachment.id(),
+                background_agent.id(),
+                "background active prompt",
+                PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("background prompt should start");
+        app.focus_agent(session.id(), focused_agent.id())
+            .expect("focused agent should be restored");
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            PromptQueueItem::new(
+                "prompt-focused-queued",
+                attachment.id(),
+                focused_agent.id(),
+                "focused queued prompt",
+                PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("focused prompt should queue");
+        app.sessions
+            .set_active_provider_run(session.id(), Some(background_run.id().to_string()))
+            .expect("background run should be active");
+        let projected_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(
+            projected_session.active_prompt().is_none(),
+            "legacy focused prompt projection intentionally has no active prompt"
+        );
+        assert!(
+            projected_session.has_any_active_prompt(),
+            "per-agent prompt state still has active work"
+        );
+        assert!(
+            app.prompt_owner_has_any_active_prompt(session.id())
+                .expect("prompt owner should read session"),
+            "prompt owner should still have background active work before detach"
+        );
+
+        app.detach(attachment.id())
+            .expect("detaching should leave background active prompt state");
+
+        assert_eq!(
+            app.providers()
+                .get_run(background_run.id())
+                .expect("background run should remain")
+                .state(),
+            ProviderRunState::Running
+        );
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should remain")
+                .active_provider_run_id(),
+            Some(background_run.id())
         );
     }
 

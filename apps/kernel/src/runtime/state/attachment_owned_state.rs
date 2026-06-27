@@ -130,10 +130,10 @@ impl KernelRuntimeOwnedState {
         let remaining_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(attachment.session_id());
-        let active_prompt_agent_id = self
+        let has_active_prompt = self
             .prompt_state_owner
-            .active_prompt_agent_id(&self.session_snapshot(attachment.session_id())?);
-        if remaining_attachment_ids.is_empty() && active_prompt_agent_id.is_none() {
+            .has_any_active_prompt(&self.session_snapshot(attachment.session_id())?);
+        if remaining_attachment_ids.is_empty() && !has_active_prompt {
             if let Some(active_provider_run_id) = session_after_detach
                 .active_provider_run_id()
                 .map(str::to_string)

@@ -2269,7 +2269,10 @@ impl<'a> KernelSessionService<'a> {
             .app
             .attachments
             .list_session_attachment_ids(attachment.session_id());
-        if remaining_attachment_ids.is_empty() && session_after_detach.active_prompt().is_none() {
+        let has_active_prompt = self
+            .app
+            .prompt_owner_has_any_active_prompt(attachment.session_id())?;
+        if remaining_attachment_ids.is_empty() && !has_active_prompt {
             if let Some(active_provider_run_id) = session_after_detach
                 .active_provider_run_id()
                 .map(str::to_string)

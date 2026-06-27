@@ -34,6 +34,14 @@ impl DaemonApp {
         Ok(self.prompt_state_owner.active_prompt_agent_id(&session))
     }
 
+    pub(crate) fn prompt_owner_has_any_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        Ok(self.prompt_state_owner.has_any_active_prompt(&session))
+    }
+
     pub(crate) fn prompt_owner_queued_prompt_count_for_agent(
         &mut self,
         session_id: &str,
