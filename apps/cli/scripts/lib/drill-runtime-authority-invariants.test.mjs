@@ -19,6 +19,7 @@ test("defines stable runtime authority invariant ids", () => {
     "primary-provider-run-per-agent",
     "projected-state-diagnostics",
     "relay-cloud-transport-only",
+    "session-scoped-agent-identity",
     "shared-runtime-primitives",
     "worker-execution-authority",
   ])
@@ -39,6 +40,13 @@ test("writes and validates runtime authority manifest", () => {
     "agent-lifecycle",
     "lease-health",
     "provider-run-lifecycle",
+    "session-authority",
+  ])
+  assert.deepEqual(drillRuntimeAuthorityInvariantSignals("session-scoped-agent-identity"), [
+    "agent-lifecycle",
+    "client-projection-health",
+    "lease-health",
+    "runtime-projection-health",
     "session-authority",
   ])
   assert.equal(isKnownDrillRuntimeAuthorityInvariant("shared-runtime-primitives"), true)

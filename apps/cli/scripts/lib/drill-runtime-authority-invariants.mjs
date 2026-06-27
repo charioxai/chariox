@@ -26,6 +26,11 @@ const RUNTIME_AUTHORITY_INVARIANTS = Object.freeze({
     description: "Projected remote state with authority implications has kernel-owned health or audit projection and validation-platform runtime-signal coverage.",
     requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"]),
   },
+  "session-scoped-agent-identity": {
+    owner: "kernel-authority",
+    description: "Every client, worker, relay lease, transcript event, and projection refers to agents by kernel-issued session-scoped identity; no surface may invent placeholder or cross-session agent ids.",
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "lease-health", "runtime-projection-health", "session-authority"]),
+  },
   "relay-cloud-transport-only": {
     owner: "runtime-network",
     description: "Relay and Cloud remain bootstrap, control-plane, or transport surfaces; neither inspects or mutates runtime prompts, provider payloads, workspace files, extension credentials, or session history.",
