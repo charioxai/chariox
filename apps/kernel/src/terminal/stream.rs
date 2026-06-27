@@ -795,16 +795,12 @@ impl TerminalStreamService {
         let mut drained = Vec::new();
         let mut drained_json_bytes: usize = 2;
         let key = (session_id.to_string(), attachment_id.to_string());
-        loop {
-            let Some(record_id) = self
-                .pending_output_by_attachment
-                .get(&key)
-                .and_then(|queue| queue.front().copied())
-            else {
-                break;
-            };
+        let mut pending_record_ids = self
+            .pending_output_by_attachment
+            .remove(&key)
+            .unwrap_or_default();
+        while let Some(record_id) = pending_record_ids.pop_front() {
             let Some(stored) = self.output_records.get(&record_id) else {
-                self.pop_pending_output_queue_front(&key);
                 continue;
             };
             let record = &stored.record;
@@ -817,31 +813,22 @@ impl TerminalStreamService {
                     .saturating_add(scoped_json_bytes)
             };
             if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
+                pending_record_ids.push_front(record_id);
                 break;
             }
             let scoped = scoped_output_record(record, attachment_id);
-            self.pop_pending_output_queue_front(&key);
             drained_json_bytes = candidate_json_bytes;
             drained.push(scoped);
             self.mark_output_record_drained_for_recipient(record_id, attachment_id);
             self.remove_output_record_if_drained(record_id);
         }
+        if !pending_record_ids.is_empty() {
+            self.pending_output_by_attachment
+                .insert(key, pending_record_ids);
+        }
 
         self.refresh_health();
         drained
-    }
-
-    fn pop_pending_output_queue_front(&mut self, key: &(String, String)) {
-        let empty = match self.pending_output_by_attachment.get_mut(key) {
-            Some(queue) => {
-                queue.pop_front();
-                queue.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            self.pending_output_by_attachment.remove(key);
-        }
     }
 
     fn remove_output_record_if_drained(&mut self, record_id: u64) {
