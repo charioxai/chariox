@@ -47,6 +47,83 @@ test("agent spawn command count inherits session defaults and launches each agen
   assert.equal(flashedMessage, "spawned 2 agents from session defaults")
 })
 
+test("agent spawn command count uses bulk spawn and launch when available", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+  let footerTone = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message, tone) => {
+      flashedMessage = message
+      footerTone = tone
+    },
+    formatError: (error) => String(error),
+    applySessionState: (nextSession) => {
+      calls.push(`apply:${nextSession.agents.length}`)
+      currentSession = nextSession
+    },
+    refreshAgentPanes: async (nextSession) => {
+      calls.push(`panes:${nextSession.agents.length}`)
+    },
+    rebuildTranscript: () => {
+      calls.push("rebuild")
+    },
+    launchAgentProviderRun: async () => {
+      throw new Error("single launch should not be used")
+    },
+    launchAgentProviderRuns: async (provider, model, variant, agentIds) => {
+      calls.push(`launch-batch:${provider}:${model}:${variant}:${agentIds.join(",")}`)
+      return {
+        runs: agentIds.map((agentId, index) => providerRun({ id: `run-${index + 1}`, agent_instance_id: agentId })),
+        failures: [],
+      }
+    },
+    setProviderRunState: (run) => {
+      calls.push(`run:${run?.id ?? "none"}`)
+    },
+    refreshSessionState: async () => {
+      calls.push("refresh-session")
+      return currentSession
+    },
+    spawnAgent: async () => {
+      throw new Error("single spawn should not be used")
+    },
+    spawnAgents: async (agents) => {
+      calls.push(`spawn-batch:${agents.length}`)
+      const spawned = agents.map((_, index) => {
+        const id = `agent-${index + 1}`
+        return agent({ id, agent_ref: id, provider: "codex", model: "codex/gpt-5.4", effort: "high" })
+      })
+      currentSession = session({ focused_agent_id: "agent-3", agents: [agent(), ...spawned] })
+      return { agents: spawned, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => {
+      calls.push("repaint")
+    },
+  }, ["3"])
+
+  assert.deepEqual(calls, [
+    "spawn-batch:3",
+    "apply:4",
+    "panes:4",
+    "launch-batch:codex:codex/gpt-5.4:high:agent-1,agent-2,agent-3",
+    "run:run-3",
+    "refresh-session",
+    "apply:4",
+    "panes:4",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "spawned 3 agents from session defaults")
+  assert.equal(footerTone, "info")
+})
+
 test("agent spawn command attaches an unattached agent as a new agent", async () => {
   let currentSession = session()
   const calls: string[] = []

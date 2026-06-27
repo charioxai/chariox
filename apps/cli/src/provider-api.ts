@@ -16,6 +16,7 @@ import {
   getProviderCommandCatalogsRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
+  launchProviderRunsRequest,
   listProviderProcessesRequest,
   logoutProviderRequest,
   startProviderLoginRequest,
@@ -158,6 +159,32 @@ export async function launchProviderRun(
     ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
     : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted")
   return payload.provider_run
+}
+
+export async function launchProviderRuns(
+  client: LocalIpcClient,
+  launches: Array<{
+    sessionId: string
+    provider: string
+    accountProfile: string
+    model: string
+    effort: string
+    agentId?: string | null
+  }>,
+  maxConcurrency?: number | null,
+): Promise<{
+  providerRuns: RuntimeProviderRun[]
+  failures: Array<{ index: number; agent_id?: string | null; message: string }>
+}> {
+  const response = await client.send<Record<string, unknown>>(launchProviderRunsRequest(launches, maxConcurrency))
+  const payload = expectVariant<{
+    provider_runs?: Array<{ provider_run: RuntimeProviderRun }>
+    failures?: Array<{ index: number; agent_id?: string | null; message: string }>
+  }>(response, "ProviderRunsLaunchAccepted")
+  return {
+    providerRuns: (payload.provider_runs ?? []).map((result) => result.provider_run),
+    failures: payload.failures ?? [],
+  }
 }
 
 export async function getProviderAuthStatus(

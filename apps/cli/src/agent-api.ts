@@ -11,6 +11,7 @@ import {
   focusAgentRequest,
   forkAgentRequest,
   spawnAgentRequest,
+  spawnAgentsRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
@@ -42,6 +43,10 @@ export type SpawnAgentOptions = {
   kernelRef?: string | undefined
   worktreePlacement?: Record<string, unknown> | undefined
   sliceRef?: string | undefined
+}
+
+export type SpawnAgentsOptions = {
+  agents: SpawnAgentOptions[]
 }
 
 export async function aliasAgent(
@@ -89,6 +94,30 @@ export async function spawnAgent(
   )
   const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
   return payload.agent
+}
+
+export async function spawnAgents(
+  client: LocalIpcClient,
+  sessionId: string,
+  options: SpawnAgentsOptions,
+): Promise<AgentInstance[]> {
+  const response = await client.send<Record<string, unknown>>(
+    spawnAgentsRequest(
+      sessionId,
+      options.agents.map((agent) => ({
+        provider: agent.provider ?? null,
+        alias: agent.alias ?? null,
+        model: agent.model ?? null,
+        worktreeId: agent.worktreeId ?? null,
+        effort: agent.effort ?? null,
+        kernelRef: agent.kernelRef ?? null,
+        worktreePlacement: agent.worktreePlacement ?? null,
+        sliceRef: agent.sliceRef ?? null,
+      })),
+    ),
+  )
+  const payload = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsSpawned")
+  return payload.agents
 }
 
 export async function undoTurn(
