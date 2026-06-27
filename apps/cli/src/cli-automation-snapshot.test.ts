@@ -176,6 +176,19 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         settles_active_prompt: true,
         passive_telemetry: false,
       },
+    }, {
+      id: 3,
+      role: "assistant",
+      text: "ordinary output",
+      source: "provider_output",
+      externalProvider: "opencode",
+      externalProviderSessionId: "thread-stale",
+      externalProviderTurnId: "turn-stale",
+      observedAtMs: 456,
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
     }],
     agentPaneEntries: () => ({
       "agent-1": [{
@@ -237,6 +250,14 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     agentId: "agent-1",
     status: "queued",
     steerDisabled: true,
+  })
+  assert.deepEqual(pickExternalFields((snapshot.transcript?.entries as Array<Record<string, unknown>>)[1]), {
+    source: "provider_output",
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+    observedAtMs: null,
+    externalObservation: null,
   })
 })
 
@@ -381,3 +402,14 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
     selectable: true,
   })
 })
+
+function pickExternalFields(entry: Record<string, unknown> | undefined): Record<string, unknown> {
+  return {
+    source: entry?.source,
+    externalProvider: entry?.externalProvider,
+    externalProviderSessionId: entry?.externalProviderSessionId,
+    externalProviderTurnId: entry?.externalProviderTurnId,
+    observedAtMs: entry?.observedAtMs,
+    externalObservation: entry?.externalObservation,
+  }
+}

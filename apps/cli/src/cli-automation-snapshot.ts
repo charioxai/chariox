@@ -1,4 +1,7 @@
 import type { ShellContext } from "@arroba/kernel-client/shell-core"
+import {
+  sessionHistoryEntryIsExternalProviderObserved,
+} from "@arroba/kernel-client/external-provider-observation"
 
 import type {
   RuntimeSession,
@@ -190,6 +193,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
 }
 
 function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unknown> {
+  const externallyObserved = sessionHistoryEntryIsExternalProviderObserved(entry)
   return {
     id: entry.id,
     role: entry.role,
@@ -206,11 +210,11 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
       }
       : null,
     source: entry.source ?? null,
-    externalProvider: entry.externalProvider ?? null,
-    externalProviderSessionId: entry.externalProviderSessionId ?? null,
-    externalProviderTurnId: entry.externalProviderTurnId ?? null,
-    observedAtMs: entry.observedAtMs ?? null,
-    externalObservation: entry.externalObservation ?? null,
+    externalProvider: externallyObserved ? entry.externalProvider ?? null : null,
+    externalProviderSessionId: externallyObserved ? entry.externalProviderSessionId ?? null : null,
+    externalProviderTurnId: externallyObserved ? entry.externalProviderTurnId ?? null : null,
+    observedAtMs: externallyObserved ? entry.observedAtMs ?? null : null,
+    externalObservation: externallyObserved ? entry.externalObservation ?? null : null,
     turnId: entry.turnId ?? null,
     hidden: entry.hidden ?? false,
     blobCollapsible: entry.blobCollapsible ?? false,
