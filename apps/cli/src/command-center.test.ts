@@ -66,6 +66,22 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
   assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show home authority, worker runs, slices, home-proxy tools, and live sync readiness")
 })
 
+test("buildCommandCenterItems includes session runtime status", () => {
+  const context = {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }
+  const items = buildCommandCenterItems("/session", context)
+  assert.equal(items.find((item) => item.value === "/session status")?.description, "Show current session owner, runtime placement, live sync, and blockers")
+
+  const discovered = new Set(buildCommandCenterItems("/session what is blocked", context).map((item) => item.value))
+  assert.equal(discovered.has("/session status"), true)
+})
+
 test("buildCommandCenterItems describes home-proxy extension sync recovery", () => {
   const items = buildCommandCenterItems("/extension", {
     providerCatalog: fallbackProviderCatalog(),

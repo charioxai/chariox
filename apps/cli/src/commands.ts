@@ -1,4 +1,4 @@
-export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "delete"
+export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }

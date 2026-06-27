@@ -68,6 +68,50 @@ test("session new forwards local git worktree placement to the kernel", async ()
   assert.equal(flashedMessage, "attached to session session-worktree")
 })
 
+test("session status renders home authority and runtime blockers", async () => {
+  const notices: string[] = []
+  const footers: string[] = []
+  const remoteAgent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => makeSession({
+      alias: "release",
+      host_daemon_id: "home-kernel",
+      host_machine_id: "home-machine",
+      workspace_live_sync_mode: "managed",
+      focused_agent_id: remoteAgent.id,
+      agents: [remoteAgent],
+    }),
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string, tone: string) => { footers.push(`${tone}:${message}`) },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: "/session status",
+    action: "status",
+    args: [],
+    value: "",
+  })
+
+  assert.match(notices[0] ?? "", /session: release \(session-1\)/)
+  assert.match(notices[0] ?? "", /home kernel: home-kernel@home-machine/)
+  assert.match(notices[0] ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
+  assert.match(notices[0] ?? "", /remote runtime: 1 agent, 1 worker, 1 worker run gap/)
+  assert.match(notices[0] ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
+  assert.deepEqual(footers, ["info:session runtime status"])
+})
+
   test("session command aliases the current session", async () => {
     let flashedMessage = ""
     let aliasedPayload: { sessionId: string; alias: string } | null = null

@@ -10,6 +10,13 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "session-new", label: "new", description: "Create and attach a new session, optionally in a directory/worktree", value: "/session new " },
       { id: "session-attach", label: "attach", description: "Attach to an existing session", value: "/session attach " },
       { id: "session-list", label: "list", description: "List available sessions", value: "/session list" },
+      {
+        id: "session-status",
+        label: "status",
+        description: "Show current session owner, runtime placement, live sync, and blockers",
+        value: "/session status",
+        searchAliases: ["session info", "session inspect", "home kernel", "runtime placement", "live sync", "what is blocked", "where agents run", "remote runtime"],
+      },
       { id: "session-delete", label: "delete", description: "Delete the current or referenced session", value: "/session delete " },
     ],
   },

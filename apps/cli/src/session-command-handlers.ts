@@ -12,6 +12,7 @@ import {
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import type { SessionListEntry } from "./sessions.js"
+import { formatSessionRuntimeStatus, type RuntimeSession as SharedRuntimeSession } from "@arroba/kernel-client"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"
@@ -77,6 +78,10 @@ export async function handleSessionSlashCommand(
     case "list":
     case "ls":
       return listSessions(deps)
+    case "status":
+    case "info":
+    case "inspect":
+      return showSessionStatus(deps)
     case "mode":
       return setSessionMode(deps, value)
     case "permissions":
@@ -151,6 +156,16 @@ async function listSessions(deps: SessionCommandHandlerDeps): Promise<boolean> {
   const sessions = await deps.listSessions()
   deps.appendNotice(deps.formatSessionList(sessions, deps.sessionState().id))
   deps.flashFooter(`listed ${sessions.length} session${sessions.length === 1 ? "" : "s"}`, "info")
+  return true
+}
+
+async function showSessionStatus(deps: SessionCommandHandlerDeps): Promise<boolean> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("attach to a session before viewing session status", "error")
+    return true
+  }
+  deps.appendNotice(formatSessionRuntimeStatus(deps.sessionState() as unknown as SharedRuntimeSession))
+  deps.flashFooter("session runtime status", "info")
   return true
 }
 
