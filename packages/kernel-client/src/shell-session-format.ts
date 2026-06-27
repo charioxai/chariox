@@ -9,6 +9,7 @@ import type {
   SessionMember,
 } from "./kernel-types.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 export function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {
   if (sessions.length === 0) {
@@ -20,17 +21,31 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
       const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
       const location = basename(session.worktree_id) || session.worktree_id
       const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
-      const home = formatSessionHomeKernel(session)
+      const runtime = formatSessionRuntimeSummary(session)
       const remote = formatSessionRemoteRuntime(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${remote}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${runtime}${remote}${current}`
     }),
   ].join("\n")
 }
 
+function formatSessionRuntimeSummary(session: RuntimeSession): string {
+  const parts = [
+    `home ${formatSessionHomeKernel(session)}`,
+    session.owner_user_id?.trim() ? `owner ${session.owner_user_id.trim()}` : null,
+    "authority home-owned",
+    `live sync ${formatWorkspaceLiveSyncModeLabel(session.workspace_live_sync_mode)}`,
+  ].filter(Boolean)
+  return ` - ${parts.join(" - ")}`
+}
+
 function formatSessionHomeKernel(session: RuntimeSession): string {
-  const host = session.host_daemon_id?.trim() || session.host_machine_id?.trim()
-  return host ? ` - home ${host}` : ""
+  const kernel = session.host_daemon_id?.trim() || ""
+  const machine = session.host_machine_id?.trim() || ""
+  if (kernel && machine) {
+    return `${kernel}@${machine}`
+  }
+  return kernel || machine || "unknown"
 }
 
 function formatSessionRemoteRuntime(session: RuntimeSession): string {

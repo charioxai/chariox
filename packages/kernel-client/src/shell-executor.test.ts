@@ -775,16 +775,20 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
       alias: "main",
       host_daemon_id: "home-kernel-1",
       host_machine_id: "home-machine-1",
+      owner_user_id: "user-1",
       attachment_ids: ["attachment-1"],
       worktree_id: "/repo/main",
+      workspace_live_sync_mode: "managed",
     }),
     makeSession({
       id: "session-2",
       alias: null,
       host_machine_id: "home-machine-2",
+      owner_user_id: "user-2",
       attachment_ids: [],
       worktree_id: "/repo/feature",
       status: "Parked",
+      workspace_live_sync_mode: "tracked",
       agents: [makeAgent({
         id: "agent-remote",
         agent_ref: "remote-1",
@@ -806,8 +810,8 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
   const result = await executeShellCommand(parseShellCommand("session list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1 current/)
-  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+  assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1@home-machine-1 - owner user-1 - authority home-owned - live sync managed \(selected workspace\/worktree only; other repositories unrestricted\) current/)
+  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - owner user-2 - authority home-owned - live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
 test("executeShellCommand rejects deprecated metaagent spawns", async () => {
