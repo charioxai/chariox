@@ -470,6 +470,77 @@ test("stitchPrependedHistory preserves prompt attachment metadata while merging 
   assert.deepEqual(stitched[0]?.attachments, attachments)
 })
 
+test("stitchPrependedHistory preserves external observed metadata while merging fragments", () => {
+  const stitched = stitchPrependedHistory(
+    [entry(1, "assistant", "native ", {
+      source: "external_provider_observed",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 12,
+    })],
+    [entry(2, "assistant", "reply", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 12,
+      historyTotalChars: 12,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.externalProvider, "codex")
+  assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.deepEqual(stitched[0]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
+test("stitchPrependedHistory ignores stray external metadata without observed source", () => {
+  const stitched = stitchPrependedHistory(
+    [entry(1, "assistant", "ordinary ", {
+      source: "provider_output",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 9,
+      historyTotalChars: 14,
+    })],
+    [entry(2, "assistant", "reply", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 9,
+      historyFragmentEnd: 14,
+      historyTotalChars: 14,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.source, "provider_output")
+  assert.equal(stitched[0]?.externalProvider, undefined)
+  assert.equal(stitched[0]?.externalProviderSessionId, undefined)
+  assert.equal(stitched[0]?.externalProviderTurnId, undefined)
+  assert.equal(stitched[0]?.observedAtMs, undefined)
+  assert.equal(stitched[0]?.externalObservation, undefined)
+})
+
 test("stitchPrependedHistory rebuilds structured tool fragments", () => {
   const toolPayload = JSON.stringify({
     id: "tool-1",

@@ -418,20 +418,22 @@ function mergeStitchedHistoryMetadata(
   if (target.source === undefined && older.source !== undefined) {
     target.source = older.source
   }
-  if (target.externalProvider === undefined && older.externalProvider !== undefined) {
-    target.externalProvider = older.externalProvider
-  }
-  if (target.externalProviderSessionId === undefined && older.externalProviderSessionId !== undefined) {
-    target.externalProviderSessionId = older.externalProviderSessionId
-  }
-  if (target.externalProviderTurnId === undefined && older.externalProviderTurnId !== undefined) {
-    target.externalProviderTurnId = older.externalProviderTurnId
-  }
-  if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
-    target.observedAtMs = older.observedAtMs
-  }
-  if (target.externalObservation === undefined && older.externalObservation !== undefined) {
-    target.externalObservation = older.externalObservation
+  if (sessionHistoryEntryIsExternalProviderObserved(older)) {
+    if (target.externalProvider === undefined && older.externalProvider !== undefined) {
+      target.externalProvider = older.externalProvider
+    }
+    if (target.externalProviderSessionId === undefined && older.externalProviderSessionId !== undefined) {
+      target.externalProviderSessionId = older.externalProviderSessionId
+    }
+    if (target.externalProviderTurnId === undefined && older.externalProviderTurnId !== undefined) {
+      target.externalProviderTurnId = older.externalProviderTurnId
+    }
+    if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
+      target.observedAtMs = older.observedAtMs
+    }
+    if (target.externalObservation === undefined && older.externalObservation !== undefined) {
+      target.externalObservation = older.externalObservation
+    }
   }
   if (target.promptId === undefined && older.promptId !== undefined) {
     target.promptId = older.promptId
