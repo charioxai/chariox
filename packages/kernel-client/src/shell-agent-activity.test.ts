@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
   sessionHasActivePrompt,
   sessionPromptForAgent,
@@ -35,6 +37,12 @@ test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", ()
   })
 
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
+  assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-1"), false)
+  assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({
+    id: "agent-1",
+    state: "Working",
+    is_processing: true,
+  })), "Idle")
   assert.equal(sessionAgentRuntimeState(session, makeAgent({
     id: "agent-1",
     state: "Working",
@@ -74,6 +82,39 @@ test("sessionAgentIsBusy treats missing projected agent activity as idle", () =>
     queued: 0,
     busyAgents: 0,
   })
+})
+
+test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-focused",
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+      "agent-focused": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-1"), true)
+  assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  })), "Done")
+  assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-focused"), false)
+  assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({
+    id: "agent-focused",
+    state: "Idle",
+    is_processing: false,
+  })), "Idle")
 })
 
 test("sessionPromptWorkSummary counts projected active turns and prompt state queues", () => {

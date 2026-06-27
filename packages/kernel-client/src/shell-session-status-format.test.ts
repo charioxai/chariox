@@ -207,3 +207,42 @@ test("formatSessionRuntimeStatus renders projected busy activity over stale idle
   assert.match(rendered, /prompts: active=1, queued=0, busy_agents=1/)
   assert.match(rendered, /agent runtime:\n  - agent-1: Working /)
 })
+
+test("formatSessionRuntimeStatus renders unfocused unread idle output as done", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-focused",
+    agent_activity: {
+      "agent-done": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+      "agent-focused": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+    },
+    agents: [
+      makeAgent({
+        id: "agent-done",
+        agent_ref: "agent-done",
+        state: "Idle",
+        is_processing: false,
+      }),
+      makeAgent({
+        id: "agent-focused",
+        agent_ref: "agent-focused",
+        state: "Idle",
+        is_processing: false,
+      }),
+    ],
+  })
+
+  const rendered = formatSessionRuntimeStatus(session)
+
+  assert.match(rendered, /agent runtime:\n  - agent-done: Done /)
+  assert.match(rendered, /\n  - agent-focused: Idle /)
+})

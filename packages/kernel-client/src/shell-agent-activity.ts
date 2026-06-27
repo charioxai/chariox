@@ -24,6 +24,8 @@ export type AgentRuntimeProjectionContext = {
   readonly promptStates?: Record<string, AgentPromptStateLike | null> | null | undefined
 }
 
+export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
+
 export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
   const promptStates = session.prompt_states
   const queued = promptStates
@@ -94,6 +96,14 @@ export function sessionAgentRuntimeState(
   })
 }
 
+export function sessionAgentRuntimeDisplayState(
+  session: RuntimeSession | null | undefined,
+  agent: AgentInstance,
+): AgentRuntimeDisplayState {
+  const runtimeState = sessionAgentRuntimeState(session, agent)
+  return sessionAgentHasUnreadIdleOutput(session, agent.id) && runtimeState === "Idle" ? "Done" : runtimeState
+}
+
 export function agentRuntimeStateFromProjection(
   agent: AgentInstance,
   context: AgentRuntimeProjectionContext,
@@ -118,6 +128,17 @@ export function agentRuntimeStateFromProjection(
       : "Idle"
   }
   return legacyAgentRuntimeState(agent)
+}
+
+export function sessionAgentHasUnreadIdleOutput(
+  session: RuntimeSession | null | undefined,
+  agentId: string | null | undefined,
+): boolean {
+  if (!session || !agentId || session.focused_agent_id === agentId) {
+    return false
+  }
+  const activity = session.agent_activity?.[agentId]
+  return activity?.unread_idle_output === true
 }
 
 export function sessionHasActivePrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {

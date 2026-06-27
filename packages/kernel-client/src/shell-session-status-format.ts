@@ -13,7 +13,7 @@ import {
   sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
-import { sessionAgentIsBusy, sessionAgentRuntimeState, sessionPromptWorkSummary } from "./shell-agent-activity.js"
+import { sessionAgentIsBusy, sessionAgentRuntimeDisplayState, sessionPromptWorkSummary } from "./shell-agent-activity.js"
 
 export type SessionRuntimeStatusFormatOptions = {
   readonly slices?: readonly SliceRecord[]
@@ -69,7 +69,7 @@ function formatAgentRuntimeLines(
   }
   return session.agents.map((agent) => [
     `  - ${formatAgentLabel(agent)}:`,
-    sessionAgentRuntimeState(session, agent),
+    sessionAgentRuntimeDisplayState(session, agent),
     formatAgentProvider(agent),
     `worktree=${agent.worktree_id ?? "-"}`,
     formatAgentPlacement(agent, sliceForRemoteAgent(agent, options.slices ?? []), options.sliceLookupError),
