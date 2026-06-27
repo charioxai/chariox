@@ -179,6 +179,12 @@ impl PromptQueueItem {
         self.prompt_origin == PromptOrigin::Arroba
     }
 
+    pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
+        self.is_external()
+            .then(|| crate::history::parse_external_provider_observed_id(&self.id))
+            .flatten()
+    }
+
     pub fn workflow_run_id(&self) -> Option<&str> {
         self.workflow_run_id.as_deref()
     }
@@ -322,5 +328,13 @@ mod tests {
         assert_eq!(prompt.status(), PromptStatus::Running);
         assert!(prompt.is_external());
         assert!(!prompt.is_arroba_owned());
+        assert_eq!(
+            prompt.external_observed_id(),
+            Some(crate::history::ExternalProviderObservedId {
+                provider: "codex".to_string(),
+                provider_session_id: "thread-1".to_string(),
+                provider_turn_id: "user-1".to_string(),
+            })
+        );
     }
 }

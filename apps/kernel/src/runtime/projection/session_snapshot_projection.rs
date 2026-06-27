@@ -201,17 +201,24 @@ pub(crate) fn agent_activity_for_session_projection(
         });
         let active_turn = provider_turn_activity
             .map(|turn| {
-                let prompt_origin = active_prompt
-                    .filter(|prompt| prompt.id() == turn.prompt_id)
+                let active_prompt_for_turn =
+                    active_prompt.filter(|prompt| prompt.id() == turn.prompt_id);
+                let prompt_origin = active_prompt_for_turn
                     .map(PromptQueueItem::prompt_origin)
                     .or_else(|| {
                         crate::history::parse_external_provider_observed_id(&turn.prompt_id)
                             .map(|_| PromptOrigin::External)
                     });
+                let external_observed_id = active_prompt_for_turn
+                    .and_then(PromptQueueItem::external_observed_id)
+                    .or_else(|| {
+                        crate::history::parse_external_provider_observed_id(&turn.prompt_id)
+                    });
                 active_turn_projection(
                     turn.prompt_id.clone(),
                     Some(turn.provider_run_id.clone()),
                     prompt_origin,
+                    external_observed_id,
                     prompt_status.clone(),
                     AgentTurnRuntimePhase::from(&turn.phase),
                     Some(turn.started_at_ms),
@@ -223,6 +230,7 @@ pub(crate) fn agent_activity_for_session_projection(
                         prompt.id().to_string(),
                         provider_run.as_ref().map(|run| run.id().to_string()),
                         Some(prompt.prompt_origin()),
+                        prompt.external_observed_id(),
                         prompt_status.clone(),
                         AgentTurnRuntimePhase::Accepted,
                         None,
@@ -337,14 +345,17 @@ fn active_turn_projection(
     prompt_id: String,
     provider_run_id: Option<String>,
     prompt_origin: Option<PromptOrigin>,
+    external_observed_id: Option<crate::history::ExternalProviderObservedId>,
     status: AgentPromptRuntimeStatus,
     phase: AgentTurnRuntimePhase,
     started_at_ms: Option<u64>,
 ) -> AgentActiveTurnProjection {
-    let external = prompt_origin
-        .is_some_and(|origin| origin == PromptOrigin::External)
-        .then(|| crate::history::parse_external_provider_observed_id(&prompt_id))
-        .flatten();
+    let external = external_observed_id.or_else(|| {
+        prompt_origin
+            .is_some_and(|origin| origin == PromptOrigin::External)
+            .then(|| crate::history::parse_external_provider_observed_id(&prompt_id))
+            .flatten()
+    });
     AgentActiveTurnProjection {
         prompt_id,
         provider_run_id,
