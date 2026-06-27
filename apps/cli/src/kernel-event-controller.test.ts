@@ -151,6 +151,7 @@ test("external provider history update status triggers pane refresh hook", () =>
   controller.processTerminalOutputRecord({
     agent_id: "agent-a",
     kind: "provider_status",
+    source: "external_provider_observed",
     bytes: [...Buffer.from("external_provider_history_updated", "utf8")],
   })
 
@@ -158,6 +159,34 @@ test("external provider history update status triggers pane refresh hook", () =>
     "activity:terminal_record",
     "turn-activity:terminal_record",
     "external-history:agent-a",
+  ])
+})
+
+test("external provider history update status requires observed source", () => {
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    handleExternalProviderHistoryUpdated: (agentId: string | null) => {
+      calls.push(`external-history:${agentId ?? "null"}`)
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_status",
+    bytes: [...Buffer.from("external_provider_history_updated", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+    "streaming:agent-a",
+    "busy:agent-a",
+    "agent-activity:agent-a:null",
+    "provider-activity:null",
+    "provider-active:false",
+    "chunk:status:external_provider_history_updated:__provider_status__",
+    "sync-visible-preview",
   ])
 })
 
@@ -271,4 +300,56 @@ test("visible prompt echo carries kernel prompt identity into transcript entry",
   assert.equal(appended[0]?.text, "ship it")
   assert.equal(appended[0]?.promptId, "prompt-1")
   assert.equal(appended[0]?.sourceAttachmentId, "attachment-1")
+})
+
+test("visible external observed output carries kernel observation metadata into transcript entries", () => {
+  const chunks: Array<{
+    role: TranscriptEntry["role"]
+    text: string
+    metadata?: Partial<TranscriptEntry>
+  }> = []
+  const { deps } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    appendProviderChunk: (
+      role: TranscriptEntry["role"],
+      text: string,
+      _mergeKey?: string,
+      _sourceText?: string,
+      metadata?: Partial<TranscriptEntry>,
+    ) => {
+      chunks.push({ role, text, metadata })
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_output",
+    merge_key: "external:codex:thread-1:item-1",
+    source: "external_provider_observed",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_234,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+    bytes: [...Buffer.from("observed reply\n", "utf8")],
+  })
+
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0]?.role, "assistant")
+  assert.equal(chunks[0]?.text, "observed reply\n")
+  assert.deepEqual(chunks[0]?.metadata, {
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "item-1",
+    observedAtMs: 1_234,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
 })

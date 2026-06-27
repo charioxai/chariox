@@ -1,4 +1,8 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
+import {
+  historyEntryExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
+} from "@arroba/kernel-client/external-provider-observation"
 import { isProviderIdleStatus } from "./runtime.js"
 
 type KernelEventControllerDeps = {
@@ -58,6 +62,12 @@ const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_upda
 type TerminalRecordTranscriptMetadata = {
   promptId?: string | null
   sourceAttachmentId?: string | null
+  source?: TranscriptEntry["source"]
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  observedAtMs?: number | null
+  externalObservation?: TranscriptEntry["externalObservation"]
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
@@ -72,7 +82,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     if (!recordAgentId) {
       return
     }
-    if (record.kind === "provider_status" && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS) {
+    if (
+      record.kind === "provider_status"
+      && sessionHistoryEntryIsExternalProviderObserved(record)
+      && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS
+    ) {
       deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
       return
     }
@@ -286,8 +300,10 @@ function normalize(text: string) {
 }
 
 function terminalRecordTranscriptMetadata(record: TerminalOutputRecord): TerminalRecordTranscriptMetadata {
+  const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
   return {
     ...(record.prompt_id !== undefined ? { promptId: record.prompt_id } : {}),
     ...(record.source_attachment_id !== undefined ? { sourceAttachmentId: record.source_attachment_id } : {}),
+    ...(externalObservedMetadata ?? {}),
   }
 }

@@ -1,4 +1,4 @@
-import type { SessionHistoryEntry, SessionHistoryExternalObservation } from "./kernel-types.js"
+import type { SessionHistoryExternalObservation } from "./kernel-types.js"
 
 export const EXTERNAL_PROVIDER_OBSERVED_SOURCE = "external_provider_observed"
 
@@ -18,15 +18,7 @@ export function sessionHistoryEntryIsExternalProviderObserved(
 }
 
 export function historyEntryExternalProviderObservedMetadata(
-  entry: Pick<
-    SessionHistoryEntry,
-    | "source"
-    | "external_provider"
-    | "external_provider_session_id"
-    | "external_provider_turn_id"
-    | "observed_at_ms"
-    | "external_observation"
-  >,
+  entry: ExternalProviderObservedKernelFields,
 ): ExternalProviderObservedTranscriptMetadata | null {
   if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return null
@@ -39,4 +31,13 @@ export function historyEntryExternalProviderObservedMetadata(
     observedAtMs: entry.observed_at_ms ?? null,
     externalObservation: entry.external_observation ?? null,
   }
+}
+
+export type ExternalProviderObservedKernelFields = {
+  readonly source?: string | null | undefined
+  readonly external_provider?: string | null | undefined
+  readonly external_provider_session_id?: string | null | undefined
+  readonly external_provider_turn_id?: string | null | undefined
+  readonly observed_at_ms?: number | null | undefined
+  readonly external_observation?: SessionHistoryExternalObservation | null | undefined
 }
