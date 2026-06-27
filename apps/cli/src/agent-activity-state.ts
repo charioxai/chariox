@@ -49,7 +49,9 @@ export function shouldPreserveAgentActivityLabel(options: {
   }
   return options.streamingAgentId === agentId
     || agentHasPromptWork(options.session, agentId)
-    || (!options.session.agent_activity && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
+    || (!options.session.agent_activity
+      && !options.session.prompt_states
+      && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
 }
 
 export function nextAgentActivityLabels(
@@ -109,7 +111,7 @@ export function deriveFocusedAgentBusy(options: {
     return false
   }
   const focused = options.session.agents.find((agent) => agent.id === agentId) ?? null
-  const allowLegacyProcessing = !options.session.agent_activity
+  const allowLegacyProcessing = !options.session.agent_activity && !options.session.prompt_states
   return (options.submitting && options.submittingAgentId === agentId)
     || agentHasPromptWork(options.session, agentId)
     || options.streamingAgentId === agentId
@@ -128,7 +130,7 @@ export function deriveAllAgentsBusyState(options: {
 }): AgentBusyState[] {
   return options.session.agents.map((agent) => {
     const agentId = agent.id
-    const allowLegacyProcessing = !options.session.agent_activity
+    const allowLegacyProcessing = !options.session.agent_activity && !options.session.prompt_states
     const isBusy = (options.submitting && options.submittingAgentId === agentId)
       || agentHasPromptWork(options.session, agentId)
       || options.streamingAgentId === agentId

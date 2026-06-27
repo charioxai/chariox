@@ -634,6 +634,84 @@ test("deriveSessionTransitionState ignores stale processing state when projected
   })
 })
 
+test("deriveSessionTransitionState ignores stale processing state when prompt state is idle", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agents: [agent("agent-a", { is_processing: true, state: "Working" })],
+  })
+
+  const transition = deriveSessionTransitionState({
+    currentSession: session({ agents: [agent("agent-a")] }),
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-a",
+    currentAgentActivityLabels: {
+      "agent-a": "thinking",
+    },
+    layoutPreference: "individual",
+  })
+
+  assert.equal(sessionHasProcessingAgent(nextSession), false)
+  assert.equal(transition.nextHasPromptWork, false)
+  assert.equal(transition.nextStreamingAgentId, null)
+  assert.equal(transition.nextFocusedActivityLabel, null)
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-a": null,
+  })
+})
+
+test("deriveSessionTransitionState resolves streaming from active prompt state before stale processing agents", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-b",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-b": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-b",
+          prompt: "hello",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [
+      agent("agent-a", { is_processing: true, state: "Working" }),
+      agent("agent-b", { is_processing: false, state: "Idle" }),
+    ],
+  })
+
+  const transition = deriveSessionTransitionState({
+    currentSession: session({ agents: [agent("agent-a"), agent("agent-b")] }),
+    nextSession,
+    currentWorking: false,
+    currentStreamingAgentId: null,
+    currentAgentActivityLabels: {
+      "agent-a": "thinking",
+      "agent-b": null,
+    },
+    layoutPreference: "individual",
+  })
+
+  assert.equal(sessionHasProcessingAgent(nextSession), true)
+  assert.equal(transition.nextHasPromptWork, true)
+  assert.equal(transition.nextStreamingAgentId, "agent-b")
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-a": null,
+    "agent-b": null,
+  })
+})
+
 test("derivePromptLifecycleTransition detects when a cancelling prompt settles", () => {
   const transition = derivePromptLifecycleTransition(
     session({

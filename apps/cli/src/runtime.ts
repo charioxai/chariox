@@ -108,8 +108,11 @@ export function resolveStreamingAgentId(
   sessionHasPromptWork: boolean,
   currentWorking: boolean,
   previousStreamingAgentId: string | null,
+  useLegacyProcessingState = true,
 ) {
-  const processingAgentId = agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
+  const processingAgentId = useLegacyProcessingState
+    ? agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
+    : null
   if (processingAgentId) {
     return processingAgentId
   }
@@ -117,7 +120,7 @@ export function resolveStreamingAgentId(
     return activePromptTargetAgentId
   }
   if (
-    (sessionHasPromptWork || currentWorking)
+    (sessionHasPromptWork || (currentWorking && useLegacyProcessingState))
     && previousStreamingAgentId
     && agents.some((agent) => agent.id === previousStreamingAgentId)
   ) {

@@ -132,6 +132,11 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
   if (session.agent_activity) {
     return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
   }
+  if (session.prompt_states) {
+    return Object.values(session.prompt_states).some((state) => {
+      return Boolean(state.active_prompt) || state.queued_prompts.length > 0
+    })
+  }
   return session.agents.some((agent) => {
     return agent.is_processing || agent.state === "Working"
   })
@@ -294,11 +299,12 @@ export function deriveSessionTransitionState(
       nextHasPromptWork,
       options.currentWorking,
       options.currentStreamingAgentId,
+      !options.nextSession.prompt_states,
     )
   const nextStreamingAgentId = resolvedStreamingAgentId
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
-    const legacyAgentBusy = !options.nextSession.agent_activity && (
+    const legacyAgentBusy = !options.nextSession.agent_activity && !options.nextSession.prompt_states && (
       agent.is_processing
       || agent.state === "Working"
     )
