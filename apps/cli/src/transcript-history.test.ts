@@ -286,6 +286,15 @@ test("previewLineForHistoryEntry suppresses non-external provider statuses", () 
       passive_telemetry: false,
     },
   }), "Stat: codex event turn_aborted {\"reason\":\"user\"}")
+  assert.equal(previewLineForHistoryEntry({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: "external_provider_observed",
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), "Stat: codex event turn_aborted {\"reason\":\"user\"}")
 })
 
 test("hydrateTranscriptEntries preserves prompt identity, attachment identity, and external observation metadata", () => {

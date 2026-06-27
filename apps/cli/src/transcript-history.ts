@@ -552,7 +552,8 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
 }
 
 function shouldRenderHistoryProviderStatus(entry: SessionHistoryEntry): boolean {
-  return sessionHistoryEntryIsExternalProviderObserved(entry)
-    && entry.external_observation?.passive_telemetry !== true
+  const metadata = historyEntryExternalProviderObservedMetadata(entry)
+  return metadata !== null
+    && metadata.externalObservation?.passive_telemetry !== true
     && shouldRenderProviderStatus(entry.text)
 }
