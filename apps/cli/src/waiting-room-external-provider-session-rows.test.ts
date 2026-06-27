@@ -82,12 +82,27 @@ test("unattached agents are projected newest first with normalized title fallbac
         first_prompt_preview: "ignored",
         last_modified_at_ms: 200,
       }),
+      externalSession({
+        external_session_id: "opencode:zeta",
+        provider: "opencode",
+        provider_session_id: "zeta",
+        title: "Zeta",
+        last_modified_at_ms: 100,
+      }),
+      externalSession({
+        external_session_id: "codex:alpha",
+        provider_session_id: "alpha",
+        title: "Alpha",
+        last_modified_at_ms: 100,
+      }),
     ],
   })
 
   assert.deepEqual(sessions.map((session) => session.external_session_id), [
     "codex:newer",
+    "codex:alpha",
     "codex:older",
+    "opencode:zeta",
   ])
 
   const rows = waitingRoomExternalProviderSessionRows(
@@ -97,7 +112,8 @@ test("unattached agents are projected newest first with normalized title fallbac
   )
 
   assert.equal(rows[1]?.title, "New task")
-  assert.equal(rows[2]?.title, "Review checkout")
+  assert.equal(rows[2]?.title, "Alpha")
+  assert.equal(rows[3]?.title, "Review checkout")
   assert.equal(rows[2]?.focused, true)
 })
 

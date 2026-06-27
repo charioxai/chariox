@@ -96,7 +96,7 @@ export function waitingRoomExternalProviderSessionTitleWidth(remote: WaitingRoom
 export function waitingRoomExternalProviderSessions(remote: WaitingRoomRemoteState = {}) {
   return (remote.externalProviderSessions ?? [])
     .slice()
-    .sort((left, right) => externalProviderSessionModifiedMs(right) - externalProviderSessionModifiedMs(left))
+    .sort(compareExternalProviderSessions)
 }
 
 function formatTitle(session: ExternalProviderSessionRecord) {
@@ -123,6 +123,21 @@ function formatTimestamp(value: number | null | undefined) {
 
 function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {
   return typeof session.last_modified_at_ms === "number" ? session.last_modified_at_ms : 0
+}
+
+function compareExternalProviderSessions(
+  left: ExternalProviderSessionRecord,
+  right: ExternalProviderSessionRecord,
+): number {
+  const modified = externalProviderSessionModifiedMs(right) - externalProviderSessionModifiedMs(left)
+  if (modified !== 0) {
+    return modified
+  }
+  const provider = left.provider.localeCompare(right.provider)
+  if (provider !== 0) {
+    return provider
+  }
+  return left.provider_session_id.localeCompare(right.provider_session_id)
 }
 
 function column(value: string, width: number) {
