@@ -40,6 +40,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invite\|join\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
+  assert.match(result.message ?? "", /agent list\|spawn\|focus\|inspect\|cycle\|mode\|permissions\|substitute/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /extension import providers\|grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
   assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|audit\|off\|managed\|tracked\|default\|link/)
