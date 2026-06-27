@@ -17,30 +17,44 @@ import { reindexTranscriptEntries } from "./transcript-text.js"
 export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   let nextId = 0
+  let activeTurnId: number | null = null
 
   orderedOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
     const turnId = outlineTurnDisplayId(turn, turnIndex)
+    const completedAtMs = outlineTurnCompletedAtMs(turn)
+    if (completedAtMs === null) {
+      activeTurnId = turnId
+    }
     const externalMetadata = outlineTurnExternalMetadata(turn)
     const promptEntries = hydratePageEntries([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
-      entries.push(applyOutlineTurnExternalMetadata({ ...entry, id: ++nextId }, externalMetadata))
+      entries.push(applyOutlineTurnExternalMetadata(
+        applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+        externalMetadata,
+      ))
     }
     for (const item of orderedOutlineItems(turn)) {
       if (item.kind === "blob") {
         entries.push(applyOutlineTurnExternalMetadata(
-          outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
+          applyOutlineTurnLifecycleMetadata(
+            outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
+            completedAtMs,
+          ),
           externalMetadata,
         ))
         continue
       }
       const hydratedEntries = hydratePageEntries([item.entry], turnId, turn.prompt_id ?? null)
       for (const entry of hydratedEntries) {
-        entries.push(applyOutlineTurnExternalMetadata({ ...entry, id: ++nextId }, externalMetadata))
+        entries.push(applyOutlineTurnExternalMetadata(
+          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+          externalMetadata,
+        ))
       }
     }
   })
 
-  return applyTranscriptDisplayState(entries, [])
+  return applyTranscriptDisplayState(entries, [], activeTurnId)
 }
 
 type OutlineTurnItem =
@@ -123,6 +137,10 @@ export function replaceHistoryBlobPlaceholder(
   }
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder)
+  const activeTurnId = placeholder.historyTurnCompletedAtMs === null
+    && typeof turnId === "number"
+    ? turnId
+    : null
   const hydrated = hydratePageEntries(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
     const next: TranscriptEntry = {
       ...entry,
@@ -135,10 +153,13 @@ export function replaceHistoryBlobPlaceholder(
     if (placeholder.historyBlobAgentId) {
       next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
     }
-    return applyOutlineTurnExternalMetadata(next, externalMetadata)
+    return applyOutlineTurnExternalMetadata(
+      applyOutlineTurnLifecycleMetadata(next, placeholder.historyTurnCompletedAtMs),
+      externalMetadata,
+    )
   })
   const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
-  return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), expandedTurnIds)
+  return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), expandedTurnIds, activeTurnId)
 }
 
 export function markHistoryBlobLoading(
@@ -247,6 +268,26 @@ function transcriptEntryExternalMetadata(
     externalProvider,
     externalProviderSessionId,
     externalProviderTurnId,
+  }
+}
+
+function outlineTurnCompletedAtMs(turn: SessionHistoryOutlineTurn): number | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(turn, "completed_at_ms")) {
+    return undefined
+  }
+  return turn.completed_at_ms ?? null
+}
+
+function applyOutlineTurnLifecycleMetadata(
+  entry: TranscriptEntry,
+  completedAtMs: number | null | undefined,
+): TranscriptEntry {
+  if (completedAtMs === undefined) {
+    return entry
+  }
+  return {
+    ...entry,
+    historyTurnCompletedAtMs: completedAtMs,
   }
 }
 

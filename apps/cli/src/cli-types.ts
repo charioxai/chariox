@@ -1092,6 +1092,7 @@ export type TranscriptEntry = {
   historyBlobLoading?: boolean
   historyBlobError?: string
   historyDeferred?: boolean
+  historyTurnCompletedAtMs?: number | null
   historyEntryIndex?: number
   historyFragmentStart?: number
   historyFragmentEnd?: number

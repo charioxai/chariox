@@ -210,6 +210,47 @@ test("hydrateOutlineAgentEntries preserves prompt attachments and external obser
   })
 })
 
+test("hydrateOutlineAgentEntries keeps explicit incomplete history turns active", () => {
+  const entries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: "external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      completed_at_ms: null,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
+      summary: pageEntry(2, "provider_output", "partial assistant\n"),
+      blobs: [{
+        blob_id: "blob-1",
+        kind: "provider_tool",
+        title: "tool",
+        summary: "running tool",
+        sequence_start: 3,
+        sequence_end: 3,
+        entry_count: 1,
+        total_chars: 80,
+        timestamp_ms: 1,
+      }],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(entries.filter((entry) => !entry.hidden).map((entry) => entry.role), [
+    "user",
+    "reasoning",
+    "assistant",
+    "tool",
+  ])
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, null)
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, null)
+})
+
 test("hydrateOutlineAgentEntries uses prompt origin to mark external turns with sparse metadata", () => {
   const entries = hydrateOutlineAgentEntries({
     agent_id: "agent-1",
@@ -327,6 +368,63 @@ test("hydrateOutlineAgentEntries does not infer external ownership for arroba-or
   assert.equal(blob?.source, undefined)
   assert.equal(prompt?.externalProvider, undefined)
   assert.equal(blob?.externalProviderSessionId, undefined)
+})
+
+test("replaceHistoryBlobPlaceholder keeps explicit incomplete history turn active", () => {
+  const entries = hydrateOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: "external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      completed_at_ms: null,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
+      summary: pageEntry(3, "provider_output", "partial assistant\n"),
+      blobs: [{
+        blob_id: "blob-1",
+        kind: "provider_tool",
+        title: "tool",
+        summary: "running tool",
+        sequence_start: 2,
+        sequence_end: 2,
+        entry_count: 1,
+        total_chars: 80,
+        timestamp_ms: 1,
+      }],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.ok(placeholder)
+
+  const replaced = replaceHistoryBlobPlaceholder(
+    entries,
+    placeholder.id,
+    {
+      blob_id: "blob-1",
+      entries: [pageEntry(2, "provider_tool", JSON.stringify({
+        id: "tool-1",
+        tool: "bash",
+        status: "running",
+        output: "",
+      }))],
+    },
+    [],
+  )
+
+  assert.equal(replaced.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(replaced.filter((entry) => !entry.hidden).map((entry) => entry.role), [
+    "user",
+    "reasoning",
+    "tool",
+    "assistant",
+  ])
+  assert.equal(replaced.find((entry) => entry.role === "tool")?.historyTurnCompletedAtMs, null)
 })
 
 test("replaceHistoryBlobPlaceholder keeps prompt identity when expanding blob content", () => {
