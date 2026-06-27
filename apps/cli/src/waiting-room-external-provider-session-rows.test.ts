@@ -2,7 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { ExternalProviderSessionRecord } from "./cli-types.js"
-import { waitingRoomExternalProviderSessionRows } from "./waiting-room-external-provider-session-rows.js"
+import {
+  waitingRoomExternalProviderSessionRows,
+  waitingRoomExternalProviderSessions,
+} from "./waiting-room-external-provider-session-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("unattached agents render as selectable waiting-room rows with load older action", () => {
@@ -60,6 +63,42 @@ test("unattached agents show a loading row while inventory is pending", () => {
     selectable: false,
     scrollbar: "",
   }])
+})
+
+test("unattached agents are projected newest first with normalized title fallback", () => {
+  const sessions = waitingRoomExternalProviderSessions({
+    externalProviderSessions: [
+      externalSession({
+        external_session_id: "codex:older",
+        provider_session_id: "older",
+        title: "  ",
+        first_prompt_preview: "  Review checkout  ",
+        last_modified_at_ms: 100,
+      }),
+      externalSession({
+        external_session_id: "codex:newer",
+        provider_session_id: "newer",
+        title: "  New task  ",
+        first_prompt_preview: "ignored",
+        last_modified_at_ms: 200,
+      }),
+    ],
+  })
+
+  assert.deepEqual(sessions.map((session) => session.external_session_id), [
+    "codex:newer",
+    "codex:older",
+  ])
+
+  const rows = waitingRoomExternalProviderSessionRows(
+    waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),
+    { externalProviderSessions: sessions },
+    { inventoryLoading: false, loadingText: "loading", titleWidth: 28 },
+  )
+
+  assert.equal(rows[1]?.title, "New task")
+  assert.equal(rows[2]?.title, "Review checkout")
+  assert.equal(rows[2]?.focused, true)
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

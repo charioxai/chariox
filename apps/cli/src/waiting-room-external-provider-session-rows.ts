@@ -94,11 +94,16 @@ export function waitingRoomExternalProviderSessionTitleWidth(remote: WaitingRoom
 }
 
 export function waitingRoomExternalProviderSessions(remote: WaitingRoomRemoteState = {}) {
-  return (remote.externalProviderSessions ?? []).slice()
+  return (remote.externalProviderSessions ?? [])
+    .slice()
+    .sort((left, right) => externalProviderSessionModifiedMs(right) - externalProviderSessionModifiedMs(left))
 }
 
 function formatTitle(session: ExternalProviderSessionRecord) {
-  return session.title || session.first_prompt_preview || session.provider_session_id
+  return session.title?.trim()
+    || session.first_prompt_preview?.trim()
+    || session.provider_session_id
+    || session.external_session_id
 }
 
 function formatMode(session: ExternalProviderSessionRecord) {
@@ -114,6 +119,10 @@ function formatTimestamp(value: number | null | undefined) {
     return "-"
   }
   return date.toISOString().replace("T", " ").slice(0, 16) + " UTC"
+}
+
+function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {
+  return typeof session.last_modified_at_ms === "number" ? session.last_modified_at_ms : 0
 }
 
 function column(value: string, width: number) {
