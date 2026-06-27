@@ -89,10 +89,11 @@ impl OperationalHistoryStore {
                 })?;
         let mut statement = connection
             .prepare(
-                "SELECT DISTINCT agent_id
+                "SELECT agent_id
                  FROM history_events
                  WHERE session_id = ?1 AND agent_id IS NOT NULL
-                 ORDER BY agent_id ASC",
+                 GROUP BY agent_id
+                 ORDER BY MIN(sequence) ASC, agent_id ASC",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),

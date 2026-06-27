@@ -1312,6 +1312,56 @@ mod tests {
     }
 
     #[test]
+    fn operational_history_lists_agents_by_first_event_sequence() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-agent-order-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store =
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+        for (sequence, agent_id, prompt) in [
+            (20, "agent-1", "created last"),
+            (10, "agent-10", "created first"),
+            (15, "agent-2", "created second"),
+        ] {
+            let entry =
+                SessionHistoryEntry::user_prompt("session-1", "attachment-1", agent_id, prompt);
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        turn_id: Some(format!("{agent_id}-turn")),
+                        prompt_id: Some(format!("{agent_id}-prompt")),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("agent history event should append");
+        }
+
+        assert_eq!(
+            store
+                .list_session_history_agent_ids("session-1")
+                .expect("history agent ids should load"),
+            vec![
+                "agent-10".to_string(),
+                "agent-2".to_string(),
+                "agent-1".to_string()
+            ]
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn operational_history_external_import_index_uses_latest_duplicate_merge_key() {
         let path = std::env::temp_dir().join(format!(
             "arroba-operational-history-external-index-duplicate-{}-{}.db",
