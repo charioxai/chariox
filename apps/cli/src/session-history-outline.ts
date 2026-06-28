@@ -16,6 +16,8 @@ import {
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
+  sessionHistoryCursorForVisibleAgent,
+  sessionHistoryEntryKindTranscriptRole,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
 } from "@arroba/kernel-client/session-history-outline"
@@ -70,11 +72,7 @@ export function historyCursorStateForVisibleAgent(
   outline: SessionHistoryOutline,
   visibleAgentId: string | null,
 ): SessionHistoryCursorState {
-  if (!visibleAgentId) {
-    return null
-  }
-  const cursor = outline.agents.find((agent) => agent.agent_id === visibleAgentId)?.next_cursor
-  return cursor ? { agentId: visibleAgentId, cursor } : null
+  return sessionHistoryCursorForVisibleAgent(outline, visibleAgentId)
 }
 
 export function replaceHistoryBlobPlaceholder(
@@ -214,7 +212,7 @@ function outlineBlobEntry(
 ): TranscriptEntry {
   return {
     id,
-    role: roleForHistoryKind(blob.kind),
+    role: sessionHistoryEntryKindTranscriptRole(blob.kind),
     text: "",
     sourceText: "",
     turnId,
@@ -230,24 +228,5 @@ function outlineBlobEntry(
     historyFragmentStart: 0,
     historyFragmentEnd: blob.total_chars,
     historyTotalChars: blob.total_chars,
-  }
-}
-
-function roleForHistoryKind(kind: SessionHistoryOutlineBlob["kind"]): TranscriptEntry["role"] {
-  switch (kind) {
-    case "provider_reasoning":
-      return "reasoning"
-    case "provider_tool":
-      return "tool"
-    case "provider_error":
-      return "error"
-    case "provider_status":
-      return "status"
-    case "notice":
-      return "notice"
-    case "provider_output":
-      return "assistant"
-    default:
-      return "tool"
   }
 }

@@ -10,6 +10,8 @@ import type {
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
+  sessionHistoryCursorForVisibleAgent,
+  sessionHistoryEntryKindTranscriptRole,
   sessionHistoryOutlineBlobSequenceStart,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
@@ -59,6 +61,39 @@ test("session history outline completion distinguishes absent, open, and settled
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs(turn(1)), undefined)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: null }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: 123 }), 123)
+})
+
+test("session history cursor selection follows the visible agent", () => {
+  assert.deepEqual(sessionHistoryCursorForVisibleAgent({
+    agents: [{
+      agent_id: "agent-1",
+      turns: [],
+      next_cursor: { before_sequence: 10 },
+    }, {
+      agent_id: "agent-2",
+      turns: [],
+      next_cursor: null,
+    }],
+  }, "agent-1"), {
+    agentId: "agent-1",
+    cursor: { before_sequence: 10 },
+  })
+
+  assert.equal(sessionHistoryCursorForVisibleAgent({ agents: [] }, "agent-1"), null)
+  assert.equal(sessionHistoryCursorForVisibleAgent({ agents: [] }, null), null)
+  assert.equal(sessionHistoryCursorForVisibleAgent({
+    agents: [{ agent_id: "agent-2", turns: [], next_cursor: null }],
+  }, "agent-2"), null)
+})
+
+test("session history entry kind maps to transcript role", () => {
+  assert.equal(sessionHistoryEntryKindTranscriptRole("user_prompt"), "user")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("provider_output"), "assistant")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("provider_reasoning"), "reasoning")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("provider_tool"), "tool")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("provider_error"), "error")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("provider_status"), "status")
+  assert.equal(sessionHistoryEntryKindTranscriptRole("notice"), "notice")
 })
 
 function turn(promptEntryIndex: number): SessionHistoryOutlineTurn {

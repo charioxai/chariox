@@ -1,8 +1,19 @@
 import type {
+  SessionHistoryEntry,
+  SessionHistoryOutline,
   SessionHistoryOutlineBlob,
+  SessionHistoryOutlineCursor,
   SessionHistoryOutlineTurn,
   SessionHistoryPageEntry,
+  TranscriptEntry,
 } from "./kernel-types.js"
+
+export type SessionHistoryCursorSelection = {
+  readonly agentId: string
+  readonly cursor: SessionHistoryOutlineCursor
+} | null
+
+export type SessionHistoryTranscriptRole = Exclude<TranscriptEntry["role"], "turn_toggle">
 
 export type SessionHistoryOutlineTurnItem<
   TEntry extends SessionHistoryPageEntry = SessionHistoryPageEntry,
@@ -93,4 +104,36 @@ export function sessionHistoryOutlineTurnCompletedAtMs(
     return undefined
   }
   return turn.completed_at_ms ?? null
+}
+
+export function sessionHistoryCursorForVisibleAgent(
+  outline: SessionHistoryOutline,
+  visibleAgentId: string | null,
+): SessionHistoryCursorSelection {
+  if (!visibleAgentId) {
+    return null
+  }
+  const cursor = outline.agents.find((agent) => agent.agent_id === visibleAgentId)?.next_cursor
+  return cursor ? { agentId: visibleAgentId, cursor } : null
+}
+
+export function sessionHistoryEntryKindTranscriptRole(
+  kind: SessionHistoryEntry["kind"],
+): SessionHistoryTranscriptRole {
+  switch (kind) {
+    case "user_prompt":
+      return "user"
+    case "provider_output":
+      return "assistant"
+    case "provider_reasoning":
+      return "reasoning"
+    case "provider_tool":
+      return "tool"
+    case "provider_error":
+      return "error"
+    case "provider_status":
+      return "status"
+    case "notice":
+      return "notice"
+  }
 }
