@@ -6,6 +6,7 @@ import {
 } from "@arroba/kernel-client/agent-activity"
 import {
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
+  sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionPromptWorkSummary,
 } from "@arroba/kernel-client/shell-agent-activity"
 import {
@@ -127,7 +128,7 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
 }
 
 export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolean {
-  return Boolean(session.agent_activity || session.prompt_states)
+  return kernelSessionHasAgentRuntimeProjection(session as Parameters<typeof kernelSessionHasAgentRuntimeProjection>[0])
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
@@ -297,7 +298,7 @@ export function deriveSessionTransitionState(
   const nextStreamingAgentId = resolvedStreamingAgentId
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
-    const legacyAgentBusy = !options.nextSession.agent_activity && !options.nextSession.prompt_states && (
+    const legacyAgentBusy = !sessionHasProjectedRuntimeState(options.nextSession) && (
       agent.is_processing
       || agent.state === "Working"
     )

@@ -1,6 +1,6 @@
 import type { RuntimeSession } from "./cli-types.js"
 import { getToolActivityLabel } from "./runtime.js"
-import { agentHasPromptWork } from "./session-state.js"
+import { agentHasPromptWork, sessionHasProjectedRuntimeState } from "./session-state.js"
 
 export type ToolActivityUpdate = {
   tool?: string | null
@@ -49,8 +49,7 @@ export function shouldPreserveAgentActivityLabel(options: {
   }
   return options.streamingAgentId === agentId
     || agentHasPromptWork(options.session, agentId)
-    || (!options.session.agent_activity
-      && !options.session.prompt_states
+    || (!sessionHasProjectedRuntimeState(options.session)
       && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
 }
 
@@ -111,7 +110,7 @@ export function deriveFocusedAgentBusy(options: {
     return false
   }
   const focused = options.session.agents.find((agent) => agent.id === agentId) ?? null
-  const allowLegacyProcessing = !options.session.agent_activity && !options.session.prompt_states
+  const allowLegacyProcessing = !sessionHasProjectedRuntimeState(options.session)
   return (options.submitting && options.submittingAgentId === agentId)
     || agentHasPromptWork(options.session, agentId)
     || options.streamingAgentId === agentId
@@ -130,7 +129,7 @@ export function deriveAllAgentsBusyState(options: {
 }): AgentBusyState[] {
   return options.session.agents.map((agent) => {
     const agentId = agent.id
-    const allowLegacyProcessing = !options.session.agent_activity && !options.session.prompt_states
+    const allowLegacyProcessing = !sessionHasProjectedRuntimeState(options.session)
     const isBusy = (options.submitting && options.submittingAgentId === agentId)
       || agentHasPromptWork(options.session, agentId)
       || options.streamingAgentId === agentId
