@@ -107,6 +107,27 @@ export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
   readonly external_provider_turn_id?: string | null | undefined
 }
 
+export type ExternalProviderObservedTranscriptTurnFields = {
+  readonly source?: string | null | undefined
+  readonly externalProvider?: string | null | undefined
+  readonly externalProviderSessionId?: string | null | undefined
+  readonly externalProviderTurnId?: string | null | undefined
+}
+
+export function transcriptExternalProviderObservedTurnMetadata(
+  entry: ExternalProviderObservedTranscriptTurnFields,
+): ExternalProviderObservedTurnMetadata | null {
+  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return null
+  }
+  return {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: nonBlankString(entry.externalProvider),
+    externalProviderSessionId: nonBlankString(entry.externalProviderSessionId),
+    externalProviderTurnId: nonBlankString(entry.externalProviderTurnId),
+  }
+}
+
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null

@@ -9,6 +9,7 @@ import {
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
+  transcriptExternalProviderObservedTurnMetadata,
 } from "./external-provider-observation.js"
 
 test("external provider observed predicate requires kernel observed source", () => {
@@ -106,6 +107,36 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     prompt_origin: "arroba",
     external_provider: "codex",
     external_provider_session_id: "thread-1",
+  }), null)
+})
+
+test("external provider observed metadata projects transcript turn fields", () => {
+  assert.deepEqual(transcriptExternalProviderObservedTurnMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: " codex ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " turn-1 ",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+  assert.deepEqual(transcriptExternalProviderObservedTurnMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "",
+    externalProviderSessionId: null,
+    externalProviderTurnId: undefined,
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+  })
+  assert.equal(transcriptExternalProviderObservedTurnMetadata({
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
   }), null)
 })
 

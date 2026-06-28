@@ -9,8 +9,8 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   promptOriginExternalProviderObservedMetadata,
+  transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTurnMetadata,
 } from "@arroba/kernel-client/external-provider-observation"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
@@ -228,18 +228,7 @@ function applyOutlineTurnExternalMetadata(
 function transcriptEntryExternalMetadata(
   entry: TranscriptEntry,
 ): OutlineTurnExternalMetadata | null {
-  const externalProvider = nonBlankString(entry.externalProvider)
-  const externalProviderSessionId = nonBlankString(entry.externalProviderSessionId)
-  const externalProviderTurnId = nonBlankString(entry.externalProviderTurnId)
-  if (entry.source !== EXTERNAL_PROVIDER_OBSERVED_SOURCE) {
-    return null
-  }
-  return {
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider,
-    externalProviderSessionId,
-    externalProviderTurnId,
-  }
+  return transcriptExternalProviderObservedTurnMetadata(entry)
 }
 
 function outlineTurnCompletedAtMs(turn: SessionHistoryOutlineTurn): number | null | undefined {
@@ -260,10 +249,6 @@ function applyOutlineTurnLifecycleMetadata(
     ...entry,
     historyTurnCompletedAtMs: completedAtMs,
   }
-}
-
-function nonBlankString(value: string | null | undefined): string | null {
-  return value?.trim() ? value.trim() : null
 }
 
 function hydratePageEntries(
