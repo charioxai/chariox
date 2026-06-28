@@ -6,6 +6,10 @@ import {
   normalizeProviderActivityLabel,
   toProviderPresentParticiplePhrase,
 } from "@arroba/kernel-client/provider-status"
+import {
+  resolveSessionStreamingAgentId,
+  type SessionStreamingAgent,
+} from "@arroba/kernel-client/shell-agent-activity"
 
 export const DEFAULT_CONNECTED_STATUS = ""
 export const MAX_TRANSIENT_POLL_FAILURES = 5
@@ -83,30 +87,21 @@ export function resolveVisibleTranscriptAgentId(
 }
 
 export function resolveStreamingAgentId(
-  agents: ReadonlyArray<{ id: string; is_processing: boolean; state: string }>,
+  agents: ReadonlyArray<SessionStreamingAgent>,
   activePromptTargetAgentId: string | null,
   sessionHasPromptWork: boolean,
   currentWorking: boolean,
   previousStreamingAgentId: string | null,
   useLegacyProcessingState = true,
 ) {
-  const processingAgentId = useLegacyProcessingState
-    ? agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
-    : null
-  if (processingAgentId) {
-    return processingAgentId
-  }
-  if (activePromptTargetAgentId && agents.some((agent) => agent.id === activePromptTargetAgentId)) {
-    return activePromptTargetAgentId
-  }
-  if (
-    (sessionHasPromptWork || (currentWorking && useLegacyProcessingState))
-    && previousStreamingAgentId
-    && agents.some((agent) => agent.id === previousStreamingAgentId)
-  ) {
-    return previousStreamingAgentId
-  }
-  return null
+  return resolveSessionStreamingAgentId(
+    agents,
+    activePromptTargetAgentId,
+    sessionHasPromptWork,
+    currentWorking,
+    previousStreamingAgentId,
+    useLegacyProcessingState,
+  )
 }
 
 export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedClientCount: number): boolean {

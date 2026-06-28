@@ -4,6 +4,7 @@ import test from "node:test"
 import type { AgentPromptState } from "./kernel-types.js"
 import {
   runtimeProviderRunForAgent,
+  resolveSessionStreamingAgentId,
   sessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent,
   sessionActivePromptLifecycleRecords,
@@ -607,6 +608,31 @@ test("sessionProjectedStreamingAgentId falls back to legacy active prompt withou
     },
     agents: [makeAgent({ id: "agent-1" })],
   })), "agent-1")
+})
+
+test("resolveSessionStreamingAgentId prefers processing, active prompt, then previous streaming agent", () => {
+  const agents = [
+    makeAgent({ id: "agent-a", is_processing: false, state: "Idle" }),
+    makeAgent({ id: "agent-b", is_processing: true, state: "Working" }),
+  ]
+
+  assert.equal(resolveSessionStreamingAgentId(agents, "agent-a", true, true, "agent-a"), "agent-b")
+  assert.equal(resolveSessionStreamingAgentId([makeAgent({ id: "agent-a" })], "agent-a", true, false, null), "agent-a")
+  assert.equal(resolveSessionStreamingAgentId([makeAgent({ id: "agent-a" })], null, true, false, "agent-a"), "agent-a")
+  assert.equal(resolveSessionStreamingAgentId([makeAgent({ id: "agent-a" })], null, false, true, "agent-a"), "agent-a")
+  assert.equal(resolveSessionStreamingAgentId([makeAgent({ id: "agent-a" })], null, false, false, "agent-a"), null)
+})
+
+test("resolveSessionStreamingAgentId can ignore legacy processing for projected sessions", () => {
+  const agents = [
+    makeAgent({ id: "agent-a", is_processing: true, state: "Working" }),
+    makeAgent({ id: "agent-b", is_processing: false, state: "Idle" }),
+  ]
+
+  assert.equal(resolveSessionStreamingAgentId(agents, "agent-b", true, false, null, false), "agent-b")
+  assert.equal(resolveSessionStreamingAgentId(agents, null, true, false, "agent-b", false), "agent-b")
+  assert.equal(resolveSessionStreamingAgentId(agents, null, false, true, "agent-b", false), null)
+  assert.equal(resolveSessionStreamingAgentId(agents, null, false, false, null, false), null)
 })
 
 test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn completion", () => {

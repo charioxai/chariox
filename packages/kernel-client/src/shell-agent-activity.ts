@@ -57,6 +57,8 @@ export type AgentRuntimeProjectionContext = {
 
 export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
 
+export type SessionStreamingAgent = Pick<AgentInstance, "id" | "is_processing" | "state">
+
 export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null | undefined): boolean {
   return Boolean(session?.agent_activity || session?.prompt_states)
 }
@@ -181,6 +183,33 @@ export function sessionProjectedStreamingAgentId(session: RuntimeSession): strin
     return activeAgents.length === 1 ? activeAgents[0]?.id ?? null : null
   }
   return session.active_prompt?.target_agent_id ?? null
+}
+
+export function resolveSessionStreamingAgentId(
+  agents: ReadonlyArray<SessionStreamingAgent>,
+  activePromptTargetAgentId: string | null,
+  sessionHasPromptWork: boolean,
+  currentWorking: boolean,
+  previousStreamingAgentId: string | null,
+  useLegacyProcessingState = true,
+): string | null {
+  const processingAgentId = useLegacyProcessingState
+    ? agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
+    : null
+  if (processingAgentId) {
+    return processingAgentId
+  }
+  if (activePromptTargetAgentId && agents.some((agent) => agent.id === activePromptTargetAgentId)) {
+    return activePromptTargetAgentId
+  }
+  if (
+    (sessionHasPromptWork || (currentWorking && useLegacyProcessingState))
+    && previousStreamingAgentId
+    && agents.some((agent) => agent.id === previousStreamingAgentId)
+  ) {
+    return previousStreamingAgentId
+  }
+  return null
 }
 
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
