@@ -623,6 +623,56 @@ test("executeShellCommand context uses projected idle over stale legacy prompt s
   assert.doesNotMatch(result.message ?? "", /agent: agent-1 \(busy\)/)
 })
 
+test("executeShellCommand context uses projected idle over stale remote worker state", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-remote",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            agents: [makeAgent({
+              id: "agent-remote",
+              agent_ref: "agent-remote",
+              state: "Working",
+              is_processing: true,
+              remote_execution: {
+                worker_kernel_id: "worker-kernel",
+                worker_machine_id: "hetzner",
+                execution_lease_id: "lease-1",
+                leased_agent_id: "leased-agent-1",
+              },
+            })],
+          }),
+          agent_activity: {
+            "agent-remote": {
+              status: "idle",
+              prompt_status: "none",
+              busy: false,
+            },
+          },
+        },
+      }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent: agent-remote/)
+  assert.doesNotMatch(result.message ?? "", /agent: agent-remote \(busy\)/)
+  assert.doesNotMatch(result.message ?? "", /provider run next:/)
+})
+
 test("executeShellCommand context keeps final revokes visible after grants are gone", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

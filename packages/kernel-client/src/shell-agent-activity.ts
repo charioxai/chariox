@@ -27,6 +27,10 @@ export type AgentRuntimeProjectionContext = {
 
 export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
 
+export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null | undefined): boolean {
+  return Boolean(session?.agent_activity || session?.prompt_states)
+}
+
 export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
   const promptStates = session.prompt_states
   const promptStateEntries = promptStateEntriesForSessionAgents(session)
