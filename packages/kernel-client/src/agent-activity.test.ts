@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy,
+  agentRuntimeActivityResolvedStatus,
   agentRuntimePromptStatusIsActive,
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityProjectionStatus,
@@ -107,6 +108,15 @@ test("agent activity helpers normalize status vocabulary", () => {
   assert.equal(agentRuntimePromptStatusIsActivePrompt("queued"), false)
   assert.equal(agentRuntimePromptStatusIsActivePrompt("running"), true)
   assert.equal(agentRuntimePromptStatusIsActivePrompt("cancelled"), false)
+})
+
+test("agent activity resolved status follows error, busy, then idle", () => {
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "error", busy: false }), "error")
+  assert.equal(agentRuntimeActivityResolvedStatus({ error: true, status: "idle", busy: false }), "error")
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "working", busy: false }), "working")
+  assert.equal(agentRuntimeActivityResolvedStatus({ active_prompt_count: 1 }), "working")
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "idle", busy: false }), "idle")
+  assert.equal(agentRuntimeActivityResolvedStatus(null), "idle")
 })
 
 test("agent activity projection preserves kernel counts as activity source", () => {

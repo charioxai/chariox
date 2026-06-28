@@ -17,6 +17,8 @@ import {
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionAgentRuntimeActivityProjection,
+  sessionAgentRuntimeActivityStatus,
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
   sessionFocusedAgentId,
@@ -106,6 +108,69 @@ test("sessionAgentIsBusy treats missing projected agent activity as idle", () =>
     queued: 0,
     busyAgents: 0,
   })
+})
+
+test("sessionAgentRuntimeActivityProjection returns normalized activity with idle fallback", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          provider_run_id: "run-1",
+          prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "turn-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionAgentRuntimeActivityProjection(session, "agent-1"), {
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: {
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      prompt_origin: "external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+      phase: "streaming",
+    },
+    activeTurnPromptId: "prompt-1",
+    activeTurnProviderRunId: "run-1",
+    activeTurnPromptOrigin: "external",
+    activeTurnExternalProvider: "codex",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activeTurnExternalProviderTurnId: "turn-1",
+    activeTurnStatus: "running",
+    activeTurnPhase: "streaming",
+    activePromptCount: 1,
+    queuedPromptCount: 0,
+    error: false,
+  })
+  assert.deepEqual(sessionAgentRuntimeActivityProjection(session, "agent-2"), {
+    status: null,
+    promptStatus: "none",
+    busy: false,
+    activeTurn: null,
+    activePromptCount: 0,
+    queuedPromptCount: 0,
+    error: false,
+  })
+  assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-1"), "working")
+  assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-2"), "idle")
+  assert.equal(sessionAgentRuntimeActivityStatus(null, "agent-1"), "idle")
 })
 
 test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done", () => {

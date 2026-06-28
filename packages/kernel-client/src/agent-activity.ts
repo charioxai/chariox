@@ -50,6 +50,16 @@ export function agentRuntimeActivityIsBusy(
   return projectAgentRuntimeActivity(activity).busy
 }
 
+export function agentRuntimeActivityResolvedStatus(
+  activity: unknown,
+): AgentRuntimeActivityStatus {
+  const projection = projectAgentRuntimeActivity(activity)
+  if (projection.error || projection.status === "error") {
+    return "error"
+  }
+  return projection.busy ? "working" : "idle"
+}
+
 export function projectAgentRuntimeActivity(
   value: unknown,
   options: { readonly previousError?: boolean } = {},

@@ -7,13 +7,14 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
+  agentRuntimeActivityResolvedStatus,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityStatus,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
-import type { AgentRuntimeActivityBusyInput } from "./agent-activity.js"
+import type { AgentRuntimeActivityBusyInput, AgentRuntimeActivityProjection, AgentRuntimeActivityStatus } from "./agent-activity.js"
 
 export type SessionPromptWorkSummary = {
   readonly active: number
@@ -86,6 +87,22 @@ export type AgentRuntimeProjectionContext = {
 export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
 
 export type SessionStreamingAgent = Pick<AgentInstance, "id" | "is_processing" | "state">
+
+export function sessionAgentRuntimeActivityProjection(
+  session: RuntimeSession | null | undefined,
+  agentId: string | null | undefined,
+): AgentRuntimeActivityProjection {
+  const activity = agentId ? session?.agent_activity?.[agentId] : null
+  return projectAgentRuntimeActivity(activity)
+}
+
+export function sessionAgentRuntimeActivityStatus(
+  session: RuntimeSession | null | undefined,
+  agentId: string | null | undefined,
+): AgentRuntimeActivityStatus {
+  const activity = agentId ? session?.agent_activity?.[agentId] : null
+  return agentRuntimeActivityResolvedStatus(activity)
+}
 
 export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null | undefined): boolean {
   return Boolean(session?.agent_activity || session?.prompt_states)
