@@ -290,7 +290,16 @@ fn provider_batch_launch_effective_concurrency(
         .min()
         .unwrap_or(DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT)
         .max(1);
-    requested.clamp(1, launches.len()).min(provider_limit)
+    let session_limit = launches
+        .iter()
+        .map(|launch| launch.session_id.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+        .max(1);
+    requested
+        .clamp(1, launches.len())
+        .min(provider_limit)
+        .min(session_limit)
 }
 
 fn provider_batch_launch_concurrency_limit(launch: &LaunchProviderRunRequest) -> usize {
@@ -551,7 +560,8 @@ mod tests {
     fn batch_launch_concurrency_respects_provider_caps() {
         let codex_launches = (0..64)
             .map(|index| {
-                let mut launch = test_launch("session-a", &format!("agent-{index}"));
+                let mut launch =
+                    test_launch(&format!("session-{index}"), &format!("agent-{index}"));
                 launch.adapter_key = "codex".to_string();
                 launch.provider = "codex".to_string();
                 launch
@@ -564,7 +574,8 @@ mod tests {
 
         let dev_stub_launches = (0..64)
             .map(|index| {
-                let mut launch = test_launch("session-a", &format!("stub-agent-{index}"));
+                let mut launch =
+                    test_launch(&format!("session-{index}"), &format!("stub-agent-{index}"));
                 launch.adapter_key = "dev-stub".to_string();
                 launch.provider = "dev-stub".to_string();
                 launch
@@ -580,7 +591,8 @@ mod tests {
     fn batch_launch_concurrency_uses_smallest_provider_cap_for_mixed_batches() {
         let mut launches = (0..40)
             .map(|index| {
-                let mut launch = test_launch("session-a", &format!("agent-{index}"));
+                let mut launch =
+                    test_launch(&format!("session-{index}"), &format!("agent-{index}"));
                 launch.adapter_key = "codex".to_string();
                 launch.provider = "codex".to_string();
                 launch
@@ -592,6 +604,29 @@ mod tests {
         assert_eq!(
             provider_batch_launch_effective_concurrency(Some(40), &launches),
             PROVIDER_CLI_BATCH_LAUNCH_LIMIT
+        );
+    }
+
+    #[test]
+    fn batch_launch_concurrency_caps_to_unique_session_count() {
+        let single_session_launches = (0..64)
+            .map(|index| test_launch("session-a", &format!("agent-{index}")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(50), &single_session_launches),
+            1
+        );
+
+        let mixed_session_launches = vec![
+            test_launch("session-a", "agent-a-1"),
+            test_launch("session-a", "agent-a-2"),
+            test_launch("session-b", "agent-b-1"),
+            test_launch("session-b", "agent-b-2"),
+            test_launch("session-c", "agent-c-1"),
+        ];
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(50), &mixed_session_launches),
+            3
         );
     }
 

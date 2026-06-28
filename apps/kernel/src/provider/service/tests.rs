@@ -502,6 +502,37 @@ fn provider_only_park_run_returns_outcome_without_session_mutation() {
 }
 
 #[test]
+fn provider_only_park_run_is_idempotent_when_already_parked() {
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("first provider-only park should succeed");
+    let outcome = providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("second provider-only park should be idempotent");
+
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Parked);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+}
+
+#[test]
 fn provider_only_resume_run_returns_outcome_without_session_mutation() {
     let mut sessions = sessions();
     let session = sessions

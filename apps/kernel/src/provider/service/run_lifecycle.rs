@@ -85,6 +85,10 @@ impl ProviderProcessService {
             });
         }
 
+        if run_snapshot.state() == ProviderRunState::Parked {
+            return Ok(ProviderRunParkedOutcome { run: run_snapshot });
+        }
+
         if run_snapshot.state() != ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: run_id.to_string(),
