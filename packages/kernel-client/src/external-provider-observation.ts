@@ -21,6 +21,12 @@ export type ExternalProviderObservedTurnMarker = {
   providerSessionId: string
 }
 
+export type ExternalProviderImportMatchFields = {
+  readonly external_provider_session_id: string
+  readonly external_provider: string
+  readonly external_provider_session_provider_id: string
+}
+
 export type ExternalProviderObservedTranscriptMetadata = {
   source: typeof EXTERNAL_PROVIDER_OBSERVED_SOURCE
   externalProvider: string | null
@@ -96,6 +102,32 @@ export function externalProviderObservedCompletionAtMs(
     ?? finiteNumber(entry.createdAtMs)
     ?? finiteNumber(entry.created_at_ms)
     ?? nowMs()
+}
+
+export function externalProviderObservedEntryBelongsToImport(
+  externalImport: ExternalProviderImportMatchFields | null | undefined,
+  entry: ExternalProviderObservedImportScopedEntryFields,
+): boolean {
+  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return true
+  }
+  const entryProvider = nonBlankString(entry.externalProvider)
+  const entrySessionId = nonBlankString(entry.externalProviderSessionId)
+  if (!entryProvider && !entrySessionId) {
+    return true
+  }
+  if (!externalImport) {
+    return true
+  }
+  const importProvider = nonBlankString(externalImport.external_provider)
+  if (entryProvider && importProvider && entryProvider !== importProvider) {
+    return false
+  }
+  if (!entrySessionId) {
+    return true
+  }
+  return entrySessionId === externalImport.external_provider_session_id
+    || entrySessionId === externalImport.external_provider_session_provider_id
 }
 
 export function promptOriginExternalProviderObservedMetadata(
@@ -177,6 +209,12 @@ export type ExternalProviderObservedCompletionTimeFields = {
   readonly observedAtMs?: number | null | undefined
   readonly created_at_ms?: number | null | undefined
   readonly createdAtMs?: number | null | undefined
+}
+
+export type ExternalProviderObservedImportScopedEntryFields = {
+  readonly source?: string | null | undefined
+  readonly externalProvider?: string | null | undefined
+  readonly externalProviderSessionId?: string | null | undefined
 }
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {

@@ -5,6 +5,7 @@ import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedCompletionAtMs,
+  externalProviderObservedEntryBelongsToImport,
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedProviderStatusShouldRender,
@@ -287,6 +288,67 @@ test("external provider observed completion time prefers observation time then c
     createdAtMs: 1_000,
   }, () => 3_000), 1_000)
   assert.equal(externalProviderObservedCompletionAtMs({}, () => 3_000), 3_000)
+})
+
+test("external provider observed import scoping keeps ordinary and unknown observed entries", () => {
+  const externalImport = {
+    external_provider: "codex",
+    external_provider_session_id: "codex:thread-1",
+    external_provider_session_provider_id: "thread-1",
+  }
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: "provider_output",
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-2",
+  }), true)
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }), true)
+  assert.equal(externalProviderObservedEntryBelongsToImport(null, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), true)
+})
+
+test("external provider observed import scoping matches external and provider session ids", () => {
+  const externalImport = {
+    external_provider: "codex",
+    external_provider_session_id: "codex:thread-1",
+    external_provider_session_provider_id: "thread-1",
+  }
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "codex:thread-1",
+  }), true)
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), true)
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+  }), true)
+})
+
+test("external provider observed import scoping rejects mismatched imported agents", () => {
+  const externalImport = {
+    external_provider: "codex",
+    external_provider_session_id: "codex:thread-1",
+    external_provider_session_provider_id: "thread-1",
+  }
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-1",
+  }), false)
+  assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-2",
+  }), false)
 })
 
 test("external provider observation merge preserves settlement over passive telemetry", () => {

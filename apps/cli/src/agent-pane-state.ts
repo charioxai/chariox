@@ -1,5 +1,5 @@
 import {
-  sessionHistoryEntryIsExternalProviderObserved,
+  externalProviderObservedEntryBelongsToImport,
 } from "@arroba/kernel-client/external-provider-observation"
 import {
   prependTranscriptEntriesWithoutDuplicateRenderableLineage,
@@ -361,24 +361,7 @@ function entryBelongsToAgent(
     externalProviderSessionId?: string | null
   },
 ) {
-  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
-    return true
-  }
-  if (!entry.externalProviderSessionId && !entry.externalProvider) {
-    return true
-  }
-  const externalImport = agent.external_provider_import
-  if (!externalImport) {
-    return true
-  }
-  if (entry.externalProvider && entry.externalProvider !== externalImport.external_provider) {
-    return false
-  }
-  if (!entry.externalProviderSessionId) {
-    return true
-  }
-  return entry.externalProviderSessionId === externalImport.external_provider_session_id
-    || entry.externalProviderSessionId === externalImport.external_provider_session_provider_id
+  return externalProviderObservedEntryBelongsToImport(agent.external_provider_import, entry)
 }
 
 function historyBlobSourceKey(agentId: string | null | undefined, blobId: string, turnId: number | undefined) {
