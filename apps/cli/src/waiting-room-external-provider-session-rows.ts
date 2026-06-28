@@ -1,4 +1,9 @@
-import type { ExternalProviderSessionRecord } from "./cli-types.js"
+import {
+  externalProviderSessionModifiedLabel,
+  externalProviderSessionModeLabel,
+  externalProviderSessionsSorted,
+  externalProviderSessionTitle,
+} from "@arroba/kernel-client/external-provider-sessions"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 const TITLE_MIN_WIDTH = 24
@@ -33,11 +38,11 @@ export function waitingRoomExternalProviderSessionRows(
   }
 
   const providerWidth = Math.max(PROVIDER_MIN_WIDTH, ...sessions.map((session) => session.provider.length))
-  const modeWidth = Math.max(MODE_MIN_WIDTH, ...sessions.map((session) => formatMode(session).length))
+  const modeWidth = Math.max(MODE_MIN_WIDTH, ...sessions.map((session) => externalProviderSessionModeLabel(session).length))
   const modifiedWidth = Math.max(
     "Modified".length,
     MODIFIED_MIN_WIDTH,
-    ...sessions.map((session) => formatTimestamp(session.last_modified_at_ms).length),
+    ...sessions.map((session) => externalProviderSessionModifiedLabel(session, { utcSuffix: true }).length),
   )
   const rows: WaitingRoomRow[] = [{
     id: "external-provider-session-header",
@@ -57,13 +62,13 @@ export function waitingRoomExternalProviderSessionRows(
   for (const [index, session] of sessions.entries()) {
     rows.push({
       id: `external-session:${session.external_session_id}`,
-      title: formatTitle(session),
+      title: externalProviderSessionTitle(session),
       value: session.provider,
       titleWidth: options.titleWidth,
       columns: [
         column(session.provider, providerWidth),
-        column(formatMode(session), modeWidth),
-        column(formatTimestamp(session.last_modified_at_ms), modifiedWidth),
+        column(externalProviderSessionModeLabel(session), modeWidth),
+        column(externalProviderSessionModifiedLabel(session, { utcSuffix: true }), modifiedWidth),
       ],
       indent: 1,
       focused: state.focus === "external-session" && state.externalSessionIndex === index,
@@ -89,55 +94,12 @@ export function waitingRoomExternalProviderSessionRows(
 export function waitingRoomExternalProviderSessionTitleWidth(remote: WaitingRoomRemoteState = {}) {
   return Math.max(
     TITLE_MIN_WIDTH,
-    ...waitingRoomExternalProviderSessions(remote).map((session) => formatTitle(session).length),
+    ...waitingRoomExternalProviderSessions(remote).map((session) => externalProviderSessionTitle(session).length),
   )
 }
 
 export function waitingRoomExternalProviderSessions(remote: WaitingRoomRemoteState = {}) {
-  return (remote.externalProviderSessions ?? [])
-    .slice()
-    .sort(compareExternalProviderSessions)
-}
-
-function formatTitle(session: ExternalProviderSessionRecord) {
-  return session.title?.trim()
-    || session.first_prompt_preview?.trim()
-    || session.provider_session_id
-    || session.external_session_id
-}
-
-function formatMode(session: ExternalProviderSessionRecord) {
-  return "observed"
-}
-
-function formatTimestamp(value: number | null | undefined) {
-  if (!value) {
-    return "-"
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return "-"
-  }
-  return date.toISOString().replace("T", " ").slice(0, 16) + " UTC"
-}
-
-function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {
-  return typeof session.last_modified_at_ms === "number" ? session.last_modified_at_ms : 0
-}
-
-function compareExternalProviderSessions(
-  left: ExternalProviderSessionRecord,
-  right: ExternalProviderSessionRecord,
-): number {
-  const modified = externalProviderSessionModifiedMs(right) - externalProviderSessionModifiedMs(left)
-  if (modified !== 0) {
-    return modified
-  }
-  const provider = left.provider.localeCompare(right.provider)
-  if (provider !== 0) {
-    return provider
-  }
-  return left.provider_session_id.localeCompare(right.provider_session_id)
+  return externalProviderSessionsSorted(remote.externalProviderSessions)
 }
 
 function column(value: string, width: number) {
