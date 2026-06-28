@@ -1,4 +1,5 @@
 import {
+  externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
@@ -8,7 +9,6 @@ import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
-  shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
 import { trimSingleTrailingNewline } from "./transcript-text.js"
@@ -341,7 +341,7 @@ export function hydrateTranscriptEntries(
         })
         break
       case "provider_status":
-        if (shouldRenderHistoryProviderStatus(pageEntry.entry)) {
+        if (externalProviderObservedProviderStatusShouldRender(pageEntry.entry)) {
           appendTranscriptEntry("status", pageEntry.entry.text, {
             ...entryOptions,
             ...observedOptions,
@@ -585,7 +585,7 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
   if (!text) {
     return null
   }
-  if (entry.kind === "provider_status" && !shouldRenderHistoryProviderStatus(entry)) {
+  if (entry.kind === "provider_status" && !externalProviderObservedProviderStatusShouldRender(entry)) {
     return null
   }
   const label = entry.kind === "user_prompt"
@@ -602,11 +602,4 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
               ? "Note"
               : "Asst"
   return `${label}: ${text.split("\n")[0]}`
-}
-
-function shouldRenderHistoryProviderStatus(entry: SessionHistoryEntry): boolean {
-  const metadata = historyEntryExternalProviderObservedMetadata(entry)
-  return metadata !== null
-    && metadata.externalObservation?.passive_telemetry !== true
-    && shouldRenderProviderStatus(entry.text)
 }

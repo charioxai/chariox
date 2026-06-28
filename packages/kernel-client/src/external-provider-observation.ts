@@ -4,6 +4,7 @@ import {
   promptOriginIsExternal,
   type PromptOriginRecord,
 } from "./prompt-origin.js"
+import { shouldRenderProviderStatus } from "./provider-status.js"
 
 export const EXTERNAL_PROVIDER_OBSERVED_SOURCE = "external_provider_observed"
 export const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_updated"
@@ -55,6 +56,18 @@ export function externalProviderObservedHistoryRefreshSignal(
     && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS
 }
 
+export function externalProviderObservedProviderStatusShouldRender(
+  entry: ExternalProviderObservedProviderStatusFields,
+): boolean {
+  if (entry.kind !== "provider_status") {
+    return false
+  }
+  const metadata = historyEntryExternalProviderObservedMetadata(entry)
+  return metadata !== null
+    && metadata.externalObservation?.passive_telemetry !== true
+    && shouldRenderProviderStatus(entry.text)
+}
+
 export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
@@ -102,6 +115,10 @@ export type ExternalProviderObservedStatusSignalFields = Pick<
   ExternalProviderObservedKernelFields,
   "kind" | "source"
 >
+
+export type ExternalProviderObservedProviderStatusFields = ExternalProviderObservedKernelFields & {
+  readonly text: string
+}
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
   readonly external_provider_turn_id?: string | null | undefined

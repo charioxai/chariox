@@ -5,6 +5,7 @@ import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
+  externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
@@ -157,6 +158,54 @@ test("external provider observed history refresh signal requires observed provid
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   }, "OpenCode status: reconnecting"), false)
+})
+
+test("external provider observed status render policy requires observed non-passive status", () => {
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: null,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_output",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
 })
 
 test("external provider observation merge preserves settlement over passive telemetry", () => {
