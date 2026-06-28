@@ -6,6 +6,7 @@ import {
 import {
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
+  sessionFocusedAgentId as kernelSessionFocusedAgentId,
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
@@ -139,14 +140,7 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
 }
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
-  const focusedAgentId = session.focused_agent_id
-  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
-    return focusedAgentId
-  }
-  if (focusedAgentId) {
-    return null
-  }
-  return session.agents[0]?.id ?? null
+  return kernelSessionFocusedAgentId(session as Parameters<typeof kernelSessionFocusedAgentId>[0])
 }
 
 export function activeInteractionForAgent(

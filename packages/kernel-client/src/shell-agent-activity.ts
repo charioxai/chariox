@@ -54,6 +54,19 @@ export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null 
   return Boolean(session?.agent_activity || session?.prompt_states)
 }
 
+export function sessionFocusedAgentId(
+  session: Pick<RuntimeSession, "agents" | "focused_agent_id">,
+): string | null {
+  const focusedAgentId = session.focused_agent_id?.trim()
+  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
+    return focusedAgentId
+  }
+  if (focusedAgentId) {
+    return null
+  }
+  return session.agents[0]?.id ?? null
+}
+
 export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
   const promptStates = session.prompt_states
   const promptStateEntries = promptStateEntriesForSessionAgents(session)

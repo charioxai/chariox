@@ -9,6 +9,7 @@ import {
   sessionAgentIsBusy,
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
+  sessionFocusedAgentId,
   sessionHasActivePrompt,
   sessionHasProcessingAgent,
   sessionHasPromptWork,
@@ -125,6 +126,28 @@ test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done"
     state: "Idle",
     is_processing: false,
   })), "Idle")
+})
+
+test("sessionFocusedAgentId keeps only session-scoped focus and falls back without explicit focus", () => {
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: "agent-2",
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })), "agent-2")
+
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: "stale-agent",
+    agents: [makeAgent({ id: "agent-1" })],
+  })), null)
+
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: "stale-agent",
+    agents: [],
+  })), null)
+
+  assert.equal(sessionFocusedAgentId(makeSession({
+    focused_agent_id: null,
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })), "agent-1")
 })
 
 test("sessionPromptWorkSummary counts projected active turns and prompt state queues", () => {
