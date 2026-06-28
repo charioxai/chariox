@@ -77,7 +77,7 @@ impl KernelRuntimeOwnedState {
         }
         let mut trace_agent_ids = std::collections::BTreeSet::new();
         let mut recipient_scope_cache =
-            std::collections::BTreeMap::<Option<String>, Vec<String>>::new();
+            std::collections::BTreeMap::<Option<String>, std::sync::Arc<[String]>>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
         for output in outputs {
             let agent_id = output.agent_id;
@@ -94,7 +94,7 @@ impl KernelRuntimeOwnedState {
                         agent_id.as_deref(),
                         scoped_recipient_attachment_ids,
                     );
-                    scoped_recipient_attachment_ids
+                    std::sync::Arc::from(scoped_recipient_attachment_ids)
                 })
                 .clone();
             if let Some(agent_id) = agent_id.as_deref() {

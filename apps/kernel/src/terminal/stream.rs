@@ -54,7 +54,7 @@ pub struct TerminalOutputAppend {
     pub agent_id: Option<String>,
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,
-    pub recipient_attachment_ids: Vec<String>,
+    pub recipient_attachment_ids: Arc<[String]>,
     pub bytes: Vec<u8>,
 }
 
@@ -659,8 +659,9 @@ impl TerminalStreamService {
         }
         let mut records = Vec::with_capacity(outputs.len());
         let mut changed_keys = BTreeSet::new();
-        let mut last_recipient_scope: Option<(String, Vec<String>)> = None;
+        let mut last_recipient_scope: Option<(String, Arc<[String]>)> = None;
         for output in outputs {
+            let recipient_attachment_ids = Vec::from(output.recipient_attachment_ids.as_ref());
             let record = TerminalOutputRecord {
                 session_id: output.session_id,
                 provider_run_id: output.provider_run_id,
@@ -669,14 +670,14 @@ impl TerminalStreamService {
                 source_attachment_id: None,
                 kind: output.kind,
                 merge_key: output.merge_key,
-                pending_recipient_attachment_ids: output.recipient_attachment_ids.clone(),
-                recipient_attachment_ids: output.recipient_attachment_ids,
+                pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
+                recipient_attachment_ids,
                 bytes: output.bytes,
             };
             let same_recipient_scope = last_recipient_scope.as_ref().is_some_and(
                 |(session_id, recipient_attachment_ids)| {
                     session_id == &record.session_id
-                        && recipient_attachment_ids.as_slice()
+                        && &recipient_attachment_ids[..]
                             == record.recipient_attachment_ids.as_slice()
                 },
             );
@@ -686,7 +687,7 @@ impl TerminalStreamService {
                 }
                 last_recipient_scope = Some((
                     record.session_id.clone(),
-                    record.recipient_attachment_ids.clone(),
+                    output.recipient_attachment_ids.clone(),
                 ));
             }
 
@@ -1468,6 +1469,7 @@ fn json_byte_array_len(bytes: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::Arc;
 
     use super::{
         scoped_output_record, terminal_output_record_scoped_json_bytes, TerminalOutputAppend,
@@ -1556,7 +1558,7 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("chunk-1".to_string()),
-                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: b"one".to_vec(),
             },
             TerminalOutputAppend {
@@ -1565,7 +1567,7 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("chunk-2".to_string()),
-                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: b"two".to_vec(),
             },
         ]);
@@ -1630,7 +1632,7 @@ mod tests {
                     agent_id: Some(format!("agent-{index}")),
                     kind: TerminalOutputKind::ProviderTool,
                     merge_key: Some(format!("chunk-{index}")),
-                    recipient_attachment_ids: vec!["attachment-1".to_string()],
+                    recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                     bytes: format!("chunk-{index}").into_bytes(),
                 })
                 .collect(),
@@ -2426,7 +2428,7 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("batch-key".to_string()),
-                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: b"one".to_vec(),
             },
             TerminalOutputAppend {
@@ -2435,7 +2437,7 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("batch-key".to_string()),
-                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: b"two".to_vec(),
             },
         ]);
@@ -2471,10 +2473,10 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some("batch-key-1".to_string()),
-                recipient_attachment_ids: vec![
+                recipient_attachment_ids: Arc::from(vec![
                     "attachment-1".to_string(),
                     "attachment-2".to_string(),
-                ],
+                ]),
                 bytes: b"one".to_vec(),
             },
             TerminalOutputAppend {
@@ -2483,10 +2485,10 @@ mod tests {
                 agent_id: Some("agent-1".to_string()),
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some("batch-key-2".to_string()),
-                recipient_attachment_ids: vec![
+                recipient_attachment_ids: Arc::from(vec![
                     "attachment-1".to_string(),
                     "attachment-2".to_string(),
-                ],
+                ]),
                 bytes: b"two".to_vec(),
             },
         ]);
