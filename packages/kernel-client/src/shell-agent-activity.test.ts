@@ -3,7 +3,9 @@ import test from "node:test"
 
 import type { AgentPromptState } from "./kernel-types.js"
 import {
+  runtimeProviderRunForAgent,
   sessionActivePromptIdForAgent,
+  sessionActiveInteractionForAgent,
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
@@ -148,6 +150,44 @@ test("sessionFocusedAgentId keeps only session-scoped focus and falls back witho
     focused_agent_id: null,
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
   })), "agent-1")
+})
+
+test("sessionActiveInteractionForAgent returns active interaction scoped to agent", () => {
+  const session = makeSession({
+    active_interactions: [{
+      id: "interaction-1",
+      agent_id: "agent-2",
+      kind: "permission",
+      level: "info",
+      title: "Approve?",
+      message: "Approve?",
+      choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" }],
+      requested_at_ms: 1,
+    }],
+  })
+
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-2")?.id, "interaction-1")
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-1"), null)
+  assert.equal(sessionActiveInteractionForAgent(session, null), null)
+})
+
+test("runtimeProviderRunForAgent returns provider run only for matching agent", () => {
+  const run = {
+    id: "run-1",
+    session_id: "session-1",
+    agent_instance_id: "agent-1",
+    adapter_key: "codex",
+    provider: "codex",
+    account_profile: "default",
+    model: "gpt-5.2",
+    variant: null,
+    usage_tokens_total: null,
+    state: "running",
+  }
+
+  assert.equal(runtimeProviderRunForAgent(run, "agent-1")?.id, "run-1")
+  assert.equal(runtimeProviderRunForAgent(run, "agent-2"), null)
+  assert.equal(runtimeProviderRunForAgent(null, "agent-1"), null)
 })
 
 test("sessionPromptWorkSummary counts projected active turns and prompt state queues", () => {

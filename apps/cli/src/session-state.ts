@@ -4,7 +4,9 @@ import {
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
+  runtimeProviderRunForAgent as kernelRuntimeProviderRunForAgent,
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
+  sessionActiveInteractionForAgent as kernelSessionActiveInteractionForAgent,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionFocusedAgentId as kernelSessionFocusedAgentId,
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
@@ -147,17 +149,20 @@ export function activeInteractionForAgent(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): RuntimeInteraction | null {
-  if (!agentId) {
-    return null
-  }
-  return session.active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
+  return kernelSessionActiveInteractionForAgent(
+    session as Parameters<typeof kernelSessionActiveInteractionForAgent>[0],
+    agentId,
+  ) as RuntimeInteraction | null
 }
 
 export function focusedProviderRunForAgent(
   run: RuntimeProviderRun | null,
   focusedAgentId: string | null | undefined,
 ): RuntimeProviderRun | null {
-  return run && run.agent_instance_id === focusedAgentId ? run : null
+  return kernelRuntimeProviderRunForAgent(
+    run as Parameters<typeof kernelRuntimeProviderRunForAgent>[0],
+    focusedAgentId,
+  ) as RuntimeProviderRun | null
 }
 
 export function activePromptIdForAgent(
