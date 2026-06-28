@@ -365,6 +365,48 @@ test("sessionPromptWorkSummary treats prompt states as runtime authority", () =>
   })
 })
 
+test("sessionPromptWorkSummary ignores prompt states for agents outside the session", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+      "agent-ghost": {
+        active_prompt: {
+          id: "prompt-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost running",
+          status: "Running",
+        },
+        queued_prompts: [{
+          id: "queued-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [
+      makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
+    ],
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 1,
+    queued: 0,
+    busyAgents: 1,
+  })
+})
+
 test("sessionAgentRuntimeState normalizes projected error status", () => {
   const session = makeSession({
     agent_activity: {
@@ -635,6 +677,37 @@ test("session prompt helpers treat missing prompt state agents as idle", () => {
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
+test("session prompt helpers ignore prompt states for agents outside the session", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: {
+          id: "prompt-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost running",
+          status: "Running",
+        },
+        queued_prompts: [{
+          id: "queued-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [
+      makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
+    ],
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-ghost"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-ghost", "prompt-ghost"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-ghost", "queued-ghost"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-ghost"), null)
 })
 
 test("session prompt helpers prefer explicit empty prompt state over stale top-level queued prompts", () => {
