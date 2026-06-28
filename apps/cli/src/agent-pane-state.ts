@@ -1,6 +1,11 @@
 import {
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
+import {
+  prependTranscriptEntriesWithoutDuplicateRenderableLineage,
+  transcriptEntriesContainRenderableLineage,
+  transcriptEntriesShareRenderableLineage,
+} from "@arroba/kernel-client/transcript-entry-lineage"
 
 export type AgentPaneExternalProviderImport = {
   external_provider_session_id: string
@@ -107,14 +112,7 @@ function refreshedEntriesAreContainedInCurrent<TEntry extends {
   currentEntries: readonly TEntry[],
   refreshedEntries: readonly TEntry[],
 ) {
-  const currentKeys = new Set(
-    currentEntries
-      .filter((entry) => entry.role !== "turn_toggle")
-      .flatMap(entryLineageKeys),
-  )
-  return refreshedEntries
-    .filter((entry) => entry.role !== "turn_toggle")
-    .every((entry) => entryLineageKeys(entry).some((key) => currentKeys.has(key)))
+  return transcriptEntriesContainRenderableLineage(currentEntries, refreshedEntries)
 }
 
 function entriesShareLineage<TEntry extends {
@@ -133,17 +131,7 @@ function entriesShareLineage<TEntry extends {
   currentEntries: readonly TEntry[],
   refreshedEntries: readonly TEntry[],
 ) {
-  const refreshedKeys = new Set(
-    refreshedEntries
-      .filter((entry) => entry.role !== "turn_toggle")
-      .flatMap(entryLineageKeys),
-  )
-  if (refreshedKeys.size === 0) {
-    return true
-  }
-  return currentEntries
-    .filter((entry) => entry.role !== "turn_toggle")
-    .some((entry) => entryLineageKeys(entry).some((key) => refreshedKeys.has(key)))
+  return transcriptEntriesShareRenderableLineage(currentEntries, refreshedEntries)
 }
 
 function prependHistoryEntriesWithoutDuplicates<TEntry extends {
@@ -162,86 +150,7 @@ function prependHistoryEntriesWithoutDuplicates<TEntry extends {
   olderEntries: readonly TEntry[],
   currentEntries: readonly TEntry[],
 ): TEntry[] {
-  const admittedKeys = new Set(
-    currentEntries
-      .filter((entry) => entry.role !== "turn_toggle")
-      .flatMap(entryLineageKeys),
-  )
-  const prepend: TEntry[] = []
-  for (const entry of olderEntries) {
-    if (entry.role !== "turn_toggle") {
-      const keys = entryLineageKeys(entry)
-      if (keys.some((key) => admittedKeys.has(key))) {
-        continue
-      }
-      for (const key of keys) {
-        admittedKeys.add(key)
-      }
-    }
-    prepend.push(entry)
-  }
-  return [...prepend, ...currentEntries]
-}
-
-function entryLineageKeys(entry: {
-  role: string
-  text: string
-  turnId?: number
-  source?: string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-}) {
-  const keys: string[] = []
-  const externalProvider = entry.externalProvider ?? ""
-  const externalProviderSessionId = entry.externalProviderSessionId ?? ""
-  const externalProviderTurnId = entry.externalProviderTurnId ?? ""
-  if (
-    sessionHistoryEntryIsExternalProviderObserved(entry)
-    && (externalProvider || externalProviderSessionId || externalProviderTurnId)
-  ) {
-    keys.push([
-      "external",
-      externalProvider,
-      externalProviderSessionId,
-      externalProviderTurnId,
-      entry.role,
-    ].join(":"))
-  }
-  const blobAgentId = entry.historyBlobSourceAgentId ?? entry.historyBlobAgentId
-  const blobId = entry.historyBlobSourceId ?? entry.historyBlobId
-  if (blobAgentId || blobId) {
-    keys.push([
-      "blob",
-      blobAgentId ?? "",
-      blobId ?? "",
-      entry.turnId ?? "",
-      entry.role,
-    ].join(":"))
-  }
-  const text = entry.text.trim()
-  if (typeof entry.turnId === "number") {
-    keys.push([
-      "turn",
-      entry.source ?? "",
-      entry.turnId,
-      entry.role,
-    ].join(":"))
-  }
-  if (text) {
-    keys.push([
-      "text",
-      entry.source ?? "",
-      entry.turnId ?? "",
-      entry.role,
-      text,
-    ].join(":"))
-  }
-  return keys
+  return prependTranscriptEntriesWithoutDuplicateRenderableLineage(olderEntries, currentEntries)
 }
 
 export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: string }>(options: {
