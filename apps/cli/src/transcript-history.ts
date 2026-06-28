@@ -1,7 +1,6 @@
 import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
-  mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
@@ -12,9 +11,9 @@ import {
 import {
   applyTranscriptHistoryDeferral,
   markDeferredTranscriptHistoryEntries,
-  sessionHistoryFragmentsAreAdjacent,
   transcriptHistoryFragmentsAreAdjacent,
 } from "@arroba/kernel-client/session-history-fragments"
+import { mergeAdjacentSessionHistoryPageEntries } from "@arroba/kernel-client/session-history-page-entries"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
   formatToolTranscriptUpdate,
@@ -90,49 +89,7 @@ export function stitchPrependedHistory(olderEntries: TranscriptEntry[], currentE
 }
 
 export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPageEntry[]) {
-  const merged: SessionHistoryPageEntry[] = []
-
-  for (const entry of historyEntries) {
-    const previous = merged.at(-1)
-    if (
-      previous
-      && sessionHistoryFragmentsAreAdjacent(previous, entry)
-      && previous.entry.kind === entry.entry.kind
-    ) {
-      previous.fragment_end = entry.fragment_end
-      previous.entry.text += entry.entry.text
-      previous.total_chars = Math.max(previous.total_chars, entry.total_chars)
-      if (entry.entry.attachments !== undefined) {
-        previous.entry.attachments = mergeSessionHistoryPromptAttachments(previous.entry.attachments, entry.entry.attachments)
-      }
-      mergeHistoryExternalObservation(previous.entry, entry.entry)
-      continue
-    }
-
-    merged.push({
-      entry_index: entry.entry_index,
-      fragment_start: entry.fragment_start,
-      fragment_end: entry.fragment_end,
-      total_chars: entry.total_chars,
-      entry: {
-        kind: entry.entry.kind,
-        text: entry.entry.text,
-        ...(entry.entry.agent_id !== undefined ? { agent_id: entry.entry.agent_id } : {}),
-        ...(entry.entry.provider_run_id !== undefined ? { provider_run_id: entry.entry.provider_run_id } : {}),
-        ...(entry.entry.merge_key !== undefined ? { merge_key: entry.entry.merge_key } : {}),
-        ...(entry.entry.source !== undefined ? { source: entry.entry.source } : {}),
-        ...(entry.entry.external_provider !== undefined ? { external_provider: entry.entry.external_provider } : {}),
-        ...(entry.entry.external_provider_session_id !== undefined ? { external_provider_session_id: entry.entry.external_provider_session_id } : {}),
-        ...(entry.entry.external_provider_turn_id !== undefined ? { external_provider_turn_id: entry.entry.external_provider_turn_id } : {}),
-        ...(entry.entry.observed_at_ms !== undefined ? { observed_at_ms: entry.entry.observed_at_ms } : {}),
-        ...(entry.entry.external_observation !== undefined ? { external_observation: entry.entry.external_observation } : {}),
-        ...(entry.entry.source_attachment_id !== undefined ? { source_attachment_id: entry.entry.source_attachment_id } : {}),
-        ...(entry.entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.entry.attachments) } : {}),
-      },
-    })
-  }
-
-  return merged
+  return mergeAdjacentSessionHistoryPageEntries(historyEntries)
 }
 
 export function hydrateTranscriptEntries(
@@ -457,13 +414,6 @@ function mergeStitchedHistoryMetadata(
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {
   return historyEntryExternalProviderObservedMetadata(entry) ?? {}
-}
-
-function mergeHistoryExternalObservation(
-  target: SessionHistoryEntry,
-  incoming: SessionHistoryEntry,
-) {
-  mergeExternalProviderObservedHistoryFields(target, incoming)
 }
 
 function historyEntryIdentityOptions(
