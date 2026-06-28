@@ -3,6 +3,10 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
+import {
+  queuedPromptActionability,
+  type QueuedPromptActionability,
+} from "@arroba/kernel-client/queued-prompt-controls"
 import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
@@ -10,18 +14,6 @@ import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcrip
 export type QueuedPromptTranscriptSyncResult = {
   entries: TranscriptEntry[]
   changed: boolean
-}
-
-export const QUEUED_PROMPT_STALE_REASON =
-  "This prompt is no longer waiting in the queue."
-
-type QueuedPromptActionability = {
-  status: string
-  steerDisabled: boolean
-  canSteer: boolean
-  canCancel: boolean
-  steerDisabledReason: string | null
-  cancelDisabledReason: string | null
 }
 
 export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] | null {
@@ -150,44 +142,13 @@ function queuedPromptTranscriptEntry(
   }
 }
 
-export function queuedPromptActionability(
-  status: string | null | undefined,
-): QueuedPromptActionability {
-  const normalizedStatus = normalizeQueuedPromptStatus(status)
-  const queued = normalizedStatus === "queued"
-  return {
-    status: normalizedStatus,
-    steerDisabled: !queued,
-    canSteer: queued,
-    canCancel: queued,
-    steerDisabledReason: queued
-      ? null
-      : QUEUED_PROMPT_STALE_REASON,
-    cancelDisabledReason: queued ? null : QUEUED_PROMPT_STALE_REASON,
-  }
-}
-
 function queuedPromptActionabilityForPrompt(
   session: RuntimeSession,
   agentId: string,
   prompt: PromptQueueItem,
 ): QueuedPromptActionability {
   const projected = session.agent_activity?.[agentId]?.queued_prompt_controls?.[prompt.id]
-  if (!projected) {
-    return queuedPromptActionability(prompt.status)
-  }
-  return {
-    status: normalizeQueuedPromptStatus(projected.status),
-    steerDisabled: projected.can_steer !== true && Boolean(projected.steer_disabled_reason),
-    canSteer: projected.can_steer === true,
-    canCancel: projected.can_cancel === true,
-    steerDisabledReason: projected.steer_disabled_reason ?? null,
-    cancelDisabledReason: projected.cancel_disabled_reason ?? null,
-  }
-}
-
-function normalizeQueuedPromptStatus(status: string | null | undefined): string {
-  return status?.trim().toLowerCase() || "queued"
+  return queuedPromptActionability(prompt.status, projected)
 }
 
 function queuedPromptActionabilityMatches(
