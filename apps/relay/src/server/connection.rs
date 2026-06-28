@@ -1,3 +1,4 @@
+use std::future::pending;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -44,13 +45,13 @@ pub(crate) async fn handle_connection(
         };
     let (mut writer, mut reader) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(RELAY_OUTGOING_QUEUE_CAPACITY);
-    let mut writer_task = tokio::spawn(async move {
+    let mut writer_task = Some(tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
             if writer.send(message).await.is_err() {
                 break;
             }
         }
-    });
+    }));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut first_message_received = false;
     let mut last_read_at = Instant::now();
@@ -101,7 +102,17 @@ pub(crate) async fn handle_connection(
                     }
                     continue;
                 }
-                _ = &mut writer_task, if !writer_task.is_finished() => break,
+                _ = async {
+                    match writer_task.as_mut() {
+                        Some(task) => {
+                            let _ = task.await;
+                        }
+                        None => pending().await,
+                    }
+                }, if writer_task.is_some() => {
+                    writer_task = None;
+                    break;
+                }
             };
             let Some(message) = message else {
                 break;
@@ -1499,8 +1510,10 @@ pub(crate) async fn handle_connection(
             .await;
     }
     drop(outgoing_tx);
-    writer_task.abort();
-    let _ = writer_task.await;
+    if let Some(writer_task) = writer_task {
+        writer_task.abort();
+        let _ = writer_task.await;
+    }
     connection_result
 }
 
