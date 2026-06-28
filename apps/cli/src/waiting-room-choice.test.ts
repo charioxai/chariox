@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import { catalogModelOptions, fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomChoice, waitingRoomEfforts, waitingRoomModel } from "./waiting-room-choice.js"
@@ -48,6 +48,23 @@ test("waiting room model and effort helpers project provider model variants", ()
   assert.deepEqual(waitingRoomEfforts(null), [""])
 })
 
+test("waiting room choice selects unattached agents in shared projected order", () => {
+  const catalog = fallbackProviderCatalog()
+  const choice = waitingRoomChoice(
+    waitingRoomState({ externalSessionIndex: 0 }),
+    [],
+    catalog,
+    {
+      externalProviderSessions: [
+        externalSession("codex:old", { last_modified_at_ms: 100 }),
+        externalSession("claude:recent", { last_modified_at_ms: 200 }),
+      ],
+    },
+  )
+
+  assert.equal(choice.externalProviderSession?.external_session_id, "claude:recent")
+})
+
 function remoteState(): WaitingRoomRemoteState {
   return {
     slices: [slice()],
@@ -66,6 +83,26 @@ function remoteState(): WaitingRoomRemoteState {
       paired_at_ms: 0,
       revoked: false,
     }],
+  }
+}
+
+function externalSession(
+  id: string,
+  overrides: Partial<ExternalProviderSessionRecord> = {},
+): ExternalProviderSessionRecord {
+  return {
+    external_session_id: id,
+    provider: id.split(":")[0] ?? "codex",
+    provider_session_id: id,
+    title: id,
+    title_source: "provider",
+    first_prompt_preview: id,
+    created_at_ms: 1,
+    last_modified_at_ms: 2,
+    capabilities: {
+      can_read_history: true,
+    },
+    ...overrides,
   }
 }
 

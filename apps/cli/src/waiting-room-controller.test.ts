@@ -91,15 +91,15 @@ test("waiting room activation stages existing worktree selections for session cr
 test("waiting room activation opens focused unattached agents", () => {
   const catalog = fallbackProviderCatalog()
   const decision = deriveWaitingRoomActivationDecision({
-    state: waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),
+    state: waitingRoomState({ focus: "external-session", externalSessionIndex: 0 }),
     sessions: [],
     catalog,
     currentProvider: "opencode",
     currentModel: "opencode/gpt-5.4",
     remote: {
       externalProviderSessions: [
-        externalSession("codex:old"),
-        externalSession("claude:recent"),
+        externalSession("codex:old", { last_modified_at_ms: 100 }),
+        externalSession("claude:recent", { last_modified_at_ms: 200 }),
       ],
     },
   })
@@ -871,7 +871,10 @@ function session(id: string): SessionListEntry {
   }
 }
 
-function externalSession(id: string): ExternalProviderSessionRecord {
+function externalSession(
+  id: string,
+  overrides: Partial<ExternalProviderSessionRecord> = {},
+): ExternalProviderSessionRecord {
   return {
     external_session_id: id,
     provider: id.split(":")[0] ?? "codex",
@@ -884,6 +887,7 @@ function externalSession(id: string): ExternalProviderSessionRecord {
     capabilities: {
       can_read_history: true,
     },
+    ...overrides,
   }
 }
 
