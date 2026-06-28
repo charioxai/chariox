@@ -20,6 +20,7 @@
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
+    "./session-history-outline": "./dist/session-history-outline.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
     "./shell-capability-format": "./dist/shell-capability-format.js",

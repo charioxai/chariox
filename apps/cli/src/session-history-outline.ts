@@ -13,6 +13,12 @@ import {
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTurnMetadata,
 } from "@arroba/kernel-client/external-provider-observation"
+import {
+  orderedSessionHistoryOutlineItems,
+  orderedSessionHistoryOutlineTurns,
+  sessionHistoryOutlineTurnCompletedAtMs,
+  sessionHistoryOutlineTurnDisplayId,
+} from "@arroba/kernel-client/session-history-outline"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { hydrateTranscriptEntries } from "./transcript-history.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
@@ -22,9 +28,9 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   let nextId = 0
   let activeTurnId: number | null = null
 
-  orderedOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
-    const turnId = outlineTurnDisplayId(turn, turnIndex)
-    const completedAtMs = outlineTurnCompletedAtMs(turn)
+  orderedSessionHistoryOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
+    const turnId = sessionHistoryOutlineTurnDisplayId(turn, turnIndex)
+    const completedAtMs = sessionHistoryOutlineTurnCompletedAtMs(turn)
     if (completedAtMs === null) {
       activeTurnId = turnId
     }
@@ -36,7 +42,7 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
         externalMetadata,
       ))
     }
-    for (const item of orderedOutlineItems(turn)) {
+    for (const item of orderedSessionHistoryOutlineItems(turn)) {
       if (item.kind === "blob") {
         entries.push(applyOutlineTurnExternalMetadata(
           applyOutlineTurnLifecycleMetadata(
@@ -58,63 +64,6 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
   })
 
   return applyTranscriptDisplayState(entries, [], activeTurnId)
-}
-
-type OutlineTurnItem =
-  | {
-    kind: "entry"
-    sequence: number
-    entry: SessionHistoryPageEntry
-  }
-  | {
-    kind: "blob"
-    sequence: number
-    blob: SessionHistoryOutlineBlob
-  }
-
-function orderedOutlineTurns(
-  turns: readonly SessionHistoryOutlineTurn[],
-): readonly SessionHistoryOutlineTurn[] {
-  return [...turns].sort((left, right) =>
-    historyPageEntryIndex(left.user_prompt) - historyPageEntryIndex(right.user_prompt))
-}
-
-function orderedOutlineItems(turn: SessionHistoryOutlineTurn): readonly OutlineTurnItem[] {
-  return [
-    ...turn.entries.map((entry): OutlineTurnItem => ({
-      kind: "entry",
-      sequence: historyPageEntryIndex(entry),
-      entry,
-    })),
-    ...turn.blobs.map((blob): OutlineTurnItem => ({
-      kind: "blob",
-      sequence: historyBlobSequenceStart(blob),
-      blob,
-    })),
-    ...(turn.summary ? [{
-      kind: "entry" as const,
-      sequence: historyPageEntryIndex(turn.summary),
-      entry: turn.summary,
-    }] : []),
-  ].sort((left, right) => left.sequence - right.sequence)
-}
-
-function historyPageEntryIndex(pageEntry: SessionHistoryPageEntry): number {
-  return Number.isFinite(pageEntry.entry_index) ? pageEntry.entry_index : Number.MAX_SAFE_INTEGER
-}
-
-function historyBlobSequenceStart(blob: SessionHistoryOutlineBlob): number {
-  return Number.isFinite(blob.sequence_start) ? blob.sequence_start : Number.MAX_SAFE_INTEGER
-}
-
-function outlineTurnDisplayId(
-  turn: SessionHistoryOutlineTurn,
-  turnIndex: number,
-): number {
-  const promptIndex = historyPageEntryIndex(turn.user_prompt)
-  return Number.isFinite(promptIndex) && promptIndex < Number.MAX_SAFE_INTEGER
-    ? promptIndex + 1
-    : turnIndex + 1
 }
 
 export function historyCursorStateForVisibleAgent(
@@ -229,13 +178,6 @@ function transcriptEntryExternalMetadata(
   entry: TranscriptEntry,
 ): OutlineTurnExternalMetadata | null {
   return transcriptExternalProviderObservedTurnMetadata(entry)
-}
-
-function outlineTurnCompletedAtMs(turn: SessionHistoryOutlineTurn): number | null | undefined {
-  if (!Object.prototype.hasOwnProperty.call(turn, "completed_at_ms")) {
-    return undefined
-  }
-  return turn.completed_at_ms ?? null
 }
 
 function applyOutlineTurnLifecycleMetadata(
