@@ -42,6 +42,12 @@ export function mergeExternalProviderSessions<T extends ExternalProviderSessionR
   return Array.from(sessionsById.values())
 }
 
+export function mergeExternalProviderSessionsSorted<T extends ExternalProviderSessionRecord>(
+  ...groups: readonly (readonly T[])[]
+): T[] {
+  return externalProviderSessionsSorted(mergeExternalProviderSessions(...groups))
+}
+
 export function externalProviderSessionSelectionIndex(
   sessions: readonly ExternalProviderSessionRecord[],
   selection: ExternalProviderSessionSelection,

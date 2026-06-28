@@ -1,3 +1,4 @@
+import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
 import type {
   SliceRecord,
   ExternalProviderSessionRecord,
@@ -62,7 +63,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     remoteKernels: payload.remote_kernels ?? [],
     terminals: payload.terminals ?? [],
     slices,
-    externalProviderSessions: payload.external_provider_sessions ?? [],
+    externalProviderSessions: externalProviderSessionsSorted(payload.external_provider_sessions),
     externalProviderSessionsHasMore: payload.external_provider_sessions_has_more ?? false,
     externalProviderSessionsNextCursor: payload.external_provider_sessions_next_cursor ?? null,
   }

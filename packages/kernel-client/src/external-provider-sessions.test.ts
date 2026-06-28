@@ -8,6 +8,7 @@ import {
   externalProviderSessionSelectionIndex,
   externalProviderSessionsSorted,
   externalProviderSessionTitle,
+  mergeExternalProviderSessionsSorted,
   mergeExternalProviderSessions,
   type ExternalProviderSessionRecord,
 } from "./external-provider-sessions.js"
@@ -112,6 +113,31 @@ test("external provider session merge keeps first metadata when modification tim
     title: session.title,
   })), [
     { id: "external-1", title: "first" },
+  ])
+})
+
+test("external provider session sorted merge dedupes and projects final order", () => {
+  const merged = mergeExternalProviderSessionsSorted(
+    [
+      externalSession("codex:old", 100),
+      externalSession("opencode:zeta", 200, {
+        provider: "opencode",
+        provider_session_id: "zeta",
+      }),
+    ],
+    [
+      externalSession("codex:old", 300, { title: "updated" }),
+      externalSession("claude:recent", 400, { provider: "claude" }),
+    ],
+  )
+
+  assert.deepEqual(merged.map((session) => ({
+    id: session.external_session_id,
+    title: session.title,
+  })), [
+    { id: "claude:recent", title: "claude:recent" },
+    { id: "codex:old", title: "updated" },
+    { id: "opencode:zeta", title: "opencode:zeta" },
   ])
 })
 

@@ -1,3 +1,4 @@
+import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
@@ -91,7 +92,7 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
-    options.setExternalProviderSessions?.(snapshot.externalProviderSessions ?? [])
+    options.setExternalProviderSessions?.(externalProviderSessionsSorted(snapshot.externalProviderSessions))
     options.setExternalProviderSessionsPage?.({
       hasMore: snapshot.externalProviderSessionsHasMore ?? false,
       nextCursor: snapshot.externalProviderSessionsNextCursor ?? null,

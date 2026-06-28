@@ -1,3 +1,4 @@
+import { mergeExternalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
 import { updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
@@ -250,11 +251,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }
       const page = await listExternalProviderSessions(deps.client, { cursor: pageState.nextCursor })
       deps.setExternalProviderSessionsState((current: any[] = []) => {
-        const seen = new Set(current.map((session) => session.external_session_id))
-        return [
-          ...current,
-          ...page.sessions.filter((session) => !seen.has(session.external_session_id)),
-        ]
+        return mergeExternalProviderSessionsSorted(current, page.sessions)
       })
       deps.setExternalProviderSessionsPageState({
         hasMore: page.hasMore,

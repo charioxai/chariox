@@ -126,7 +126,10 @@ test("waiting room inventory row patch merges changes and removals", () => {
 test("waiting room refresh still hydrates unattached agents after a row patch set the inventory version", async () => {
   const harness = createHarness({
     snapshots: [inventory("v2", {
-      externalProviderSessions: [externalProviderSession("opencode:thread-1")],
+      externalProviderSessions: [
+        externalProviderSession("opencode:thread-1", { last_modified_at_ms: 100 }),
+        externalProviderSession("codex:thread-2", { last_modified_at_ms: 200 }),
+      ],
       externalProviderSessionsHasMore: true,
       externalProviderSessionsNextCursor: "cursor-2",
     })],
@@ -140,7 +143,10 @@ test("waiting room refresh still hydrates unattached agents after a row patch se
   await harness.controller.refreshNow()
 
   assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1"])
-  assert.deepEqual(harness.externalProviderSessions().map((entry) => entry.external_session_id), ["opencode:thread-1"])
+  assert.deepEqual(harness.externalProviderSessions().map((entry) => entry.external_session_id), [
+    "codex:thread-2",
+    "opencode:thread-1",
+  ])
   assert.deepEqual(harness.externalProviderSessionsPage(), { hasMore: true, nextCursor: "cursor-2" })
   assert.equal(harness.reconcileCount(), 2)
 })
@@ -307,7 +313,10 @@ function createHarness(options: {
   }
 }
 
-function externalProviderSession(externalSessionId: string): ExternalProviderSessionRecord {
+function externalProviderSession(
+  externalSessionId: string,
+  overrides: Partial<ExternalProviderSessionRecord> = {},
+): ExternalProviderSessionRecord {
   const [provider = "opencode", providerSessionId = externalSessionId] = externalSessionId.split(":", 2)
   return {
     external_session_id: externalSessionId,
@@ -315,6 +324,7 @@ function externalProviderSession(externalSessionId: string): ExternalProviderSes
     provider_session_id: providerSessionId,
     title: "External thread",
     last_modified_at_ms: 1,
+    ...overrides,
   }
 }
 

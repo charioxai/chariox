@@ -1,3 +1,4 @@
+import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
 import {
   normalizeRuntimeSession,
   type AgentInstance,
@@ -36,7 +37,7 @@ export async function listExternalProviderSessions(
     }
   }>(response, "ExternalProviderSessionsListed")
   return {
-    sessions: payload.page.sessions ?? [],
+    sessions: externalProviderSessionsSorted(payload.page.sessions),
     hasMore: payload.page.has_more ?? false,
     nextCursor: payload.page.next_cursor ?? null,
   }
