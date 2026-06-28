@@ -6,9 +6,13 @@ import {
   stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
+  transcriptEntryIsBlobCollapsible,
   transcriptEntryIsDisplayOnly,
   transcriptEntryIsRenderable,
   transcriptEntryLineageKeys,
+  transcriptTurnFinalAssistantEntry,
+  transcriptTurnHasCollapsibleBody,
+  transcriptTurnIsCollapsible,
 } from "./transcript-entry-lineage.js"
 
 test("transcript display-only helpers classify turn toggles as non-renderable lineage", () => {
@@ -20,6 +24,27 @@ test("transcript display-only helpers classify turn toggles as non-renderable li
   assert.equal(transcriptEntryIsDisplayOnly(assistant), false)
   assert.equal(transcriptEntryIsRenderable(assistant), true)
   assert.deepEqual(stripTranscriptDisplayOnlyEntries([assistant, toggle]), [assistant])
+})
+
+test("transcript display helpers classify collapsible blobs and turns", () => {
+  const turnEntries = [
+    { id: 1, role: "user", text: "prompt", turnId: 1 },
+    { id: 2, role: "reasoning", text: "thinking", turnId: 1 },
+    { id: 3, role: "tool", text: "tool", turnId: 1 },
+    { id: 4, role: "assistant", text: "summary", turnId: 1 },
+  ]
+
+  assert.equal(transcriptEntryIsBlobCollapsible(turnEntries[0]!), false)
+  assert.equal(transcriptEntryIsBlobCollapsible(turnEntries[2]!), true)
+  assert.equal(transcriptEntryIsBlobCollapsible({ id: 5, role: "assistant", text: "blob", historyBlobId: "blob-1" }), true)
+  assert.equal(transcriptTurnFinalAssistantEntry(turnEntries), turnEntries[3])
+  assert.equal(transcriptTurnHasCollapsibleBody(turnEntries, 4), true)
+  assert.equal(transcriptTurnIsCollapsible(turnEntries), true)
+  assert.equal(transcriptTurnIsCollapsible(turnEntries, 1), false)
+  assert.equal(transcriptTurnIsCollapsible([
+    { id: 1, role: "user", text: "prompt", turnId: 2 },
+    { id: 2, role: "assistant", text: "summary", turnId: 2 },
+  ]), false)
 })
 
 test("transcript entry lineage keys prefer durable external observed identity", () => {

@@ -1,4 +1,10 @@
-import { stripTranscriptDisplayOnlyEntries } from "@arroba/kernel-client/transcript-entry-lineage"
+import {
+  stripTranscriptDisplayOnlyEntries,
+  transcriptEntryIsBlobCollapsible,
+  transcriptTurnFinalAssistantEntry,
+  transcriptTurnHasCollapsibleBody,
+  transcriptTurnIsCollapsible,
+} from "@arroba/kernel-client/transcript-entry-lineage"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   parseToolTranscriptUpdate,
@@ -49,8 +55,8 @@ export function collapseLatestTranscriptTurn(
   }
 
   const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
-  const finalSummary = [...turnEntries].reverse().find((entry) => entry.role === "assistant")
-  if (!finalSummary || !hasCollapsibleTurnBody(turnEntries, finalSummary.id)) {
+  const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
+  if (!finalSummary || !transcriptTurnHasCollapsibleBody(turnEntries, finalSummary.id)) {
     return sortedTurnIds(nextCollapsedTurnIds)
   }
 
@@ -73,10 +79,8 @@ export function applyTranscriptDisplayState(
 
   for (const turnId of turnIds) {
     const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
-    const finalSummary = [...turnEntries].reverse().find((entry) => entry.role === "assistant")
-    const collapsibleTurn = Boolean(finalSummary)
-      && turnId !== activeTurnId
-      && hasCollapsibleTurnBody(turnEntries, finalSummary!.id)
+    const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
+    const collapsibleTurn = transcriptTurnIsCollapsible(turnEntries, activeTurnId)
     const expanded = collapsibleTurn ? !collapsedTurnIdSet.has(turnId) : false
 
     for (const entry of turnEntries) {
@@ -189,17 +193,7 @@ export function resolveVisibleTurnToggle(
 }
 
 function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number | null) {
-  if (entry.historyBlobId) {
-    return true
-  }
-  if (entry.role === "user" || entry.role === "reasoning" || entry.role === "turn_toggle" || entry.role === "assistant") {
-    return false
-  }
-  return entry.role === "tool" || entry.role === "error" || entry.role === "status" || entry.role === "notice"
-}
-
-function hasCollapsibleTurnBody(turnEntries: TranscriptEntry[], finalSummaryId: number) {
-  return turnEntries.some((entry) => entry.role !== "user" && entry.id !== finalSummaryId)
+  return transcriptEntryIsBlobCollapsible(entry)
 }
 
 function sortedTurnIds(turnIds: Iterable<number>) {

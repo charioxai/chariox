@@ -18,6 +18,13 @@ export type TranscriptRoleEntry = {
   readonly role: string
 }
 
+export type TranscriptTurnDisplayEntry = TranscriptRoleEntry & {
+  readonly id: number
+  readonly text?: string
+  readonly turnId?: number | null | undefined
+  readonly historyBlobId?: string | null | undefined
+}
+
 export function transcriptEntryIsDisplayOnly(entry: TranscriptRoleEntry): boolean {
   return entry.role === "turn_toggle"
 }
@@ -30,6 +37,45 @@ export function stripTranscriptDisplayOnlyEntries<TEntry extends TranscriptRoleE
   entries: readonly TEntry[],
 ): TEntry[] {
   return entries.filter(transcriptEntryIsRenderable)
+}
+
+export function transcriptEntryIsBlobCollapsible(entry: TranscriptTurnDisplayEntry): boolean {
+  if (entry.historyBlobId) {
+    return true
+  }
+  switch (entry.role) {
+    case "tool":
+    case "error":
+    case "status":
+    case "notice":
+      return true
+    default:
+      return false
+  }
+}
+
+export function transcriptTurnFinalAssistantEntry<TEntry extends TranscriptTurnDisplayEntry>(
+  turnEntries: readonly TEntry[],
+): TEntry | null {
+  return [...turnEntries].reverse().find((entry) => entry.role === "assistant") ?? null
+}
+
+export function transcriptTurnHasCollapsibleBody<TEntry extends TranscriptTurnDisplayEntry>(
+  turnEntries: readonly TEntry[],
+  finalSummaryId: number,
+): boolean {
+  return turnEntries.some((entry) => entry.role !== "user" && entry.id !== finalSummaryId)
+}
+
+export function transcriptTurnIsCollapsible<TEntry extends TranscriptTurnDisplayEntry>(
+  turnEntries: readonly TEntry[],
+  activeTurnId: number | null | undefined = null,
+): boolean {
+  const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
+  const turnId = turnEntries.find((entry) => typeof entry.turnId === "number")?.turnId
+  return Boolean(finalSummary)
+    && turnId !== activeTurnId
+    && transcriptTurnHasCollapsibleBody(turnEntries, finalSummary!.id)
 }
 
 export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): string[] {
