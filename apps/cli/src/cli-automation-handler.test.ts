@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
-import type { CliOptions, RuntimeSession } from "./cli-types.js"
+import type { CliOptions, ExternalProviderSessionRecord, RuntimeSession } from "./cli-types.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 
@@ -125,8 +125,8 @@ test("automation action handler activates a selected unattached agent", async ()
       waitingRoomState = next
     },
     externalProviderSessionsState: () => [
-      { external_session_id: "opencode:first" },
-      { external_session_id: "codex:second" },
+      externalSession("opencode:first", { last_modified_at_ms: 100 }),
+      externalSession("codex:second", { last_modified_at_ms: 200 }),
     ],
     activateWaitingRoom: async () => {
       activated = true
@@ -144,7 +144,42 @@ test("automation action handler activates a selected unattached agent", async ()
     waitingRoomState: {
       ...waitingRoomState,
       focus: "external-session",
-      externalSessionIndex: 1,
+      externalSessionIndex: 0,
+    },
+    activated: true,
+  })
+})
+
+test("automation action handler indexes unattached agents in shared projected order", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let activated = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    externalProviderSessionsState: () => [
+      externalSession("codex:old", { last_modified_at_ms: 100 }),
+      externalSession("claude:recent", { last_modified_at_ms: 200 }),
+    ],
+    activateWaitingRoom: async () => {
+      activated = true
+    },
+    snapshot: () => ({
+      waitingRoomState,
+      activated,
+    }),
+  })
+
+  const result = await handler({ action: "activate_unattached_agent", externalSessionIndex: 0 })
+
+  assert.equal(activated, true)
+  assert.deepEqual(result, {
+    waitingRoomState: {
+      ...waitingRoomState,
+      focus: "external-session",
+      externalSessionIndex: 0,
     },
     activated: true,
   })
@@ -276,6 +311,26 @@ function baseDeps() {
     waitingRoomState: () => waitingRoomFixture(),
     setWaitingRoomState: () => {},
     externalProviderSessionsState: () => [],
+  }
+}
+
+function externalSession(
+  id: string,
+  overrides: Partial<ExternalProviderSessionRecord> = {},
+): ExternalProviderSessionRecord {
+  return {
+    external_session_id: id,
+    provider: id.split(":")[0] ?? "codex",
+    provider_session_id: id,
+    title: id,
+    title_source: "provider",
+    first_prompt_preview: id,
+    created_at_ms: 1,
+    last_modified_at_ms: 2,
+    capabilities: {
+      can_read_history: true,
+    },
+    ...overrides,
   }
 }
 

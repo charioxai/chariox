@@ -1,4 +1,11 @@
-import type { CliOptions, PromptAttachmentPart, RuntimeAttachment, RuntimeSession } from "./cli-types.js"
+import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
+import type {
+  CliOptions,
+  ExternalProviderSessionRecord,
+  PromptAttachmentPart,
+  RuntimeAttachment,
+  RuntimeSession,
+} from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaLogger } from "./logging.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
@@ -48,7 +55,7 @@ export type CliAutomationActionDeps = {
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
-  externalProviderSessionsState: () => Array<{ external_session_id: string }>
+  externalProviderSessionsState: () => ExternalProviderSessionRecord[]
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -139,7 +146,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         if (deps.isAttached()) {
           throw new Error("cannot activate unattached agent while attached")
         }
-        const sessions = deps.externalProviderSessionsState()
+        const sessions = externalProviderSessionsSorted(deps.externalProviderSessionsState())
         const externalSessionId = typeof request.externalSessionId === "string" ? request.externalSessionId : ""
         const requestedIndex = typeof request.externalSessionIndex === "number" ? request.externalSessionIndex : null
         const candidateIndex = externalSessionId
