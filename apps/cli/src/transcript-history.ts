@@ -9,6 +9,11 @@ import {
   cloneSessionHistoryPromptAttachments,
   mergeSessionHistoryPromptAttachments,
 } from "@arroba/kernel-client/session-history-attachments"
+import {
+  sessionHistoryFragmentsAreAdjacent,
+  transcriptHistoryFragmentsAreAdjacent,
+  transcriptHistoryFragmentShouldDefer,
+} from "@arroba/kernel-client/session-history-fragments"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
   formatToolTranscriptUpdate,
@@ -19,7 +24,7 @@ import {
 import { trimSingleTrailingNewline } from "./transcript-text.js"
 
 function shouldDeferHistoryEntry(entry: TranscriptEntry) {
-  return entry.historyFragmentStart !== undefined && entry.historyFragmentStart > 0
+  return transcriptHistoryFragmentShouldDefer(entry)
 }
 
 export function applyHistoryDeferral(entry: TranscriptEntry) {
@@ -95,12 +100,7 @@ export function stitchPrependedHistory(olderEntries: TranscriptEntry[], currentE
 
   const tail = olderEntries.at(-1)
   const head = currentEntries[0]
-  if (
-    tail?.historyEntryIndex === undefined
-    || head?.historyEntryIndex === undefined
-    || tail.historyEntryIndex !== head.historyEntryIndex
-    || tail.historyFragmentEnd !== head.historyFragmentStart
-  ) {
+  if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
     return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
   }
 
@@ -118,9 +118,8 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
     const previous = merged.at(-1)
     if (
       previous
-      && previous.entry_index === entry.entry_index
+      && sessionHistoryFragmentsAreAdjacent(previous, entry)
       && previous.entry.kind === entry.entry.kind
-      && previous.fragment_end === entry.fragment_start
     ) {
       previous.fragment_end = entry.fragment_end
       previous.entry.text += entry.entry.text

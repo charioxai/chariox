@@ -1,3 +1,6 @@
+import {
+  sessionHistoryFragmentsAreAdjacent,
+} from "@arroba/kernel-client/session-history-fragments"
 import type { PromptInputHistoryEntry, SessionHistoryPageEntry } from "./cli-types.js"
 
 export type PromptHistoryDirection = "previous" | "next"
@@ -162,9 +165,8 @@ function mergeAdjacentPromptHistoryEntries(historyEntries: SessionHistoryPageEnt
     const previous = merged.at(-1)
     if (
       previous
-      && previous.entry_index === entry.entry_index
+      && sessionHistoryFragmentsAreAdjacent(previous, entry)
       && previous.entry.kind === entry.entry.kind
-      && previous.fragment_end === entry.fragment_start
     ) {
       previous.fragment_end = entry.fragment_end
       previous.entry.text += entry.entry.text

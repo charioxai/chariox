@@ -1,3 +1,7 @@
+import {
+  transcriptHistoryFragmentsAreAdjacent,
+} from "@arroba/kernel-client/session-history-fragments"
+
 export type HistoryFragmentEntry = {
   id: number
   historyEntryIndex?: number
@@ -15,12 +19,7 @@ export function findPrependedHistoryMergedHeadId(
 
   const tail = olderEntries.at(-1)
   const head = currentEntries[0]
-  if (
-    tail?.historyEntryIndex === undefined
-    || head?.historyEntryIndex === undefined
-    || tail.historyEntryIndex !== head.historyEntryIndex
-    || tail.historyFragmentEnd !== head.historyFragmentStart
-  ) {
+  if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
     return null
   }
 
