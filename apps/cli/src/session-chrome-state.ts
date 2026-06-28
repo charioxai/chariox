@@ -1,4 +1,10 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
+import {
+  sessionFocusedStatusBadge,
+  type SessionAgentBusyState,
+  type SessionFocusedStatusBadge,
+  type SessionStatusBadgePart,
+} from "@arroba/kernel-client/shell-agent-activity"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -7,21 +13,13 @@ import {
   type PromptMetaPart,
   type PromptUsageMeta,
 } from "./prompt-meta.js"
-import { chooseVisibleActivityLabel, getSessionStatusLabel } from "./runtime.js"
-import type { StatusBadgeTone } from "./split-pane-footer.js"
+import { chooseVisibleActivityLabel } from "./runtime.js"
 import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type SessionStatusMode = "idle" | "working" | "disconnected"
-export type StatusBadgePart = {
-  label: string
-  tone: StatusBadgeTone
-}
-export type FocusedStatusBadge = {
-  label: string
-  tone: StatusBadgeTone
-  parts: StatusBadgePart[]
-}
+export type StatusBadgePart = SessionStatusBadgePart
+export type FocusedStatusBadge = SessionFocusedStatusBadge
 
 type ProviderSelectionOptions = {
   providerRun: RuntimeProviderRun | null
@@ -162,10 +160,7 @@ export function deriveVisibleActivityLabel(options: {
   return chooseVisibleActivityLabel(options.providerActivityLabel, latestActiveToolLabel)
 }
 
-export type AgentBusyState = {
-  id: string
-  busy: boolean
-}
+export type AgentBusyState = SessionAgentBusyState
 
 export function deriveFocusedStatusBadge(options: {
   attached: boolean
@@ -174,36 +169,7 @@ export function deriveFocusedStatusBadge(options: {
   focusedBusy: boolean
   agents?: AgentBusyState[]
 }): FocusedStatusBadge {
-  if (!options.attached) {
-    return statusBadge([])
-  }
-  if (options.daemonDisconnected) {
-    return statusBadge([{ label: "DISCONNECTED", tone: "disconnected" }])
-  }
-
-  const agents = options.agents
-  if (!agents || agents.length <= 1) {
-    if (!options.focusedBusy) {
-      return statusBadge([{ label: "IDLE", tone: "idle" }])
-    }
-    return statusBadge([{ label: getSessionStatusLabel("working", options.activeStatusLabel), tone: "working" }])
-  }
-
-  const idleCount = agents.filter((a) => !a.busy).length
-  const workingCount = agents.length - idleCount
-
-  if (workingCount === 0) {
-    return statusBadge([{ label: `${agents.length} IDLE`, tone: "idle" }])
-  }
-
-  if (idleCount === 0) {
-    return statusBadge([{ label: `${agents.length} WORKING`, tone: "working" }])
-  }
-
-  return statusBadge([
-    { label: `${idleCount} IDLE`, tone: "idle" },
-    { label: `${workingCount} WORKING`, tone: "working" },
-  ])
+  return sessionFocusedStatusBadge(options)
 }
 
 export function deriveAttachedFooterSummary(options: {
@@ -280,15 +246,4 @@ function normalizeProvider(provider?: string | null) {
     return null
   }
   return provider
-}
-
-function statusBadge(parts: StatusBadgePart[]): FocusedStatusBadge {
-  const label = parts.map((part) => part.label).join(" ")
-  return {
-    label,
-    tone: parts.some((part) => part.tone === "working")
-      ? "working"
-      : parts[0]?.tone ?? "idle",
-    parts,
-  }
 }

@@ -169,20 +169,20 @@ test("streaming agent resolution prefers active processing and clears stale runs
   const agents = [
     { id: "agent-a", is_processing: false, state: "Idle" },
     { id: "agent-b", is_processing: true, state: "Working" },
-  ]
+  ] as const
 
   assert.equal(resolveStreamingAgentId(agents, "agent-a", true, true, "agent-a"), "agent-b")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], "agent-a", true, false, null), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, true, false, "agent-a"), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, true, "agent-a"), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, false, "agent-a"), null)
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, "agent-a", true, false, null), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, true, false, "agent-a"), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, false, true, "agent-a"), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, false, false, "agent-a"), null)
 })
 
 test("streaming agent resolution can ignore legacy processing state for projected sessions", () => {
   const agents = [
     { id: "agent-a", is_processing: true, state: "Working" },
     { id: "agent-b", is_processing: false, state: "Idle" },
-  ]
+  ] as const
 
   assert.equal(resolveStreamingAgentId(agents, "agent-b", true, false, null, false), "agent-b")
   assert.equal(resolveStreamingAgentId(agents, null, true, false, "agent-b", false), "agent-b")

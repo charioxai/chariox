@@ -15,6 +15,10 @@ import {
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
 import type { AgentRuntimeActivityBusyInput, AgentRuntimeActivityProjection, AgentRuntimeActivityStatus } from "./agent-activity.js"
+import {
+  ACTIVE_STATUS_FALLBACK,
+  normalizeProviderActivityLabel,
+} from "./provider-status.js"
 
 export type SessionPromptWorkSummary = {
   readonly active: number
@@ -88,6 +92,24 @@ export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
 
 export type SessionStreamingAgent = Pick<AgentInstance, "id" | "is_processing" | "state">
 
+export type SessionStatusBadgeTone = "idle" | "working" | "disconnected" | "error"
+
+export type SessionStatusBadgePart = {
+  label: string
+  tone: SessionStatusBadgeTone
+}
+
+export type SessionFocusedStatusBadge = {
+  label: string
+  tone: SessionStatusBadgeTone
+  parts: SessionStatusBadgePart[]
+}
+
+export type SessionAgentBusyState = {
+  id: string
+  busy: boolean
+}
+
 export function sessionAgentRuntimeActivityProjection(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
@@ -102,6 +124,62 @@ export function sessionAgentRuntimeActivityStatus(
 ): AgentRuntimeActivityStatus {
   const activity = agentId ? session?.agent_activity?.[agentId] : null
   return agentRuntimeActivityResolvedStatus(activity)
+}
+
+export function sessionFocusedStatusBadge(options: {
+  readonly attached: boolean
+  readonly daemonDisconnected: boolean
+  readonly activeStatusLabel: string | null
+  readonly focusedBusy: boolean
+  readonly agents?: readonly SessionAgentBusyState[]
+}): SessionFocusedStatusBadge {
+  if (!options.attached) {
+    return sessionStatusBadge([])
+  }
+  if (options.daemonDisconnected) {
+    return sessionStatusBadge([{ label: "DISCONNECTED", tone: "disconnected" }])
+  }
+
+  const agents = options.agents
+  if (!agents || agents.length <= 1) {
+    if (!options.focusedBusy) {
+      return sessionStatusBadge([{ label: "IDLE", tone: "idle" }])
+    }
+    return sessionStatusBadge([{
+      label: formatSessionWorkingStatusLabel(options.activeStatusLabel),
+      tone: "working",
+    }])
+  }
+
+  const idleCount = agents.filter((agent) => !agent.busy).length
+  const workingCount = agents.length - idleCount
+
+  if (workingCount === 0) {
+    return sessionStatusBadge([{ label: `${agents.length} IDLE`, tone: "idle" }])
+  }
+
+  if (idleCount === 0) {
+    return sessionStatusBadge([{ label: `${agents.length} WORKING`, tone: "working" }])
+  }
+
+  return sessionStatusBadge([
+    { label: `${idleCount} IDLE`, tone: "idle" },
+    { label: `${workingCount} WORKING`, tone: "working" },
+  ])
+}
+
+function sessionStatusBadge(parts: SessionStatusBadgePart[]): SessionFocusedStatusBadge {
+  return {
+    label: parts.map((part) => part.label).join(" "),
+    tone: parts.some((part) => part.tone === "working")
+      ? "working"
+      : parts[0]?.tone ?? "idle",
+    parts,
+  }
+}
+
+function formatSessionWorkingStatusLabel(activity: string | null): string {
+  return (normalizeProviderActivityLabel(activity) ?? ACTIVE_STATUS_FALLBACK).trim().toUpperCase()
 }
 
 export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null | undefined): boolean {

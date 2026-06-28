@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type {
+  AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
@@ -30,6 +31,7 @@ test("kernel session snapshot refreshes changed provider run and panes after pro
 test("kernel session snapshot detects prompt completion from projected prompt states", async () => {
   const harness = createHarness({
     session: session({
+      agents: [agent()],
       active_prompt: {
         ...activePrompt(),
         id: "prompt-stale",
@@ -49,6 +51,7 @@ test("kernel session snapshot detects prompt completion from projected prompt st
   })
 
   await harness.controller.apply(session({
+    agents: [agent()],
     active_prompt: {
       ...activePrompt(),
       id: "prompt-stale",
@@ -155,6 +158,28 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     max_agents: 1,
     agents: [],
     config_state: { values: {} } as RuntimeSession["config_state"],
+    ...overrides,
+  }
+}
+
+function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "model",
+    effort: null,
+    worktree_id: "/workspace",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
     ...overrides,
   }
 }

@@ -17,6 +17,7 @@ import {
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionFocusedStatusBadge,
   sessionAgentRuntimeActivityProjection,
   sessionAgentRuntimeActivityStatus,
   sessionAgentRuntimeDisplayState,
@@ -171,6 +172,70 @@ test("sessionAgentRuntimeActivityProjection returns normalized activity with idl
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-1"), "working")
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-2"), "idle")
   assert.equal(sessionAgentRuntimeActivityStatus(null, "agent-1"), "idle")
+})
+
+test("sessionFocusedStatusBadge projects detached, disconnected, focused, and multi-agent status", () => {
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: false,
+    daemonDisconnected: false,
+    activeStatusLabel: null,
+    focusedBusy: false,
+  }), badge([]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: true,
+    activeStatusLabel: "reading",
+    focusedBusy: true,
+  }), badge([{ label: "DISCONNECTED", tone: "disconnected" }]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: false,
+    activeStatusLabel: null,
+    focusedBusy: false,
+  }), badge([{ label: "IDLE", tone: "idle" }]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: false,
+    activeStatusLabel: "reading",
+    focusedBusy: true,
+  }), badge([{ label: "READING", tone: "working" }]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: false,
+    activeStatusLabel: null,
+    focusedBusy: true,
+  }), badge([{ label: "THINKING", tone: "working" }]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: false,
+    activeStatusLabel: "patching",
+    focusedBusy: true,
+    agents: [
+      { id: "agent-1", busy: false },
+      { id: "agent-2", busy: true },
+      { id: "agent-3", busy: false },
+      { id: "agent-4", busy: true },
+    ],
+  }), badge([
+    { label: "2 IDLE", tone: "idle" },
+    { label: "2 WORKING", tone: "working" },
+  ]))
+
+  assert.deepEqual(sessionFocusedStatusBadge({
+    attached: true,
+    daemonDisconnected: false,
+    activeStatusLabel: null,
+    focusedBusy: true,
+    agents: [
+      { id: "agent-1", busy: true },
+      { id: "agent-2", busy: true },
+    ],
+  }), badge([{ label: "2 WORKING", tone: "working" }]))
 })
 
 test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done", () => {
@@ -2033,6 +2098,16 @@ test("sessionPromptLifecycleTransition settles cancelling external prompts", () 
   assert.equal(transition.cancelledPromptSettled, true)
   assert.deepEqual(transition.settledAgentIds, ["agent-1"])
 })
+
+function badge(parts: Array<{ label: string; tone: "idle" | "working" | "disconnected" | "error" }>) {
+  return {
+    label: parts.map((part) => part.label).join(" "),
+    tone: parts.some((part) => part.tone === "working")
+      ? "working"
+      : parts[0]?.tone ?? "idle",
+    parts,
+  }
+}
 
 function malformedRuntimeValue<T>(value: string): T {
   return value as unknown as T
