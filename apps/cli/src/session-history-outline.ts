@@ -8,8 +8,11 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./cli-types.js"
-import { EXTERNAL_PROVIDER_OBSERVED_SOURCE } from "@arroba/kernel-client/external-provider-observation"
-import { promptOriginFromRecord, promptOriginIsExternal } from "@arroba/kernel-client/prompt-origin"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  promptOriginExternalProviderObservedMetadata,
+  type ExternalProviderObservedTurnMetadata,
+} from "@arroba/kernel-client/external-provider-observation"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { hydrateTranscriptEntries } from "./transcript-history.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
@@ -191,44 +194,12 @@ export function markHistoryBlobLoading(
   })
 }
 
-type OutlineTurnExternalMetadata = {
-  source: typeof EXTERNAL_PROVIDER_OBSERVED_SOURCE
-  externalProvider: string | null
-  externalProviderSessionId: string | null
-  externalProviderTurnId: string | null
-}
+type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
 
 function outlineTurnExternalMetadata(
   turn: SessionHistoryOutlineTurn,
 ): OutlineTurnExternalMetadata | null {
-  const externalProvider = nonBlankString(turn.external_provider)
-  const externalProviderSessionId = nonBlankString(turn.external_provider_session_id)
-  const externalProviderTurnId = nonBlankString(turn.external_provider_turn_id)
-  if (!promptOriginIsExternal(promptOriginFromRecord(outlineTurnPromptOriginRecord(turn)))) {
-    return null
-  }
-  return {
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider,
-    externalProviderSessionId,
-    externalProviderTurnId,
-  }
-}
-
-function outlineTurnPromptOriginRecord(
-  turn: SessionHistoryOutlineTurn,
-): {
-  readonly prompt_origin?: string | null
-  readonly external_provider?: string | null
-  readonly external_provider_session_id?: string | null
-} {
-  return {
-    ...(turn.prompt_origin !== undefined ? { prompt_origin: turn.prompt_origin } : {}),
-    ...(turn.external_provider !== undefined ? { external_provider: turn.external_provider } : {}),
-    ...(turn.external_provider_session_id !== undefined
-      ? { external_provider_session_id: turn.external_provider_session_id }
-      : {}),
-  }
+  return promptOriginExternalProviderObservedMetadata(turn)
 }
 
 function applyOutlineTurnExternalMetadata(

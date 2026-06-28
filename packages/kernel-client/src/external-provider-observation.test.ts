@@ -5,6 +5,7 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
+  promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
 
@@ -76,6 +77,34 @@ test("external provider observed metadata treats settlement as non-passive", () 
     settles_active_prompt: true,
     passive_telemetry: false,
   })
+})
+
+test("external provider observed metadata projects prompt-origin turn fields", () => {
+  assert.deepEqual(promptOriginExternalProviderObservedMetadata({
+    prompt_origin: " External ",
+    external_provider: " codex ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: " turn-1 ",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+  assert.deepEqual(promptOriginExternalProviderObservedMetadata({
+    external_provider: " codex ",
+    external_provider_session_id: " thread-1 ",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  })
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    prompt_origin: "arroba",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+  }), null)
 })
 
 test("external provider observation merge preserves settlement over passive telemetry", () => {
