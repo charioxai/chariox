@@ -101,7 +101,7 @@ pub(crate) async fn handle_connection(
                     }
                     continue;
                 }
-                _ = &mut writer_task => break,
+                _ = &mut writer_task, if !writer_task.is_finished() => break,
             };
             let Some(message) = message else {
                 break;
