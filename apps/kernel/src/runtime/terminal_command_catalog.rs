@@ -190,4 +190,25 @@ mod tests {
             Some("provider_catalog.providers")
         );
     }
+
+    #[test]
+    fn terminal_command_catalog_misc_group_has_scoped_value() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let misc = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "misc")
+            .expect("misc command should be present");
+
+        assert_eq!(misc.label, "/misc");
+        assert_eq!(misc.value, "/misc ");
+        assert_eq!(misc.kind, TerminalCommandCatalogNodeKind::Group);
+        assert_eq!(
+            misc.children
+                .iter()
+                .map(|node| node.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/attach ", "/stop", "/waiting", "/exit"]
+        );
+    }
 }

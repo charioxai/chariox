@@ -2020,7 +2020,7 @@
     "id": "misc",
     "label": "/misc",
     "description": "Attachments, control, and app commands",
-    "value": "/",
+    "value": "/misc ",
     "children": [
       {
         "id": "attach",

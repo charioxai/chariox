@@ -129,6 +129,25 @@ test("command center controller completes expandable items without executing", (
   assert.equal(harness.controller.query(), "/workflow ")
 })
 
+test("command center controller opens misc children without executing", () => {
+  const harness = createHarness("/misc")
+  harness.controller.sync()
+
+  const enter = handledKey("enter")
+  assert.equal(harness.controller.handleKey(enter.event), true)
+
+  assert.equal(harness.promptText, "/misc ")
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.controller.query(), "/misc ")
+  assert.deepEqual(harness.controller.items().map((item) => item.value), [
+    "/misc ",
+    "/attach ",
+    "/stop",
+    "/waiting",
+    "/exit",
+  ])
+})
+
 test("command center controller executes selected commands and clears prompt", () => {
   const harness = createHarness("/exit")
   harness.controller.sync()
