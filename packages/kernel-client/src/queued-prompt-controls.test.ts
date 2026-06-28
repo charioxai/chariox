@@ -6,8 +6,10 @@ import {
   normalizeQueuedPromptStatus,
   queuedPromptActionability,
   queuedPromptControlForPrompt,
+  queuedPromptsForAgent,
   queuedPromptStatusIsQueued,
 } from "./queued-prompt-controls.js"
+import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 
 test("queued prompt actionability defaults queued prompts to both actions", () => {
   assert.deepEqual(queuedPromptActionability(undefined), {
@@ -97,3 +99,126 @@ test("queued prompt status helpers normalize queue vocabulary", () => {
   assert.equal(queuedPromptStatusIsQueued(" queued "), true)
   assert.equal(queuedPromptStatusIsQueued("running"), false)
 })
+
+test("queued prompts for agent prefer authoritative prompt states", () => {
+  const staleTopLevel = prompt("stale-top-level")
+  const promptStatePrompt = prompt("prompt-state")
+  const session = sessionWith({
+    queued_prompts: [staleTopLevel],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [promptStatePrompt],
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [promptStatePrompt])
+})
+
+test("queued prompts for agent clear stale queues when projected activity is idle", () => {
+  const queued = prompt("queued-stale")
+  const session = sessionWith({
+    queued_prompts: [queued],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
+})
+
+test("queued prompts for agent preserve existing transcript when projected busy omits queue detail", () => {
+  const session = sessionWith({
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(queuedPromptsForAgent(session, "agent-1"), null)
+})
+
+test("queued prompts for agent falls back to legacy top-level queues without projections", () => {
+  const queuedForAgent = prompt("queued-agent")
+  const queuedForOther = prompt("queued-other", "agent-2")
+  const session = sessionWith({
+    queued_prompts: [queuedForOther, queuedForAgent],
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
+})
+
+function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
+  return {
+    id: "session-1",
+    alias: null,
+    workspace_id: "/repo",
+    worktree_id: "/repo",
+    created_at_ms: 1,
+    status: "Active",
+    agent_defaults: {
+      provider: "codex",
+      model: null,
+      effort: null,
+      account_profile: null,
+      execution_mode: "build",
+      permission_level: "yolo",
+    },
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 4,
+    agents: [{
+      id: "agent-1",
+      agent_ref: "agent-1",
+      session_id: "session-1",
+      alias: "agent-1",
+      provider: "codex",
+      model: null,
+      effort: null,
+      account_profile: null,
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+      worktree_id: "/repo",
+    }],
+    workflows: [],
+    workflow_runs: [],
+    workflow_watchdogs: [],
+    workflow_consoles: [],
+    config_state: {
+      version: 1,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
+
+function prompt(id: string, agentId = "agent-1"): PromptQueueItem {
+  return {
+    id,
+    source_attachment_id: "attachment-1",
+    target_agent_id: agentId,
+    prompt: id,
+    status: "Queued",
+  }
+}

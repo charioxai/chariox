@@ -1,3 +1,6 @@
+import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
+import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
 
 export type QueuedPromptControlInput = {
@@ -60,6 +63,23 @@ export function queuedPromptControlForPrompt(
   return control
 }
 
+export function queuedPromptsForAgent(
+  session: RuntimeSession,
+  agentId: string,
+): readonly PromptQueueItem[] | null {
+  if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
+    return []
+  }
+  const promptStates = session.prompt_states
+  if (promptStates) {
+    return promptStates[agentId]?.queued_prompts ?? []
+  }
+  if (session.agent_activity) {
+    return null
+  }
+  return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+}
+
 export function normalizeQueuedPromptStatus(status: string | null | undefined): string {
   return status?.trim().toLowerCase() || "queued"
 }
@@ -86,4 +106,15 @@ function hasOwn<T extends object, K extends PropertyKey>(
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
+}
+
+function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {
+  if (!session.agent_activity) {
+    return true
+  }
+  const activity = session.agent_activity[agentId]
+  if (!activity) {
+    return false
+  }
+  return agentRuntimeActivityIsBusy(activity)
 }

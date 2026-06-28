@@ -6,9 +6,10 @@ import type {
 import {
   queuedPromptActionability,
   queuedPromptControlForPrompt,
+  queuedPromptsForAgent as kernelQueuedPromptsForAgent,
   type QueuedPromptActionability,
 } from "@arroba/kernel-client/queued-prompt-controls"
-import { agentRuntimeActivityIsBusy, sessionHasProjectedRuntimeState } from "./session-state.js"
+import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
 
@@ -18,18 +19,11 @@ export type QueuedPromptTranscriptSyncResult = {
 }
 
 export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] | null {
-  if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
-    return []
-  }
-  const promptStates = session.prompt_states
-  if (promptStates) {
-    return promptStates[agentId]?.queued_prompts ?? []
-  }
-  if (session.agent_activity) {
-    return null
-  }
-  const topLevelPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
-  return topLevelPrompts
+  const prompts = kernelQueuedPromptsForAgent(
+    session as Parameters<typeof kernelQueuedPromptsForAgent>[0],
+    agentId,
+  )
+  return prompts === null ? null : [...prompts] as PromptQueueItem[]
 }
 
 export function syncQueuedPromptEntriesForAgent(
@@ -165,17 +159,6 @@ function queuedPromptActionabilityMatches(
     && current.canCancel === next.canCancel
     && current.steerDisabledReason === next.steerDisabledReason
     && current.cancelDisabledReason === next.cancelDisabledReason
-}
-
-function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {
-  if (!session.agent_activity) {
-    return true
-  }
-  const activity = session.agent_activity[agentId]
-  if (!activity) {
-    return false
-  }
-  return agentRuntimeActivityIsBusy(activity)
 }
 
 function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {
