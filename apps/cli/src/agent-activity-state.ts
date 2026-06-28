@@ -5,6 +5,7 @@ import {
   nextAgentActivityLabels as kernelNextAgentActivityLabels,
   nextAgentBusyLatches as kernelNextAgentBusyLatches,
   readAgentBusyLatch as kernelReadAgentBusyLatch,
+  resolveActiveToolLabelForAgent as kernelResolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel as kernelShouldPreserveAgentActivityLabel,
   type AgentBusyState,
 } from "@arroba/kernel-client/shell-agent-activity"
@@ -60,18 +61,10 @@ export function resolveActiveToolLabelForAgent(options: {
   activeToolLabels: Iterable<string>
   agentPaneToolUpdates: Iterable<ToolActivityUpdate> | null | undefined
 }): string | null {
-  const agentId = options.agentId
-  if (!agentId) {
-    return null
-  }
-  if (agentId === options.visibleTranscriptAgentId) {
-    return Array.from(options.activeToolLabels).at(-1) ?? null
-  }
-  const labels = Array.from(options.agentPaneToolUpdates ?? [])
-    .filter((update) => update.status !== "completed" && update.status !== "error" && update.status !== "cancelled")
-    .map((update) => getToolActivityLabel(update.tool))
-    .filter((label): label is string => Boolean(label))
-  return labels.at(-1) ?? null
+  return kernelResolveActiveToolLabelForAgent({
+    ...options,
+    toolActivityLabel: getToolActivityLabel,
+  })
 }
 
 export function deriveFocusedActivityLabel(options: {

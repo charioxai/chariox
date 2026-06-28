@@ -10,6 +10,7 @@ import {
   nextAgentBusyLatches,
   readAgentBusyLatch,
   runtimeProviderRunForAgent,
+  resolveActiveToolLabelForAgent,
   resolveSessionStreamingAgentId,
   sessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent,
@@ -909,6 +910,37 @@ test("focused activity and busy state derive from labels, latches, prompt work, 
     focusedActivityLabel: null,
     agentBusyLatches: {},
   }), false)
+})
+
+test("active tool labels prefer visible transcript tools and ignore completed pane tools", () => {
+  const label = (tool?: string | null) => tool ? `${tool}ing` : null
+
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: "agent-1",
+    visibleTranscriptAgentId: "agent-1",
+    activeToolLabels: ["reading", "patching"],
+    agentPaneToolUpdates: null,
+    toolActivityLabel: label,
+  }), "patching")
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: "agent-2",
+    visibleTranscriptAgentId: "agent-1",
+    activeToolLabels: ["reading"],
+    agentPaneToolUpdates: [
+      { tool: "read", status: "completed" },
+      { tool: "bash", status: "running" },
+      { tool: "edit", status: "error" },
+      { tool: "grep", status: "cancelled" },
+    ],
+    toolActivityLabel: label,
+  }), "bashing")
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: null,
+    visibleTranscriptAgentId: "agent-1",
+    activeToolLabels: ["reading"],
+    agentPaneToolUpdates: null,
+    toolActivityLabel: label,
+  }), null)
 })
 
 test("all agent busy state is derived per agent", () => {

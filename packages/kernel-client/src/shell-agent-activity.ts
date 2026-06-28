@@ -69,6 +69,11 @@ export type AgentBusyState = {
   readonly busy: boolean
 }
 
+export type AgentToolActivityUpdate = {
+  readonly tool?: string | null
+  readonly status?: string | null
+}
+
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
   readonly queued_prompts?: readonly unknown[] | null
@@ -352,6 +357,27 @@ export function deriveFocusedActivityLabel(options: {
   readonly agentActivityLabel: string | null
 }): string | null {
   return options.focusedAgentId ? (options.activeToolLabel ?? options.agentActivityLabel) : null
+}
+
+export function resolveActiveToolLabelForAgent(options: {
+  readonly agentId: string | null | undefined
+  readonly visibleTranscriptAgentId: string | null
+  readonly activeToolLabels: Iterable<string>
+  readonly agentPaneToolUpdates: Iterable<AgentToolActivityUpdate> | null | undefined
+  readonly toolActivityLabel: (tool?: string | null) => string | null
+}): string | null {
+  const agentId = options.agentId
+  if (!agentId) {
+    return null
+  }
+  if (agentId === options.visibleTranscriptAgentId) {
+    return Array.from(options.activeToolLabels).at(-1) ?? null
+  }
+  const labels = Array.from(options.agentPaneToolUpdates ?? [])
+    .filter((update) => update.status !== "completed" && update.status !== "error" && update.status !== "cancelled")
+    .map((update) => options.toolActivityLabel(update.tool))
+    .filter((label): label is string => Boolean(label))
+  return labels.at(-1) ?? null
 }
 
 export function deriveFocusedAgentBusy(options: {
