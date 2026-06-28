@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyTranscriptHistoryDeferral,
+  markDeferredTranscriptHistoryEntries,
   sessionHistoryFragmentsAreAdjacent,
   transcriptHistoryFragmentsAreAdjacent,
   transcriptHistoryFragmentShouldDefer,
@@ -73,4 +75,46 @@ test("transcript history fragment deferral starts after the first fragment", () 
     historyFragmentStart: 12,
   }), true)
   assert.equal(transcriptHistoryFragmentShouldDefer({}), false)
+})
+
+test("transcript history deferral is applied from fragment range metadata", () => {
+  assert.deepEqual(applyTranscriptHistoryDeferral({
+    historyEntryIndex: 7,
+    historyFragmentStart: 12,
+  }), {
+    historyEntryIndex: 7,
+    historyFragmentStart: 12,
+    historyDeferred: true,
+  })
+
+  assert.deepEqual(applyTranscriptHistoryDeferral({
+    historyEntryIndex: 7,
+    historyFragmentStart: 0,
+    historyDeferred: true,
+  }), {
+    historyEntryIndex: 7,
+    historyFragmentStart: 0,
+  })
+})
+
+test("only the first visible transcript history fragment remains deferred", () => {
+  const empty: Array<{ historyFragmentStart?: number, historyDeferred?: boolean }> = []
+  assert.equal(markDeferredTranscriptHistoryEntries(empty), empty)
+
+  const first = { historyFragmentStart: 12 }
+  const staleLater = { historyFragmentStart: 24, historyDeferred: true }
+  const normalLater = { historyFragmentStart: 36 }
+
+  const marked = markDeferredTranscriptHistoryEntries([first, staleLater, normalLater])
+
+  assert.deepEqual(marked[0], {
+    historyFragmentStart: 12,
+    historyDeferred: true,
+  })
+  assert.deepEqual(marked[1], {
+    historyFragmentStart: 24,
+  })
+  assert.equal(marked[2], normalLater)
+  assert.notEqual(marked[0], first)
+  assert.notEqual(marked[1], staleLater)
 })

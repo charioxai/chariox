@@ -10,6 +10,10 @@ export type TranscriptHistoryFragmentRange = {
   readonly historyFragmentEnd?: number | null | undefined
 }
 
+export type TranscriptHistoryDeferrableEntry = TranscriptHistoryFragmentRange & {
+  historyDeferred?: boolean | undefined
+}
+
 export function sessionHistoryFragmentsAreAdjacent(
   older: SessionHistoryFragmentRange | null | undefined,
   newer: SessionHistoryFragmentRange | null | undefined,
@@ -38,4 +42,31 @@ export function transcriptHistoryFragmentShouldDefer(
   entry: TranscriptHistoryFragmentRange,
 ): boolean {
   return typeof entry.historyFragmentStart === "number" && entry.historyFragmentStart > 0
+}
+
+export function applyTranscriptHistoryDeferral<T extends TranscriptHistoryDeferrableEntry>(entry: T): T {
+  if (transcriptHistoryFragmentShouldDefer(entry)) {
+    entry.historyDeferred = true
+  } else {
+    delete entry.historyDeferred
+  }
+  return entry
+}
+
+export function markDeferredTranscriptHistoryEntries<T extends TranscriptHistoryDeferrableEntry>(items: T[]): T[] {
+  if (items.length === 0) {
+    return items
+  }
+
+  return items.map((entry, index) => {
+    if (index === 0) {
+      return applyTranscriptHistoryDeferral({ ...entry })
+    }
+    if (!entry.historyDeferred) {
+      return entry
+    }
+    const next = { ...entry }
+    delete next.historyDeferred
+    return next
+  })
 }

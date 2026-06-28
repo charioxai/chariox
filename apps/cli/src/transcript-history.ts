@@ -10,9 +10,10 @@ import {
   mergeSessionHistoryPromptAttachments,
 } from "@arroba/kernel-client/session-history-attachments"
 import {
+  applyTranscriptHistoryDeferral,
+  markDeferredTranscriptHistoryEntries,
   sessionHistoryFragmentsAreAdjacent,
   transcriptHistoryFragmentsAreAdjacent,
-  transcriptHistoryFragmentShouldDefer,
 } from "@arroba/kernel-client/session-history-fragments"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
@@ -23,35 +24,12 @@ import {
 } from "./transcript.js"
 import { trimSingleTrailingNewline } from "./transcript-text.js"
 
-function shouldDeferHistoryEntry(entry: TranscriptEntry) {
-  return transcriptHistoryFragmentShouldDefer(entry)
-}
-
 export function applyHistoryDeferral(entry: TranscriptEntry) {
-  const deferred = shouldDeferHistoryEntry(entry)
-  if (deferred) {
-    entry.historyDeferred = true
-  } else {
-    delete entry.historyDeferred
-  }
-  return entry
+  return applyTranscriptHistoryDeferral(entry)
 }
 
 export function markDeferredHistoryEntries(items: TranscriptEntry[]) {
-  if (items.length === 0) {
-    return items
-  }
-  return items.map((entry, index) => {
-    if (index === 0) {
-      return applyHistoryDeferral({ ...entry })
-    }
-    if (!entry.historyDeferred) {
-      return entry
-    }
-    const next = { ...entry }
-    delete next.historyDeferred
-    return next
-  })
+  return markDeferredTranscriptHistoryEntries(items)
 }
 
 export function mergePrependedHistoryFragments(older: TranscriptEntry, newer: TranscriptEntry): TranscriptEntry {
