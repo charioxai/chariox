@@ -6,6 +6,7 @@ import {
 } from "./prompt-origin.js"
 
 export const EXTERNAL_PROVIDER_OBSERVED_SOURCE = "external_provider_observed"
+export const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_updated"
 
 export type ExternalProviderObservedTurnMetadata = {
   source: typeof EXTERNAL_PROVIDER_OBSERVED_SOURCE
@@ -45,6 +46,15 @@ export function historyEntryExternalProviderObservedMetadata(
   }
 }
 
+export function externalProviderObservedHistoryRefreshSignal(
+  entry: ExternalProviderObservedStatusSignalFields,
+  text: string,
+): boolean {
+  return entry.kind === "provider_status"
+    && sessionHistoryEntryIsExternalProviderObserved(entry)
+    && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS
+}
+
 export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
@@ -79,6 +89,7 @@ export function mergeExternalProviderObservation(
 }
 
 export type ExternalProviderObservedKernelFields = {
+  readonly kind?: string | null | undefined
   readonly source?: string | null | undefined
   readonly external_provider?: string | null | undefined
   readonly external_provider_session_id?: string | null | undefined
@@ -86,6 +97,11 @@ export type ExternalProviderObservedKernelFields = {
   readonly observed_at_ms?: number | null | undefined
   readonly external_observation?: SessionHistoryExternalObservation | null | undefined
 }
+
+export type ExternalProviderObservedStatusSignalFields = Pick<
+  ExternalProviderObservedKernelFields,
+  "kind" | "source"
+>
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
   readonly external_provider_turn_id?: string | null | undefined

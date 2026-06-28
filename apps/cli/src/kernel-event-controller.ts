@@ -1,7 +1,7 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
+  externalProviderObservedHistoryRefreshSignal,
   historyEntryExternalProviderObservedMetadata,
-  sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
 import { isProviderIdleStatus } from "./runtime.js"
 
@@ -57,8 +57,6 @@ type KernelEventControllerDeps = {
   handleExternalProviderHistoryUpdated?: (agentId: string | null) => void
 }
 
-const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_updated"
-
 type TerminalRecordTranscriptMetadata = {
   promptId?: string | null
   sourceAttachmentId?: string | null
@@ -83,9 +81,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       return
     }
     if (
-      record.kind === "provider_status"
-      && sessionHistoryEntryIsExternalProviderObserved(record)
-      && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS
+      externalProviderObservedHistoryRefreshSignal(record, text)
     ) {
       deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
       return

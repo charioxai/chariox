@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  externalProviderObservedHistoryRefreshSignal,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
@@ -105,6 +107,25 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     external_provider: "codex",
     external_provider_session_id: "thread-1",
   }), null)
+})
+
+test("external provider observed history refresh signal requires observed provider status", () => {
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, ` ${EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS}\n`), true)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: null,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), false)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_output",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), false)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, "OpenCode status: reconnecting"), false)
 })
 
 test("external provider observation merge preserves settlement over passive telemetry", () => {
