@@ -8,6 +8,7 @@ import {
 } from "@arroba/kernel-client/provider-status"
 import {
   resolveSessionStreamingAgentId,
+  sessionWorkingStateAfterPromptWork,
   type SessionStreamingAgent,
 } from "@arroba/kernel-client/shell-agent-activity"
 
@@ -45,7 +46,7 @@ export type TurnCompletionDelayOptions = {
 }
 
 export function reconcileWorkingStateFromSession(currentWorking: boolean, sessionHasPromptWork: boolean) {
-  return sessionHasPromptWork ? true : currentWorking
+  return sessionWorkingStateAfterPromptWork(currentWorking, sessionHasPromptWork)
 }
 
 export function getSessionStatusLabel(

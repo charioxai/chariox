@@ -17,6 +17,7 @@ import {
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
   sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
+  sessionRuntimeTransitionState as kernelSessionRuntimeTransitionState,
 } from "@arroba/kernel-client/shell-agent-activity"
 import type {
   PromptLifecycleTransition as KernelPromptLifecycleTransition,
@@ -31,7 +32,6 @@ import {
   type TranscriptEntry,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export const NO_SESSION_ID = "no-session"
@@ -237,53 +237,17 @@ export function agentRuntimeActivityIsBusy(
 export function deriveSessionTransitionState(
   options: SessionTransitionOptions,
 ): SessionTransitionState {
-  const previousAgentSignature = options.currentSession.agents
-    .map((agent) => agent.id)
-    .join(",")
-  const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
-  const nextFocusedAgentId = focusedAgentIdForSession(options.nextSession)
-  const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
-  const resolvedStreamingAgentId = options.nextSession.agent_activity
-    ? projectedStreamingAgentIdForSession(options.nextSession)
-    : resolveStreamingAgentId(
-      options.nextSession.agents,
-      projectedStreamingAgentIdForSession(options.nextSession),
-      nextHasPromptWork,
-      options.currentWorking,
-      options.currentStreamingAgentId,
-      !options.nextSession.prompt_states,
-    )
-  const nextStreamingAgentId = resolvedStreamingAgentId
-  const nextAgentActivityLabels: Record<string, string | null> = {}
-  for (const agent of options.nextSession.agents) {
-    const legacyAgentBusy = !sessionHasProjectedRuntimeState(options.nextSession) && (
-      agent.is_processing
-      || agent.state === "Working"
-    )
-    nextAgentActivityLabels[agent.id] =
-      legacyAgentBusy
-        || agent.id === nextStreamingAgentId
-        || agentHasPromptWork(options.nextSession, agent.id)
-        ? (options.currentAgentActivityLabels[agent.id] ?? null)
-        : null
-  }
-  const nextFocusedActivityLabel = nextFocusedAgentId
-    ? nextAgentActivityLabels[nextFocusedAgentId] ?? null
-    : null
+  const transition = kernelSessionRuntimeTransitionState({
+    currentSession: options.currentSession as Parameters<typeof kernelSessionRuntimeTransitionState>[0]["currentSession"],
+    nextSession: options.nextSession as Parameters<typeof kernelSessionRuntimeTransitionState>[0]["nextSession"],
+    currentWorking: options.currentWorking,
+    currentStreamingAgentId: options.currentStreamingAgentId,
+    currentAgentActivityLabels: options.currentAgentActivityLabels,
+  })
 
   return {
-    nextFocusedAgentId,
-    nextHasPromptWork,
-    nextStreamingAgentId,
-    nextFocusedActivityLabel,
-    nextAgentActivityLabels,
+    ...transition,
     nextLayout: sessionResponseLayout(options.nextSession, options.layoutPreference),
-    nextWorking: reconcileWorkingStateFromSession(
-      options.currentWorking,
-      nextHasPromptWork,
-    ),
-    previousAgentSignature,
-    nextAgentSignature,
   }
 }
 

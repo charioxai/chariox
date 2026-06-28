@@ -45,6 +45,25 @@ export type SessionIdleTurnCompletionInput = {
   readonly currentActiveStatusLabel: string | null
 }
 
+export type SessionRuntimeTransitionOptions = {
+  readonly currentSession: RuntimeSession
+  readonly nextSession: RuntimeSession
+  readonly currentWorking: boolean
+  readonly currentStreamingAgentId: string | null
+  readonly currentAgentActivityLabels: Record<string, string | null>
+}
+
+export type SessionRuntimeTransitionState = {
+  readonly nextFocusedAgentId: string | null
+  readonly nextHasPromptWork: boolean
+  readonly nextStreamingAgentId: string | null
+  readonly nextFocusedActivityLabel: string | null
+  readonly nextAgentActivityLabels: Record<string, string | null>
+  readonly nextWorking: boolean
+  readonly previousAgentSignature: string
+  readonly nextAgentSignature: string
+}
+
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
   readonly queued_prompts?: readonly unknown[] | null
@@ -210,6 +229,60 @@ export function resolveSessionStreamingAgentId(
     return previousStreamingAgentId
   }
   return null
+}
+
+export function sessionRuntimeTransitionState(
+  options: SessionRuntimeTransitionOptions,
+): SessionRuntimeTransitionState {
+  const previousAgentSignature = options.currentSession.agents
+    .map((agent) => agent.id)
+    .join(",")
+  const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
+  const nextFocusedAgentId = sessionFocusedAgentId(options.nextSession)
+  const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
+  const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.nextSession)
+  const nextStreamingAgentId = options.nextSession.agent_activity
+    ? projectedStreamingAgentId
+    : resolveSessionStreamingAgentId(
+      options.nextSession.agents,
+      projectedStreamingAgentId,
+      nextHasPromptWork,
+      options.currentWorking,
+      options.currentStreamingAgentId,
+      !options.nextSession.prompt_states,
+    )
+  const nextAgentActivityLabels: Record<string, string | null> = {}
+  for (const agent of options.nextSession.agents) {
+    const legacyAgentBusy = !sessionHasAgentRuntimeProjection(options.nextSession)
+      && (agent.is_processing || agent.state === "Working")
+    nextAgentActivityLabels[agent.id] =
+      legacyAgentBusy
+        || agent.id === nextStreamingAgentId
+        || sessionAgentIsBusy(options.nextSession, agent.id)
+        ? (options.currentAgentActivityLabels[agent.id] ?? null)
+        : null
+  }
+  const nextFocusedActivityLabel = nextFocusedAgentId
+    ? nextAgentActivityLabels[nextFocusedAgentId] ?? null
+    : null
+
+  return {
+    nextFocusedAgentId,
+    nextHasPromptWork,
+    nextStreamingAgentId,
+    nextFocusedActivityLabel,
+    nextAgentActivityLabels,
+    nextWorking: sessionWorkingStateAfterPromptWork(options.currentWorking, nextHasPromptWork),
+    previousAgentSignature,
+    nextAgentSignature,
+  }
+}
+
+export function sessionWorkingStateAfterPromptWork(
+  currentWorking: boolean,
+  sessionHasPromptWork: boolean,
+): boolean {
+  return sessionHasPromptWork ? true : currentWorking
 }
 
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {

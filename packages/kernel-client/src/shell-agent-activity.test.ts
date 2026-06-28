@@ -22,7 +22,9 @@ import {
   sessionPromptStateForAgent,
   sessionPromptWorkByAgent,
   sessionPromptWorkSummary,
+  sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
+  sessionWorkingStateAfterPromptWork,
 } from "./shell-agent-activity.js"
 import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
@@ -633,6 +635,134 @@ test("resolveSessionStreamingAgentId can ignore legacy processing for projected 
   assert.equal(resolveSessionStreamingAgentId(agents, null, true, false, "agent-b", false), "agent-b")
   assert.equal(resolveSessionStreamingAgentId(agents, null, false, true, "agent-b", false), null)
   assert.equal(resolveSessionStreamingAgentId(agents, null, false, false, null, false), null)
+})
+
+test("sessionRuntimeTransitionState preserves active labels and clears idle labels", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })
+  const nextSession = makeSession({
+    agents: [
+      makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
+      makeAgent({ id: "agent-2", state: "Working", is_processing: true }),
+    ],
+    active_prompt: {
+      id: "prompt-2",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-2",
+      prompt: "run",
+      status: "Running",
+    },
+    focused_agent_id: "agent-2",
+  })
+
+  assert.deepEqual(sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: false,
+    currentStreamingAgentId: null,
+    currentAgentActivityLabels: {
+      "agent-1": "thinking",
+      "agent-2": "writing",
+    },
+  }), {
+    nextFocusedAgentId: "agent-2",
+    nextHasPromptWork: true,
+    nextStreamingAgentId: "agent-2",
+    nextFocusedActivityLabel: "writing",
+    nextAgentActivityLabels: {
+      "agent-1": null,
+      "agent-2": "writing",
+    },
+    nextWorking: true,
+    previousAgentSignature: "agent-1,agent-2",
+    nextAgentSignature: "agent-1,agent-2",
+  })
+})
+
+test("sessionRuntimeTransitionState clears stale streaming when projected activity is idle", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "thinking" },
+  }), {
+    nextFocusedAgentId: "agent-1",
+    nextHasPromptWork: false,
+    nextStreamingAgentId: null,
+    nextFocusedActivityLabel: null,
+    nextAgentActivityLabels: {
+      "agent-1": null,
+    },
+    nextWorking: true,
+    previousAgentSignature: "agent-1",
+    nextAgentSignature: "agent-1",
+  })
+})
+
+test("sessionRuntimeTransitionState resolves streaming from prompt state before stale processing", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })
+  const nextSession = makeSession({
+    agents: [
+      makeAgent({ id: "agent-1", state: "Working", is_processing: true }),
+      makeAgent({ id: "agent-2", state: "Idle", is_processing: false }),
+    ],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-2",
+          prompt: "run",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: false,
+    currentStreamingAgentId: null,
+    currentAgentActivityLabels: { "agent-1": "thinking", "agent-2": "writing" },
+  })
+
+  assert.equal(transition.nextStreamingAgentId, "agent-2")
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-1": null,
+    "agent-2": "writing",
+  })
+})
+
+test("sessionWorkingStateAfterPromptWork keeps working latched until completion is confirmed", () => {
+  assert.equal(sessionWorkingStateAfterPromptWork(true, false), true)
+  assert.equal(sessionWorkingStateAfterPromptWork(true, true), true)
+  assert.equal(sessionWorkingStateAfterPromptWork(false, true), true)
+  assert.equal(sessionWorkingStateAfterPromptWork(false, false), false)
 })
 
 test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn completion", () => {
