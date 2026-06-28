@@ -16,6 +16,11 @@ export type ExternalProviderObservedTurnMetadata = {
   externalProviderTurnId: string | null
 }
 
+export type ExternalProviderObservedTurnMarker = {
+  provider: string
+  providerSessionId: string
+}
+
 export type ExternalProviderObservedTranscriptMetadata = {
   source: typeof EXTERNAL_PROVIDER_OBSERVED_SOURCE
   externalProvider: string | null
@@ -68,6 +73,31 @@ export function externalProviderObservedProviderStatusShouldRender(
     && shouldRenderProviderStatus(entry.text)
 }
 
+export function externalProviderObservedEntryIsPassiveTelemetry(
+  entry: ExternalProviderObservedObservationFields,
+): boolean {
+  return externalProviderObservedObservation(entry)?.passive_telemetry === true
+}
+
+export function externalProviderObservedStatusSettlesActivePrompt(
+  entry: ExternalProviderObservedStatusSettlementFields,
+): boolean {
+  return externalProviderObservedEntryIsStatus(entry)
+    && sessionHistoryEntryIsExternalProviderObserved(entry)
+    && externalProviderObservedObservation(entry)?.settles_active_prompt === true
+}
+
+export function externalProviderObservedCompletionAtMs(
+  entry: ExternalProviderObservedCompletionTimeFields,
+  nowMs: () => number,
+): number {
+  return finiteNumber(entry.observedAtMs)
+    ?? finiteNumber(entry.observed_at_ms)
+    ?? finiteNumber(entry.createdAtMs)
+    ?? finiteNumber(entry.created_at_ms)
+    ?? nowMs()
+}
+
 export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
@@ -101,6 +131,16 @@ export function mergeExternalProviderObservation(
   }
 }
 
+export function mergeExternalProviderObservedSource(
+  existing: string | null | undefined,
+  incoming: string | null | undefined,
+): string | null | undefined {
+  if (incoming === EXTERNAL_PROVIDER_OBSERVED_SOURCE) {
+    return incoming
+  }
+  return existing ?? incoming
+}
+
 export type ExternalProviderObservedKernelFields = {
   readonly kind?: string | null | undefined
   readonly source?: string | null | undefined
@@ -118,6 +158,25 @@ export type ExternalProviderObservedStatusSignalFields = Pick<
 
 export type ExternalProviderObservedProviderStatusFields = ExternalProviderObservedKernelFields & {
   readonly text: string
+}
+
+export type ExternalProviderObservedObservationFields = {
+  readonly source?: string | null | undefined
+  readonly external_observation?: SessionHistoryExternalObservation | null | undefined
+  readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
+}
+
+export type ExternalProviderObservedStatusSettlementFields =
+  ExternalProviderObservedObservationFields & {
+    readonly kind?: string | null | undefined
+    readonly role?: string | null | undefined
+  }
+
+export type ExternalProviderObservedCompletionTimeFields = {
+  readonly observed_at_ms?: number | null | undefined
+  readonly observedAtMs?: number | null | undefined
+  readonly created_at_ms?: number | null | undefined
+  readonly createdAtMs?: number | null | undefined
 }
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
@@ -145,6 +204,21 @@ export function transcriptExternalProviderObservedTurnMetadata(
   }
 }
 
+export function transcriptExternalProviderObservedTurnMarker(
+  entries: readonly ExternalProviderObservedTranscriptTurnFields[],
+): ExternalProviderObservedTurnMarker | null {
+  const metadata = entries
+    .map(transcriptExternalProviderObservedTurnMetadata)
+    .find((candidate) => candidate !== null)
+  if (!metadata) {
+    return null
+  }
+  return {
+    provider: metadata.externalProvider ?? "provider",
+    providerSessionId: metadata.externalProviderSessionId ?? "unknown",
+  }
+}
+
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
@@ -165,4 +239,19 @@ function normalizedExternalObservation(
     settles_active_prompt: settlesActivePrompt,
     passive_telemetry: settlesActivePrompt ? false : value.passive_telemetry === true,
   }
+}
+
+function externalProviderObservedObservation(
+  entry: ExternalProviderObservedObservationFields,
+): SessionHistoryExternalObservation | null {
+  if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return null
+  }
+  return normalizedExternalObservation(entry.externalObservation ?? entry.external_observation)
+}
+
+function externalProviderObservedEntryIsStatus(
+  entry: ExternalProviderObservedStatusSettlementFields,
+): boolean {
+  return entry.kind === "provider_status" || entry.role === "status"
 }

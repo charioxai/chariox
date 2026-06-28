@@ -4,12 +4,17 @@ import test from "node:test"
 import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  externalProviderObservedCompletionAtMs,
+  externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedProviderStatusShouldRender,
+  externalProviderObservedStatusSettlesActivePrompt,
   historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservedSource,
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
+  transcriptExternalProviderObservedTurnMarker,
   transcriptExternalProviderObservedTurnMetadata,
 } from "./external-provider-observation.js"
 
@@ -208,6 +213,82 @@ test("external provider observed status render policy requires observed non-pass
   }), false)
 })
 
+test("external provider observed passive telemetry helper accepts history and transcript fields", () => {
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    source: "provider_output",
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), false)
+})
+
+test("external provider observed settlement helper accepts provider status records and entries", () => {
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), true)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    role: "status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    role: "assistant",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    kind: "provider_status",
+    source: "provider_output",
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+})
+
+test("external provider observed completion time prefers observation time then creation time", () => {
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: 2_000,
+    observed_at_ms: 1_500,
+    createdAtMs: 1_000,
+  }, () => 3_000), 2_000)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observed_at_ms: 1_500,
+    createdAtMs: 1_000,
+  }, () => 3_000), 1_500)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: Number.NaN,
+    createdAtMs: 1_000,
+  }, () => 3_000), 1_000)
+  assert.equal(externalProviderObservedCompletionAtMs({}, () => 3_000), 3_000)
+})
+
 test("external provider observation merge preserves settlement over passive telemetry", () => {
   assert.deepEqual(mergeExternalProviderObservation({
     settles_active_prompt: false,
@@ -236,6 +317,46 @@ test("external provider observation merge preserves settlement over passive tele
     settles_active_prompt: false,
     passive_telemetry: true,
   })
+})
+
+test("external provider observed source merge preserves observed source", () => {
+  assert.equal(
+    mergeExternalProviderObservedSource("provider_output", EXTERNAL_PROVIDER_OBSERVED_SOURCE),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
+    mergeExternalProviderObservedSource(EXTERNAL_PROVIDER_OBSERVED_SOURCE, "provider_output"),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(mergeExternalProviderObservedSource(null, "provider_output"), "provider_output")
+})
+
+test("external provider observed turn marker resolves footer identity", () => {
+  assert.deepEqual(transcriptExternalProviderObservedTurnMarker([{
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: " opencode ",
+    externalProviderSessionId: " thread-2 ",
+  }]), {
+    provider: "opencode",
+    providerSessionId: "thread-2",
+  })
+  assert.deepEqual(transcriptExternalProviderObservedTurnMarker([{
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "",
+    externalProviderSessionId: null,
+  }]), {
+    provider: "provider",
+    providerSessionId: "unknown",
+  })
+  assert.equal(transcriptExternalProviderObservedTurnMarker([{
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }]), null)
 })
 
 test("external provider observed metadata ignores ordinary history entries", () => {

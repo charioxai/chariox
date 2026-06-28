@@ -1,5 +1,6 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
+  externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
@@ -334,5 +335,5 @@ function terminalRecordProviderStatusShouldRender(
 }
 
 function terminalRecordIsPassiveExternalProviderTelemetry(record: TerminalOutputRecord): boolean {
-  return historyEntryExternalProviderObservedMetadata(record)?.externalObservation?.passive_telemetry === true
+  return externalProviderObservedEntryIsPassiveTelemetry(record)
 }
