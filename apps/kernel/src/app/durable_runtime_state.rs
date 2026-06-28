@@ -533,6 +533,8 @@ impl DaemonApp {
                     return Ok(());
                 }
                 self.external_provider_sessions.detach_session(session.id());
+                self.attached_provider_transcript_cursors
+                    .detach_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.restore_session(session.clone());
@@ -548,6 +550,8 @@ impl DaemonApp {
                     return Ok(());
                 }
                 self.external_provider_sessions.detach_session(session.id());
+                self.attached_provider_transcript_cursors
+                    .detach_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
@@ -562,6 +566,8 @@ impl DaemonApp {
                 )?;
                 let session_id = agent.session_id().to_string();
                 self.external_provider_sessions
+                    .detach_agent(&session_id, agent.id());
+                self.attached_provider_transcript_cursors
                     .detach_agent(&session_id, agent.id());
                 self.prompt_state_owner
                     .remove_agent(&session_id, agent.id());

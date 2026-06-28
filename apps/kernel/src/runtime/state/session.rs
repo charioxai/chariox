@@ -243,6 +243,8 @@ impl KernelRuntimeOwnedState {
             self.remove_session_workflow_dispatch_claims(session_id);
             self.prompt_state_owner.remove_session(session_id);
             self.external_provider_sessions.detach_session(session_id);
+            self.attached_provider_transcript_cursors
+                .detach_session(session_id);
             let ended = self.session_store.end_session(session_id)?;
             return Ok((ended, Vec::new()));
         }
@@ -283,6 +285,8 @@ impl KernelRuntimeOwnedState {
         self.remove_session_workflow_dispatch_claims(session_id);
         self.prompt_state_owner.remove_session(session_id);
         self.external_provider_sessions.detach_session(session_id);
+        self.attached_provider_transcript_cursors
+            .detach_session(session_id);
         let mut ended = self.session_store.end_session(session_id)?;
         ended.set_agents(removed_agents);
         self.runtime_projection_changes.record_change();
@@ -321,6 +325,8 @@ impl KernelRuntimeOwnedState {
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {
                 self.external_provider_sessions.detach_session(&session_id);
+                self.attached_provider_transcript_cursors
+                    .detach_session(&session_id);
                 (session, Vec::new())
             } else {
                 self.end_session(&session_id)?

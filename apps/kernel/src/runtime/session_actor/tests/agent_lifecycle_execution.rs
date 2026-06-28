@@ -428,7 +428,7 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (session_id, agent_id, provider_run_id, terminal_stream) = {
+    let (session_id, agent_id, provider_run_id, terminal_stream, cursor_key) = {
         let mut app_locked = app.lock().await;
         let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -453,12 +453,26 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
             session.id(),
             extra_agent.id(),
         );
+        let cursor_key = crate::app::AttachedProviderTranscriptCursorKey::new(
+            session.id(),
+            extra_agent.id(),
+            "codex",
+            "destroyed-agent-thread",
+        );
+        app_locked.attached_provider_transcript_cursor_store().set(
+            cursor_key.clone(),
+            crate::provider::ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-before-destroy".to_string()),
+                ..crate::provider::ExternalProviderObservedCursor::default()
+            },
+        );
         assert_ne!(default_agent.id(), extra_agent.id());
         (
             session.id().to_string(),
             extra_agent.id().to_string(),
             provider_run.id().to_string(),
             app_locked.terminal_stream_store(),
+            cursor_key,
         )
     };
     let session_projection = SessionStateProjectionStore::default();
@@ -541,6 +555,13 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
         "destroying an attached agent should return its provider thread to the unattached list"
     );
     assert!(page.sessions[0].is_attachable_to_arroba());
+    assert_eq!(
+        _locked_app
+            .attached_provider_transcript_cursor_store()
+            .get(&cursor_key),
+        crate::provider::ExternalProviderObservedCursor::default(),
+        "destroying an attached agent should prune its Arroba-owned provider transcript cursor"
+    );
 }
 
 #[tokio::test]

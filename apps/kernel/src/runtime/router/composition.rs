@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::app::{
-    DaemonApp, ExternalProviderSessionIndexStore, PromptActivityStore, WorkflowDesignEventStore,
+    AttachedProviderTranscriptCursorStore, DaemonApp, ExternalProviderSessionIndexStore,
+    PromptActivityStore, WorkflowDesignEventStore,
 };
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
 use crate::provider::ProviderRunOperationLanes;
@@ -130,6 +131,7 @@ pub(super) struct RouterProjectionStores {
     pub(super) provider_store: crate::provider::ProviderProcessServiceStore,
     pub(super) provider_process_tracking: crate::app::ProviderProcessTrackingStore,
     pub(super) external_provider_sessions: ExternalProviderSessionIndexStore,
+    pub(super) attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     pub(super) slice_store: crate::slice::SliceStore,
     pub(super) active_turns: crate::app::ActiveTurnStore,
     pub(super) prompt_activity: PromptActivityStore,
@@ -175,6 +177,7 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         provider_store: app.providers().clone(),
         provider_process_tracking: app.provider_process_tracking_store(),
         external_provider_sessions: app.external_provider_session_index_store(),
+        attached_provider_transcript_cursors: app.attached_provider_transcript_cursor_store(),
         slice_store: app.slices(),
         active_turns: app.active_turn_store(),
         prompt_activity: app.prompt_activity_store(),
@@ -216,6 +219,7 @@ pub(super) fn compose_command_router(
         provider_store,
         provider_process_tracking,
         external_provider_sessions,
+        attached_provider_transcript_cursors,
         slice_store,
         active_turns,
         prompt_activity,
@@ -242,6 +246,7 @@ pub(super) fn compose_command_router(
         provider_store.clone(),
         provider_process_tracking.clone(),
         external_provider_sessions.clone(),
+        attached_provider_transcript_cursors.clone(),
         slice_store.clone(),
         session_projection.clone(),
         provider_run_projection.clone(),

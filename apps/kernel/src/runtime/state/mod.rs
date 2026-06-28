@@ -15,8 +15,9 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
-    ActiveTurnStore, DaemonApp, ExternalProviderSessionIndexStore, PromptActivityStore,
-    PromptWorkspaceClaimStore, ProviderProcessTrackingStore, WorkflowDesignEventStore,
+    ActiveTurnStore, AttachedProviderTranscriptCursorStore, DaemonApp,
+    ExternalProviderSessionIndexStore, PromptActivityStore, PromptWorkspaceClaimStore,
+    ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -58,6 +59,7 @@ struct KernelRuntimeOwnedState {
     provider_store: ProviderProcessServiceStore,
     provider_process_tracking: ProviderProcessTrackingStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
+    attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -241,15 +243,18 @@ impl KernelRuntimeState {
         metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let external_provider_sessions = {
+        let (external_provider_sessions, attached_provider_transcript_cursors) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
-                    break app.external_provider_session_index_store();
+                    break (
+                        app.external_provider_session_index_store(),
+                        app.attached_provider_transcript_cursor_store(),
+                    );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
                     panic!(
-                        "KernelRuntimeState could not acquire the app lock for external provider sessions during bootstrap"
+                        "KernelRuntimeState could not acquire the app lock for external provider session state during bootstrap"
                     );
                 }
                 std::thread::sleep(Duration::from_millis(2));
@@ -265,6 +270,7 @@ impl KernelRuntimeState {
             provider_store,
             provider_process_tracking,
             external_provider_sessions,
+            attached_provider_transcript_cursors,
             slice_store,
             session_projection,
             provider_run_projection,
@@ -294,6 +300,7 @@ impl KernelRuntimeState {
         provider_store: ProviderProcessServiceStore,
         provider_process_tracking: ProviderProcessTrackingStore,
         external_provider_sessions: ExternalProviderSessionIndexStore,
+        attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
         slice_store: crate::slice::SliceStore,
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -354,6 +361,7 @@ impl KernelRuntimeState {
                 provider_store,
                 provider_process_tracking,
                 external_provider_sessions,
+                attached_provider_transcript_cursors,
                 slice_store,
                 session_projection,
                 provider_run_projection,

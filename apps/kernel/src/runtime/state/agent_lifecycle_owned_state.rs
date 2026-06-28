@@ -267,6 +267,8 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
         self.external_provider_sessions
             .detach_agent(&session_id, agent_id);
+        self.attached_provider_transcript_cursors
+            .detach_agent(&session_id, agent_id);
         Ok(destroyed)
     }
 

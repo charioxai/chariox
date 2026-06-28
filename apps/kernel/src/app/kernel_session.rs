@@ -2241,6 +2241,9 @@ impl<'a> KernelSessionService<'a> {
         self.app
             .external_provider_session_index_store()
             .detach_agent(&session_id, agent_id);
+        self.app
+            .attached_provider_transcript_cursor_store()
+            .detach_agent(&session_id, agent_id);
         self.app.durable_state_store().append_event(
             "agent.deleted",
             Some(destroyed.id().to_string()),
@@ -2366,6 +2369,9 @@ impl<'a> KernelSessionService<'a> {
             self.app
                 .external_provider_session_index_store()
                 .detach_session(session_id);
+            self.app
+                .attached_provider_transcript_cursor_store()
+                .detach_session(session_id);
             let ended =
                 SessionStateOwner::new(self.app.session_state_store()).end_session(session_id)?;
             self.app.durable_state_store().append_event(
@@ -2417,6 +2423,9 @@ impl<'a> KernelSessionService<'a> {
         self.app.prompt_owner_remove_session(session_id);
         self.app
             .external_provider_session_index_store()
+            .detach_session(session_id);
+        self.app
+            .attached_provider_transcript_cursor_store()
             .detach_session(session_id);
         let mut ended =
             SessionStateOwner::new(self.app.session_state_store()).end_session(session_id)?;

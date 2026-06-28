@@ -68,6 +68,26 @@ impl AttachedProviderTranscriptCursorStore {
             .expect("attached provider transcript cursor store poisoned")
             .insert(key, cursor);
     }
+
+    pub(crate) fn detach_session(&self, session_id: &str) -> usize {
+        let mut cursors = self
+            .inner
+            .write()
+            .expect("attached provider transcript cursor store poisoned");
+        let previous_len = cursors.len();
+        cursors.retain(|key, _| key.session_id != session_id);
+        previous_len.saturating_sub(cursors.len())
+    }
+
+    pub(crate) fn detach_agent(&self, session_id: &str, agent_id: &str) -> usize {
+        let mut cursors = self
+            .inner
+            .write()
+            .expect("attached provider transcript cursor store poisoned");
+        let previous_len = cursors.len();
+        cursors.retain(|key, _| key.session_id != session_id || key.agent_id != agent_id);
+        previous_len.saturating_sub(cursors.len())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -600,6 +620,83 @@ mod tests {
         assert!(session.is_attached_to_arroba());
         assert_eq!(session.attached_session_ids, vec!["session-2"]);
         assert_eq!(session.attached_agent_ids, vec!["agent-3"]);
+    }
+
+    #[test]
+    fn transcript_cursor_store_detaches_session_cursors() {
+        let store = AttachedProviderTranscriptCursorStore::default();
+        store.set(
+            AttachedProviderTranscriptCursorKey::new("session-1", "agent-1", "codex", "thread-1"),
+            ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-1".to_string()),
+                ..ExternalProviderObservedCursor::default()
+            },
+        );
+        let preserved_key =
+            AttachedProviderTranscriptCursorKey::new("session-2", "agent-2", "codex", "thread-2");
+        store.set(
+            preserved_key.clone(),
+            ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-2".to_string()),
+                ..ExternalProviderObservedCursor::default()
+            },
+        );
+
+        assert_eq!(store.detach_session("session-1"), 1);
+
+        assert_eq!(
+            store.get(&AttachedProviderTranscriptCursorKey::new(
+                "session-1",
+                "agent-1",
+                "codex",
+                "thread-1"
+            )),
+            ExternalProviderObservedCursor::default()
+        );
+        assert_eq!(
+            store.get(&preserved_key).last_observed_turn_id.as_deref(),
+            Some("turn-2")
+        );
+    }
+
+    #[test]
+    fn transcript_cursor_store_detaches_agent_cursors() {
+        let store = AttachedProviderTranscriptCursorStore::default();
+        store.set(
+            AttachedProviderTranscriptCursorKey::new("session-1", "agent-1", "codex", "thread-1"),
+            ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-1".to_string()),
+                ..ExternalProviderObservedCursor::default()
+            },
+        );
+        let preserved_same_session =
+            AttachedProviderTranscriptCursorKey::new("session-1", "agent-2", "codex", "thread-2");
+        store.set(
+            preserved_same_session.clone(),
+            ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-2".to_string()),
+                ..ExternalProviderObservedCursor::default()
+            },
+        );
+
+        assert_eq!(store.detach_agent("session-1", "agent-1"), 1);
+
+        assert_eq!(
+            store.get(&AttachedProviderTranscriptCursorKey::new(
+                "session-1",
+                "agent-1",
+                "codex",
+                "thread-1"
+            )),
+            ExternalProviderObservedCursor::default()
+        );
+        assert_eq!(
+            store
+                .get(&preserved_same_session)
+                .last_observed_turn_id
+                .as_deref(),
+            Some("turn-2")
+        );
     }
 
     fn record(
