@@ -200,6 +200,28 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   return legacyPromptForAgent(session, agentId)
 }
 
+export function sessionActivePromptIdForAgent(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): string | null {
+  if (agentId) {
+    const projected = session.agent_activity?.[agentId]
+    const projectedPromptId = agentRuntimeActiveTurnIsBusy(projected?.active_turn)
+      ? projected?.active_turn?.prompt_id
+      : null
+    if (projectedPromptId) {
+      return projectedPromptId
+    }
+    if (session.agent_activity && !agentRuntimeActivityIsBusy(projected)) {
+      return null
+    }
+    return activePromptForAgent(session, agentId)?.id ?? null
+  }
+
+  const records = sessionActivePromptLifecycleRecords(session)
+  return records.length === 1 ? records[0]?.id ?? null : null
+}
+
 export function sessionActivePromptLifecycleRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
   if (session.agent_activity) {
     const records: ActivePromptLifecycleRecord[] = []
@@ -258,6 +280,17 @@ function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQ
   return (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
     ?? [...session.queued_prompts].reverse().find((prompt) => prompt.target_agent_id === agentId)
     ?? null
+}
+
+function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
+  const promptState = promptStateForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptState?.active_prompt ?? null
+  }
+  if (session.agent_activity) {
+    return null
+  }
+  return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
 }
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {

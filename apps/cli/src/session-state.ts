@@ -1,10 +1,10 @@
 import process from "node:process"
 
 import {
-  agentRuntimeActiveTurnIsBusy as kernelAgentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
+  sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionActivePromptLifecycleRecords,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
@@ -168,22 +168,10 @@ export function activePromptIdForAgent(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): string | null {
-  if (agentId) {
-    const projectedActivity = session.agent_activity?.[agentId]
-    const projectedPromptId = kernelAgentRuntimeActiveTurnIsBusy(projectedActivity?.active_turn)
-      ? projectedActivity?.active_turn?.prompt_id
-      : null
-    if (projectedPromptId) {
-      return projectedPromptId
-    }
-    if (session.agent_activity && !agentRuntimeActivityIsBusy(projectedActivity)) {
-      return null
-    }
-    return agentPromptState(session, agentId)?.active_prompt?.id ?? null
-  }
-
-  const activePromptRecords = activePromptLifecycleRecords(session)
-  return activePromptRecords.length === 1 ? activePromptRecords[0]?.id ?? null : null
+  return kernelSessionActivePromptIdForAgent(
+    session as Parameters<typeof kernelSessionActivePromptIdForAgent>[0],
+    agentId,
+  )
 }
 
 export function shouldConfirmIdleTurnCompletion(options: {

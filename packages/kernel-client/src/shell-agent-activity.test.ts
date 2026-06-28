@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  sessionActivePromptIdForAgent,
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
@@ -821,6 +822,202 @@ test("sessionActivePromptLifecycleRecords uses projected active turns and determ
     prompt_origin: "external",
     promptOrigin: "external",
   }])
+})
+
+test("sessionActivePromptIdForAgent prefers projected active turn and per-agent prompt state", () => {
+  assert.equal(sessionActivePromptIdForAgent(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "projected-prompt",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "stale-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  }), "agent-1"), "projected-prompt")
+
+  assert.equal(sessionActivePromptIdForAgent(makeSession({
+    active_prompt: null,
+    queued_prompts: [],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  }), "agent-1"), "state-prompt")
+
+  assert.equal(sessionActivePromptIdForAgent(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "stale-idle-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  }), "agent-1"), null)
+})
+
+test("sessionActivePromptIdForAgent falls back to prompt state for sparse busy activity", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionActivePromptIdForAgent(session, null), "state-prompt")
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), "state-prompt")
+})
+
+test("sessionActivePromptIdForAgent ignores legacy active prompt for sparse activity without prompt state", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "stale top-level prompt",
+      status: "running",
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+})
+
+test("sessionActivePromptIdForAgent suppresses prompt state for idle or missing projected activity", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "stale-a",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "stale-b",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-2",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })
+
+  assert.equal(sessionActivePromptIdForAgent(session, null), null)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-2"), null)
+})
+
+test("sessionActivePromptIdForAgent ignores settled projected active turn identity", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-settled",
+          status: malformedRuntimeValue("cancelled"),
+          phase: malformedRuntimeValue("settled"),
+        },
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-stale",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+  assert.equal(sessionActivePromptIdForAgent(session, null), null)
 })
 
 test("sessionActivePromptLifecycleRecords treats projected idle as authoritative", () => {
