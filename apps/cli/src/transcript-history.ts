@@ -4,6 +4,10 @@ import {
   mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
+import {
+  cloneSessionHistoryPromptAttachments,
+  mergeSessionHistoryPromptAttachments,
+} from "@arroba/kernel-client/session-history-attachments"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
   formatToolTranscriptUpdate,
@@ -121,7 +125,7 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
       previous.entry.text += entry.entry.text
       previous.total_chars = Math.max(previous.total_chars, entry.total_chars)
       if (entry.entry.attachments !== undefined) {
-        previous.entry.attachments = mergeHistoryAttachments(previous.entry.attachments, entry.entry.attachments)
+        previous.entry.attachments = mergeSessionHistoryPromptAttachments(previous.entry.attachments, entry.entry.attachments)
       }
       mergeHistoryExternalObservation(previous.entry, entry.entry)
       continue
@@ -145,7 +149,7 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
         ...(entry.entry.observed_at_ms !== undefined ? { observed_at_ms: entry.entry.observed_at_ms } : {}),
         ...(entry.entry.external_observation !== undefined ? { external_observation: entry.entry.external_observation } : {}),
         ...(entry.entry.source_attachment_id !== undefined ? { source_attachment_id: entry.entry.source_attachment_id } : {}),
-        ...(entry.entry.attachments !== undefined ? { attachments: cloneHistoryAttachments(entry.entry.attachments) } : {}),
+        ...(entry.entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.entry.attachments) } : {}),
       },
     })
   }
@@ -225,7 +229,7 @@ export function hydrateTranscriptEntries(
           }
           if (options.promptId !== undefined) candidate.promptId = options.promptId
           if (options.sourceAttachmentId !== undefined) candidate.sourceAttachmentId = options.sourceAttachmentId
-          if (options.attachments !== undefined) candidate.attachments = mergeHistoryAttachments(candidate.attachments, options.attachments)
+          if (options.attachments !== undefined) candidate.attachments = mergeSessionHistoryPromptAttachments(candidate.attachments, options.attachments)
           if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
           if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
           if (options.historyFragmentEnd !== undefined) candidate.historyFragmentEnd = options.historyFragmentEnd
@@ -263,7 +267,7 @@ export function hydrateTranscriptEntries(
     }
     if (options.promptId !== undefined) nextEntry.promptId = options.promptId
     if (options.sourceAttachmentId !== undefined) nextEntry.sourceAttachmentId = options.sourceAttachmentId
-    if (options.attachments !== undefined) nextEntry.attachments = cloneHistoryAttachments(options.attachments)
+    if (options.attachments !== undefined) nextEntry.attachments = cloneSessionHistoryPromptAttachments(options.attachments)
     if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
     if (options.historyEntryIndex !== undefined) nextEntry.historyEntryIndex = options.historyEntryIndex
     if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
@@ -390,7 +394,7 @@ function applyEntryMetadata(
   }
   if (options.promptId !== undefined) entry.promptId = options.promptId
   if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
-  if (options.attachments !== undefined) entry.attachments = mergeHistoryAttachments(entry.attachments, options.attachments)
+  if (options.attachments !== undefined) entry.attachments = mergeSessionHistoryPromptAttachments(entry.attachments, options.attachments)
   if (options.historyEntryIndex !== undefined) entry.historyEntryIndex = options.historyEntryIndex
   if (options.historyFragmentStart !== undefined) entry.historyFragmentStart = options.historyFragmentStart
   if (options.historyFragmentEnd !== undefined) entry.historyFragmentEnd = options.historyFragmentEnd
@@ -466,7 +470,7 @@ function mergeStitchedHistoryMetadata(
     target.sourceAttachmentId = older.sourceAttachmentId
   }
   if (older.attachments !== undefined || newer.attachments !== undefined) {
-    target.attachments = mergeHistoryAttachments(
+    target.attachments = mergeSessionHistoryPromptAttachments(
       older.attachments,
       newer.attachments,
     )
@@ -513,71 +517,8 @@ function historyEntryIdentityOptions(
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
-    ...(entry.attachments !== undefined ? { attachments: cloneHistoryAttachments(entry.attachments) } : {}),
+    ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
-}
-
-function cloneHistoryAttachments(
-  attachments: NonNullable<TranscriptEntry["attachments"]>,
-): NonNullable<TranscriptEntry["attachments"]> {
-  return attachments.map((attachment) => ({ ...attachment }))
-}
-
-function mergeHistoryAttachments(
-  existing: TranscriptEntry["attachments"] | undefined,
-  incoming: TranscriptEntry["attachments"] | undefined,
-): NonNullable<TranscriptEntry["attachments"]> {
-  const incomingAttachments = incoming ?? []
-  if (!existing?.length) {
-    return cloneHistoryAttachments(incomingAttachments)
-  }
-  if (!incomingAttachments.length) {
-    return cloneHistoryAttachments(existing)
-  }
-  const existingByUrl = historyAttachmentsByUrl(existing)
-  const incomingByUrl = historyAttachmentsByUrl(incomingAttachments)
-  const sharedUrls = [...incomingByUrl.keys()].filter((url) => existingByUrl.has(url))
-  if (sharedUrls.length === 0) {
-    return cloneHistoryAttachments(attachmentSetScore(incomingAttachments) > attachmentSetScore(existing) ? incomingAttachments : existing)
-  }
-  const base = existing.length >= incomingAttachments.length ? existing : incomingAttachments
-  const alternateByUrl = base === existing ? incomingByUrl : existingByUrl
-  const merged = base.map((attachment) => {
-    const alternate = alternateByUrl.get(attachment.url)
-    return { ...(alternate ? richerHistoryAttachment(attachment, alternate) : attachment) }
-  })
-  const mergedUrls = new Set(merged.map((attachment) => attachment.url))
-  for (const attachment of base === existing ? incomingAttachments : existing) {
-    if (!mergedUrls.has(attachment.url)) {
-      merged.push({ ...attachment })
-    }
-  }
-  return merged
-}
-
-function historyAttachmentsByUrl(
-  attachments: NonNullable<TranscriptEntry["attachments"]>,
-): Map<string, NonNullable<TranscriptEntry["attachments"]>[number]> {
-  return new Map(attachments.map((attachment) => [attachment.url, attachment]))
-}
-
-function richerHistoryAttachment<T extends NonNullable<TranscriptEntry["attachments"]>[number]>(
-  left: T,
-  right: T,
-): T {
-  return historyAttachmentScore(right) > historyAttachmentScore(left) ? right : left
-}
-
-function attachmentSetScore(attachments: NonNullable<TranscriptEntry["attachments"]>): number {
-  return attachments.reduce((sum, attachment) => sum + historyAttachmentScore(attachment), 0)
-}
-
-function historyAttachmentScore(
-  attachment: NonNullable<TranscriptEntry["attachments"]>[number],
-): number {
-  const previewScore = attachment.preview_url ? 10 : 0
-  const nameScore = attachment.filename && attachment.filename !== "attachment" ? 1 : 0
-  return 100 + previewScore + nameScore
 }
 
 export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
