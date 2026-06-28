@@ -11,6 +11,7 @@ import {
   normalizeAgentRuntimePromptProjectionStatus,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
+  readAgentRuntimeCompletedTurn,
 } from "./agent-activity.js"
 
 test("agent activity busy helper follows kernel projected activity semantics", () => {
@@ -144,6 +145,102 @@ test("agent activity projection unwraps nested activity and normalizes settled s
     queuedPromptCount: 0,
     error: false,
   })
+})
+
+test("agent activity projection exposes live active turn identity", () => {
+  assert.deepEqual(projectAgentRuntimeActivity({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      prompt_origin: " external ",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+      phase: "streaming",
+      started_at_ms: 123,
+    },
+  }), {
+    status: "idle",
+    promptStatus: "none",
+    busy: true,
+    activeTurn: {
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      prompt_origin: " external ",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+      phase: "streaming",
+      started_at_ms: 123,
+    },
+    activeTurnPromptId: "prompt-1",
+    activeTurnProviderRunId: "run-1",
+    activeTurnPromptOrigin: "external",
+    activeTurnExternalProvider: "codex",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activeTurnExternalProviderTurnId: "turn-1",
+    activeTurnPhase: "streaming",
+    activeTurnStartedAtMs: 123,
+    activePromptCount: 1,
+    queuedPromptCount: 0,
+    error: false,
+  })
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-completed",
+      status: "completed",
+    },
+  }).activeTurnPromptId, undefined)
+})
+
+test("agent activity projection exposes completed turn action metadata", () => {
+  const activity = {
+    last_completed_turn: {
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      agent_id: "agent-1",
+      completed_at_ms: 500,
+      duration_ms: 120,
+      changed_paths: ["src/a.ts", 42, "src/b.ts"],
+      undo_available: false,
+      undo_unavailable_reason: "turn already undone",
+    },
+  }
+
+  assert.deepEqual(readAgentRuntimeCompletedTurn(activity), {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    completedAtMs: 500,
+    durationMs: 120,
+    changedPaths: ["src/a.ts", "src/b.ts"],
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  assert.deepEqual(projectAgentRuntimeActivity(activity).lastCompletedTurn, {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    completedAtMs: 500,
+    durationMs: 120,
+    changedPaths: ["src/a.ts", "src/b.ts"],
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "turn-1",
+    },
+  }), null)
 })
 
 test("agent activity projection preserves previous error only when kernel omits error state", () => {

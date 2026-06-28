@@ -15,9 +15,30 @@ export type AgentRuntimeActivityProjection = {
   readonly promptStatus: AgentRuntimePromptStatus
   readonly busy: boolean
   readonly activeTurn: Record<string, unknown> | null
+  readonly activeTurnPromptId?: string
+  readonly activeTurnProviderRunId?: string
+  readonly activeTurnPromptOrigin?: string
+  readonly activeTurnExternalProvider?: string
+  readonly activeTurnExternalProviderSessionId?: string
+  readonly activeTurnExternalProviderTurnId?: string
+  readonly activeTurnPhase?: string
+  readonly activeTurnStartedAtMs?: number
+  readonly lastCompletedTurn?: AgentRuntimeCompletedTurnActionProjection | null
   readonly activePromptCount: number
   readonly queuedPromptCount: number
   readonly error: boolean
+}
+
+export type AgentRuntimeCompletedTurnActionProjection = {
+  readonly turnId: string
+  readonly promptId: string
+  readonly providerRunId: string
+  readonly agentId: string
+  readonly completedAtMs: number
+  readonly durationMs: number | null
+  readonly changedPaths: readonly string[]
+  readonly undoAvailable: boolean
+  readonly undoUnavailableReason: string | null
 }
 
 export function agentRuntimeActivityIsBusy(
@@ -39,6 +60,7 @@ export function projectAgentRuntimeActivity(
   ) ?? "none"
   const activeTurn = readRecordField(activityRecord, "active_turn") ?? readRecordField(value, "active_turn")
   const activeTurnBusy = agentRuntimeActiveTurnIsBusy(activeTurn)
+  const liveActiveTurn = activeTurnBusy ? activeTurn : null
   const rawBusy = readBooleanField(activityRecord, "busy") === true
     || readBooleanField(value, "busy") === true
     || status === "working"
@@ -53,11 +75,16 @@ export function projectAgentRuntimeActivity(
   const error = readBooleanField(activityRecord, "error")
     ?? readBooleanField(value, "error")
     ?? (status ? status === "error" : options.previousError ?? false)
+  const activeTurnIdentity = projectAgentRuntimeActiveTurnIdentity(liveActiveTurn)
+  const lastCompletedTurn = readAgentRuntimeCompletedTurn(activityRecord)
+    ?? readAgentRuntimeCompletedTurn(value)
   return {
     status,
     promptStatus,
     busy: rawBusy || activePromptCount > 0 || queuedPromptCount > 0,
     activeTurn,
+    ...activeTurnIdentity,
+    ...(lastCompletedTurn ? { lastCompletedTurn } : {}),
     activePromptCount,
     queuedPromptCount,
     error,
@@ -141,6 +168,58 @@ export function agentRuntimeActiveTurnIsBusy(activeTurn: unknown): boolean {
   return status === null || agentRuntimePromptStatusIsActive(status)
 }
 
+export function readAgentRuntimeCompletedTurn(
+  value: unknown,
+): AgentRuntimeCompletedTurnActionProjection | null {
+  const turn = readRecordField(value, "last_completed_turn")
+  if (!turn) {
+    return null
+  }
+  const turnId = readStringField(turn, "turn_id")
+  const promptId = readStringField(turn, "prompt_id")
+  const providerRunId = readStringField(turn, "provider_run_id")
+  const agentId = readStringField(turn, "agent_id")
+  const completedAtMs = readNumberField(turn, "completed_at_ms")
+  if (!turnId || !promptId || !providerRunId || !agentId || completedAtMs === null) {
+    return null
+  }
+  return {
+    turnId,
+    promptId,
+    providerRunId,
+    agentId,
+    completedAtMs,
+    durationMs: readNumberField(turn, "duration_ms"),
+    changedPaths: readStringArrayField(turn, "changed_paths"),
+    undoAvailable: readBooleanField(turn, "undo_available") === true,
+    undoUnavailableReason: readStringField(turn, "undo_unavailable_reason"),
+  }
+}
+
+function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknown> | null) {
+  if (!activeTurn) {
+    return {}
+  }
+  const activeTurnPromptId = readStringField(activeTurn, "prompt_id") ?? undefined
+  const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
+  const activeTurnPromptOrigin = readNonBlankStringField(activeTurn, "prompt_origin") ?? undefined
+  const activeTurnExternalProvider = readNonBlankStringField(activeTurn, "external_provider") ?? undefined
+  const activeTurnExternalProviderSessionId = readNonBlankStringField(activeTurn, "external_provider_session_id") ?? undefined
+  const activeTurnExternalProviderTurnId = readNonBlankStringField(activeTurn, "external_provider_turn_id") ?? undefined
+  const activeTurnPhase = readStringField(activeTurn, "phase") ?? undefined
+  const activeTurnStartedAtMs = readNumberField(activeTurn, "started_at_ms") ?? undefined
+  return {
+    ...(activeTurnPromptId ? { activeTurnPromptId } : {}),
+    ...(activeTurnProviderRunId ? { activeTurnProviderRunId } : {}),
+    ...(activeTurnPromptOrigin ? { activeTurnPromptOrigin } : {}),
+    ...(activeTurnExternalProvider ? { activeTurnExternalProvider } : {}),
+    ...(activeTurnExternalProviderSessionId ? { activeTurnExternalProviderSessionId } : {}),
+    ...(activeTurnExternalProviderTurnId ? { activeTurnExternalProviderTurnId } : {}),
+    ...(activeTurnPhase ? { activeTurnPhase } : {}),
+    ...(activeTurnStartedAtMs !== undefined ? { activeTurnStartedAtMs } : {}),
+  }
+}
+
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -164,10 +243,29 @@ function readBooleanField(value: unknown, field: string): boolean | null {
   return typeof candidate === "boolean" ? candidate : null
 }
 
+function readNumberField(value: unknown, field: string): number | null {
+  const record = readRecord(value)
+  const candidate = record?.[field]
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null
+}
+
 function readNonNegativeIntegerField(value: unknown, field: string): number | null {
   const record = readRecord(value)
   const candidate = record?.[field]
   return typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 0
     ? candidate
     : null
+}
+
+function readNonBlankStringField(value: unknown, field: string): string | null {
+  const candidate = readStringField(value, field)
+  return candidate?.trim() ? candidate.trim() : null
+}
+
+function readStringArrayField(value: unknown, field: string): string[] {
+  const record = readRecord(value)
+  const candidate = record?.[field]
+  return Array.isArray(candidate)
+    ? candidate.filter((entry): entry is string => typeof entry === "string")
+    : []
 }
