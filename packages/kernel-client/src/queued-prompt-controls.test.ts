@@ -5,6 +5,7 @@ import {
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
   queuedPromptActionability,
+  queuedPromptControlForPrompt,
   queuedPromptStatusIsQueued,
 } from "./queued-prompt-controls.js"
 
@@ -32,6 +33,7 @@ test("queued prompt actionability marks non-queued prompts stale", () => {
 
 test("queued prompt actionability prefers kernel projected controls", () => {
   assert.deepEqual(queuedPromptActionability("queued", {
+    prompt_id: "prompt-1",
     status: "dispatching",
     can_steer: false,
     can_cancel: true,
@@ -45,6 +47,34 @@ test("queued prompt actionability prefers kernel projected controls", () => {
     steerDisabledReason: "kernel says external turn",
     cancelDisabledReason: null,
   })
+})
+
+test("queued prompt control lookup requires matching projected prompt identity", () => {
+  const controls = {
+    "prompt-1": {
+      prompt_id: "prompt-1",
+      status: "dispatching",
+    },
+    "prompt-2": {
+      prompt_id: "other-prompt",
+      status: "dispatching",
+    },
+    "prompt-3": {
+      status: "dispatching",
+    },
+    "prompt-4": null,
+  }
+  assert.deepEqual(queuedPromptControlForPrompt(controls, "prompt-1"), {
+    prompt_id: "prompt-1",
+    status: "dispatching",
+  })
+  assert.equal(queuedPromptControlForPrompt(controls, "prompt-2"), null)
+  assert.deepEqual(queuedPromptControlForPrompt(controls, "prompt-3"), {
+    status: "dispatching",
+  })
+  assert.equal(queuedPromptControlForPrompt(controls, "missing"), null)
+  assert.equal(queuedPromptControlForPrompt(controls, null), null)
+  assert.equal(queuedPromptControlForPrompt(null, "prompt-1"), null)
 })
 
 test("queued prompt actionability does not mark unavailable action disabled without reason", () => {

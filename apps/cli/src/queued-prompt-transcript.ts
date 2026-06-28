@@ -5,6 +5,7 @@ import type {
 } from "./cli-types.js"
 import {
   queuedPromptActionability,
+  queuedPromptControlForPrompt,
   type QueuedPromptActionability,
 } from "@arroba/kernel-client/queued-prompt-controls"
 import { agentRuntimeActivityIsBusy, sessionHasProjectedRuntimeState } from "./session-state.js"
@@ -147,7 +148,10 @@ function queuedPromptActionabilityForPrompt(
   agentId: string,
   prompt: PromptQueueItem,
 ): QueuedPromptActionability {
-  const projected = session.agent_activity?.[agentId]?.queued_prompt_controls?.[prompt.id]
+  const projected = queuedPromptControlForPrompt(
+    session.agent_activity?.[agentId]?.queued_prompt_controls,
+    prompt.id,
+  )
   return queuedPromptActionability(prompt.status, projected)
 }
 

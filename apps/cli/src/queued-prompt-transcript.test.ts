@@ -330,6 +330,44 @@ test("syncQueuedPromptEntriesForAgent uses projected queue controls to disable s
   })
 })
 
+test("syncQueuedPromptEntriesForAgent ignores projected controls with mismatched prompt ids", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          queued_prompt_controls: {
+            "prompt-1": {
+              prompt_id: "prompt-other",
+              status: "dispatching",
+              can_steer: false,
+              can_cancel: false,
+              steer_disabled_reason: "stale control",
+              cancel_disabled_reason: "stale control",
+            },
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
+    agentId: "agent-1",
+    promptId: "prompt-1",
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
+})
+
 test("syncQueuedPromptEntriesForAgent ignores prompt state origin when projected activity is busy without active turn", () => {
   const synced = syncQueuedPromptEntriesForAgent(
     [],
