@@ -6,7 +6,6 @@ export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
-  shouldRenderProviderStatus,
   shouldSkipConsecutiveTranscriptEntry,
   splitInlineCodeSpans,
   type ApplyPatchFile,
@@ -17,6 +16,10 @@ export {
   type ToolDisplayPatchLine,
   type ToolTranscriptUpdate,
 } from "@arroba/tool-display"
+
+export {
+  shouldRenderProviderStatus,
+} from "@arroba/kernel-client/provider-status"
 
 export {
   normalizeMarkdownFenceInfoStrings,
