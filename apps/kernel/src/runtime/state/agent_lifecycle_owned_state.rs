@@ -252,9 +252,9 @@ impl KernelRuntimeOwnedState {
                     .set_active_provider_run(&session_id, None)?;
             }
             self.provider_run_projection.update(ended.clone());
-            self.clear_prompt_activity(ended.id());
             self.remove_provider_process_tracking_for_run(ended.id(), None);
         }
+        self.clear_agent_prompt_runtime_state(&session_id, agent_id);
         self.prompt_state_owner.remove_agent(&session_id, agent_id);
         self.mirror_prompt_owner_agent_state(
             &session_id,

@@ -132,6 +132,39 @@ impl KernelRuntimeOwnedState {
         self.prompt_workspace_claims.remove(provider_run_id)
     }
 
+    pub(super) fn clear_session_prompt_runtime_state(&self, session_id: &str) {
+        let provider_run_ids = self
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        for provider_run_id in provider_run_ids {
+            let _ = self.clear_prompt_activity(&provider_run_id);
+        }
+        self.active_turns.clear_session(session_id);
+        let _ = self
+            .prompt_workspace_claims
+            .remove_matching(|claim| claim.session_id == session_id);
+    }
+
+    pub(super) fn clear_agent_prompt_runtime_state(&self, session_id: &str, agent_id: &str) {
+        let provider_run_ids = self
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
+            })
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        for provider_run_id in provider_run_ids {
+            let _ = self.clear_prompt_activity(&provider_run_id);
+        }
+        self.active_turns.clear_agent(session_id, agent_id);
+    }
+
     pub(super) fn release_workflow_node_workspace_claim(
         &self,
         session_id: &str,

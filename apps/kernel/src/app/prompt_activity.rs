@@ -194,20 +194,37 @@ impl ActiveTurnStore {
             .expect("active turn mutex poisoned")
             .remove(provider_run_id);
         if let Some(turn) = removed {
-            crate::debug_trace::record_terminal_turn(
-                &turn.session_id,
-                "active_turn_clear",
-                serde_json::json!({
-                    "agent_id": turn.agent_id,
-                    "prompt_id": turn.prompt_id,
-                    "provider_run_id": turn.provider_run_id,
-                    "trace_id": turn.trace_id,
-                    "started_at_ms": turn.started_at_ms,
-                    "phase": turn.phase.as_str(),
-                    "settlement_requested": turn.settlement_requested,
-                }),
-            );
+            record_active_turn_clear(turn);
         }
+    }
+
+    pub(crate) fn clear_session(&self, session_id: &str) -> usize {
+        self.clear_matching(|turn| turn.session_id == session_id)
+    }
+
+    pub(crate) fn clear_agent(&self, session_id: &str, agent_id: &str) -> usize {
+        self.clear_matching(|turn| turn.session_id == session_id && turn.agent_id == agent_id)
+    }
+
+    fn clear_matching(&self, mut predicate: impl FnMut(&ActiveTurnState) -> bool) -> usize {
+        let removed = {
+            let mut guard = self.inner.lock().expect("active turn mutex poisoned");
+            let provider_run_ids = guard
+                .iter()
+                .filter_map(|(provider_run_id, turn)| {
+                    predicate(turn).then(|| provider_run_id.clone())
+                })
+                .collect::<Vec<_>>();
+            provider_run_ids
+                .into_iter()
+                .filter_map(|provider_run_id| guard.remove(&provider_run_id))
+                .collect::<Vec<_>>()
+        };
+        let removed_count = removed.len();
+        for turn in removed {
+            record_active_turn_clear(turn);
+        }
+        removed_count
     }
 
     pub(crate) fn snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
@@ -216,6 +233,22 @@ impl ActiveTurnStore {
             .expect("active turn mutex poisoned")
             .clone()
     }
+}
+
+fn record_active_turn_clear(turn: ActiveTurnState) {
+    crate::debug_trace::record_terminal_turn(
+        &turn.session_id,
+        "active_turn_clear",
+        serde_json::json!({
+            "agent_id": turn.agent_id,
+            "prompt_id": turn.prompt_id,
+            "provider_run_id": turn.provider_run_id,
+            "trace_id": turn.trace_id,
+            "started_at_ms": turn.started_at_ms,
+            "phase": turn.phase.as_str(),
+            "settlement_requested": turn.settlement_requested,
+        }),
+    );
 }
 
 fn merge_active_turn_start(
@@ -421,6 +454,40 @@ mod tests {
                 .expect("turn should remain settling")
                 .phase,
             ActiveTurnPhase::Settling
+        );
+    }
+
+    #[test]
+    fn active_turn_store_clears_by_session_and_agent() {
+        let store = ActiveTurnStore::default();
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        ));
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-2".to_string(),
+            "prompt-2".to_string(),
+            "run-2".to_string(),
+        ));
+        store.start(ActiveTurnState::new(
+            "session-2".to_string(),
+            "agent-1".to_string(),
+            "prompt-3".to_string(),
+            "run-3".to_string(),
+        ));
+
+        assert_eq!(store.clear_agent("session-1", "agent-1"), 1);
+        assert!(!store.snapshot().contains_key("run-1"));
+        assert!(store.snapshot().contains_key("run-2"));
+        assert!(store.snapshot().contains_key("run-3"));
+
+        assert_eq!(store.clear_session("session-1"), 1);
+        assert_eq!(
+            store.snapshot().keys().cloned().collect::<Vec<_>>(),
+            vec!["run-3".to_string()]
         );
     }
 }

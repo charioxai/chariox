@@ -240,6 +240,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
+            self.clear_session_prompt_runtime_state(session_id);
             self.remove_session_workflow_dispatch_claims(session_id);
             self.prompt_state_owner.remove_session(session_id);
             self.external_provider_sessions.detach_session(session_id);
@@ -277,11 +278,7 @@ impl KernelRuntimeOwnedState {
             .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
             .collect();
 
-        for run in self.provider_store.list_runs() {
-            if run.session_id() == session_id {
-                self.clear_prompt_activity(run.id());
-            }
-        }
+        self.clear_session_prompt_runtime_state(session_id);
         self.remove_session_workflow_dispatch_claims(session_id);
         self.prompt_state_owner.remove_session(session_id);
         self.external_provider_sessions.detach_session(session_id);
@@ -324,6 +321,7 @@ impl KernelRuntimeOwnedState {
         let session_id = session.id().to_string();
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {
+                self.clear_session_prompt_runtime_state(&session_id);
                 self.external_provider_sessions.detach_session(&session_id);
                 self.attached_provider_transcript_cursors
                     .detach_session(&session_id);
