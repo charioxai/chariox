@@ -50,6 +50,28 @@ export function agentRuntimeActivityIsBusy(
   return projectAgentRuntimeActivity(activity).busy
 }
 
+export function agentRuntimeActivityHasTurnWork(activity: unknown): boolean {
+  const projection = projectAgentRuntimeActivity(activity)
+  if (
+    projection.activeTurnPromptId
+    || projection.activeTurnProviderRunId
+    || projection.activeTurnPhase
+    || projection.activeTurnStartedAtMs !== undefined
+  ) {
+    return true
+  }
+  if (agentRuntimePromptStatusIsActivePrompt(projection.promptStatus)) {
+    return true
+  }
+  if (projection.activePromptCount > 0) {
+    return true
+  }
+  if (projection.promptStatus === "queued" || projection.queuedPromptCount > 0) {
+    return false
+  }
+  return projection.status === "working" || projection.busy
+}
+
 export function agentRuntimeActivityResolvedStatus(
   activity: unknown,
 ): AgentRuntimeActivityStatus {

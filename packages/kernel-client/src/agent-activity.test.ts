@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   agentRuntimeActiveTurnIsBusy,
+  agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
   agentRuntimeActivityResolvedStatus,
   agentRuntimePromptStatusIsActive,
@@ -117,6 +118,57 @@ test("agent activity resolved status follows error, busy, then idle", () => {
   assert.equal(agentRuntimeActivityResolvedStatus({ active_prompt_count: 1 }), "working")
   assert.equal(agentRuntimeActivityResolvedStatus({ status: "idle", busy: false }), "idle")
   assert.equal(agentRuntimeActivityResolvedStatus(null), "idle")
+})
+
+test("agent activity turn-work helper distinguishes active turns from queued-only work", () => {
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "running",
+    busy: true,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "queued",
+    busy: true,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+  }), false)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "none",
+    busy: true,
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "none",
+    busy: true,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "running",
+      phase: "streaming",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "cancelled",
+      phase: "settled",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), false)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+  }), false)
 })
 
 test("agent activity projection preserves kernel counts as activity source", () => {

@@ -8,6 +8,7 @@ import type {
 } from "./kernel-types.js"
 import {
   agentRuntimeActivityResolvedStatus,
+  agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityStatus,
@@ -841,8 +842,8 @@ function agentRuntimeActivityHasActivePrompt(
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): boolean {
   const projection = projectAgentRuntimeActivity(activity)
-  if (projection.activeTurn) {
-    return projection.activePromptCount > 0
+  if (agentRuntimeActivityHasTurnWork(activity)) {
+    return true
   }
   if (agentRuntimeActivityIsBusy(activity) && promptState?.active_prompt) {
     return true
