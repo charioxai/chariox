@@ -325,17 +325,11 @@ fn outline_turn_completed_at_ms(
     events: &[HistoryEvent],
     prompt_origin: PromptOrigin,
 ) -> Option<u64> {
+    if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
+        return Some(settled_at_ms);
+    }
     if prompt_origin == PromptOrigin::External {
-        return events
-            .iter()
-            .filter_map(|event| {
-                let entry = event.to_session_history_entry()?;
-                let observation = entry.external_observation.as_ref()?;
-                observation
-                    .settles_active_prompt
-                    .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
-            })
-            .max();
+        return None;
     }
     Some(
         events
@@ -345,6 +339,19 @@ fn outline_turn_completed_at_ms(
             .max()
             .unwrap_or(prompt.timestamp_ms),
     )
+}
+
+fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let entry = event.to_session_history_entry()?;
+            let observation = entry.external_observation.as_ref()?;
+            observation
+                .settles_active_prompt
+                .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
+        })
+        .max()
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
