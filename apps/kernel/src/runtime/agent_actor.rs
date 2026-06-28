@@ -16,6 +16,8 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::{PromptIdAllocator, PromptQueueItem, DEFAULT_LOCAL_USER_ID};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
+const DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY: usize = 16;
+const DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION: usize = 8;
 
 mod agent_resolution;
 mod command_executor;
@@ -168,10 +170,7 @@ impl AgentRuntime {
             });
         }
 
-        let max_concurrency = request
-            .max_concurrency
-            .unwrap_or(16)
-            .clamp(1, request.prompts.len());
+        let max_concurrency = prompt_batch_effective_concurrency(request.max_concurrency, &request);
         let response_session_id = request.session_id.clone();
         let prompt_session_ids = prompt_batch_session_ids(&request);
         let mut outcomes = futures_util::stream::iter(interleave_prompt_batch_by_session(request))
@@ -400,6 +399,21 @@ fn prompt_batch_session_ids(request: &crate::local::SubmitPromptsRequest) -> Vec
         }
     }
     session_ids
+}
+
+fn prompt_batch_effective_concurrency(
+    requested: Option<usize>,
+    request: &crate::local::SubmitPromptsRequest,
+) -> usize {
+    if request.prompts.is_empty() {
+        return 0;
+    }
+    let requested = requested.unwrap_or(DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY);
+    let session_limit = prompt_batch_session_ids(request)
+        .len()
+        .saturating_mul(DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION)
+        .max(1);
+    requested.clamp(1, request.prompts.len()).min(session_limit)
 }
 
 fn interleave_prompt_batch_by_session(
@@ -631,11 +645,15 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, SteerQueuedPromptRequest, SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
-    use crate::runtime::agent_actor::interleave_prompt_batch_by_session;
     use crate::runtime::agent_actor::prompt_attachment_materialization::{
         materialize_inline_prompt_attachments, INLINE_PROMPT_ATTACHMENT_DIR,
     };
     use crate::runtime::agent_actor::AgentRuntime;
+    use crate::runtime::agent_actor::{
+        interleave_prompt_batch_by_session, prompt_batch_effective_concurrency,
+        DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY,
+        DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION,
+    };
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::prompt_state::PromptStateOwner;
     use crate::runtime::session_actor::FocusedAgentProjection;
@@ -685,6 +703,66 @@ mod tests {
                 (3, "session-b", "attachment-b", "agent-b-2"),
             ]
         );
+    }
+
+    #[test]
+    fn prompt_batch_concurrency_caps_to_per_session_budget() {
+        let single_session = crate::local::SubmitPromptsRequest {
+            session_id: "session-a".to_string(),
+            attachment_id: "attachment-a".to_string(),
+            max_concurrency: Some(32),
+            prompts: (0..32)
+                .map(|index| test_prompt(None, None, &format!("agent-{index}")))
+                .collect(),
+        };
+        assert_eq!(
+            prompt_batch_effective_concurrency(single_session.max_concurrency, &single_session),
+            DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION
+        );
+
+        let mixed_sessions = crate::local::SubmitPromptsRequest {
+            session_id: "session-0".to_string(),
+            attachment_id: "attachment-0".to_string(),
+            max_concurrency: Some(32),
+            prompts: (0..30)
+                .map(|index| {
+                    let session_index = index % 3;
+                    test_prompt(
+                        Some(&format!("session-{session_index}")),
+                        Some(&format!("attachment-{session_index}")),
+                        &format!("agent-{index}"),
+                    )
+                })
+                .collect(),
+        };
+        assert_eq!(
+            prompt_batch_effective_concurrency(mixed_sessions.max_concurrency, &mixed_sessions),
+            3 * DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY_PER_SESSION
+        );
+    }
+
+    #[test]
+    fn prompt_batch_concurrency_uses_default_and_requested_caps() {
+        let request = crate::local::SubmitPromptsRequest {
+            session_id: "session-a".to_string(),
+            attachment_id: "attachment-a".to_string(),
+            max_concurrency: None,
+            prompts: (0..32)
+                .map(|index| {
+                    test_prompt(
+                        Some(&format!("session-{index}")),
+                        Some(&format!("attachment-{index}")),
+                        &format!("agent-{index}"),
+                    )
+                })
+                .collect(),
+        };
+        assert_eq!(
+            prompt_batch_effective_concurrency(None, &request),
+            DEFAULT_PROMPT_BATCH_SUBMIT_CONCURRENCY
+        );
+        assert_eq!(prompt_batch_effective_concurrency(Some(4), &request), 4);
+        assert_eq!(prompt_batch_effective_concurrency(Some(0), &request), 1);
     }
 
     fn test_prompt(
