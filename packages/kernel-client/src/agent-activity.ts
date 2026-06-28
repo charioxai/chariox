@@ -21,6 +21,7 @@ export type AgentRuntimeActivityProjection = {
   readonly activeTurnExternalProvider?: string
   readonly activeTurnExternalProviderSessionId?: string
   readonly activeTurnExternalProviderTurnId?: string
+  readonly activeTurnStatus?: AgentRuntimePromptStatus
   readonly activeTurnPhase?: string
   readonly activeTurnStartedAtMs?: number
   readonly lastCompletedTurn?: AgentRuntimeCompletedTurnActionProjection | null
@@ -206,6 +207,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnExternalProvider = readNonBlankStringField(activeTurn, "external_provider") ?? undefined
   const activeTurnExternalProviderSessionId = readNonBlankStringField(activeTurn, "external_provider_session_id") ?? undefined
   const activeTurnExternalProviderTurnId = readNonBlankStringField(activeTurn, "external_provider_turn_id") ?? undefined
+  const activeTurnStatus = normalizeAgentRuntimePromptProjectionStatus(readStringField(activeTurn, "status")) ?? undefined
   const activeTurnPhase = readStringField(activeTurn, "phase") ?? undefined
   const activeTurnStartedAtMs = readNumberField(activeTurn, "started_at_ms") ?? undefined
   return {
@@ -215,6 +217,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
     ...(activeTurnExternalProvider ? { activeTurnExternalProvider } : {}),
     ...(activeTurnExternalProviderSessionId ? { activeTurnExternalProviderSessionId } : {}),
     ...(activeTurnExternalProviderTurnId ? { activeTurnExternalProviderTurnId } : {}),
+    ...(activeTurnStatus ? { activeTurnStatus } : {}),
     ...(activeTurnPhase ? { activeTurnPhase } : {}),
     ...(activeTurnStartedAtMs !== undefined ? { activeTurnStartedAtMs } : {}),
   }

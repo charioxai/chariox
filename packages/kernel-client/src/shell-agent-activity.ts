@@ -7,7 +7,6 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
-  agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
   normalizeAgentRuntimeActivityStatus,
@@ -530,11 +529,11 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    const activeTurn = projected.active_turn
-    if (agentRuntimeActiveTurnIsBusy(activeTurn)) {
-      return activeTurn?.prompt_id === promptId
+    const projection = projectAgentRuntimeActivity(projected)
+    if (projection.activeTurnPromptId) {
+      return projection.activeTurnPromptId === promptId
     }
-    if (!agentRuntimeActivityIsBusy(projected)) {
+    if (!projection.busy) {
       return false
     }
   }
@@ -550,14 +549,13 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   }
   const projected = session.agent_activity?.[agentId]
   if (projected) {
-    const activeTurnPromptId = agentRuntimeActiveTurnIsBusy(projected.active_turn)
-      ? projected.active_turn?.prompt_id
-      : null
+    const projection = projectAgentRuntimeActivity(projected)
+    const activeTurnPromptId = projection.activeTurnPromptId ?? null
     if (activeTurnPromptId) {
       const prompt = legacyPromptForAgent(session, agentId)
       return prompt?.id === activeTurnPromptId ? prompt : null
     }
-    if (!agentRuntimeActivityIsBusy(projected)) {
+    if (!projection.busy) {
       return null
     }
   }
@@ -570,13 +568,12 @@ export function sessionActivePromptIdForAgent(
 ): string | null {
   if (agentId) {
     const projected = session.agent_activity?.[agentId]
-    const projectedPromptId = agentRuntimeActiveTurnIsBusy(projected?.active_turn)
-      ? projected?.active_turn?.prompt_id
-      : null
+    const projection = projectAgentRuntimeActivity(projected)
+    const projectedPromptId = projection.activeTurnPromptId ?? null
     if (projectedPromptId) {
       return projectedPromptId
     }
-    if (session.agent_activity && !agentRuntimeActivityIsBusy(projected)) {
+    if (session.agent_activity && !projection.busy) {
       return null
     }
     return activePromptForAgent(session, agentId)?.id ?? null
@@ -590,17 +587,17 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
   if (session.agent_activity) {
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, activity] of Object.entries(session.agent_activity)) {
-      const activeTurn = activity.active_turn
-      if (activeTurn && agentRuntimeActiveTurnIsBusy(activeTurn)) {
+      const projection = projectAgentRuntimeActivity(activity)
+      if (projection.activeTurnPromptId) {
         records.push({
-          id: activeTurn.prompt_id,
-          status: activeTurn.status,
-          promptOrigin: activeTurn.prompt_origin ?? null,
+          id: projection.activeTurnPromptId,
+          status: projection.activeTurnStatus ?? projection.promptStatus,
+          promptOrigin: projection.activeTurnPromptOrigin ?? null,
           target_agent_id: agentId,
         })
         continue
       }
-      if (!agentRuntimeActivityIsBusy(activity)) {
+      if (!projection.busy) {
         continue
       }
       const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
