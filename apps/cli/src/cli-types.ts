@@ -2,10 +2,18 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type {
+  ExternalProviderSessionCapabilities,
+  ExternalProviderSessionRecord,
+} from "@arroba/kernel-client/external-provider-sessions"
 import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
+export type {
+  ExternalProviderSessionCapabilities,
+  ExternalProviderSessionRecord,
+}
 
 export type ArrobaMcpServerConfig = {
   name: string
@@ -345,24 +353,6 @@ export type WaitingRoomTerminalView = {
   alias?: string | null
   paired_at_ms: number
   revoked: boolean
-}
-
-export type ExternalProviderSessionCapabilities = {
-  can_read_history?: boolean
-}
-
-export type ExternalProviderSessionRecord = {
-  external_session_id: string
-  provider: string
-  provider_session_id: string
-  title?: string | null
-  title_source?: string | null
-  first_prompt_preview?: string | null
-  created_at_ms?: number | null
-  last_modified_at_ms: number
-  worktree_path?: string | null
-  account_profile?: string | null
-  capabilities?: ExternalProviderSessionCapabilities
 }
 
 export type WaitingRoomPublicSnapshot = {
