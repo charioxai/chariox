@@ -13,6 +13,7 @@ import {
   sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionPromptLifecycleTransition,
+  sessionProjectedStreamingAgentId,
   sessionPromptForAgent,
   sessionPromptStateForAgent,
   sessionPromptWorkByAgent,
@@ -443,6 +444,106 @@ test("sessionPromptWorkByAgent prefers projected activity over stale prompt stat
     "agent-1": false,
     "agent-2": true,
   })
+})
+
+test("sessionProjectedStreamingAgentId uses projected activity before legacy active prompts", () => {
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })), "agent-2")
+
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    agent_activity: {},
+    agents: [makeAgent({ id: "agent-1" })],
+  })), null)
+})
+
+test("sessionProjectedStreamingAgentId resolves exactly one prompt-state active agent", () => {
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-2",
+          target_agent_id: "agent-2",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })), "agent-2")
+
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-2",
+          target_agent_id: "agent-2",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })), null)
+})
+
+test("sessionProjectedStreamingAgentId falls back to legacy active prompt without projections", () => {
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    active_prompt: {
+      id: "prompt-legacy",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "legacy",
+      status: "Running",
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })), "agent-1")
 })
 
 test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn completion", () => {

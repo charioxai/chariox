@@ -10,6 +10,7 @@ import {
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
+  sessionProjectedStreamingAgentId as kernelSessionProjectedStreamingAgentId,
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
   sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
@@ -223,17 +224,9 @@ export function sessionResponseLayout(
 }
 
 export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
-  if (session.agent_activity) {
-    return session.agents.find((agent) => agentRuntimeActivityIsBusy(session.agent_activity?.[agent.id]))?.id ?? null
-  }
-  if (session.prompt_states) {
-    const activeAgents = session.agents.filter((agent) => {
-      const promptState = session.prompt_states?.[agent.id]
-      return Boolean(promptState?.active_prompt)
-    })
-    return activeAgents.length === 1 ? activeAgents[0]?.id ?? null : null
-  }
-  return session.active_prompt?.target_agent_id ?? null
+  return kernelSessionProjectedStreamingAgentId(
+    session as Parameters<typeof kernelSessionProjectedStreamingAgentId>[0],
+  )
 }
 
 export function agentRuntimeActivityIsBusy(

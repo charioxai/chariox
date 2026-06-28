@@ -132,6 +132,20 @@ export function sessionPromptWorkByAgent(session: RuntimeSession): Record<string
   return state
 }
 
+export function sessionProjectedStreamingAgentId(session: RuntimeSession): string | null {
+  if (session.agent_activity) {
+    return session.agents.find((agent) => agentRuntimeActivityIsBusy(session.agent_activity?.[agent.id]))?.id ?? null
+  }
+  if (session.prompt_states) {
+    const activeAgents = session.agents.filter((agent) => {
+      const promptState = session.prompt_states?.[agent.id]
+      return Boolean(promptState?.active_prompt)
+    })
+    return activeAgents.length === 1 ? activeAgents[0]?.id ?? null : null
+  }
+  return session.active_prompt?.target_agent_id ?? null
+}
+
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
   if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
     return false
