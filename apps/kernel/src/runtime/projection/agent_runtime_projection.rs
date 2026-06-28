@@ -86,17 +86,6 @@ impl AgentRuntimeProjectionStore {
                 },
             );
         }
-        for (agent_id, prompt_state) in session.prompt_states() {
-            agents
-                .entry(agent_id.clone())
-                .or_insert_with(|| AgentRuntimeProjection {
-                    session_id: session.id().to_string(),
-                    agent_id: agent_id.clone(),
-                    active_prompt: prompt_state.active_prompt().cloned(),
-                    next_queued_prompt: prompt_state.queued_prompts().front().cloned(),
-                    queued_prompt_count: prompt_state.queued_prompts().len(),
-                });
-        }
     }
 
     #[cfg(test)]
@@ -164,9 +153,7 @@ fn agent_runtime_projection_from_session(
     session: &RuntimeSession,
     agent_id: &str,
 ) -> Option<AgentRuntimeProjection> {
-    if !session.agents().iter().any(|agent| agent.id() == agent_id)
-        && !session.prompt_states().contains_key(agent_id)
-    {
+    if !session.agents().iter().any(|agent| agent.id() == agent_id) {
         return None;
     }
     let prompt_state = session.prompt_states().get(agent_id);
@@ -316,5 +303,46 @@ mod tests {
                 .is_some(),
             "single-agent refresh should not erase newer peer prompt state"
         );
+    }
+
+    #[test]
+    fn agent_runtime_projection_ignores_prompt_state_without_session_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-agent-runtime-prompt-state-only",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attach should succeed");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "ghost prompt",
+        );
+        let mut session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        assert!(
+            session.prompt_states().contains_key(&agent_id),
+            "fixture should retain prompt state before removing projected agents"
+        );
+        session.set_agents(Vec::new());
+
+        let store = AgentRuntimeProjectionStore::default();
+        store.update_session(&session);
+
+        assert_eq!(store.get(&agent_id), None);
+        assert!(store.list_for_session(&session_id).is_empty());
+        store.update_agent_from_session(&session, &agent_id);
+        assert_eq!(store.get(&agent_id), None);
     }
 }

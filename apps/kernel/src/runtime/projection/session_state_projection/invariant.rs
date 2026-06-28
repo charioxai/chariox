@@ -48,7 +48,9 @@ pub(super) fn snapshot(
         }
 
         let mut expected_prompt_states = BTreeMap::new();
+        let mut session_agent_ids = BTreeSet::new();
         for agent in session.agents() {
+            session_agent_ids.insert(agent.id().to_string());
             projected_session_agents.insert(agent.id().to_string(), session.id().to_string());
             if !canonical_agent_ids.is_empty() && !canonical_agent_ids.contains(agent.id()) {
                 mismatches.push(ProjectionInvariantMismatch {
@@ -70,16 +72,15 @@ pub(super) fn snapshot(
                 ),
             );
         }
-        for (agent_id, prompt_state) in session.prompt_states() {
-            expected_prompt_states
-                .entry(agent_id.clone())
-                .or_insert_with(|| {
-                    (
-                        prompt_state.active_prompt().cloned(),
-                        prompt_state.queued_prompts().front().cloned(),
-                        prompt_state.queued_prompts().len(),
-                    )
+        for agent_id in session.prompt_states().keys() {
+            if !session_agent_ids.contains(agent_id) {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "prompt_state_without_session_agent".to_string(),
+                    session_id: session.id().to_string(),
+                    agent_id: Some(agent_id.clone()),
+                    details: "session prompt state has no matching session agent".to_string(),
                 });
+            }
         }
 
         for (agent_id, (active_prompt, next_queued_prompt, queued_prompt_count)) in
@@ -295,6 +296,61 @@ mod tests {
         assert!(!snapshot.mismatches.iter().any(|mismatch| {
             mismatch.kind == "missing_agent_runtime_projection"
                 && mismatch.agent_id.as_deref() == Some(agent.id())
+        }));
+    }
+
+    #[test]
+    fn projection_invariant_health_reports_prompt_state_without_session_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-projection-invariant-prompt-state-only",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "active prompt",
+        );
+
+        let mut session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        assert!(
+            session.prompt_states().contains_key(&agent_id),
+            "fixture should retain prompt state before removing projected agents"
+        );
+        session.set_agents(Vec::new());
+
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(session.clone());
+        agent_store.update_session(&session);
+
+        let snapshot = session_store.invariant_snapshot(&agent_store, &[]);
+
+        assert_eq!(snapshot.checked_sessions, 1);
+        assert_eq!(snapshot.checked_agents, 0);
+        assert!(agent_store.get(&agent_id).is_none());
+        assert!(snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "prompt_state_without_session_agent"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details == "session prompt state has no matching session agent"
+        }));
+        assert!(!snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "orphaned_agent_runtime_projection"
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
         }));
     }
 
