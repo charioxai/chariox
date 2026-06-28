@@ -1,6 +1,7 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
   externalProviderObservedHistoryRefreshSignal,
+  externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
 } from "@arroba/kernel-client/external-provider-observation"
 import { isProviderIdleStatus } from "./runtime.js"
@@ -86,6 +87,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
       return
     }
+    if (terminalRecordIsPassiveExternalProviderTelemetry(record)) {
+      return
+    }
     if (record.kind !== "prompt_echo") {
       deps.setStreamingAgentId(recordAgentId)
       if (record.kind !== "provider_status" || !isProviderIdleStatus(text)) {
@@ -136,7 +140,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           break
         }
         case "provider_status":
-          if (deps.shouldRenderProviderStatus(text)) {
+          if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
             deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
           }
           break
@@ -183,7 +187,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
               break
             }
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
-            if (deps.shouldRenderProviderStatus(text)) {
+            if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
               deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
             }
             break
@@ -229,7 +233,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         if (activityLabel !== null) {
           deps.syncVisibleActivityLabel()
         }
-        if (deps.shouldRenderProviderStatus(text)) {
+        if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
           deps.appendProviderChunk("status", text, "__provider_status__", undefined, metadata)
           deps.syncVisibleTranscriptPreview()
         }
@@ -316,4 +320,19 @@ function terminalRecordTranscriptMetadata(record: TerminalOutputRecord): Termina
     ...(record.source_attachment_id !== undefined ? { sourceAttachmentId: record.source_attachment_id } : {}),
     ...(externalObservedMetadata ?? {}),
   }
+}
+
+function terminalRecordProviderStatusShouldRender(
+  record: TerminalOutputRecord,
+  text: string,
+  deps: Pick<KernelEventControllerDeps, "shouldRenderProviderStatus">,
+): boolean {
+  if (historyEntryExternalProviderObservedMetadata(record) !== null) {
+    return externalProviderObservedProviderStatusShouldRender({ ...record, text })
+  }
+  return deps.shouldRenderProviderStatus(text)
+}
+
+function terminalRecordIsPassiveExternalProviderTelemetry(record: TerminalOutputRecord): boolean {
+  return historyEntryExternalProviderObservedMetadata(record)?.externalObservation?.passive_telemetry === true
 }

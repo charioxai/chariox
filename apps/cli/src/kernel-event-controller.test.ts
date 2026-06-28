@@ -190,6 +190,66 @@ test("external provider history update status requires observed source", () => {
   ])
 })
 
+test("passive external provider telemetry status is ignored by live terminal rendering", () => {
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "token-count",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+    bytes: [...Buffer.from("codex token_count\n{\"total_tokens\":42}", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+  ])
+})
+
+test("external observed provider status rendering uses shared observed policy", () => {
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    shouldRenderProviderStatus: () => false,
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "reconnecting",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: false,
+    },
+    bytes: [...Buffer.from("OpenCode status: reconnecting", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+    "streaming:agent-a",
+    "busy:agent-a",
+    "agent-activity:agent-a:null",
+    "provider-activity:null",
+    "provider-active:false",
+    "chunk:status:OpenCode status: reconnecting:__provider_status__",
+    "sync-visible-preview",
+  ])
+})
+
 test("idle provider status is ignored so it cannot demote a live turn to idle", () => {
   const { deps, calls } = createDeps({
     resolveTerminalRecordAgentId: () => "agent-a",
