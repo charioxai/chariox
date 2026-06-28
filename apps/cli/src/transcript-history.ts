@@ -78,6 +78,9 @@ export function stitchPrependedHistory(olderEntries: TranscriptEntry[], currentE
 
   const tail = olderEntries.at(-1)
   const head = currentEntries[0]
+  if (!tail || !head) {
+    return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
+  }
   if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
     return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
   }

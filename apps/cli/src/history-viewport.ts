@@ -19,6 +19,9 @@ export function findPrependedHistoryMergedHeadId(
 
   const tail = olderEntries.at(-1)
   const head = currentEntries[0]
+  if (!tail || !head) {
+    return null
+  }
   if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
     return null
   }
