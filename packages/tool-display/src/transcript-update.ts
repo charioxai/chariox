@@ -2,6 +2,7 @@ import type {
   InlineCodeSpan,
   ToolTranscriptUpdate,
 } from "./types.js"
+export { shouldRenderProviderStatus } from "./status.js"
 
 export function mergeToolTranscriptUpdate(
   previous: ToolTranscriptUpdate | null,
@@ -35,10 +36,6 @@ export function mergeToolTranscriptUpdate(
   if (executionLocation !== undefined) merged.execution_location = executionLocation
 
   return merged
-}
-
-export function shouldRenderProviderStatus(text: string) {
-  return !/^OpenCode is (?:idle\.?|thinking\.\.\.)$/i.test(text.trim())
 }
 
 export function splitInlineCodeSpans(text: string): InlineCodeSpan[] {

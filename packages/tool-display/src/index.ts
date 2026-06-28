@@ -40,6 +40,14 @@ export {
   buildApplyPatchNewPreview,
   readApplyPatchFiles,
 } from "./patch-display.js"
+export {
+  ACTIVE_STATUS_FALLBACK,
+  getProviderActivityLabel,
+  isProviderIdleStatus,
+  normalizeProviderActivityLabel,
+  shouldRenderProviderStatus,
+  toProviderPresentParticiplePhrase,
+} from "./status.js"
 export type {
   ApplyPatchFile,
   InlineCodeSpan,
@@ -53,7 +61,6 @@ export type {
 export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
-  shouldRenderProviderStatus,
   shouldSkipConsecutiveTranscriptEntry,
   splitInlineCodeSpans,
 } from "./transcript-update.js"

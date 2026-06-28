@@ -3,10 +3,15 @@ import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import {
+  getProviderActivityLabel,
+  isProviderIdleStatus,
+  normalizeProviderActivityLabel,
   buildApplyPatchNewPreview,
   formatToolDisplay,
   formatToolTranscriptUpdate,
   readApplyPatchFiles,
+  shouldRenderProviderStatus,
+  toProviderPresentParticiplePhrase,
   type ToolTranscriptUpdate,
 } from "./index.js"
 
@@ -172,6 +177,34 @@ test("formatToolDisplay distinguishes worker-local tool calls", () => {
   assert.match(markdown, /^\*\*worker_lookup\*\* · WORKER-LOCAL · COMPLETED/)
   assert.equal(display.title, "worker-local · worker_lookup")
   assert.equal(display.collapsed.title, "worker-local · worker_lookup · COMPLETED")
+})
+
+test("provider status helpers map OpenCode status text to activity labels", () => {
+  assert.equal(getProviderActivityLabel("OpenCode is idle."), null)
+  assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
+  assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
+  assert.equal(getProviderActivityLabel("OpenCode status: retry_auth"), "retry authing")
+  assert.equal(getProviderActivityLabel("OpenCode status: compile"), "compiling")
+  assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
+  assert.equal(getProviderActivityLabel("OpenCode is compile."), "compile")
+  assert.equal(getProviderActivityLabel("unrecognized"), null)
+})
+
+test("provider status helpers identify idle and renderable statuses", () => {
+  assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
+  assert.equal(isProviderIdleStatus("OpenCode is idle"), true)
+  assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is idle."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode status: reconnecting"), true)
+})
+
+test("provider status helpers normalize activity label vocabulary", () => {
+  assert.equal(normalizeProviderActivityLabel(" Writing "), "writing")
+  assert.equal(normalizeProviderActivityLabel(""), null)
+  assert.equal(toProviderPresentParticiplePhrase("run"), "running")
+  assert.equal(toProviderPresentParticiplePhrase("die"), "dying")
+  assert.equal(toProviderPresentParticiplePhrase("compile"), "compiling")
 })
 
 test("formatToolDisplay distinguishes skill snapshot tool calls", () => {
