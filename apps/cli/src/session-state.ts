@@ -5,6 +5,7 @@ import {
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
+  sessionActivePromptLifecycleRecords,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionPromptWorkSummary,
@@ -181,7 +182,7 @@ export function activePromptIdForAgent(
     return agentPromptState(session, agentId)?.active_prompt?.id ?? null
   }
 
-  const activePromptRecords = collectActivePromptRecords(session)
+  const activePromptRecords = activePromptLifecycleRecords(session)
   return activePromptRecords.length === 1 ? activePromptRecords[0]?.id ?? null : null
 }
 
@@ -333,10 +334,10 @@ export function derivePromptLifecycleTransition(
   currentSession: RuntimeSession,
   nextSession: RuntimeSession,
 ): PromptLifecycleTransition {
-  const previousPromptIds = collectActivePromptIds(currentSession)
-  const nextPromptIds = collectActivePromptIds(nextSession)
+  const previousPromptIds = activePromptLifecycleRecordIds(currentSession)
+  const nextPromptIds = activePromptLifecycleRecordIds(nextSession)
   const nextPromptIdSet = new Set(nextPromptIds)
-  const settledPromptRecords = collectActivePromptRecords(currentSession)
+  const settledPromptRecords = activePromptLifecycleRecords(currentSession)
     .filter((prompt) => !nextPromptIdSet.has(prompt.id))
 
   return {
@@ -347,7 +348,7 @@ export function derivePromptLifecycleTransition(
       .map((prompt) => prompt.target_agent_id)
       .filter((agentId): agentId is string => Boolean(agentId)),
     cancelledPromptSettled:
-      collectActivePromptRecords(currentSession)
+      activePromptLifecycleRecords(currentSession)
         .some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
   }
 }
@@ -413,56 +414,12 @@ function normalizeMultiAgentResponseLayout(
   return value === "split" || value === "individual" ? value : null
 }
 
-type ActivePromptLifecycleRecord = {
-  id: string
-  status?: string
-  promptOrigin?: string | null
-  target_agent_id?: string | null
+function activePromptLifecycleRecords(session: RuntimeSession) {
+  return sessionActivePromptLifecycleRecords(
+    session as Parameters<typeof sessionActivePromptLifecycleRecords>[0],
+  )
 }
 
-function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
-  if (session.agent_activity) {
-    const records: ActivePromptLifecycleRecord[] = []
-    for (const [agentId, activity] of Object.entries(session.agent_activity)) {
-      const activeTurn = activity.active_turn
-      if (activeTurn && kernelAgentRuntimeActiveTurnIsBusy(activeTurn)) {
-        records.push({
-          id: activeTurn.prompt_id,
-          status: activeTurn.status,
-          promptOrigin: activeTurn.prompt_origin ?? null,
-          target_agent_id: agentId,
-        })
-        continue
-      }
-      if (!agentRuntimeActivityIsBusy(activity)) {
-        continue
-      }
-      const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
-      if (stateActivePrompt) {
-        records.push({
-          ...stateActivePrompt,
-          promptOrigin: stateActivePrompt.prompt_origin ?? null,
-        })
-      }
-    }
-    return records.sort((left, right) => left.id.localeCompare(right.id))
-  }
-  if (session.prompt_states) {
-    return Object.values(session.prompt_states)
-      .map((state) => state.active_prompt)
-      .map((stateActivePrompt) => stateActivePrompt ? {
-        ...stateActivePrompt,
-        promptOrigin: stateActivePrompt.prompt_origin ?? null,
-      } : null)
-      .filter((prompt): prompt is NonNullable<typeof prompt> => Boolean(prompt))
-      .sort((left, right) => left.id.localeCompare(right.id))
-  }
-  return session.active_prompt ? [{
-    ...session.active_prompt,
-    promptOrigin: session.active_prompt.prompt_origin ?? null,
-  }] : []
-}
-
-function collectActivePromptIds(session: RuntimeSession) {
-  return collectActivePromptRecords(session).map((prompt) => prompt.id)
+function activePromptLifecycleRecordIds(session: RuntimeSession) {
+  return activePromptLifecycleRecords(session).map((prompt) => prompt.id)
 }

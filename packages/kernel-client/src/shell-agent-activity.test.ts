@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
   sessionAgentRuntimeDisplayState,
@@ -752,6 +753,124 @@ test("session prompt helpers ignore top-level prompts for other agents", () => {
 
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-other"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
+test("sessionActivePromptLifecycleRecords uses projected active turns and deterministic order", () => {
+  const session = makeSession({
+    agents: [
+      makeAgent({ id: "agent-b", state: "Working", is_processing: true }),
+      makeAgent({ id: "agent-a", state: "Working", is_processing: true }),
+    ],
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "prompt-a-stale",
+          source_attachment_id: "attach-a",
+          target_agent_id: "agent-a",
+          prompt: "stale",
+          status: "Running",
+          prompt_origin: "arroba",
+        },
+        queued_prompts: [],
+      },
+      "agent-b": {
+        active_prompt: {
+          id: "prompt-b-state",
+          source_attachment_id: "attach-b",
+          target_agent_id: "agent-b",
+          prompt: "running",
+          status: "Running",
+          prompt_origin: "external",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-a-live",
+          status: "running",
+          prompt_origin: "external",
+          phase: "streaming",
+        },
+      },
+      "agent-b": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "prompt-a-live",
+    status: "running",
+    promptOrigin: "external",
+    target_agent_id: "agent-a",
+  }, {
+    id: "prompt-b-state",
+    source_attachment_id: "attach-b",
+    target_agent_id: "agent-b",
+    prompt: "running",
+    status: "Running",
+    prompt_origin: "external",
+    promptOrigin: "external",
+  }])
+})
+
+test("sessionActivePromptLifecycleRecords treats projected idle as authoritative", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "cancelling",
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-stale",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "cancelling",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {},
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
+})
+
+test("sessionActivePromptLifecycleRecords falls back to legacy active prompt without projections", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-legacy",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "legacy",
+      status: "Running",
+      prompt_origin: " External ",
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "prompt-legacy",
+    source_attachment_id: "attach-1",
+    target_agent_id: "agent-1",
+    prompt: "legacy",
+    status: "Running",
+    prompt_origin: " External ",
+    promptOrigin: " External ",
+  }])
 })
 
 function malformedRuntimeValue<T>(value: string): T {
