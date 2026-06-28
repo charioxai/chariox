@@ -227,7 +227,6 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
     const activities = Object.entries(session.agent_activity)
     const projectedQueued = promptWorkCountFromProjectedActivities(
       activities.map(([, activity]) => activity),
-      "queued_prompt_count",
     )
     return {
       active: activities.reduce(
@@ -856,7 +855,7 @@ function projectedActivePromptCount(
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): number {
   const projection = projectAgentRuntimeActivity(activity)
-  if (activity.active_prompt_count !== undefined && activity.active_prompt_count !== null) {
+  if (projection.activePromptCountExplicit) {
     return projection.activePromptCount
   }
   return agentRuntimeActivityHasActivePrompt(activity, promptState) ? 1 : 0
@@ -864,21 +863,16 @@ function projectedActivePromptCount(
 
 function promptWorkCountFromProjectedActivities(
   activities: readonly NonNullable<RuntimeSession["agent_activity"]>[string][],
-  field: "queued_prompt_count",
 ): number | null {
   let count = 0
   for (const activity of activities) {
-    const projectedCount = nonNegativeInteger(activity[field])
-    if (projectedCount === null) {
+    const projection = projectAgentRuntimeActivity(activity)
+    if (!projection.queuedPromptCountExplicit) {
       return null
     }
-    count += projectedCount
+    count += projection.queuedPromptCount
   }
   return count
-}
-
-function nonNegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null
 }
 
 function legacyBusyAgentCount(session: RuntimeSession): number {

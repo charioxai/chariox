@@ -194,7 +194,9 @@ test("agent activity projection preserves kernel counts as activity source", () 
     busy: true,
     activeTurn: null,
     activePromptCount: 0,
+    activePromptCountExplicit: true,
     queuedPromptCount: 2,
+    queuedPromptCountExplicit: true,
     error: false,
   })
 })
@@ -214,7 +216,9 @@ test("agent activity projection unwraps nested activity and normalizes settled s
     busy: false,
     activeTurn,
     activePromptCount: 0,
+    activePromptCountExplicit: false,
     queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
     error: false,
   })
 })
@@ -260,7 +264,9 @@ test("agent activity projection exposes live active turn identity", () => {
     activeTurnPhase: "streaming",
     activeTurnStartedAtMs: 123,
     activePromptCount: 1,
+    activePromptCountExplicit: false,
     queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
     error: false,
   })
 

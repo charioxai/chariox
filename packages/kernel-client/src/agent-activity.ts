@@ -29,7 +29,9 @@ export type AgentRuntimeActivityProjection = {
   readonly activeTurnStartedAtMs?: number
   readonly lastCompletedTurn?: AgentRuntimeCompletedTurnActionProjection | null
   readonly activePromptCount: number
+  readonly activePromptCountExplicit: boolean
   readonly queuedPromptCount: number
+  readonly queuedPromptCountExplicit: boolean
   readonly error: boolean
 }
 
@@ -103,11 +105,19 @@ export function projectAgentRuntimeActivity(
     || status === "working"
     || agentRuntimePromptStatusIsActive(promptStatus)
     || activeTurnBusy
-  const activePromptCount = readNonNegativeIntegerField(activityRecord, "active_prompt_count")
-    ?? readNonNegativeIntegerField(value, "active_prompt_count")
+  const projectedActivePromptCount = readExplicitNonNegativeIntegerField(
+    activityRecord,
+    value,
+    "active_prompt_count",
+  )
+  const activePromptCount = projectedActivePromptCount.value
     ?? (agentRuntimePromptStatusIsActivePrompt(promptStatus) || activeTurnBusy ? 1 : 0)
-  const queuedPromptCount = readNonNegativeIntegerField(activityRecord, "queued_prompt_count")
-    ?? readNonNegativeIntegerField(value, "queued_prompt_count")
+  const projectedQueuedPromptCount = readExplicitNonNegativeIntegerField(
+    activityRecord,
+    value,
+    "queued_prompt_count",
+  )
+  const queuedPromptCount = projectedQueuedPromptCount.value
     ?? (agentRuntimePromptStatusIsQueued(promptStatus) ? 1 : 0)
   const error = readBooleanField(activityRecord, "error")
     ?? readBooleanField(value, "error")
@@ -123,7 +133,9 @@ export function projectAgentRuntimeActivity(
     ...activeTurnIdentity,
     ...(lastCompletedTurn ? { lastCompletedTurn } : {}),
     activePromptCount,
+    activePromptCountExplicit: projectedActivePromptCount.explicit,
     queuedPromptCount,
+    queuedPromptCountExplicit: projectedQueuedPromptCount.explicit,
     error,
   }
 }
@@ -298,6 +310,22 @@ function readNonNegativeIntegerField(value: unknown, field: string): number | nu
   return typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 0
     ? candidate
     : null
+}
+
+function readExplicitNonNegativeIntegerField(
+  primary: unknown,
+  fallback: unknown,
+  field: string,
+): { readonly explicit: boolean, readonly value: number | null } {
+  const primaryValue = readNonNegativeIntegerField(primary, field)
+  if (primaryValue !== null) {
+    return { explicit: true, value: primaryValue }
+  }
+  const fallbackValue = readNonNegativeIntegerField(fallback, field)
+  if (fallbackValue !== null) {
+    return { explicit: true, value: fallbackValue }
+  }
+  return { explicit: false, value: null }
 }
 
 function readNonBlankStringField(value: unknown, field: string): string | null {
