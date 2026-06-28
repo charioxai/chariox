@@ -171,7 +171,6 @@ impl<'a> KernelAgentService<'a> {
         });
         if let Some(provider_run_id) = completion_provider_run_id.as_deref() {
             flow_control::clear_prompt_activity(self.app, provider_run_id);
-            flow_control::clear_active_turn(self.app, provider_run_id);
         }
         let started_next = if self
             .app

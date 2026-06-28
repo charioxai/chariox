@@ -2338,7 +2338,6 @@ impl<'a> KernelSessionService<'a> {
             for run in self.app.providers.list_runs() {
                 if run.session_id() == attachment.session_id() {
                     crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
-                    crate::transport::flow_control::clear_active_turn(self.app, run.id());
                 }
             }
         }
@@ -2417,7 +2416,6 @@ impl<'a> KernelSessionService<'a> {
         for run in self.app.providers.list_runs() {
             if run.session_id() == session_id {
                 crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
-                crate::transport::flow_control::clear_active_turn(self.app, run.id());
             }
         }
         self.app.prompt_owner_remove_session(session_id);

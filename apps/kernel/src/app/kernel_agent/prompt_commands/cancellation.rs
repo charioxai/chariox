@@ -15,7 +15,6 @@ impl<'a> KernelAgentService<'a> {
             .app
             .prompt_owner_cancel_active_prompt_only(session_id, agent_id);
         flow_control::clear_prompt_activity(self.app, provider_run_id);
-        flow_control::clear_active_turn(self.app, provider_run_id);
     }
 
     pub(crate) fn cancel_active_prompt(
@@ -154,7 +153,6 @@ impl<'a> KernelAgentService<'a> {
         });
         if let Some(provider_run_id) = cancellation_provider_run_id.as_deref() {
             flow_control::clear_prompt_activity(self.app, provider_run_id);
-            flow_control::clear_active_turn(self.app, provider_run_id);
         }
         let started_next = if self
             .app

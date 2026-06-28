@@ -117,7 +117,6 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             self.clear_prompt_activity(provider_run_id);
-            self.clear_active_turn(provider_run_id);
             return Ok(());
         };
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
@@ -168,7 +167,6 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             self.clear_prompt_activity(provider_run_id);
-            self.clear_active_turn(provider_run_id);
             return Ok(());
         };
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
@@ -258,7 +256,6 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             self.clear_prompt_activity(provider_run_id);
-            self.clear_active_turn(provider_run_id);
             return Ok(());
         };
         let agent_id = self.provider_run_agent_id(provider_run_id)?;

@@ -462,7 +462,6 @@ fn handle_workflow_prompt_submission_outcome(
                 {
                     if let Some(provider_run_id) = provider_run_id.as_deref() {
                         crate::transport::flow_control::clear_prompt_activity(app, provider_run_id);
-                        crate::transport::flow_control::clear_active_turn(app, provider_run_id);
                     }
                     let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
                 }

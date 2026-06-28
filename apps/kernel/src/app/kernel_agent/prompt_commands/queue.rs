@@ -71,7 +71,6 @@ impl<'a> KernelAgentService<'a> {
             )?;
             let Some(next) = next_candidate else {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                flow_control::clear_active_turn(self.app, &provider_run_id);
                 continue;
             };
 
@@ -97,7 +96,6 @@ impl<'a> KernelAgentService<'a> {
                             self.app, session_id, &cancelled,
                         )?;
                         flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                        flow_control::clear_active_turn(self.app, &provider_run_id);
                         return Err(dispatch_error);
                     }
                     if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
@@ -131,7 +129,6 @@ impl<'a> KernelAgentService<'a> {
                     .app
                     .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                flow_control::clear_active_turn(self.app, &provider_run_id);
                 continue;
             }
 
@@ -159,7 +156,6 @@ impl<'a> KernelAgentService<'a> {
                     .app
                     .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                flow_control::clear_active_turn(self.app, &provider_run_id);
                 continue;
             }
 

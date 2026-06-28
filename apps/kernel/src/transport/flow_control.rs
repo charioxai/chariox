@@ -54,10 +54,6 @@ pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) 
     }
 }
 
-pub(crate) fn clear_active_turn(app: &mut DaemonApp, provider_run_id: &str) {
-    app.active_turns.clear(provider_run_id);
-}
-
 pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run_id: &str) {
     app.active_turns.mark_settling(provider_run_id);
     app.prompt_activity
