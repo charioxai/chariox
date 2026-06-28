@@ -4,8 +4,10 @@ import test from "node:test"
 import {
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
+  projectQueuedPrompt,
   queuedPromptActionability,
   queuedPromptControlForPrompt,
+  queuedPromptProjectionForAgent,
   queuedPromptsForAgent,
   queuedPromptStatusIsQueued,
 } from "./queued-prompt-controls.js"
@@ -114,6 +116,91 @@ test("queued prompts for agent prefer authoritative prompt states", () => {
   })
 
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [promptStatePrompt])
+})
+
+test("queued prompt projection returns display prompts with actionability", () => {
+  const session = sessionWith({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [prompt("queued-1")],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        queued_prompt_controls: {
+          "queued-1": {
+            prompt_id: "queued-1",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: true,
+            steer_disabled_reason: "Kernel projected steer reason.",
+            cancel_disabled_reason: null,
+          },
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "replace",
+    prompts: [{
+      id: "queued-1",
+      sourceAttachmentId: "attachment-1",
+      targetAgentId: "agent-1",
+      prompt: "queued-1",
+      attachmentCount: 0,
+      status: "dispatching",
+      steerDisabled: true,
+      canSteer: false,
+      canCancel: true,
+      steerDisabledReason: "Kernel projected steer reason.",
+      cancelDisabledReason: null,
+    }],
+  })
+})
+
+test("queued prompt projection preserves transcript when projected busy omits queue detail", () => {
+  const session = sessionWith({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), { action: "preserve" })
+})
+
+test("project queued prompt records attachment count and fallback target", () => {
+  assert.deepEqual(projectQueuedPrompt({
+    id: "queued-1",
+    source_attachment_id: "attachment-1",
+    prompt: "queued",
+    attachments: [{ url: "file:///tmp/a.txt", mime: "text/plain", filename: "a.txt" }],
+    status: "Queued",
+  }, {
+    fallbackTargetAgentId: "agent-fallback",
+  }), {
+    id: "queued-1",
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-fallback",
+    prompt: "queued",
+    attachmentCount: 1,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
 })
 
 test("queued prompts for agent clear stale queues when projected activity is idle", () => {

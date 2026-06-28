@@ -21,6 +21,18 @@ export type QueuedPromptActionability = {
   readonly cancelDisabledReason: string | null
 }
 
+export type ProjectedQueuedPrompt = QueuedPromptActionability & {
+  readonly id: string
+  readonly sourceAttachmentId: string
+  readonly targetAgentId: string | null
+  readonly prompt: string
+  readonly attachmentCount: number
+}
+
+export type QueuedPromptProjection =
+  | { readonly action: "preserve" }
+  | { readonly action: "replace"; readonly prompts: readonly ProjectedQueuedPrompt[] }
+
 export function queuedPromptActionability(
   promptStatus: string | null | undefined,
   control: QueuedPromptControlInput | null | undefined = null,
@@ -78,6 +90,49 @@ export function queuedPromptsForAgent(
     return null
   }
   return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+}
+
+export function queuedPromptProjectionForAgent(
+  session: RuntimeSession,
+  agentId: string,
+): QueuedPromptProjection {
+  const prompts = queuedPromptsForAgent(session, agentId)
+  if (prompts === null) {
+    return { action: "preserve" }
+  }
+  return {
+    action: "replace",
+    prompts: prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
+      const projected = projectQueuedPrompt(prompt, {
+        fallbackTargetAgentId: agentId,
+        control: queuedPromptControlForPrompt(
+          session.agent_activity?.[agentId]?.queued_prompt_controls,
+          prompt.id,
+        ),
+      })
+      return projected ? [projected] : []
+    }),
+  }
+}
+
+export function projectQueuedPrompt(
+  prompt: PromptQueueItem,
+  options: {
+    readonly fallbackTargetAgentId?: string | null
+    readonly control?: QueuedPromptControlInput | null
+  } = {},
+): ProjectedQueuedPrompt | null {
+  if (!prompt.id || !prompt.prompt) {
+    return null
+  }
+  return {
+    id: prompt.id,
+    sourceAttachmentId: prompt.source_attachment_id ?? "",
+    targetAgentId: prompt.target_agent_id ?? options.fallbackTargetAgentId ?? null,
+    prompt: prompt.prompt,
+    attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
+    ...queuedPromptActionability(prompt.status, options.control),
+  }
 }
 
 export function normalizeQueuedPromptStatus(status: string | null | undefined): string {

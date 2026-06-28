@@ -1,12 +1,10 @@
 import type {
-  PromptQueueItem,
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  queuedPromptActionability,
-  queuedPromptControlForPrompt,
-  queuedPromptsForAgent as kernelQueuedPromptsForAgent,
+  queuedPromptProjectionForAgent,
+  type ProjectedQueuedPrompt,
   type QueuedPromptActionability,
 } from "@arroba/kernel-client/queued-prompt-controls"
 import { sessionHasProjectedRuntimeState } from "./session-state.js"
@@ -18,23 +16,19 @@ export type QueuedPromptTranscriptSyncResult = {
   changed: boolean
 }
 
-export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] | null {
-  const prompts = kernelQueuedPromptsForAgent(
-    session as Parameters<typeof kernelQueuedPromptsForAgent>[0],
-    agentId,
-  )
-  return prompts === null ? null : [...prompts] as PromptQueueItem[]
-}
-
 export function syncQueuedPromptEntriesForAgent(
   entries: readonly TranscriptEntry[],
   session: RuntimeSession,
   agentId: string,
 ): QueuedPromptTranscriptSyncResult {
-  const queuedPrompts = queuedPromptsForAgent(session, agentId)
-  if (queuedPrompts === null) {
+  const projection = queuedPromptProjectionForAgent(
+    session as Parameters<typeof queuedPromptProjectionForAgent>[0],
+    agentId,
+  )
+  if (projection.action === "preserve") {
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
+  const queuedPrompts = projection.prompts
   const queuedById = new Map(queuedPrompts.map((prompt) => [prompt.id, prompt]))
   const queuedIds = new Set(queuedById.keys())
   let changed = false
@@ -48,9 +42,7 @@ export function syncQueuedPromptEntriesForAgent(
       return []
     }
     const prompt = queuedById.get(entry.queuedPrompt.promptId)
-    const actionability = prompt
-      ? queuedPromptActionabilityForPrompt(session, agentId, prompt)
-      : queuedPromptActionability(entry.queuedPrompt.status)
+    const actionability = prompt ?? entry.queuedPrompt
     if (!queuedPromptActionabilityMatches(entry.queuedPrompt, actionability)) {
       changed = true
       return [{
@@ -76,7 +68,7 @@ export function syncQueuedPromptEntriesForAgent(
     changed = true
     nextEntries = [
       ...nextEntries,
-      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), session),
+      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries)),
     ]
   }
   if (!changed) {
@@ -119,12 +111,10 @@ export function syncQueuedPromptEntriesByAgent(
 }
 
 function queuedPromptTranscriptEntry(
-  prompt: PromptQueueItem,
+  prompt: ProjectedQueuedPrompt,
   agentId: string,
   id: number,
-  session: RuntimeSession,
 ): TranscriptEntry {
-  const actionability = queuedPromptActionabilityForPrompt(session, agentId, prompt)
   return {
     id,
     role: "user",
@@ -132,21 +122,14 @@ function queuedPromptTranscriptEntry(
     queuedPrompt: {
       promptId: prompt.id,
       agentId,
-      ...actionability,
+      status: prompt.status,
+      steerDisabled: prompt.steerDisabled,
+      canSteer: prompt.canSteer,
+      canCancel: prompt.canCancel,
+      steerDisabledReason: prompt.steerDisabledReason,
+      cancelDisabledReason: prompt.cancelDisabledReason,
     },
   }
-}
-
-function queuedPromptActionabilityForPrompt(
-  session: RuntimeSession,
-  agentId: string,
-  prompt: PromptQueueItem,
-): QueuedPromptActionability {
-  const projected = queuedPromptControlForPrompt(
-    session.agent_activity?.[agentId]?.queued_prompt_controls,
-    prompt.id,
-  )
-  return queuedPromptActionability(prompt.status, projected)
 }
 
 function queuedPromptActionabilityMatches(
