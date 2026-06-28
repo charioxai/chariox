@@ -124,6 +124,14 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
   return sessionPromptWorkSummary(session).busyAgents > 0
 }
 
+export function sessionPromptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
+  const state: Record<string, boolean> = {}
+  for (const agent of session.agents) {
+    state[agent.id] = sessionAgentIsBusy(session, agent.id)
+  }
+  return state
+}
+
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
   if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
     return false

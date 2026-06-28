@@ -15,6 +15,7 @@ import {
   sessionPromptLifecycleTransition,
   sessionPromptForAgent,
   sessionPromptStateForAgent,
+  sessionPromptWorkByAgent,
   sessionPromptWorkSummary,
   sessionShouldConfirmIdleTurnCompletion,
 } from "./shell-agent-activity.js"
@@ -370,6 +371,77 @@ test("sessionPromptWorkSummary treats prompt states as runtime authority", () =>
     active: 1,
     queued: 1,
     busyAgents: 2,
+  })
+})
+
+test("sessionPromptWorkByAgent honors prompt states across agents", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-2",
+          target_agent_id: "agent-2",
+          prompt: "review",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [
+      makeAgent({ id: "agent-1" }),
+      makeAgent({ id: "agent-2", is_processing: true, state: "Working" }),
+    ],
+  })
+
+  assert.deepEqual(sessionPromptWorkByAgent(session), {
+    "agent-1": false,
+    "agent-2": true,
+  })
+})
+
+test("sessionPromptWorkByAgent prefers projected activity over stale prompt state", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "stale-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+      "agent-2": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })
+
+  assert.deepEqual(sessionPromptWorkByAgent(session), {
+    "agent-1": false,
+    "agent-2": true,
   })
 })
 

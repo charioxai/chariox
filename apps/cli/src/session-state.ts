@@ -11,6 +11,7 @@ import {
   sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
+  sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
 } from "@arroba/kernel-client/shell-agent-activity"
 import type {
@@ -207,11 +208,7 @@ export function agentHasPromptWork(
 }
 
 export function promptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
-  const state: Record<string, boolean> = {}
-  for (const agent of session.agents) {
-    state[agent.id] = agentHasPromptWork(session, agent.id)
-  }
-  return state
+  return kernelSessionPromptWorkByAgent(session as Parameters<typeof kernelSessionPromptWorkByAgent>[0])
 }
 
 export function sessionResponseLayout(
