@@ -4,6 +4,7 @@ import {
   mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
+import { previewLineForSessionHistoryEntry } from "@arroba/kernel-client/session-history-preview"
 import {
   cloneSessionHistoryPromptAttachments,
   mergeSessionHistoryPromptAttachments,
@@ -428,25 +429,5 @@ function historyEntryIdentityOptions(
 }
 
 export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
-  const text = entry.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!text) {
-    return null
-  }
-  if (entry.kind === "provider_status" && !externalProviderObservedProviderStatusShouldRender(entry)) {
-    return null
-  }
-  const label = entry.kind === "user_prompt"
-    ? "You"
-    : entry.kind === "provider_reasoning"
-      ? "Think"
-      : entry.kind === "provider_tool"
-        ? "Tool"
-        : entry.kind === "provider_error"
-          ? "Err"
-          : entry.kind === "provider_status"
-            ? "Stat"
-            : entry.kind === "notice"
-              ? "Note"
-              : "Asst"
-  return `${label}: ${text.split("\n")[0]}`
+  return previewLineForSessionHistoryEntry(entry)
 }

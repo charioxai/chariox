@@ -4,6 +4,10 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
+  previewLineForTranscriptEntry as sharedPreviewLineForTranscriptEntry,
+  transcriptEntryPreviewLabel,
+} from "@arroba/kernel-client/session-history-preview"
+import {
   mergeAdjacentHistoryPageEntries,
   previewLineForHistoryEntry,
 } from "./transcript-history.js"
@@ -30,24 +34,7 @@ export function formatTranscriptPreview(transcriptEntries: TranscriptEntry[]) {
 }
 
 function previewLineForTranscriptEntry(entry: TranscriptEntry) {
-  const text = entry.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!text || entry.role === "turn_toggle") {
-    return null
-  }
-  const label = entry.role === "user"
-    ? "You"
-    : entry.role === "reasoning"
-      ? "Think"
-      : entry.role === "tool"
-        ? "Tool"
-        : entry.role === "error"
-          ? "Err"
-          : entry.role === "status"
-            ? "Stat"
-            : entry.role === "notice"
-              ? "Note"
-              : "Asst"
-  return `${label}: ${text.split("\n")[0]}`
+  return sharedPreviewLineForTranscriptEntry(entry)
 }
 
 export function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"], text: string) {
@@ -57,15 +44,15 @@ export function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"],
   }
   const label = kind === "prompt_echo"
     ? "You"
-    : kind === "provider_reasoning"
-      ? "Think"
+    : transcriptEntryPreviewLabel(kind === "provider_reasoning"
+      ? "reasoning"
       : kind === "provider_tool"
-        ? "Tool"
+        ? "tool"
         : kind === "provider_error"
-          ? "Err"
+          ? "error"
           : kind === "provider_status"
-            ? "Stat"
-            : "Asst"
+            ? "status"
+            : "assistant")
   return `${label}: ${normalized.split("\n")[0]}`
 }
 

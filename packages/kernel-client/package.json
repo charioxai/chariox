@@ -22,6 +22,7 @@
     "./session-history-fragments": "./dist/session-history-fragments.js",
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
+    "./session-history-preview": "./dist/session-history-preview.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
     "./shell-capability-format": "./dist/shell-capability-format.js",
