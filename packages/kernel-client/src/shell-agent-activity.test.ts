@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import type { AgentPromptState } from "./kernel-types.js"
 import {
   sessionActivePromptIdForAgent,
   sessionActivePromptLifecycleRecords,
@@ -13,6 +14,7 @@ import {
   sessionHasPromptWork,
   sessionPromptLifecycleTransition,
   sessionPromptForAgent,
+  sessionPromptStateForAgent,
   sessionPromptWorkSummary,
   sessionShouldConfirmIdleTurnCompletion,
 } from "./shell-agent-activity.js"
@@ -707,6 +709,33 @@ test("session prompt helpers prefer explicit empty prompt state over stale top-l
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
 })
 
+test("sessionPromptStateForAgent normalizes prompt states with omitted queued prompts", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+      } as AgentPromptState,
+    },
+  })
+
+  assert.deepEqual(sessionPromptStateForAgent(session, "agent-1"), {
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "running",
+      status: "Running",
+    },
+    queued_prompts: [],
+  })
+})
+
 test("session prompt helpers treat missing prompt state agents as idle", () => {
   const session = makeSession({
     active_prompt: {
@@ -729,6 +758,80 @@ test("session prompt helpers treat missing prompt state agents as idle", () => {
   assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
   assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-stale"), false)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
+})
+
+test("sessionPromptStateForAgent ignores legacy prompts once activity projection exists", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale queued",
+      status: "Queued",
+    }],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
+})
+
+test("sessionPromptStateForAgent scopes legacy top-level prompts by agent", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "running",
+      status: "Running",
+    },
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "queued",
+      status: "Queued",
+    }, {
+      id: "queued-other",
+      source_attachment_id: "attach-2",
+      target_agent_id: "agent-2",
+      prompt: "other",
+      status: "Queued",
+    }],
+  })
+
+  assert.deepEqual(sessionPromptStateForAgent(session, "agent-1"), {
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "running",
+      status: "Running",
+    },
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "queued",
+      status: "Queued",
+    }],
+  })
+  assert.equal(sessionPromptStateForAgent(session, "agent-2")?.active_prompt, null)
+  assert.equal(sessionPromptStateForAgent(session, null), null)
 })
 
 test("session prompt helpers ignore prompt states for agents outside the session", () => {

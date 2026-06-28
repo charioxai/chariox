@@ -10,13 +10,13 @@ import {
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
+  sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
 } from "@arroba/kernel-client/shell-agent-activity"
 import type {
   PromptLifecycleTransition as KernelPromptLifecycleTransition,
 } from "@arroba/kernel-client/shell-agent-activity"
 import {
-  normalizeAgentPromptState,
   type AgentPromptState,
   type CliOptions,
   type RuntimeInteraction,
@@ -193,25 +193,10 @@ export function agentPromptState(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): AgentPromptState | null {
-  if (!agentId) {
-    return null
-  }
-  const promptStates = session.prompt_states
-  if (promptStates) {
-    return Object.prototype.hasOwnProperty.call(promptStates, agentId)
-      ? normalizeAgentPromptState(promptStates[agentId])
-      : null
-  }
-  if (session.agent_activity) {
-    return null
-  }
-  if (session.active_prompt?.target_agent_id === agentId || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId)) {
-    return {
-      active_prompt: session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null,
-      queued_prompts: session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId),
-    }
-  }
-  return null
+  return kernelSessionPromptStateForAgent(
+    session as Parameters<typeof kernelSessionPromptStateForAgent>[0],
+    agentId,
+  ) as AgentPromptState | null
 }
 
 export function agentHasPromptWork(

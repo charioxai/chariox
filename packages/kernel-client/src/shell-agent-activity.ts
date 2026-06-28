@@ -1,4 +1,4 @@
-import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import type { AgentInstance, AgentPromptState, PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import {
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityIsBusy,
@@ -134,6 +134,33 @@ export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnC
     || options.currentStreamingAgentId !== null
     || options.currentProviderActivityLabel !== null
     || options.currentActiveStatusLabel !== null
+}
+
+export function sessionPromptStateForAgent(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): AgentPromptState | null {
+  if (!agentId) {
+    return null
+  }
+  const promptStates = session.prompt_states
+  if (promptStates) {
+    return Object.prototype.hasOwnProperty.call(promptStates, agentId)
+      ? normalizeAgentPromptState(promptStates[agentId])
+      : null
+  }
+  if (session.agent_activity) {
+    return null
+  }
+  const activePrompt = session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
+  const queuedPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+  if (activePrompt || queuedPrompts.length > 0) {
+    return {
+      active_prompt: activePrompt,
+      queued_prompts: queuedPrompts,
+    }
+  }
+  return null
 }
 
 export function sessionAgentRuntimeState(
@@ -395,6 +422,13 @@ function promptStateForAgent(session: RuntimeSession, agentId: string) {
     return null
   }
   return promptStates[agentId] ?? null
+}
+
+function normalizeAgentPromptState(state: Partial<AgentPromptState> | null | undefined): AgentPromptState {
+  return {
+    active_prompt: state?.active_prompt ?? null,
+    queued_prompts: Array.isArray(state?.queued_prompts) ? state.queued_prompts : [],
+  }
 }
 
 function sessionHasAgent(session: RuntimeSession, agentId: string): boolean {
