@@ -28,6 +28,16 @@ export type PromptLifecycleTransition = {
   readonly settledAgentIds: string[]
 }
 
+export type SessionIdleTurnCompletionInput = {
+  readonly nextSession: RuntimeSession
+  readonly currentWorking: boolean
+  readonly currentSubmitting: boolean
+  readonly currentBusyLatches: Record<string, boolean>
+  readonly currentStreamingAgentId: string | null
+  readonly currentProviderActivityLabel: string | null
+  readonly currentActiveStatusLabel: string | null
+}
+
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
   readonly queued_prompts?: readonly unknown[] | null
@@ -103,6 +113,27 @@ export function sessionAgentIsBusy(session: RuntimeSession | null | undefined, a
     return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
   }
   return legacyTopLevelSessionHasPromptWork(session, agentId)
+}
+
+export function sessionHasPromptWork(session: RuntimeSession): boolean {
+  const summary = sessionPromptWorkSummary(session)
+  return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0
+}
+
+export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
+  return sessionPromptWorkSummary(session).busyAgents > 0
+}
+
+export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
+  if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
+    return false
+  }
+  return options.currentWorking
+    || options.currentSubmitting
+    || Object.values(options.currentBusyLatches).some(Boolean)
+    || options.currentStreamingAgentId !== null
+    || options.currentProviderActivityLabel !== null
+    || options.currentActiveStatusLabel !== null
 }
 
 export function sessionAgentRuntimeState(

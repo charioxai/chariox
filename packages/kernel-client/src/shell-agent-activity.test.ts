@@ -9,9 +9,12 @@ import {
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
   sessionHasActivePrompt,
+  sessionHasProcessingAgent,
+  sessionHasPromptWork,
   sessionPromptLifecycleTransition,
   sessionPromptForAgent,
   sessionPromptWorkSummary,
+  sessionShouldConfirmIdleTurnCompletion,
 } from "./shell-agent-activity.js"
 import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
@@ -366,6 +369,52 @@ test("sessionPromptWorkSummary treats prompt states as runtime authority", () =>
     queued: 1,
     busyAgents: 2,
   })
+})
+
+test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn completion", () => {
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Focused" }), makeAgent({ id: "agent-2" })],
+  })
+
+  assert.equal(sessionHasPromptWork(idleSession), false)
+  assert.equal(sessionHasProcessingAgent(idleSession), false)
+  assert.equal(sessionShouldConfirmIdleTurnCompletion({
+    nextSession: idleSession,
+    currentWorking: true,
+    currentSubmitting: false,
+    currentBusyLatches: {},
+    currentStreamingAgentId: "agent-1",
+    currentProviderActivityLabel: "thinking",
+    currentActiveStatusLabel: "thinking",
+  }), true)
+})
+
+test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or processing snapshots", () => {
+  const activePromptSession = makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "running",
+    },
+    agents: [makeAgent({ id: "agent-1", is_processing: false, state: "Focused" })],
+  })
+  const processingSession = makeSession({
+    agents: [makeAgent({ id: "agent-1", is_processing: true, state: "Working" })],
+  })
+
+  for (const nextSession of [activePromptSession, processingSession]) {
+    assert.equal(sessionShouldConfirmIdleTurnCompletion({
+      nextSession,
+      currentWorking: true,
+      currentSubmitting: true,
+      currentBusyLatches: { "agent-1": true },
+      currentStreamingAgentId: "agent-1",
+      currentProviderActivityLabel: "thinking",
+      currentActiveStatusLabel: "thinking",
+    }), false)
+  }
 })
 
 test("sessionPromptWorkSummary ignores prompt states for agents outside the session", () => {

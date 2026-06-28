@@ -6,9 +6,11 @@ import {
 import {
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
+  sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
+  sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
-  sessionPromptWorkSummary,
+  sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
 } from "@arroba/kernel-client/shell-agent-activity"
 import type {
   PromptLifecycleTransition as KernelPromptLifecycleTransition,
@@ -123,8 +125,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 }
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
-  const summary = sessionPromptWorkSummary(session as Parameters<typeof sessionPromptWorkSummary>[0])
-  return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0
+  return kernelSessionHasPromptWork(session as Parameters<typeof kernelSessionHasPromptWork>[0])
 }
 
 export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolean {
@@ -132,7 +133,7 @@ export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolea
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
-  return sessionPromptWorkSummary(session as Parameters<typeof sessionPromptWorkSummary>[0]).busyAgents > 0
+  return kernelSessionHasProcessingAgent(session as Parameters<typeof kernelSessionHasProcessingAgent>[0])
 }
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
@@ -182,15 +183,10 @@ export function shouldConfirmIdleTurnCompletion(options: {
   currentProviderActivityLabel: string | null
   currentActiveStatusLabel: string | null
 }): boolean {
-  if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
-    return false
-  }
-  return options.currentWorking
-    || options.currentSubmitting
-    || Object.values(options.currentBusyLatches).some(Boolean)
-    || options.currentStreamingAgentId !== null
-    || options.currentProviderActivityLabel !== null
-    || options.currentActiveStatusLabel !== null
+  return kernelSessionShouldConfirmIdleTurnCompletion({
+    ...options,
+    nextSession: options.nextSession as Parameters<typeof kernelSessionShouldConfirmIdleTurnCompletion>[0]["nextSession"],
+  })
 }
 
 export function agentPromptState(
