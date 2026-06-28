@@ -118,7 +118,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
-        let active_turn = self.active_turns.snapshot().remove(provider_run_id);
+        let active_turn = self.active_turns.get(provider_run_id);
         if prompt_activity.is_some() || active_turn.is_some() {
             if let Ok(run) = self.provider_store.get_run(provider_run_id) {
                 crate::runtime::command_latency::log_provider_turn_completed(
@@ -241,7 +241,7 @@ impl KernelRuntimeOwnedState {
         if first_response_content {
             self.active_turns.mark_streaming(provider_run_id);
             if let Ok(run) = self.provider_store.get_run(provider_run_id) {
-                let active_turn = self.active_turns.snapshot().remove(provider_run_id);
+                let active_turn = self.active_turns.get(provider_run_id);
                 crate::runtime::command_latency::log_provider_first_response_content(
                     &run,
                     active_turn.as_ref(),

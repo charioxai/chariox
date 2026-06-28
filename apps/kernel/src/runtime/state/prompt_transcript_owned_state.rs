@@ -199,7 +199,7 @@ impl KernelRuntimeOwnedState {
         let active_turn = entry
             .provider_run_id
             .as_deref()
-            .and_then(|provider_run_id| self.active_turns.snapshot().remove(provider_run_id));
+            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
         let prompt_id = prompt_id_override
             .map(str::to_string)
             .or_else(|| active_turn.as_ref().map(|turn| turn.prompt_id.clone()))

@@ -121,7 +121,7 @@ impl ProviderOutputTrace {
             (Some(session), Some(agent_id)) => session.active_prompt_for_agent(agent_id),
             _ => None,
         };
-        let active_turn = self.active_turns.snapshot().remove(provider_run_id);
+        let active_turn = self.active_turns.get(provider_run_id);
         let prompt_activity = self.prompt_activity.read().get(provider_run_id).cloned();
         json!({
             "agent_id": agent_id,

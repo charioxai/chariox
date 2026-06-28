@@ -38,7 +38,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
 
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
     let prompt_activity = app.prompt_activity.write().remove(provider_run_id);
-    let active_turn = app.active_turns.snapshot().remove(provider_run_id);
+    let active_turn = app.active_turns.get(provider_run_id);
     if prompt_activity.is_some() || active_turn.is_some() {
         if let Ok(run) = app.providers().get_run(provider_run_id) {
             crate::runtime::command_latency::log_provider_turn_completed(
@@ -94,7 +94,7 @@ pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, provider_run_id:
     if first_response_content {
         app.active_turns.mark_streaming(provider_run_id);
         if let Ok(run) = app.providers().get_run(provider_run_id) {
-            let active_turn = app.active_turns.snapshot().remove(provider_run_id);
+            let active_turn = app.active_turns.get(provider_run_id);
             crate::runtime::command_latency::log_provider_first_response_content(
                 &run,
                 active_turn.as_ref(),

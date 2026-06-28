@@ -198,6 +198,14 @@ impl ActiveTurnStore {
         }
     }
 
+    pub(crate) fn get(&self, provider_run_id: &str) -> Option<ActiveTurnState> {
+        self.inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .get(provider_run_id)
+            .cloned()
+    }
+
     pub(crate) fn clear_session(&self, session_id: &str) -> usize {
         self.clear_matching(|turn| turn.session_id == session_id)
     }
@@ -489,5 +497,21 @@ mod tests {
             store.snapshot().keys().cloned().collect::<Vec<_>>(),
             vec!["run-3".to_string()]
         );
+    }
+
+    #[test]
+    fn active_turn_store_get_reads_without_clearing() {
+        let store = ActiveTurnStore::default();
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        ));
+
+        let turn = store.get("run-1").expect("active turn should be readable");
+
+        assert_eq!(turn.prompt_id, "prompt-1");
+        assert!(store.snapshot().contains_key("run-1"));
     }
 }
