@@ -9,6 +9,7 @@ import {
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
   sessionHasActivePrompt,
+  sessionPromptLifecycleTransition,
   sessionPromptForAgent,
   sessionPromptWorkSummary,
 } from "./shell-agent-activity.js"
@@ -1068,6 +1069,157 @@ test("sessionActivePromptLifecycleRecords falls back to legacy active prompt wit
     prompt_origin: " External ",
     promptOrigin: " External ",
   }])
+})
+
+test("sessionPromptLifecycleTransition detects when a cancelling prompt settles", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "hello",
+        status: "cancelling",
+      },
+    }),
+    makeSession(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+})
+
+test("sessionPromptLifecycleTransition treats projected idle activity as prompt settlement", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "hello",
+        status: "cancelling",
+      },
+    }),
+    makeSession({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "stale",
+        status: "cancelling",
+      },
+      agent_activity: {},
+    }),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+})
+
+test("sessionPromptLifecycleTransition ignores already-settled projected active turns", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-settled",
+            status: malformedRuntimeValue("cancelled"),
+            phase: malformedRuntimeValue("settled"),
+          },
+        },
+      },
+    }),
+    makeSession(),
+  )
+
+  assert.equal(transition.activePromptChanged, false)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, [])
+})
+
+test("sessionPromptLifecycleTransition detects normal prompt replacement", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "hello",
+        status: "running",
+      },
+    }),
+    makeSession({
+      active_prompt: {
+        id: "prompt-2",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "next",
+        status: "running",
+      },
+    }),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+})
+
+test("sessionPromptLifecycleTransition settles external prompts when they disappear", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "running",
+            prompt_origin: " External ",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+})
+
+test("sessionPromptLifecycleTransition settles cancelling external prompts", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "cancelling",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "cancelling",
+            prompt_origin: "External",
+            phase: "settling",
+          },
+        },
+      },
+    }),
+    makeSession(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
 })
 
 function malformedRuntimeValue<T>(value: string): T {

@@ -5,10 +5,13 @@ import {
 } from "@arroba/kernel-client/agent-activity"
 import {
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
-  sessionActivePromptLifecycleRecords,
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
+  sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
   sessionPromptWorkSummary,
+} from "@arroba/kernel-client/shell-agent-activity"
+import type {
+  PromptLifecycleTransition as KernelPromptLifecycleTransition,
 } from "@arroba/kernel-client/shell-agent-activity"
 import {
   normalizeAgentPromptState,
@@ -48,11 +51,7 @@ export type SessionTransitionState = {
   nextAgentSignature: string
 }
 
-export type PromptLifecycleTransition = {
-  activePromptChanged: boolean
-  cancelledPromptSettled: boolean
-  settledAgentIds: string[]
-}
+export type PromptLifecycleTransition = KernelPromptLifecycleTransition
 
 export type DetachedCliTransitionState = {
   centerMode: "transcript"
@@ -322,23 +321,10 @@ export function derivePromptLifecycleTransition(
   currentSession: RuntimeSession,
   nextSession: RuntimeSession,
 ): PromptLifecycleTransition {
-  const previousPromptIds = activePromptLifecycleRecordIds(currentSession)
-  const nextPromptIds = activePromptLifecycleRecordIds(nextSession)
-  const nextPromptIdSet = new Set(nextPromptIds)
-  const settledPromptRecords = activePromptLifecycleRecords(currentSession)
-    .filter((prompt) => !nextPromptIdSet.has(prompt.id))
-
-  return {
-    activePromptChanged:
-      previousPromptIds.length !== nextPromptIds.length
-      || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
-    settledAgentIds: settledPromptRecords
-      .map((prompt) => prompt.target_agent_id)
-      .filter((agentId): agentId is string => Boolean(agentId)),
-    cancelledPromptSettled:
-      activePromptLifecycleRecords(currentSession)
-        .some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
-  }
+  return kernelSessionPromptLifecycleTransition(
+    currentSession as Parameters<typeof kernelSessionPromptLifecycleTransition>[0],
+    nextSession as Parameters<typeof kernelSessionPromptLifecycleTransition>[1],
+  )
 }
 
 export function deriveDetachedCliTransitionState(options: {
@@ -400,14 +386,4 @@ function normalizeMultiAgentResponseLayout(
   value?: string | null,
 ): MultiAgentResponseLayout | null {
   return value === "split" || value === "individual" ? value : null
-}
-
-function activePromptLifecycleRecords(session: RuntimeSession) {
-  return sessionActivePromptLifecycleRecords(
-    session as Parameters<typeof sessionActivePromptLifecycleRecords>[0],
-  )
-}
-
-function activePromptLifecycleRecordIds(session: RuntimeSession) {
-  return activePromptLifecycleRecords(session).map((prompt) => prompt.id)
 }

@@ -22,6 +22,12 @@ export type ActivePromptLifecycleRecord = {
   readonly target_agent_id?: string | null
 }
 
+export type PromptLifecycleTransition = {
+  readonly activePromptChanged: boolean
+  readonly cancelledPromptSettled: boolean
+  readonly settledAgentIds: string[]
+}
+
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
   readonly queued_prompts?: readonly unknown[] | null
@@ -260,6 +266,29 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
     : []
 }
 
+export function sessionPromptLifecycleTransition(
+  currentSession: RuntimeSession,
+  nextSession: RuntimeSession,
+): PromptLifecycleTransition {
+  const currentPromptRecords = sessionActivePromptLifecycleRecords(currentSession)
+  const previousPromptIds = currentPromptRecords.map((prompt) => prompt.id)
+  const nextPromptIds = activePromptLifecycleRecordIds(nextSession)
+  const nextPromptIdSet = new Set(nextPromptIds)
+  const settledPromptRecords = currentPromptRecords
+    .filter((prompt) => !nextPromptIdSet.has(prompt.id))
+
+  return {
+    activePromptChanged:
+      previousPromptIds.length !== nextPromptIds.length
+      || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
+    settledAgentIds: settledPromptRecords
+      .map((prompt) => prompt.target_agent_id)
+      .filter((agentId): agentId is string => Boolean(agentId)),
+    cancelledPromptSettled:
+      currentPromptRecords.some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
+  }
+}
+
 function legacySessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
   const promptState = promptStateForAgent(session, agentId)
   if (promptState !== undefined) {
@@ -298,6 +327,10 @@ function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActiveP
     ...prompt,
     promptOrigin: prompt.prompt_origin ?? null,
   }
+}
+
+function activePromptLifecycleRecordIds(session: RuntimeSession): string[] {
+  return sessionActivePromptLifecycleRecords(session).map((prompt) => prompt.id)
 }
 
 function compareActivePromptLifecycleRecords(
