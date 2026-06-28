@@ -6,6 +6,7 @@ import {
   normalizeQueuedPromptStatus,
   projectQueuedPrompt,
   queuedPromptActionability,
+  queuedPromptActionabilityMatches,
   queuedPromptControlForPrompt,
   queuedPromptProjectionForAgent,
   queuedPromptsForAgent,
@@ -51,6 +52,27 @@ test("queued prompt actionability prefers kernel projected controls", () => {
     steerDisabledReason: "kernel says external turn",
     cancelDisabledReason: null,
   })
+})
+
+test("queued prompt actionability comparison includes status and controls", () => {
+  const current = queuedPromptActionability("queued")
+  assert.equal(queuedPromptActionabilityMatches(current, {
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  }), true)
+
+  assert.equal(queuedPromptActionabilityMatches(current, {
+    ...current,
+    canSteer: false,
+  }), false)
+  assert.equal(queuedPromptActionabilityMatches(current, {
+    ...current,
+    steerDisabledReason: "kernel reason",
+  }), false)
 })
 
 test("queued prompt control lookup requires matching projected prompt identity", () => {

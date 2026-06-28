@@ -57,6 +57,18 @@ export function queuedPromptActionability(
   }
 }
 
+export function queuedPromptActionabilityMatches(
+  current: QueuedPromptActionability,
+  next: QueuedPromptActionability,
+): boolean {
+  return current.status === next.status
+    && current.steerDisabled === next.steerDisabled
+    && current.canSteer === next.canSteer
+    && current.canCancel === next.canCancel
+    && current.steerDisabledReason === next.steerDisabledReason
+    && current.cancelDisabledReason === next.cancelDisabledReason
+}
+
 export function queuedPromptControlForPrompt(
   controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
   promptId: string | null | undefined,

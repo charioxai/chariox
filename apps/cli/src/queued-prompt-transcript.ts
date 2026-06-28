@@ -3,9 +3,9 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
+  queuedPromptActionabilityMatches,
   queuedPromptProjectionForAgent,
   type ProjectedQueuedPrompt,
-  type QueuedPromptActionability,
 } from "@arroba/kernel-client/queued-prompt-controls"
 import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
@@ -130,18 +130,6 @@ function queuedPromptTranscriptEntry(
       cancelDisabledReason: prompt.cancelDisabledReason,
     },
   }
-}
-
-function queuedPromptActionabilityMatches(
-  current: NonNullable<TranscriptEntry["queuedPrompt"]>,
-  next: QueuedPromptActionability,
-): boolean {
-  return current.status === next.status
-    && current.steerDisabled === next.steerDisabled
-    && current.canSteer === next.canSteer
-    && current.canCancel === next.canCancel
-    && current.steerDisabledReason === next.steerDisabledReason
-    && current.cancelDisabledReason === next.cancelDisabledReason
 }
 
 function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {
