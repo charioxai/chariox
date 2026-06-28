@@ -11,7 +11,6 @@ import {
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
-  normalizeAgentRuntimeActivityStatus,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
@@ -588,10 +587,11 @@ export function agentRuntimeStateFromProjection(
   }
   const projected = context.agentActivity?.[agent.id]
   if (projected) {
-    if (normalizeAgentRuntimeActivityStatus(projected.status) === "error") {
+    const resolvedStatus = agentRuntimeActivityResolvedStatus(projected)
+    if (resolvedStatus === "error") {
       return "Error"
     }
-    return agentRuntimeActivityIsBusy(projected) ? "Working" : "Idle"
+    return resolvedStatus === "working" ? "Working" : "Idle"
   }
   const promptState = context.promptStates?.[agent.id]
   if (promptState !== undefined) {

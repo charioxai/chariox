@@ -7,6 +7,7 @@ export type AgentRuntimeActivityBusyInput = {
   readonly active_prompt_count?: number | null
   readonly queued_prompt_count?: number | null
   readonly active_turn?: unknown | null
+  readonly error?: boolean | null
 }
 
 export type AgentRuntimeActivityStatus = "idle" | "working" | "error"

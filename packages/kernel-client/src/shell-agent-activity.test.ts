@@ -12,6 +12,7 @@ import {
   runtimeProviderRunForAgent,
   resolveActiveToolLabelForAgent,
   resolveSessionStreamingAgentId,
+  agentRuntimeStateFromProjection,
   sessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent,
   sessionActivePromptLifecycleRecords,
@@ -1203,6 +1204,21 @@ test("sessionAgentRuntimeState normalizes projected error status", () => {
     state: "Idle",
     is_processing: false,
   })), "Error")
+
+  assert.equal(agentRuntimeStateFromProjection(makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  }), {
+    agentActivity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        error: true,
+      },
+    },
+  }), "Error")
 })
 
 test("sessionHasActivePrompt follows projected active turn identity", () => {
