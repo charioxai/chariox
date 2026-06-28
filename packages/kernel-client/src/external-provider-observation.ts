@@ -173,6 +173,38 @@ export function mergeExternalProviderObservedSource(
   return existing ?? incoming
 }
 
+export function mergeExternalProviderObservedHistoryFields<T extends ExternalProviderObservedMutableKernelFields>(
+  target: T,
+  incoming: ExternalProviderObservedKernelFields,
+): T {
+  if (incoming.external_observation === undefined && incoming.source === undefined) {
+    return target
+  }
+  if (target.source === undefined && incoming.source !== undefined) {
+    target.source = incoming.source
+  }
+  if (target.external_provider === undefined && incoming.external_provider !== undefined) {
+    target.external_provider = incoming.external_provider
+  }
+  if (target.external_provider_session_id === undefined && incoming.external_provider_session_id !== undefined) {
+    target.external_provider_session_id = incoming.external_provider_session_id
+  }
+  if (target.external_provider_turn_id === undefined && incoming.external_provider_turn_id !== undefined) {
+    target.external_provider_turn_id = incoming.external_provider_turn_id
+  }
+  if (target.observed_at_ms === undefined && incoming.observed_at_ms !== undefined) {
+    target.observed_at_ms = incoming.observed_at_ms
+  }
+  const externalObservation = mergeExternalProviderObservation(
+    target.external_observation,
+    incoming.external_observation,
+  )
+  if (externalObservation !== undefined) {
+    target.external_observation = externalObservation
+  }
+  return target
+}
+
 export type ExternalProviderObservedKernelFields = {
   readonly kind?: string | null | undefined
   readonly source?: string | null | undefined
@@ -181,6 +213,15 @@ export type ExternalProviderObservedKernelFields = {
   readonly external_provider_turn_id?: string | null | undefined
   readonly observed_at_ms?: number | null | undefined
   readonly external_observation?: SessionHistoryExternalObservation | null | undefined
+}
+
+export type ExternalProviderObservedMutableKernelFields = {
+  source?: string | null | undefined
+  external_provider?: string | null | undefined
+  external_provider_session_id?: string | null | undefined
+  external_provider_turn_id?: string | null | undefined
+  observed_at_ms?: number | null | undefined
+  external_observation?: SessionHistoryExternalObservation | null | undefined
 }
 
 export type ExternalProviderObservedStatusSignalFields = Pick<

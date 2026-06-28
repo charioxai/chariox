@@ -11,12 +11,14 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
   historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservedSource,
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
   transcriptExternalProviderObservedTurnMarker,
   transcriptExternalProviderObservedTurnMetadata,
+  type ExternalProviderObservedMutableKernelFields,
 } from "./external-provider-observation.js"
 
 test("external provider observed predicate requires kernel observed source", () => {
@@ -391,6 +393,70 @@ test("external provider observed source merge preserves observed source", () => 
     EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   )
   assert.equal(mergeExternalProviderObservedSource(null, "provider_output"), "provider_output")
+})
+
+test("external provider observed history field merge preserves first stable metadata", () => {
+  const target: ExternalProviderObservedMutableKernelFields & {
+    kind: string
+    text: string
+  } = {
+    kind: "provider_output",
+    text: "native ",
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "item-2",
+    observed_at_ms: 2_000,
+  })
+
+  assert.deepEqual(target, {
+    kind: "provider_output",
+    text: "native ",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+})
+
+test("external provider observed history field merge lets settlement override passive telemetry", () => {
+  const target = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+
+  assert.deepEqual(target.external_observation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
 })
 
 test("external provider observed turn marker resolves footer identity", () => {

@@ -1,6 +1,7 @@
 import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservation,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
@@ -485,29 +486,7 @@ function mergeHistoryExternalObservation(
   target: SessionHistoryEntry,
   incoming: SessionHistoryEntry,
 ) {
-  if (incoming.external_observation === undefined && incoming.source === undefined) {
-    return
-  }
-  if (target.source === undefined && incoming.source !== undefined) {
-    target.source = incoming.source
-  }
-  if (target.external_provider === undefined && incoming.external_provider !== undefined) {
-    target.external_provider = incoming.external_provider
-  }
-  if (target.external_provider_session_id === undefined && incoming.external_provider_session_id !== undefined) {
-    target.external_provider_session_id = incoming.external_provider_session_id
-  }
-  if (target.external_provider_turn_id === undefined && incoming.external_provider_turn_id !== undefined) {
-    target.external_provider_turn_id = incoming.external_provider_turn_id
-  }
-  if (target.observed_at_ms === undefined && incoming.observed_at_ms !== undefined) {
-    target.observed_at_ms = incoming.observed_at_ms
-  }
-  const externalObservation = mergeExternalProviderObservation(
-    target.external_observation,
-    incoming.external_observation,
-  )
-  if (externalObservation !== undefined) target.external_observation = externalObservation
+  mergeExternalProviderObservedHistoryFields(target, incoming)
 }
 
 function historyEntryIdentityOptions(
