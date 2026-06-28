@@ -172,10 +172,10 @@ impl ProviderProcessService {
         }
 
         if run_snapshot.state() == ProviderRunState::Ended {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: run_id.to_string(),
-                state: run_snapshot.state(),
-                operation: "terminate",
+            self.clear_runtime(run_id);
+            return Ok(ProviderRunEndedOutcome {
+                run: run_snapshot,
+                already_ended: true,
             });
         }
 

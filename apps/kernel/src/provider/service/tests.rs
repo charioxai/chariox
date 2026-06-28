@@ -420,6 +420,13 @@ fn provider_only_terminate_run_returns_outcome_without_session_mutation() {
             .active_provider_run_id(),
         Some(run.id())
     );
+
+    let outcome = providers
+        .terminate_run_provider_only(session.id(), run.id())
+        .expect("already-ended provider-only termination should succeed");
+    assert!(outcome.already_ended);
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Ended);
 }
 
 #[test]
