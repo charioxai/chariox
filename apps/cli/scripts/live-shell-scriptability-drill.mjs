@@ -253,7 +253,7 @@ async function main() {
       'workflow queue flush',
       'workflow runs',
       'provider processes',
-      'provider processes teardown',
+      'provider processes teardown dev-stub',
     ].join('\n'), 'utf8')
 
     const success = await run(process.execPath, [
@@ -289,6 +289,67 @@ async function main() {
       throw new Error(`success script did not expose a session id\n${success.stdout}`)
     }
     log('success-script-passed', { sessionId })
+
+    const unconfirmedBatchScript = path.join(scriptsDir, 'batch-spawn-unconfirmed.arroba')
+    await writeFile(unconfirmedBatchScript, [
+      'set provider dev-stub',
+      'set model shell-drill-model',
+      'set effort low',
+      'session use $session',
+      'agents spawn 50 reviewer',
+    ].join('\n'), 'utf8')
+    const unconfirmedBatch = await run(process.execPath, [
+      shellBin,
+      'run',
+      unconfirmedBatchScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      `session=${sessionId}`,
+    ], { env })
+    if (unconfirmedBatch.code === 0) {
+      throw new Error(`unconfirmed batch spawn unexpectedly exited 0\nstdout:\n${unconfirmedBatch.stdout}\nstderr:\n${unconfirmedBatch.stderr}`)
+    }
+    requireOutput(unconfirmedBatch.stdout, /spawning 50 agents requires confirmation/, 'large batch confirmation prompt')
+    requireOutput(unconfirmedBatch.stdout, /--confirm-large/, 'large batch confirmation flag')
+
+    const batchScript = path.join(scriptsDir, 'batch-spawn.arroba')
+    await writeFile(batchScript, [
+      'set provider dev-stub',
+      'set model shell-drill-model',
+      'set effort low',
+      'session use $session',
+      'agents spawn 50 reviewer --confirm-large',
+      'agents spawn 10 promptbot --prompt "shell drill batch prompt" --concurrency 5',
+      'stop',
+      'agent list',
+    ].join('\n'), 'utf8')
+    const batch = await run(process.execPath, [
+      shellBin,
+      'run',
+      batchScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      `session=${sessionId}`,
+    ], { env })
+    if (batch.code !== 0) {
+      throw new Error(`batch spawn script failed\nstdout:\n${batch.stdout}\nstderr:\n${batch.stderr}`)
+    }
+    requireOutput(batch.stdout, /spawned 50 agents \([0-9a-f]+\.\.[0-9a-f]+\)/, 'confirmed 50-agent batch spawn')
+    requireOutput(batch.stdout, /spawned 10 agents \([0-9a-f]+\.\.[0-9a-f]+\); prompted 10 agents with concurrency 5/, 'prompted 10-agent batch spawn')
+    requireOutput(batch.stdout, /cancellation requested for prompt/, 'prompted batch cleanup stop')
+    requireOutput(batch.stdout, /reviewer-50/, 'batch agent list tail alias')
+    requireOutput(batch.stdout, /promptbot-10/, 'prompted batch agent list tail alias')
+    log('batch-spawn-script-passed')
 
     const auditScript = path.join(scriptsDir, 'continue-on-error.arroba')
     await writeFile(auditScript, [

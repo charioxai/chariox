@@ -87,6 +87,32 @@ export function appendNativeProviderOutputRequest(
   }
 }
 
+export type AppendNativeProviderOutputBatchItem = {
+  providerRunId: string
+  kind: "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
+  text: string
+  mergeKey?: string | null
+}
+
+export function appendNativeProviderOutputBatchRequest(
+  sessionId: string,
+  attachmentId: string,
+  outputs: AppendNativeProviderOutputBatchItem[],
+) {
+  return {
+    AppendNativeProviderOutputBatch: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      outputs: outputs.map((output) => ({
+        provider_run_id: output.providerRunId,
+        kind: output.kind,
+        merge_key: output.mergeKey ?? null,
+        text: output.text,
+      })),
+    },
+  }
+}
+
 export function submitPromptRequest(
   sessionId: string,
   attachmentId: string,
@@ -102,6 +128,48 @@ export function submitPromptRequest(
       prompt,
       attachments,
     },
+  }
+}
+
+export type SubmitPromptBatchItem = {
+  sessionId?: string | null
+  attachmentId?: string | null
+  targetAgentId: string
+  prompt: string
+  attachments: PromptAttachmentPart[]
+}
+
+export function submitPromptsRequest(
+  sessionId: string,
+  attachmentId: string,
+  prompts: SubmitPromptBatchItem[],
+  maxConcurrency?: number | null,
+) {
+  validatePromptBatch(sessionId, prompts)
+  return {
+    SubmitPrompts: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      max_concurrency: maxConcurrency ?? null,
+      prompts: prompts.map((prompt) => ({
+        session_id: prompt.sessionId ?? null,
+        attachment_id: prompt.attachmentId ?? null,
+        target_agent_id: prompt.targetAgentId,
+        prompt: prompt.prompt,
+        attachments: prompt.attachments,
+      })),
+    },
+  }
+}
+
+function validatePromptBatch(sessionId: string, prompts: SubmitPromptBatchItem[]): void {
+  const seenTargets = new Set<string>()
+  for (const prompt of prompts) {
+    const targetKey = `${prompt.sessionId ?? sessionId}\0${prompt.targetAgentId}`
+    if (seenTargets.has(targetKey)) {
+      throw new Error("prompt batch contains duplicate target agents")
+    }
+    seenTargets.add(targetKey)
   }
 }
 

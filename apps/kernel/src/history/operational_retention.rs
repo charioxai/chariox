@@ -10,6 +10,8 @@ const OPERATIONAL_HISTORY_WAL_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 
 impl OperationalHistoryStore {
     pub fn enforce_size_budget(&self) -> Result<(), DaemonError> {
+        self.appended_bytes_since_size_check
+            .store(0, Ordering::Release);
         let mut total_deleted = 0usize;
         while self.estimated_live_size_bytes()? > self.max_size_bytes {
             let deleted = self.prune_oldest_events(self.next_size_prune_batch_len()?)?;
@@ -46,6 +48,20 @@ impl OperationalHistoryStore {
             self.reclaim_disk_space_without_blocking_appends()?;
         }
         Ok(())
+    }
+
+    pub(super) fn enforce_size_budget_after_append(
+        &self,
+        estimated_append_bytes: u64,
+    ) -> Result<(), DaemonError> {
+        let pending_bytes = self
+            .appended_bytes_since_size_check
+            .fetch_add(estimated_append_bytes.max(1), Ordering::AcqRel)
+            .saturating_add(estimated_append_bytes.max(1));
+        if pending_bytes < self.size_budget_check_interval_bytes() {
+            return Ok(());
+        }
+        self.enforce_size_budget()
     }
 
     pub fn prune_events_before(

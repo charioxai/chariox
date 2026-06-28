@@ -1,6 +1,94 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn inject_metaagent_agent_lifecycle_event_for_agents(
+        &self,
+        session_id: &str,
+        agents: &[crate::agent::AgentInstance],
+        kind: &str,
+    ) -> Result<(), DaemonError> {
+        let mut agents_by_owner =
+            std::collections::BTreeMap::<String, Vec<&crate::agent::AgentInstance>>::new();
+        for agent in agents.iter().filter(|agent| !agent.is_metaagent()) {
+            agents_by_owner
+                .entry(agent.owner_user_id().to_string())
+                .or_default()
+                .push(agent);
+        }
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for (owner_user_id, agents) in agents_by_owner {
+            let Some(metaagent) = self
+                .owned
+                .agent_store
+                .get_session_agents(session_id)
+                .into_iter()
+                .find(|agent| agent.is_metaagent() && agent.owner_user_id() == owner_user_id)
+            else {
+                continue;
+            };
+            let agent_refs = agents
+                .iter()
+                .map(|agent| agent.agent_ref().to_string())
+                .collect::<Vec<_>>();
+            let preview_refs = agent_refs
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let omitted = agent_refs.len().saturating_sub(12);
+            let title = match kind {
+                "agents.spawned" => format!("{} agents were spawned", agent_refs.len()),
+                _ => format!("{} agents changed", agent_refs.len()),
+            };
+            let summary = match kind {
+                "agents.spawned" => {
+                    if omitted == 0 {
+                        format!("{} regular agents were spawned by the user in this session: {preview_refs}.", agent_refs.len())
+                    } else {
+                        format!(
+                            "{} regular agents were spawned by the user in this session: {preview_refs}, and {omitted} more.",
+                            agent_refs.len()
+                        )
+                    }
+                }
+                _ => format!(
+                    "{} regular agents had lifecycle event `{kind}` in this session.",
+                    agent_refs.len()
+                ),
+            };
+            let source_attachment_id =
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(&format!(
+                    "metaagent-{kind}-{}",
+                    agents.first().map(|agent| agent.id()).unwrap_or("batch")
+                ));
+            dispatches.extend(self.owned.metaagent_event_prompt_for_metaagent(
+                session_id,
+                &metaagent,
+                kind,
+                None,
+                &source_attachment_id,
+                title,
+                summary,
+                serde_json::json!({
+                    "agent_count": agent_refs.len(),
+                    "agents": agents.iter().map(|agent| {
+                        serde_json::json!({
+                            "id": agent.id(),
+                            "ref": agent.agent_ref(),
+                            "alias": agent.alias(),
+                            "owner_user_id": agent.owner_user_id(),
+                        })
+                    }).collect::<Vec<_>>(),
+                    "kind": kind,
+                }),
+                "agents".to_string(),
+            ));
+        }
+        self.spawn_workflow_prompt_dispatches(dispatches);
+        Ok(())
+    }
+
     pub(crate) async fn inject_metaagent_agent_lifecycle_event_for_agent(
         &self,
         session_id: &str,
@@ -236,6 +324,7 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             })
             .await?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
@@ -541,6 +630,7 @@ impl KernelRuntimeOwnedState {
             session_id: session_id.to_string(),
             prompt,
             force_queue: false,
+            refresh_projection: true,
         };
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
             Some(submission) => submission,

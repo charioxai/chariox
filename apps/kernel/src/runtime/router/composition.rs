@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use crate::app::{
     AttachedProviderTranscriptCursorStore, DaemonApp, ExternalProviderSessionIndexStore,
@@ -75,17 +75,8 @@ impl CommandRouter {
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
     ) -> Self {
-        let started = Instant::now();
         let (provider_runtime_lanes, transport_health) = {
-            let app = loop {
-                if let Ok(app) = app.try_lock() {
-                    break app;
-                }
-                if started.elapsed() >= Duration::from_secs(5) {
-                    panic!("CommandRouter could not acquire the app lock during bootstrap");
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            };
+            let app = wait_for_daemon_app_lock(&app, "router bootstrap");
             (
                 app.provider_run_operation_lanes(),
                 app.transport_health_store(),
@@ -151,16 +142,7 @@ pub(super) struct RouterProjectionStores {
 }
 
 pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterProjectionStores {
-    let started = Instant::now();
-    let app = loop {
-        if let Ok(app) = app.try_lock() {
-            break app;
-        }
-        if started.elapsed() >= Duration::from_secs(5) {
-            panic!("CommandRouter could not acquire the app lock during bootstrap");
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
+    let app = wait_for_daemon_app_lock(app, "projection store bootstrap");
     RouterProjectionStores {
         history_store: app.history_store(),
         operational_history_store: app.operational_history_store(),
@@ -193,6 +175,28 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         workspace_coordinator: app.workspace_coordinator(),
         prompt_state_owner: app.prompt_state_owner(),
         prompt_id_allocator: app.prompt_id_allocator(),
+    }
+}
+
+fn wait_for_daemon_app_lock<'a>(
+    app: &'a Arc<Mutex<DaemonApp>>,
+    context: &str,
+) -> MutexGuard<'a, DaemonApp> {
+    let started = Instant::now();
+    let mut next_diagnostic = Duration::from_secs(5);
+    loop {
+        if let Ok(app) = app.try_lock() {
+            return app;
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= next_diagnostic {
+            eprintln!(
+                "CommandRouter waiting for app lock during {context}; waited_ms={}",
+                elapsed.as_millis(),
+            );
+            next_diagnostic += Duration::from_secs(5);
+        }
+        std::thread::sleep(Duration::from_millis(2));
     }
 }
 

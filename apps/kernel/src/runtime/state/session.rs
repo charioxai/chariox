@@ -10,12 +10,27 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.build_session_snapshot(session_id)?;
+        self.session_projection.update(session.clone());
+        self.runtime_projection_changes.record_change();
+        Ok(session)
+    }
+
+    pub(super) fn session_snapshot_without_projection_update(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.build_session_snapshot(session_id)
+    }
+
+    fn build_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
         self.project_session_runtime_view(&mut session);
-        self.session_projection.update(session.clone());
-        self.runtime_projection_changes.record_change();
         Ok(session)
     }
 

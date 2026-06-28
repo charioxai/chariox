@@ -51,6 +51,7 @@ pub(crate) async fn handle_health_connection(
         200
     };
     let guard = registry.read().await;
+    let backpressure = guard.backpressure_metrics();
     let mut body = json!({
         "status": status,
         "draining": is_draining,
@@ -60,6 +61,10 @@ pub(crate) async fn handle_health_connection(
         "pending_request_count": guard.pending_request_count(),
         "subscription_count": guard.subscription_count(),
         "display_tunnel_count": guard.display_tunnel_count(),
+        "backpressure": {
+            "target_queue_full_count": backpressure.target_queue_full_count,
+            "slow_subscription_close_count": backpressure.slow_subscription_close_count,
+        },
     });
     drop(guard);
     if http_status == 503 {

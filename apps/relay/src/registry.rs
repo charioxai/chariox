@@ -74,6 +74,12 @@ pub(crate) struct ActiveSubscription {
     pub(crate) daemon_key: DaemonKey,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelayBackpressureMetrics {
+    pub target_queue_full_count: u64,
+    pub slow_subscription_close_count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DisplayTunnelRegistration {
     pub(crate) daemon_key: DaemonKey,
@@ -122,6 +128,7 @@ pub struct RelayRegistry {
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
     pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
     pub(crate) pending_display_streams: BTreeMap<String, PendingDisplayStream>,
+    backpressure_metrics: RelayBackpressureMetrics,
 }
 
 impl RelayRegistry {
@@ -152,6 +159,24 @@ impl RelayRegistry {
 
     pub fn display_tunnel_count(&self) -> usize {
         self.display_tunnels.len()
+    }
+
+    pub fn backpressure_metrics(&self) -> RelayBackpressureMetrics {
+        self.backpressure_metrics
+    }
+
+    pub(crate) fn record_target_queue_full(&mut self) {
+        self.backpressure_metrics.target_queue_full_count = self
+            .backpressure_metrics
+            .target_queue_full_count
+            .saturating_add(1);
+    }
+
+    pub(crate) fn record_slow_subscription_close(&mut self) {
+        self.backpressure_metrics.slow_subscription_close_count = self
+            .backpressure_metrics
+            .slow_subscription_close_count
+            .saturating_add(1);
     }
 
     pub(crate) fn register_display_tunnel(

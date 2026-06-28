@@ -12,6 +12,7 @@ import {
   focusAgent as focusAgentApi,
   forkAgent as forkAgentApi,
   spawnAgent as spawnAgentApi,
+  spawnAgents as spawnAgentsApi,
   undoTurn as undoTurnApi,
   updateAgentConfig,
   updateAgentProfile,
@@ -94,6 +95,7 @@ import {
   getProviderAuthStatus,
   getProviderRun,
   launchProviderRun,
+  launchProviderRuns,
   listProviderProcesses,
   logoutProvider,
   startProviderLogin,
@@ -668,6 +670,46 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return {
         agent,
         session: await getSessionState(client, sessionState().id),
+      }
+    },
+    spawnAgents: async (agents) => {
+      const spawned = await spawnAgentsApi(
+        client,
+        sessionState().id,
+        {
+          agents: agents.map((agent) => ({
+            provider: agent.provider,
+            alias: agent.alias,
+            model: agent.model,
+            effort: agent.effort,
+            worktreeId: agent.worktreeId,
+            kernelRef: agent.machineRef,
+            worktreePlacement: agent.worktreePlacement,
+            sliceRef: agent.sliceRef,
+          })),
+        },
+      )
+      return {
+        agents: spawned,
+        session: await getSessionState(client, sessionState().id),
+      }
+    },
+    launchAgentProviderRuns: async (provider, model, variant, agentIds) => {
+      const result = await launchProviderRuns(
+        client,
+        agentIds.map((agentId) => ({
+          sessionId: sessionState().id,
+          provider,
+          accountProfile: options.accountProfile,
+          model,
+          effort: variant,
+          agentId,
+        })),
+        Math.min(8, Math.max(1, agentIds.length)),
+      )
+      return {
+        runs: result.providerRuns,
+        failures: result.failures,
       }
     },
     importExternalProviderAgent: async (externalSessionId) => {

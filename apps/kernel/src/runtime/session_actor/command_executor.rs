@@ -188,6 +188,11 @@ impl SessionRuntimeCommandExecutor {
                     .spawn_agent(request, caller_user_id, caller_metaagent_id)
                     .await
             }
+            LocalDaemonRequest::SpawnAgents(request) => {
+                self.store
+                    .spawn_agents(request, caller_user_id, caller_metaagent_id)
+                    .await
+            }
             LocalDaemonRequest::UndoTurn(request) => {
                 self.store.undo_turn(request, caller_user_id).await
             }

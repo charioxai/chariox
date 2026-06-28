@@ -138,6 +138,7 @@ pub const META_WORKFLOW_REGISTRY_RUN_TOOL: &str = "arroba.meta.workflow_registry
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
+pub const META_EVENT_KIND_AGENTS_SPAWNED: &str = "agents.spawned";
 pub const META_EVENT_KIND_RUNTIME_INTERACTION: &str = "runtime.interaction";
 pub const META_EVENT_KIND_WORKFLOW_RUN_STARTED: &str = "workflow.run.started";
 pub const META_EVENT_KIND_WORKFLOW_RUN_UPDATED: &str = "workflow.run.updated";
@@ -150,6 +151,7 @@ pub const META_EVENT_KIND_WORKFLOW_OUTPUT_INTERMEDIATE: &str = "workflow.output.
 pub const META_EVENT_KINDS: &[&str] = &[
     META_EVENT_KIND_AGENT_TURN_COMPLETED,
     META_EVENT_KIND_AGENT_TURN_FAILED,
+    META_EVENT_KIND_AGENTS_SPAWNED,
     META_EVENT_KIND_RUNTIME_INTERACTION,
     META_EVENT_KIND_WORKFLOW_RUN_STARTED,
     META_EVENT_KIND_WORKFLOW_RUN_UPDATED,

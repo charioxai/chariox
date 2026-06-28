@@ -294,6 +294,7 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
             request = self.prepare_local_agent_worktree_placement(request)?;
             return self.owned.spawn_agent(request);
@@ -302,6 +303,60 @@ impl KernelRuntimeState {
             crate::app::KernelSessionService::new(app).spawn_agent(request)
         })
         .await
+    }
+
+    pub(crate) async fn spawn_agents(
+        &self,
+        mut requests: Vec<crate::agent::CreateAgentRequest>,
+        caller_user_id: &str,
+    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        for request in &mut requests {
+            self.normalize_local_kernel_ref(request);
+        }
+        if requests.iter().all(|request| request.kernel_ref.is_none()) {
+            let mut prepared_requests = Vec::with_capacity(requests.len());
+            for request in requests {
+                prepared_requests.push(self.prepare_local_agent_worktree_placement(request)?);
+            }
+            return self.owned.spawn_agents(prepared_requests);
+        }
+
+        let mut ordered_agents = vec![None; requests.len()];
+        let mut local_requests = Vec::new();
+        let mut local_indices = Vec::new();
+        for (index, request) in requests.into_iter().enumerate() {
+            if request.kernel_ref.is_none() {
+                local_requests.push(self.prepare_local_agent_worktree_placement(request)?);
+                local_indices.push(index);
+            } else {
+                ordered_agents[index] = Some(self.spawn_agent(request).await?);
+            }
+        }
+        if !local_requests.is_empty() {
+            let local_agents = self.owned.spawn_agents(local_requests)?;
+            for (index, agent) in local_indices.into_iter().zip(local_agents.into_iter()) {
+                ordered_agents[index] = Some(agent);
+            }
+        }
+        let agents = ordered_agents
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .expect("every batch spawn slot should be populated");
+        if let Some(last_agent) = agents.last() {
+            self.owned
+                .focus_agent(last_agent.session_id(), last_agent.id(), caller_user_id)?;
+        }
+        Ok(agents)
+    }
+
+    fn normalize_local_kernel_ref(&self, request: &mut crate::agent::CreateAgentRequest) {
+        let Some(kernel_ref) = request.kernel_ref.as_deref() else {
+            return;
+        };
+        let config = self.owned.config_projection.snapshot();
+        if kernel_ref_matches_local_config(&config, kernel_ref) {
+            request.kernel_ref = None;
+        }
     }
 
     fn prepare_local_agent_worktree_placement(
@@ -376,6 +431,29 @@ impl KernelRuntimeState {
             serde_json::json!({ "slice": &slice }),
         )?;
         Ok(slice)
+    }
+
+    pub(crate) async fn attach_slice_agents(
+        &self,
+        attachments: Vec<crate::slice::SliceAgentAttachment>,
+    ) -> Result<Vec<crate::slice::SliceRecord>, DaemonError> {
+        if attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+        let slices = self
+            .with_app_side_effect(move |app| {
+                app.slices()
+                    .attach_agents(attachments, crate::session::unix_epoch_ms())
+            })
+            .await?;
+        for slice in &slices {
+            self.owned.durable_state_store.append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": slice }),
+            )?;
+        }
+        Ok(slices)
     }
 
     pub(crate) async fn move_agent_to_remote(
@@ -650,6 +728,12 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .as_ref()
         .map(|defaults| defaults.provider.as_str())
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
+}
+
+fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+    let kernel_ref = kernel_ref.trim();
+    !kernel_ref.is_empty()
+        && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))
 }
 
 fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>) -> bool {

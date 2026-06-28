@@ -31,6 +31,7 @@ pub use session_log::{
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
 pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
+const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -451,6 +452,7 @@ pub struct OperationalHistoryStore {
     connection: Arc<Mutex<Connection>>,
     next_sequence: Arc<AtomicU64>,
     reclaim_in_progress: Arc<AtomicBool>,
+    appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
     max_size_bytes: u64,
 }
@@ -501,6 +503,7 @@ impl OperationalHistoryStore {
             connection: Arc::new(Mutex::new(connection)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
+            appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
         };
@@ -523,6 +526,24 @@ impl OperationalHistoryStore {
         let event = HistoryEvent::transcript(sequence, entry, context);
         self.append(&event)?;
         Ok(event)
+    }
+
+    pub fn append_transcripts(
+        &self,
+        entries: Vec<(&SessionHistoryEntry, HistoryEventTurnContext)>,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let events = entries
+            .into_iter()
+            .map(|(entry, context)| {
+                let sequence = self.reserve_sequence();
+                HistoryEvent::transcript(sequence, entry, context)
+            })
+            .collect::<Vec<_>>();
+        self.append_many(&events)?;
+        Ok(events)
     }
 
     pub fn replace_transcript_by_merge_key(
@@ -684,24 +705,88 @@ impl OperationalHistoryStore {
     }
 
     pub fn append(&self, event: &HistoryEvent) -> Result<(), DaemonError> {
-        let event_json =
-            serde_json::to_string(event).map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: event.session_id.clone(),
-                operation: "encode operational history event",
-                message: error.to_string(),
+        self.append_many(std::slice::from_ref(event))
+    }
+
+    pub fn append_many(&self, events: &[HistoryEvent]) -> Result<(), DaemonError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut encoded_events = Vec::with_capacity(events.len());
+        let mut estimated_append_bytes = 0_u64;
+        for event in events {
+            let event_json = serde_json::to_string(event).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: event.session_id.clone(),
+                    operation: "encode operational history event",
+                    message: error.to_string(),
+                }
             })?;
-        let metadata_text = searchable_metadata(event);
-        let connection =
+            let metadata_text = searchable_metadata(event);
+            estimated_append_bytes = estimated_append_bytes.saturating_add(
+                estimate_history_event_storage_bytes(&event_json, &metadata_text),
+            );
+            encoded_events.push((event, event_json, metadata_text));
+        }
+        let mut connection =
             self.connection
                 .lock()
                 .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: event.session_id.clone(),
+                    session_id: events.first().and_then(|event| event.session_id.clone()),
                     operation: "lock operational history store",
                     message: error.to_string(),
                 })?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO history_events (
+        let transaction = connection.transaction().map_err(|error| {
+            operational_history_error("begin operational history append", error)
+        })?;
+        {
+            let mut statement = transaction
+                .prepare(OPERATIONAL_HISTORY_INSERT_SQL)
+                .map_err(|error| {
+                    operational_history_error("prepare operational history append", error)
+                })?;
+            for (event, event_json, metadata_text) in encoded_events {
+                statement
+                    .execute(params![
+                        event.event_id.as_str(),
+                        event.sequence as i64,
+                        event.timestamp_ms as i64,
+                        history_event_kind_key(event.kind),
+                        event.session_id.as_deref(),
+                        event.agent_id.as_deref(),
+                        event.provider.as_deref(),
+                        event.model.as_deref(),
+                        event.turn_id.as_deref(),
+                        event.prompt_id.as_deref(),
+                        event.provider_run_id.as_deref(),
+                        event.workflow_id.as_deref(),
+                        event.workflow_run_id.as_deref(),
+                        event.workflow_node_id.as_deref(),
+                        event.machine_id.as_deref(),
+                        event.repo_root.as_deref(),
+                        event.worktree_path.as_deref(),
+                        event.content.as_deref(),
+                        event.content_ref.as_deref(),
+                        metadata_text,
+                        event_json,
+                    ])
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: event.session_id.clone(),
+                        operation: "append operational history event",
+                        message: error.to_string(),
+                    })?;
+            }
+        }
+        transaction.commit().map_err(|error| {
+            operational_history_error("commit operational history append", error)
+        })?;
+        drop(connection);
+        self.enforce_size_budget_after_append(estimated_append_bytes)?;
+        Ok(())
+    }
+}
+
+const OPERATIONAL_HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO history_events (
                     event_id,
                     sequence,
                     timestamp_ms,
@@ -723,49 +808,21 @@ impl OperationalHistoryStore {
                     content_ref,
                     metadata_text,
                     event_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
-                params![
-                    event.event_id.as_str(),
-                    event.sequence as i64,
-                    event.timestamp_ms as i64,
-                    history_event_kind_key(event.kind),
-                    event.session_id.as_deref(),
-                    event.agent_id.as_deref(),
-                    event.provider.as_deref(),
-                    event.model.as_deref(),
-                    event.turn_id.as_deref(),
-                    event.prompt_id.as_deref(),
-                    event.provider_run_id.as_deref(),
-                    event.workflow_id.as_deref(),
-                    event.workflow_run_id.as_deref(),
-                    event.workflow_node_id.as_deref(),
-                    event.machine_id.as_deref(),
-                    event.repo_root.as_deref(),
-                    event.worktree_path.as_deref(),
-                    event.content.as_deref(),
-                    event.content_ref.as_deref(),
-                    metadata_text,
-                    event_json,
-                ],
-            )
-            .map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: event.session_id.clone(),
-                    operation: "append operational history event",
-                    message: error.to_string(),
-                }
-            })?;
-        drop(connection);
-        self.enforce_size_budget()?;
-        Ok(())
-    }
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)";
 
+impl OperationalHistoryStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     pub fn max_size_bytes(&self) -> u64 {
         self.max_size_bytes
+    }
+
+    fn size_budget_check_interval_bytes(&self) -> u64 {
+        OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES
+            .min((self.max_size_bytes / 4).max(1))
+            .max(1)
     }
 }
 
@@ -877,6 +934,13 @@ fn searchable_metadata(event: &HistoryEvent) -> String {
     parts.join("\n")
 }
 
+fn estimate_history_event_storage_bytes(event_json: &str, metadata_text: &str) -> u64 {
+    event_json
+        .len()
+        .saturating_add(metadata_text.len())
+        .saturating_add(512) as u64
+}
+
 fn collect_searchable_json_strings(value: &serde_json::Value, parts: &mut Vec<String>) {
     match value {
         serde_json::Value::String(value) => parts.push(value.clone()),
@@ -903,6 +967,8 @@ fn unix_epoch_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use base64::Engine;
 
     use crate::config::DaemonConfig;
@@ -1594,6 +1660,56 @@ mod tests {
                 .legacy_fallback_disabled("session-1")
                 .expect("legacy fallback marker should load"),
             "pruned sessions should not fall back to legacy JSONL"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn operational_history_amortizes_size_budget_checks_for_small_appends() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-amortized-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store = OperationalHistoryStore::open_with_read_delay_and_max_size(
+            path.clone(),
+            0,
+            16 * 1024 * 1024,
+        )
+        .expect("operational history store should open");
+        let entry = SessionHistoryEntry::provider_output(
+            "session-amortized",
+            "provider-run-amortized",
+            Some("agent-amortized"),
+            TerminalOutputKind::ProviderOutput,
+            Some("chunk-1".to_string()),
+            "small output",
+        );
+        let event = HistoryEvent::transcript(1, &entry, HistoryEventTurnContext::default());
+        store.append(&event).expect("event should append");
+        assert!(
+            store
+                .appended_bytes_since_size_check
+                .load(Ordering::Acquire)
+                > 0,
+            "small appends should defer retention work until the byte threshold is reached"
+        );
+
+        store
+            .enforce_size_budget()
+            .expect("explicit retention check should succeed");
+        assert_eq!(
+            store
+                .appended_bytes_since_size_check
+                .load(Ordering::Acquire),
+            0
         );
 
         let _ = std::fs::remove_file(&path);

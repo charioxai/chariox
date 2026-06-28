@@ -20,6 +20,11 @@ type AgentSpawnPayload = {
   session: RuntimeSession
 }
 
+type AgentSpawnBatchPayload = {
+  agents: AgentInstance[]
+  session: RuntimeSession
+}
+
 export type AgentSpawnCommandHandlerDeps = {
   currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
@@ -58,6 +63,24 @@ export type AgentSpawnCommandHandlerDeps = {
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
     sliceRef?: string,
   ) => Promise<AgentSpawnPayload>
+  spawnAgents?: (
+    agents: Array<{
+      provider?: string | null | undefined
+      alias?: string | undefined
+      model?: string | null | undefined
+      effort?: string | null | undefined
+      worktreeId?: string | undefined
+      machineRef?: string | undefined
+      worktreePlacement?: RemoteGitWorktreePlacement | undefined
+      sliceRef?: string | undefined
+    }>,
+  ) => Promise<AgentSpawnBatchPayload>
+  launchAgentProviderRuns?: (
+    provider: string,
+    model: string,
+    variant: string,
+    agentIds: readonly string[],
+  ) => Promise<{ runs: RuntimeProviderRun[]; failures: Array<{ index: number; agent_id?: string | null; message: string }> }>
   importExternalProviderAgent?: (
     externalSessionId: string,
   ) => Promise<AgentSpawnPayload & { providerRun?: RuntimeProviderRun | null }>
@@ -98,13 +121,44 @@ export async function handleAgentSpawnCommand(
       return
     }
     if (count !== null && parsed.positional.length === 1) {
-      for (let index = 0; index < count; index += 1) {
-        await spawnAndLaunchAgent(deps, {})
+      if (!deps.spawnAgents || !deps.launchAgentProviderRuns) {
+        for (let index = 0; index < count; index += 1) {
+          await spawnAndLaunchAgent(deps, {})
+        }
+        deps.flashFooter(
+          `spawned ${count} agent${count === 1 ? "" : "s"} from session defaults`,
+          "info",
+        )
+        return
       }
-      deps.flashFooter(
-        `spawned ${count} agent${count === 1 ? "" : "s"} from session defaults`,
-        "info",
+      const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({})))
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      const provider = deps.currentProviderId()
+      const model = deps.currentModelId()
+      const variant = deps.currentVariantId()
+      const launched = await deps.launchAgentProviderRuns(
+        provider,
+        model,
+        variant,
+        payload.agents.map((agent) => agent.id),
       )
+      deps.setProviderRunState(launched.runs.at(-1) ?? null)
+      const refreshedSession = await deps.refreshSessionState(payload.session.id)
+      deps.applySessionState(refreshedSession)
+      await deps.refreshAgentPanes(refreshedSession)
+      deps.rebuildTranscript()
+      deps.refreshSplitPaneFocusRepaint()
+      const failureSummary = launched.failures.length
+        ? `; ${launched.failures.length} launch failure${launched.failures.length === 1 ? "" : "s"}`
+        : ""
+      deps.flashFooter(
+        `spawned ${payload.agents.length} agent${payload.agents.length === 1 ? "" : "s"} from session defaults${failureSummary}`,
+        launched.failures.length ? "error" : "info",
+      )
+      if (launched.failures.length) {
+        return
+      }
       return
     }
 

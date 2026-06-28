@@ -581,6 +581,7 @@ Current architectural interpretation:
 - relay machine lists remain grouped by stable machine identity; when several kernels are online from the same machine, `/machine kernels <machine-ref>` shows each addressable relay kernel alias separately
 - user-facing stable names still come from local home-kernel rename/approval state; relay aliases are plain live metadata and do not become relay-owned user preferences
 - relay-visible machine metadata remains plain routing/liveness metadata; trust decisions and aliases are local home-kernel state, not relay authority
+- relay health endpoints expose transport-level backpressure counters such as target queue saturation and slow subscription closures; these metrics are for operations and scale drills only and do not require inspecting encrypted runtime payloads
 
 
 ### Docker Remote-Machine Lab

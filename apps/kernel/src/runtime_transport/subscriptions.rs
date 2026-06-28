@@ -7,7 +7,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::error::DaemonError;
 use crate::local::{RelayStatus, RemoteMachineRecord};
-use crate::runtime::event_log::{ReplayGap, ReplayOutcome};
+use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::CommandRouter;
 use crate::terminal::{
@@ -58,8 +58,14 @@ pub(super) async fn run_subscription_loop(
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
     loop {
-        let terminal_change_sequence = router.terminal_stream_change_sequence();
-        let session_projection_change_sequence = router.session_projection_change_sequence();
+        let terminal_attachment_change_sequence = router.terminal_attachment_change_sequence(
+            &subscription.session_id,
+            &subscription.attachment_id,
+        );
+        let terminal_session_change_sequence =
+            router.terminal_session_change_sequence(&subscription.session_id);
+        let session_projection_change_sequence =
+            router.session_projection_session_change_sequence(&subscription.session_id);
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
             || tick.wrapping_sub(last_snapshot_check_tick)
@@ -286,15 +292,23 @@ pub(super) async fn run_subscription_loop(
             crate::session::unix_epoch_ms(),
         );
         let wait_started = Instant::now();
-        let _ = timeout(
-            Duration::from_millis(wait_ms),
-            async {
-                tokio::select! {
-                    _ = router.wait_for_terminal_stream_change_after(terminal_change_sequence) => {}
-                    _ = router.wait_for_session_projection_change_after(session_projection_change_sequence) => {}
-                }
-            },
-        )
+        let _ = timeout(Duration::from_millis(wait_ms), async {
+            tokio::select! {
+                _ = router.wait_for_terminal_attachment_change_after(
+                    &subscription.session_id,
+                    &subscription.attachment_id,
+                    terminal_attachment_change_sequence
+                ) => {}
+                _ = router.wait_for_terminal_session_change_after(
+                    &subscription.session_id,
+                    terminal_session_change_sequence
+                ) => {}
+                _ = router.wait_for_session_projection_session_change_after(
+                    &subscription.session_id,
+                    session_projection_change_sequence
+                ) => {}
+            }
+        })
         .await;
         let elapsed_ticks =
             ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
@@ -561,7 +575,7 @@ pub(super) async fn replay_recent_events(
         }
     };
 
-    for persisted in events {
+    for persisted in compact_replay_events(events) {
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }
@@ -623,6 +637,25 @@ pub(super) async fn replay_recent_events(
         return ReplaySubscriptionResult::Overflow;
     }
     ReplaySubscriptionResult::Complete
+}
+
+fn compact_replay_events(events: Vec<LoggedEvent<KernelEvent>>) -> Vec<LoggedEvent<KernelEvent>> {
+    let latest_session_snapshot_event_id =
+        events.iter().rev().find_map(|event| match event.event {
+            KernelEvent::SessionSnapshot { .. } => Some(event.event_id),
+            _ => None,
+        });
+
+    events
+        .into_iter()
+        .filter(|event| match &event.event {
+            KernelEvent::Heartbeat { .. } | KernelEvent::TransportResumed { .. } => false,
+            KernelEvent::SessionSnapshot { .. } => {
+                latest_session_snapshot_event_id == Some(event.event_id)
+            }
+            _ => true,
+        })
+        .collect()
 }
 
 pub(super) async fn emit_replay_gap_snapshot(
@@ -815,5 +848,103 @@ async fn run_waiting_room_inventory_subscription_loop(
         let elapsed_ticks =
             ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
         tick = tick.wrapping_add(elapsed_ticks);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::session::RuntimeSession;
+    use crate::terminal::TerminalOutputKind;
+
+    #[test]
+    fn compact_replay_events_preserves_output_and_latest_snapshot_only() {
+        let events = vec![
+            logged_event(
+                1,
+                KernelEvent::Heartbeat {
+                    session_id: "session-a".to_string(),
+                },
+            ),
+            logged_event(2, session_snapshot_event("session-a", "snapshot-a")),
+            logged_event(3, terminal_output_event("session-a", "first")),
+            logged_event(4, session_snapshot_event("session-a", "snapshot-b")),
+            logged_event(
+                5,
+                KernelEvent::TransportResumed {
+                    session_id: "session-a".to_string(),
+                    resumed_from_event_id: Some(1),
+                },
+            ),
+            logged_event(6, terminal_output_event("session-a", "second")),
+        ];
+
+        let compacted = compact_replay_events(events);
+
+        assert_eq!(
+            compacted
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 6]
+        );
+        assert!(matches!(
+            compacted[0].event,
+            KernelEvent::TerminalOutput { .. }
+        ));
+        assert!(matches!(
+            compacted[1].event,
+            KernelEvent::SessionSnapshot { .. }
+        ));
+        assert!(matches!(
+            compacted[2].event,
+            KernelEvent::TerminalOutput { .. }
+        ));
+    }
+
+    fn logged_event(event_id: u64, event: KernelEvent) -> LoggedEvent<KernelEvent> {
+        LoggedEvent {
+            event_id,
+            stream_id: "session:session-a:attachment:attachment-a".to_string(),
+            stream_seq: event_id,
+            recorded_at_ms: event_id * 1_000,
+            event,
+        }
+    }
+
+    fn session_snapshot_event(session_id: &str, alias: &str) -> KernelEvent {
+        KernelEvent::SessionSnapshot {
+            session: Box::new(RuntimeSession::new(
+                session_id,
+                Some(alias.to_string()),
+                "workspace-a",
+                "worktree-a",
+                "machine-a",
+                "daemon-a",
+            )),
+            provider_run: Box::new(None),
+            agent_activity: Box::new(BTreeMap::new()),
+            agent_activity_revision: 0,
+        }
+    }
+
+    fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
+        KernelEvent::TerminalOutput {
+            records: vec![TerminalOutputRecord {
+                session_id: session_id.to_string(),
+                provider_run_id: "provider-run-a".to_string(),
+                agent_id: Some("agent-a".to_string()),
+                prompt_id: None,
+                source_attachment_id: None,
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some(marker.to_string()),
+                recipient_attachment_ids: vec!["attachment-a".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-a".to_string()],
+                bytes: marker.as_bytes().to_vec(),
+                external_observation_metadata: None,
+            }],
+        }
     }
 }

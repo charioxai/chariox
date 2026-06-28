@@ -20,7 +20,9 @@ use crate::runtime::native_interaction_bridge::execute_native_provider_interacti
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
-use crate::runtime::provider_launch_executor::execute_provider_launch_command;
+use crate::runtime::provider_launch_executor::{
+    execute_provider_batch_launch_command, execute_provider_launch_command,
+};
 use crate::runtime::provider_process_control::execute_provider_process_request;
 use crate::runtime::provider_run_control::execute_provider_run_request;
 use crate::runtime::relay_config_control::execute_relay_config_request;
@@ -31,7 +33,10 @@ use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::workflow_publication_endpoint_runtime::execute_register_workflow_publication_endpoint_request;
 use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
-use crate::runtime::terminal_output_executor::execute_append_native_provider_output_request;
+use crate::runtime::terminal_output_executor::{
+    execute_append_native_provider_output_batch_request,
+    execute_append_native_provider_output_request,
+};
 use crate::runtime::user_config_executor::execute_user_config_request;
 use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::is_workflow_command;
@@ -72,6 +77,9 @@ impl CommandRouter {
             }
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 execute_provider_launch_command(&self.runtime_state, &command, request).await
+            }
+            LocalDaemonRequest::LaunchProviderRuns(request) => {
+                execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
@@ -442,6 +450,15 @@ impl CommandRouter {
                 )
                 .await
             }
+            LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => {
+                execute_append_native_provider_output_batch_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    request,
+                )
+                .await
+            }
             request @ (LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)
             | LocalDaemonRequest::ReadFile(_)
@@ -459,6 +476,11 @@ impl CommandRouter {
             LocalDaemonRequest::SubmitPrompt(request) => {
                 self.agent_runtime
                     .dispatch_prompt_submit(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::SubmitPrompts(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_submit_batch(&command, request)
                     .await
             }
             LocalDaemonRequest::CompletePrompt(request) => {

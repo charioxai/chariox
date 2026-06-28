@@ -1069,6 +1069,9 @@ mod tests {
         assert!(healthy.starts_with("HTTP/1.1 200 OK"));
         assert!(healthy.contains("\"status\":\"healthy\""));
         assert!(healthy.contains("\"draining\":false"));
+        assert!(healthy.contains("\"backpressure\""));
+        assert!(healthy.contains("\"target_queue_full_count\":0"));
+        assert!(healthy.contains("\"slow_subscription_close_count\":0"));
         let _ = shutdown_tx.send(());
         server_task.await.expect("healthy server task should join");
 

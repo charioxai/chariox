@@ -39,6 +39,7 @@ impl KernelRuntimeOwnedState {
                     session_id: session_id.to_string(),
                     prompt,
                     force_queue: false,
+                    refresh_projection: true,
                 },
                 workflow_run.id(),
                 &workflow_node_run_id,

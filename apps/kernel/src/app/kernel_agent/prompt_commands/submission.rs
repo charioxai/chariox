@@ -77,6 +77,7 @@ impl<'a> KernelAgentService<'a> {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,
             force_queue: false,
+            refresh_projection: true,
         })?;
         let outcome = submitted.outcome;
         self.finish_compat_prompt_dispatch(submitted.dispatch)?;
@@ -107,6 +108,7 @@ impl<'a> KernelAgentService<'a> {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,
             force_queue: false,
+            refresh_projection: true,
         })?;
         if admission.remote_execution.is_some() {
             return Err(DaemonError::LocalTransport {

@@ -38,6 +38,39 @@ export function spawnAgentRequest(
   }
 }
 
+export type SpawnAgentBatchItem = {
+  provider?: string | null
+  alias?: string | null
+  model?: string | null
+  worktreeId?: string | null
+  effort?: string | null
+  executionMode?: "build" | "plan" | null
+  permissionLevel?: "required" | "yolo" | null
+  kernelRef?: string | null
+  worktreePlacement?: Record<string, unknown> | null
+  sliceRef?: string | null
+}
+
+export function spawnAgentsRequest(sessionId: string, agents: SpawnAgentBatchItem[]) {
+  return {
+    SpawnAgents: {
+      session_id: sessionId,
+      agents: agents.map((agent) => ({
+        provider: agent.provider ?? null,
+        alias: agent.alias ?? null,
+        model: agent.model ?? null,
+        effort: agent.effort ?? null,
+        execution_mode: agent.executionMode ?? null,
+        permission_level: agent.permissionLevel ?? null,
+        worktree_id: agent.worktreeId ?? null,
+        kernel_ref: agent.kernelRef ?? null,
+        slice_ref: agent.sliceRef ?? null,
+        worktree_placement: agent.worktreePlacement ?? null,
+      })),
+    },
+  }
+}
+
 export function undoTurnRequest(sessionId: string, agentRef?: string | null, turnRef?: string | null) {
   return {
     UndoTurn: {

@@ -312,6 +312,7 @@ impl<'a> KernelAgentService<'a> {
                 session_id: session_id.to_string(),
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             },
         ) {
             Ok(submitted) => submitted,
@@ -444,6 +445,7 @@ impl<'a> KernelAgentService<'a> {
                 session_id: session_id.clone(),
                 prompt,
                 force_queue: false,
+                refresh_projection: true,
             },
         ) {
             Ok(submitted) => submitted,

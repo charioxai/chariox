@@ -103,6 +103,17 @@ impl RestoredExternalProviderAttachmentState {
                     self.restore_agent_if_session_live(agent);
                 }
             }
+            "agents.created" => {
+                if let Ok(agents) = decode_durable_payload_field::<Vec<AgentInstance>>(
+                    event,
+                    "agents",
+                    "durable_state.scan_external_provider_attachment_agent_batch",
+                ) {
+                    for agent in agents {
+                        self.restore_agent_if_session_live(agent);
+                    }
+                }
+            }
             "agent.deleted" => {
                 if let Ok(agent) = decode_durable_payload_field::<AgentInstance>(
                     event,
@@ -366,6 +377,7 @@ impl DaemonApp {
         for mut session in sessions {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
+            self.sessions.restore_session(session.clone());
             self.update_session_projection(session);
         }
         Ok(())
@@ -378,6 +390,7 @@ impl DaemonApp {
         let mut session = self.sessions.get_session(session_id)?;
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
+        self.sessions.restore_session(session.clone());
         self.update_session_projection(session);
         Ok(())
     }
@@ -501,6 +514,26 @@ impl DaemonApp {
                 self.mark_agent_external_provider_sessions_attached(&agent);
                 self.agents.restore_agent(agent);
                 self.refresh_restored_agent_session_projection(&session_id)?;
+            }
+            "agents.created" => {
+                let agents: Vec<AgentInstance> = decode_durable_payload_field(
+                    &event,
+                    "agents",
+                    "durable_state.restore_agent_batch",
+                )?;
+                let mut restored_session_ids = std::collections::BTreeSet::new();
+                for agent in agents {
+                    let session_id = agent.session_id().to_string();
+                    if self.sessions.get_session(&session_id).is_err() {
+                        continue;
+                    }
+                    self.mark_agent_external_provider_sessions_attached(&agent);
+                    self.agents.restore_agent(agent);
+                    restored_session_ids.insert(session_id);
+                }
+                for session_id in restored_session_ids {
+                    self.refresh_restored_agent_session_projection(&session_id)?;
+                }
             }
             "agent.mcp_granted"
             | "agent.mcp_revoked"

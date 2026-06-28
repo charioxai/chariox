@@ -15,6 +15,7 @@ pub(super) enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,
         trace_id: String,
+        response_mode: PromptSubmitResponseMode,
     },
     CompletePrompt {
         request: crate::local::CompletePromptRequest,
@@ -31,6 +32,12 @@ pub(super) enum AgentCommand {
     CancelQueuedPrompt {
         request: crate::local::CancelQueuedPromptRequest,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptSubmitResponseMode {
+    Full,
+    BatchItem,
 }
 
 #[derive(Debug)]

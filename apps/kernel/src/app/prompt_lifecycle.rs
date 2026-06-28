@@ -170,6 +170,7 @@ pub(crate) struct KernelPreparedPromptSubmission {
     pub(crate) session_id: String,
     pub(crate) prompt: PromptQueueItem,
     pub(crate) force_queue: bool,
+    pub(crate) refresh_projection: bool,
 }
 
 pub(crate) struct KernelPromptAdmission {

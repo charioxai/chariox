@@ -135,6 +135,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::SubmitPrompts(request) => {
+            LocalRequestMetadata::new("prompts.submit", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -244,6 +249,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::DeleteKernel(_) => LocalRequestMetadata::new("kernel.delete", Normal),
         LocalDaemonRequest::SpawnAgent(request) => {
             LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::SpawnAgents(request) => {
+            LocalRequestMetadata::new("agents.spawn", Interactive).session(&request.session_id)
         }
         LocalDaemonRequest::UndoTurn(request) => {
             LocalRequestMetadata::new("turn.undo", Interactive).session(&request.session_id)
@@ -361,6 +369,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
+        LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
         LocalDaemonRequest::ListSessionMembers(_) => "session.members.list",
         LocalDaemonRequest::CreateSessionInvite(_) => "session.invite.create",
@@ -532,6 +541,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
         LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
         LocalDaemonRequest::AppendNativeProviderOutput(_) => "terminal.output.append_native",
+        LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => {
+            "terminal.output.append_native_batch"
+        }
         LocalDaemonRequest::RunShellCommand(_) => "capability.shell.run",
         LocalDaemonRequest::ReadDirectoryTree(_) => "capability.dir.tree",
         LocalDaemonRequest::ReadFile(_) => "capability.file.read",
@@ -543,6 +555,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
+        LocalDaemonRequest::SpawnAgents(_) => "agents.spawn",
         LocalDaemonRequest::UndoTurn(_) => "turn.undo",
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
@@ -644,6 +657,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)
+        | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)

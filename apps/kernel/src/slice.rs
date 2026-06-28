@@ -25,7 +25,7 @@ pub use model::{
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
-pub use store::{SliceHostRuntimeState, SliceOperationGuard, SliceStore};
+pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
 
 #[cfg(test)]
 mod tests {
@@ -433,6 +433,43 @@ mod tests {
         assert_eq!(attached.session_ids, vec!["session-1", "session-2"]);
         assert_eq!(attached.agent_ids, vec!["agent-2"]);
         assert_eq!(store.list_by_session("session-2").len(), 1);
+    }
+
+    #[test]
+    fn slice_store_batch_attaches_agents_with_one_record_update_per_slice() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+
+        let attached = store
+            .attach_agents(
+                vec![
+                    SliceAgentAttachment {
+                        slice_ref: slice.id.clone(),
+                        session_id: "session-1".to_string(),
+                        agent_id: "agent-1".to_string(),
+                    },
+                    SliceAgentAttachment {
+                        slice_ref: slice.name.clone(),
+                        session_id: "session-1".to_string(),
+                        agent_id: "agent-2".to_string(),
+                    },
+                ],
+                46,
+            )
+            .expect("slice should batch attach agents");
+
+        assert_eq!(
+            attached.len(),
+            1,
+            "batch attach should return one updated record per touched slice"
+        );
+        assert_eq!(attached[0].id, slice.id);
+        assert_eq!(attached[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(attached[0].session_ids, vec!["session-1"]);
+        assert_eq!(attached[0].agent_ids, vec!["agent-1", "agent-2"]);
+        assert_eq!(attached[0].updated_at_ms, 46);
     }
 
     #[test]

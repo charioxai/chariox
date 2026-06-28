@@ -101,7 +101,7 @@ pub(crate) async fn handle_connection(
                     }
                     continue;
                 }
-                _ = &mut writer_task => break,
+                _ = &mut writer_task, if !writer_task.is_finished() => break,
             };
             let Some(message) = message else {
                 break;
@@ -1629,6 +1629,7 @@ async fn close_slow_subscription(
     if let Some(sender) = sender {
         send_close(&sender, "relay event consumer is too slow".to_string());
         let _ = sender.try_send(Message::Close(None));
+        registry.write().await.record_slow_subscription_close();
     }
 }
 
@@ -1687,11 +1688,11 @@ async fn reject_client_pending_on_target_backpressure(
     relay_request_id: &str,
     client_request_id: String,
 ) -> Result<(), std::io::Error> {
-    registry
-        .write()
-        .await
-        .pending_requests
-        .remove(relay_request_id);
+    {
+        let mut guard = registry.write().await;
+        guard.pending_requests.remove(relay_request_id);
+        guard.record_target_queue_full();
+    }
     send_envelope(
         client_sender,
         &RelayEnvelope::ClientResponse {
@@ -1709,11 +1710,11 @@ async fn reject_peer_pending_on_target_backpressure(
     requester_request_id: String,
     target_daemon_id: String,
 ) -> Result<(), std::io::Error> {
-    registry
-        .write()
-        .await
-        .pending_daemon_peer_requests
-        .remove(relay_request_id);
+    {
+        let mut guard = registry.write().await;
+        guard.pending_daemon_peer_requests.remove(relay_request_id);
+        guard.record_target_queue_full();
+    }
     send_envelope(
         requester_sender,
         &RelayEnvelope::DaemonPeerResponse {
@@ -2178,6 +2179,11 @@ mod tests {
         let guard = registry.read().await;
         assert!(!guard.subscriptions.contains_key("slow-subscription"));
         assert!(guard.subscriptions.contains_key("other-subscription"));
+        assert_eq!(
+            guard.backpressure_metrics().slow_subscription_close_count,
+            1
+        );
+        assert_eq!(guard.backpressure_metrics().target_queue_full_count, 0);
         drop(guard);
         assert!(matches!(
             receiver.try_recv(),
@@ -2211,7 +2217,15 @@ mod tests {
         .await
         .expect("client rejection should enqueue");
 
-        assert_eq!(registry.read().await.pending_request_count(), 0);
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.pending_request_count(), 0);
+            assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
+            assert_eq!(
+                guard.backpressure_metrics().slow_subscription_close_count,
+                0
+            );
+        }
         let payload = match client_receiver.try_recv() {
             Ok(Message::Text(text)) => text,
             other => panic!("unexpected client rejection frame: {other:?}"),
@@ -2258,7 +2272,15 @@ mod tests {
         .await
         .expect("peer rejection should enqueue");
 
-        assert_eq!(registry.read().await.pending_request_count(), 0);
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.pending_request_count(), 0);
+            assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
+            assert_eq!(
+                guard.backpressure_metrics().slow_subscription_close_count,
+                0
+            );
+        }
         let payload = match requester_receiver.try_recv() {
             Ok(Message::Text(text)) => text,
             other => panic!("unexpected peer rejection frame: {other:?}"),

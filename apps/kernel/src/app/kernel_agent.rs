@@ -96,6 +96,7 @@ mod tests {
                     session_id: session.id().to_string(),
                     prompt,
                     force_queue: false,
+                    refresh_projection: true,
                 })
                 .expect("prepared remote submit should not require relay I/O")
         });

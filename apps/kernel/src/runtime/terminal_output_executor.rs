@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::error::DaemonError;
 use crate::local::{
-    AppendNativeProviderOutputRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
+    AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest, LocalDaemonResponse,
+    PumpTerminalOutputRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::projection::{
@@ -76,6 +77,16 @@ impl TerminalOutputExecutor {
                     self.projected_provider_run_is_idle(&request, provider_run_id)
                 })
             && !session.has_any_prompt_work()
+        {
+            return Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
+            });
+        }
+        if self
+            .terminal_stream
+            .has_pending_output_records(&request.session_id, &request.attachment_id)
         {
             return Ok(LocalDaemonResponse::TerminalOutput {
                 records: self
@@ -240,12 +251,20 @@ impl TerminalOutputStore {
 
 pub(crate) async fn execute_append_native_provider_output_request(
     runtime_state: &KernelRuntimeState,
-    session_projection: &SessionStateProjectionStore,
-    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    _session_projection: &SessionStateProjectionStore,
+    _agent_runtime_projection: &AgentRuntimeProjectionStore,
     request: AppendNativeProviderOutputRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (records, session) = runtime_state.append_native_provider_output(request)?;
-    agent_runtime_projection.update_session(&session);
-    session_projection.update(session);
+    let records = runtime_state.append_native_provider_output(request)?;
+    Ok(LocalDaemonResponse::TerminalOutput { records })
+}
+
+pub(crate) async fn execute_append_native_provider_output_batch_request(
+    runtime_state: &KernelRuntimeState,
+    _session_projection: &SessionStateProjectionStore,
+    _agent_runtime_projection: &AgentRuntimeProjectionStore,
+    request: AppendNativeProviderOutputBatchRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let records = runtime_state.append_native_provider_output_batch(request)?;
     Ok(LocalDaemonResponse::TerminalOutput { records })
 }

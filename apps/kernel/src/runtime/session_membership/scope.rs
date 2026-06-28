@@ -1,9 +1,12 @@
+use std::collections::HashSet;
+
 use crate::local::{LocalDaemonRequest, QueryRecallRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionMembershipScope {
     AllSessions,
     SessionId(String),
+    SessionIds(Vec<String>),
     SessionRef {
         session_ref: String,
         workspace_id: Option<String>,
@@ -42,6 +45,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::LaunchProviderRuns(request) => unique_session_scope(
+            request
+                .launches
+                .iter()
+                .map(|launch| launch.session_id.as_str()),
+        ),
         LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -75,6 +84,14 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SubmitPrompts(request) => unique_session_scope(
+            std::iter::once(request.session_id.as_str()).chain(
+                request
+                    .prompts
+                    .iter()
+                    .filter_map(|prompt| prompt.session_id.as_deref()),
+            ),
+        ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -153,6 +170,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AppendNativeProviderOutput(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -178,6 +198,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::SpawnAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SpawnAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::ImportExternalProviderAgent(request) => Some(
@@ -395,14 +418,32 @@ fn optional_session_scope(request: &QueryRecallRequest) -> Option<SessionMembers
         .map(|session_id| SessionMembershipScope::SessionId(session_id.clone()))
 }
 
+fn unique_session_scope<'a>(
+    session_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<SessionMembershipScope> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for session_id in session_ids {
+        if seen.insert(session_id) {
+            unique.push(session_id.to_string());
+        }
+    }
+    match unique.len() {
+        0 => None,
+        1 => unique.pop().map(SessionMembershipScope::SessionId),
+        _ => Some(SessionMembershipScope::SessionIds(unique)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, DetachFromSessionRequest, ListSessionsRequest, QueryRecallRequest,
-        RelayStatusRequest, ResolveSessionRequest,
+        AttachToSessionRequest, DetachFromSessionRequest, LaunchProviderRunRequest,
+        LaunchProviderRunsRequest, ListSessionsRequest, QueryRecallRequest, RelayStatusRequest,
+        ResolveSessionRequest,
     };
 
     #[test]
@@ -456,5 +497,43 @@ mod tests {
             request_session_scope(&LocalDaemonRequest::RelayStatus(RelayStatusRequest)),
             None
         );
+    }
+
+    #[test]
+    fn request_session_scope_covers_every_session_in_provider_batch() {
+        let request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
+            max_concurrency: Some(4),
+            launches: vec![
+                launch("session-a", "agent-a-1"),
+                launch("session-a", "agent-a-2"),
+                launch("session-b", "agent-b-1"),
+                launch("session-c", "agent-c-1"),
+                launch("session-b", "agent-b-2"),
+            ],
+        });
+
+        assert_eq!(
+            request_session_scope(&request),
+            Some(SessionMembershipScope::SessionIds(vec![
+                "session-a".to_string(),
+                "session-b".to_string(),
+                "session-c".to_string(),
+            ]))
+        );
+    }
+
+    fn launch(session_id: &str, agent_id: &str) -> LaunchProviderRunRequest {
+        LaunchProviderRunRequest {
+            session_id: session_id.to_string(),
+            agent_id: Some(agent_id.to_string()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
+        }
     }
 }

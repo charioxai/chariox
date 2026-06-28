@@ -373,6 +373,7 @@ fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
         LocalDaemonResponse::SessionEnded { .. } => "SessionEnded",
         LocalDaemonResponse::SessionDeleted { .. } => "SessionDeleted",
         LocalDaemonResponse::AgentSpawned { .. } => "AgentSpawned",
+        LocalDaemonResponse::AgentsSpawned { .. } => "AgentsSpawned",
         LocalDaemonResponse::AgentDestroyed { .. } => "AgentDestroyed",
         LocalDaemonResponse::AgentFocused { .. } => "AgentFocused",
         LocalDaemonResponse::AgentOutputSeenAcknowledged { .. } => "AgentOutputSeenAcknowledged",
