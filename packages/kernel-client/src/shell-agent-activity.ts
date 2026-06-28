@@ -612,7 +612,7 @@ export function sessionAgentHasUnreadIdleOutput(
     return false
   }
   const activity = session.agent_activity?.[agentId]
-  return activity?.unread_idle_output === true
+  return projectAgentRuntimeActivity(activity).unreadIdleOutput
 }
 
 export function sessionHasActivePrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {

@@ -33,6 +33,7 @@ export type AgentRuntimeActivityProjection = {
   readonly queuedPromptCount: number
   readonly queuedPromptCountExplicit: boolean
   readonly error: boolean
+  readonly unreadIdleOutput: boolean
 }
 
 export type AgentRuntimeCompletedTurnActionProjection = {
@@ -122,6 +123,9 @@ export function projectAgentRuntimeActivity(
   const error = readBooleanField(activityRecord, "error")
     ?? readBooleanField(value, "error")
     ?? (status ? status === "error" : options.previousError ?? false)
+  const unreadIdleOutput = readBooleanField(activityRecord, "unread_idle_output")
+    ?? readBooleanField(value, "unread_idle_output")
+    ?? false
   const activeTurnIdentity = projectAgentRuntimeActiveTurnIdentity(liveActiveTurn)
   const lastCompletedTurn = readAgentRuntimeCompletedTurn(activityRecord)
     ?? readAgentRuntimeCompletedTurn(value)
@@ -137,6 +141,7 @@ export function projectAgentRuntimeActivity(
     queuedPromptCount,
     queuedPromptCountExplicit: projectedQueuedPromptCount.explicit,
     error,
+    unreadIdleOutput,
   }
 }
 

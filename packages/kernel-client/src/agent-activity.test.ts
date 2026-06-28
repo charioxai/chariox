@@ -198,6 +198,7 @@ test("agent activity projection preserves kernel counts as activity source", () 
     queuedPromptCount: 2,
     queuedPromptCountExplicit: true,
     error: false,
+    unreadIdleOutput: false,
   })
 })
 
@@ -220,6 +221,7 @@ test("agent activity projection unwraps nested activity and normalizes settled s
     queuedPromptCount: 0,
     queuedPromptCountExplicit: false,
     error: false,
+    unreadIdleOutput: false,
   })
 })
 
@@ -268,6 +270,7 @@ test("agent activity projection exposes live active turn identity", () => {
     queuedPromptCount: 0,
     queuedPromptCountExplicit: false,
     error: false,
+    unreadIdleOutput: false,
   })
 
   assert.equal(projectAgentRuntimeActivity({
@@ -329,6 +332,22 @@ test("agent activity projection exposes completed turn action metadata", () => {
       turn_id: "turn-1",
     },
   }), null)
+})
+
+test("agent activity projection exposes unread idle output", () => {
+  assert.equal(projectAgentRuntimeActivity({
+    activity: {
+      status: "idle",
+      prompt_status: "none",
+      busy: false,
+      unread_idle_output: true,
+    },
+  }).unreadIdleOutput, true)
+  assert.equal(projectAgentRuntimeActivity({
+    activity: {
+      unread_idle_output: false,
+    },
+  }).unreadIdleOutput, false)
 })
 
 test("agent activity projection preserves previous error only when kernel omits error state", () => {

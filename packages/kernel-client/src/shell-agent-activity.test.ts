@@ -162,6 +162,7 @@ test("sessionAgentRuntimeActivityProjection returns normalized activity with idl
     queuedPromptCount: 0,
     queuedPromptCountExplicit: false,
     error: false,
+    unreadIdleOutput: false,
   })
   assert.deepEqual(sessionAgentRuntimeActivityProjection(session, "agent-2"), {
     status: null,
@@ -173,6 +174,7 @@ test("sessionAgentRuntimeActivityProjection returns normalized activity with idl
     queuedPromptCount: 0,
     queuedPromptCountExplicit: false,
     error: false,
+    unreadIdleOutput: false,
   })
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-1"), "working")
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-2"), "idle")
