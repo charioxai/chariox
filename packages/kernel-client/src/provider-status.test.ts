@@ -5,6 +5,7 @@ import {
   getProviderActivityLabel,
   isProviderIdleStatus,
   normalizeProviderActivityLabel,
+  shouldRenderProviderStatus,
   toProviderPresentParticiplePhrase,
 } from "./provider-status.js"
 
@@ -23,6 +24,9 @@ test("provider status helpers identify idle status without treating activity as 
   assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
   assert.equal(isProviderIdleStatus("OpenCode is idle"), true)
   assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is idle."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode status: reconnecting"), true)
 })
 
 test("provider status helpers normalize activity label vocabulary", () => {
