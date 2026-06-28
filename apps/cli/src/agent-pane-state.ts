@@ -3,6 +3,7 @@ import {
 } from "@arroba/kernel-client/external-provider-observation"
 import {
   prependTranscriptEntriesWithoutDuplicateRenderableLineage,
+  stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
 } from "@arroba/kernel-client/transcript-entry-lineage"
@@ -58,7 +59,7 @@ export function shouldRefreshAgentPanesForSessionChange<TAgent extends { id: str
 }
 
 function countRenderablePaneEntries<TEntry extends { role: string }>(entries: readonly TEntry[]) {
-  return entries.filter((entry) => entry.role !== "turn_toggle").length
+  return stripTranscriptDisplayOnlyEntries(entries).length
 }
 
 function historyCursorKey(cursor: unknown): string {

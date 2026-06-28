@@ -3,10 +3,24 @@ import test from "node:test"
 
 import {
   prependTranscriptEntriesWithoutDuplicateRenderableLineage,
+  stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
+  transcriptEntryIsDisplayOnly,
+  transcriptEntryIsRenderable,
   transcriptEntryLineageKeys,
 } from "./transcript-entry-lineage.js"
+
+test("transcript display-only helpers classify turn toggles as non-renderable lineage", () => {
+  const assistant = { role: "assistant", text: "answer" }
+  const toggle = { role: "turn_toggle", text: "click to expand" }
+
+  assert.equal(transcriptEntryIsDisplayOnly(toggle), true)
+  assert.equal(transcriptEntryIsRenderable(toggle), false)
+  assert.equal(transcriptEntryIsDisplayOnly(assistant), false)
+  assert.equal(transcriptEntryIsRenderable(assistant), true)
+  assert.deepEqual(stripTranscriptDisplayOnlyEntries([assistant, toggle]), [assistant])
+})
 
 test("transcript entry lineage keys prefer durable external observed identity", () => {
   assert.deepEqual(transcriptEntryLineageKeys({

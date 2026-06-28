@@ -1,3 +1,4 @@
+import { stripTranscriptDisplayOnlyEntries } from "@arroba/kernel-client/transcript-entry-lineage"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   parseToolTranscriptUpdate,
@@ -32,7 +33,7 @@ export function normalizeTranscriptTurnIds(entries: TranscriptEntry[]) {
 }
 
 export function stripTranscriptDisplayEntries(entries: TranscriptEntry[]) {
-  return entries.filter((entry) => entry.role !== "turn_toggle")
+  return stripTranscriptDisplayOnlyEntries(entries)
 }
 
 export function collapseLatestTranscriptTurn(

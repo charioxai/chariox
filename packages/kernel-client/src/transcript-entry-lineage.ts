@@ -14,6 +14,24 @@ export type TranscriptLineageEntry = {
   readonly historyBlobSourceAgentId?: string | null | undefined
 }
 
+export type TranscriptRoleEntry = {
+  readonly role: string
+}
+
+export function transcriptEntryIsDisplayOnly(entry: TranscriptRoleEntry): boolean {
+  return entry.role === "turn_toggle"
+}
+
+export function transcriptEntryIsRenderable(entry: TranscriptRoleEntry): boolean {
+  return !transcriptEntryIsDisplayOnly(entry)
+}
+
+export function stripTranscriptDisplayOnlyEntries<TEntry extends TranscriptRoleEntry>(
+  entries: readonly TEntry[],
+): TEntry[] {
+  return entries.filter(transcriptEntryIsRenderable)
+}
+
 export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): string[] {
   const keys: string[] = []
   const externalProvider = entry.externalProvider ?? ""
@@ -93,7 +111,7 @@ export function prependTranscriptEntriesWithoutDuplicateRenderableLineage<TEntry
   const admittedKeys = new Set(renderableLineageKeys(currentEntries))
   const prepend: TEntry[] = []
   for (const entry of olderEntries) {
-    if (entry.role !== "turn_toggle") {
+    if (transcriptEntryIsRenderable(entry)) {
       const keys = transcriptEntryLineageKeys(entry)
       if (keys.some((key) => admittedKeys.has(key))) {
         continue
@@ -116,5 +134,5 @@ function renderableLineageKeys<TEntry extends TranscriptLineageEntry>(
 function renderableEntries<TEntry extends TranscriptLineageEntry>(
   entries: readonly TEntry[],
 ): TEntry[] {
-  return entries.filter((entry) => entry.role !== "turn_toggle")
+  return stripTranscriptDisplayOnlyEntries(entries)
 }
