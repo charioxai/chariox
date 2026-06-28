@@ -151,6 +151,24 @@ fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
         .processes
         .values()
         .any(|process| process.owner_provider_run_ids == vec![run.id().to_string()]));
+    app.prompt_activity_store().write().insert(
+        run.id().to_string(),
+        crate::app::ActivePromptState {
+            last_output_at: None,
+            saw_response_content: false,
+            completion_recorded: false,
+            settlement_requested: false,
+        },
+    );
+    app.active_turn_store()
+        .start(crate::app::ActiveTurnState::new(
+            session.id().to_string(),
+            run.agent_instance_id()
+                .expect("provider run should be bound to an agent")
+                .to_string(),
+            "prompt-before-shutdown".to_string(),
+            run.id().to_string(),
+        ));
 
     app.shutdown_cleanup()
         .expect("shutdown cleanup should preserve sessions");
@@ -176,6 +194,14 @@ fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
         .snapshot()
         .run_processes
         .is_empty());
+    assert!(
+        !app.prompt_activity_store().read().contains_key(run.id()),
+        "prompt activity must not survive daemon shutdown"
+    );
+    assert!(
+        !app.active_turn_store().snapshot().contains_key(run.id()),
+        "active turns must not survive daemon shutdown"
+    );
     assert!(app.attachments().get_attachment(attachment.id()).is_err());
     assert!(app
         .durable_state_store()

@@ -48,6 +48,7 @@ pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) 
             );
         }
     }
+    app.active_turns.clear(provider_run_id);
     if app.release_prompt_workspace_claim(provider_run_id) {
         crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app);
     }
