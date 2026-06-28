@@ -3,6 +3,12 @@ import test from "node:test"
 
 import type { AgentPromptState } from "./kernel-types.js"
 import {
+  deriveAllAgentsBusyState,
+  deriveFocusedActivityLabel,
+  deriveFocusedAgentBusy,
+  nextAgentActivityLabels,
+  nextAgentBusyLatches,
+  readAgentBusyLatch,
   runtimeProviderRunForAgent,
   resolveSessionStreamingAgentId,
   sessionActivePromptIdForAgent,
@@ -25,6 +31,7 @@ import {
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
   sessionWorkingStateAfterPromptWork,
+  shouldPreserveAgentActivityLabel,
 } from "./shell-agent-activity.js"
 import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
@@ -763,6 +770,170 @@ test("sessionWorkingStateAfterPromptWork keeps working latched until completion 
   assert.equal(sessionWorkingStateAfterPromptWork(true, true), true)
   assert.equal(sessionWorkingStateAfterPromptWork(false, true), true)
   assert.equal(sessionWorkingStateAfterPromptWork(false, false), false)
+})
+
+test("agent busy latches set, clear, and preserve unchanged records", () => {
+  const empty: Record<string, boolean> = {}
+  assert.equal(readAgentBusyLatch(empty, null), false)
+  assert.equal(nextAgentBusyLatches(empty, null, true), empty)
+
+  const busy = nextAgentBusyLatches(empty, "agent-1", true)
+  assert.deepEqual(busy, { "agent-1": true })
+  assert.equal(readAgentBusyLatch(busy, "agent-1"), true)
+  assert.equal(nextAgentBusyLatches(busy, "agent-1", true), busy)
+
+  const cleared = nextAgentBusyLatches(busy, "agent-1", false)
+  assert.deepEqual(cleared, {})
+})
+
+test("agent activity labels preserve current labels only while activity is still authoritative", () => {
+  const current = { "agent-1": "writing" }
+  assert.deepEqual(nextAgentActivityLabels(current, "agent-1", "reading", false), { "agent-1": "reading" })
+  assert.deepEqual(nextAgentActivityLabels(current, "agent-1", null, true), { "agent-1": "writing" })
+  assert.deepEqual(nextAgentActivityLabels(current, "agent-1", null, false), { "agent-1": null })
+  assert.equal(nextAgentActivityLabels(current, null, "reading", false), current)
+})
+
+test("agent activity labels are preserved for streaming, prompt work, and working agents", () => {
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "agent-1",
+    session: makeSession({ agents: [makeAgent({ id: "agent-1" })] }),
+    streamingAgentId: "agent-1",
+  }), true)
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "agent-1",
+    session: makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+    }),
+    streamingAgentId: null,
+  }), true)
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "agent-1",
+    session: makeSession({ agents: [makeAgent({ id: "agent-1", state: "Working" })] }),
+    streamingAgentId: null,
+  }), true)
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "agent-1",
+    session: makeSession({ agents: [makeAgent({ id: "agent-1" })] }),
+    streamingAgentId: null,
+  }), false)
+})
+
+test("projected idle activity suppresses stale legacy busy state", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "agent-1",
+    session,
+    streamingAgentId: null,
+  }), false)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "agent-1",
+    submitting: false,
+    submittingAgentId: null,
+    session,
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), false)
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: false,
+    submittingAgentId: null,
+    session,
+    streamingAgentId: null,
+    agentActivityLabels: {},
+    agentBusyLatches: {},
+  }), [{ id: "agent-1", busy: false }])
+})
+
+test("focused activity and busy state derive from labels, latches, prompt work, and agent state", () => {
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: "agent-1",
+    activeToolLabel: "reading",
+    agentActivityLabel: "thinking",
+  }), "reading")
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: "agent-1",
+    activeToolLabel: null,
+    agentActivityLabel: "thinking",
+  }), "thinking")
+  assert.equal(deriveFocusedActivityLabel({
+    focusedAgentId: null,
+    activeToolLabel: "reading",
+    agentActivityLabel: "thinking",
+  }), null)
+
+  const idleSession = makeSession({ agents: [makeAgent({ id: "agent-1" })] })
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "agent-1",
+    submitting: false,
+    submittingAgentId: null,
+    session: idleSession,
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: { "agent-1": true },
+  }), true)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "agent-1",
+    submitting: false,
+    submittingAgentId: null,
+    session: makeSession({ agents: [makeAgent({ id: "agent-1", is_processing: true })] }),
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), true)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "agent-1",
+    submitting: false,
+    submittingAgentId: null,
+    session: idleSession,
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), false)
+})
+
+test("all agent busy state is derived per agent", () => {
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: true,
+    submittingAgentId: "agent-1",
+    session: makeSession({ agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2", state: "Working" })] }),
+    streamingAgentId: null,
+    agentActivityLabels: {},
+    agentBusyLatches: {},
+  }), [
+    { id: "agent-1", busy: true },
+    { id: "agent-2", busy: true },
+  ])
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: false,
+    submittingAgentId: null,
+    session: makeSession({ agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })] }),
+    streamingAgentId: "agent-2",
+    agentActivityLabels: { "agent-1": "thinking" },
+    agentBusyLatches: {},
+  }), [
+    { id: "agent-1", busy: true },
+    { id: "agent-2", busy: true },
+  ])
 })
 
 test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn completion", () => {

@@ -64,6 +64,11 @@ export type SessionRuntimeTransitionState = {
   readonly nextAgentSignature: string
 }
 
+export type AgentBusyState = {
+  readonly id: string
+  readonly busy: boolean
+}
+
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
   readonly queued_prompts?: readonly unknown[] | null
@@ -283,6 +288,114 @@ export function sessionWorkingStateAfterPromptWork(
   sessionHasPromptWork: boolean,
 ): boolean {
   return sessionHasPromptWork ? true : currentWorking
+}
+
+export function readAgentBusyLatch(
+  latches: Record<string, boolean>,
+  agentId: string | null | undefined,
+): boolean {
+  return agentId ? (latches[agentId] ?? false) : false
+}
+
+export function nextAgentBusyLatches(
+  current: Record<string, boolean>,
+  agentId: string | null | undefined,
+  busy: boolean,
+): Record<string, boolean> {
+  if (!agentId || (current[agentId] ?? false) === busy) {
+    return current
+  }
+  if (busy) {
+    return {
+      ...current,
+      [agentId]: true,
+    }
+  }
+  const next = { ...current }
+  delete next[agentId]
+  return next
+}
+
+export function shouldPreserveAgentActivityLabel(options: {
+  readonly agentId: string | null | undefined
+  readonly session: RuntimeSession
+  readonly streamingAgentId: string | null
+}): boolean {
+  const agentId = options.agentId
+  if (!agentId) {
+    return false
+  }
+  return options.streamingAgentId === agentId
+    || sessionAgentIsBusy(options.session, agentId)
+    || (!sessionHasAgentRuntimeProjection(options.session)
+      && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
+}
+
+export function nextAgentActivityLabels(
+  current: Record<string, string | null>,
+  agentId: string | null | undefined,
+  nextLabel: string | null,
+  preserveCurrent: boolean,
+): Record<string, string | null> {
+  if (!agentId) {
+    return current
+  }
+  return {
+    ...current,
+    [agentId]: nextLabel ?? (preserveCurrent ? (current[agentId] ?? null) : null),
+  }
+}
+
+export function deriveFocusedActivityLabel(options: {
+  readonly focusedAgentId: string | null
+  readonly activeToolLabel: string | null
+  readonly agentActivityLabel: string | null
+}): string | null {
+  return options.focusedAgentId ? (options.activeToolLabel ?? options.agentActivityLabel) : null
+}
+
+export function deriveFocusedAgentBusy(options: {
+  readonly focusedAgentId: string | null
+  readonly submitting: boolean
+  readonly submittingAgentId: string | null
+  readonly session: RuntimeSession
+  readonly streamingAgentId: string | null
+  readonly focusedActivityLabel: string | null
+  readonly agentBusyLatches: Record<string, boolean>
+}): boolean {
+  const agentId = options.focusedAgentId
+  if (!agentId) {
+    return false
+  }
+  const focused = options.session.agents.find((agent) => agent.id === agentId) ?? null
+  const allowLegacyProcessing = !sessionHasAgentRuntimeProjection(options.session)
+  return (options.submitting && options.submittingAgentId === agentId)
+    || sessionAgentIsBusy(options.session, agentId)
+    || options.streamingAgentId === agentId
+    || Boolean(options.focusedActivityLabel)
+    || readAgentBusyLatch(options.agentBusyLatches, agentId)
+    || Boolean(allowLegacyProcessing && focused && (focused.is_processing || focused.state === "Working"))
+}
+
+export function deriveAllAgentsBusyState(options: {
+  readonly submitting: boolean
+  readonly submittingAgentId: string | null
+  readonly session: RuntimeSession
+  readonly streamingAgentId: string | null
+  readonly agentActivityLabels: Record<string, string | null>
+  readonly agentBusyLatches: Record<string, boolean>
+}): AgentBusyState[] {
+  return options.session.agents.map((agent) => {
+    const agentId = agent.id
+    const allowLegacyProcessing = !sessionHasAgentRuntimeProjection(options.session)
+    const isBusy = (options.submitting && options.submittingAgentId === agentId)
+      || sessionAgentIsBusy(options.session, agentId)
+      || options.streamingAgentId === agentId
+      || Boolean(options.agentActivityLabels[agentId])
+      || readAgentBusyLatch(options.agentBusyLatches, agentId)
+      || (allowLegacyProcessing && (agent.is_processing || agent.state === "Working"))
+    return { id: agentId, busy: isBusy }
+  })
 }
 
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {

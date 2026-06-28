@@ -1,22 +1,28 @@
+import {
+  deriveAllAgentsBusyState as kernelDeriveAllAgentsBusyState,
+  deriveFocusedActivityLabel as kernelDeriveFocusedActivityLabel,
+  deriveFocusedAgentBusy as kernelDeriveFocusedAgentBusy,
+  nextAgentActivityLabels as kernelNextAgentActivityLabels,
+  nextAgentBusyLatches as kernelNextAgentBusyLatches,
+  readAgentBusyLatch as kernelReadAgentBusyLatch,
+  shouldPreserveAgentActivityLabel as kernelShouldPreserveAgentActivityLabel,
+  type AgentBusyState,
+} from "@arroba/kernel-client/shell-agent-activity"
 import type { RuntimeSession } from "./cli-types.js"
 import { getToolActivityLabel } from "./runtime.js"
-import { agentHasPromptWork, sessionHasProjectedRuntimeState } from "./session-state.js"
 
 export type ToolActivityUpdate = {
   tool?: string | null
   status?: string | null
 }
 
-export type AgentBusyState = {
-  id: string
-  busy: boolean
-}
+export type { AgentBusyState }
 
 export function readAgentBusyLatch(
   latches: Record<string, boolean>,
   agentId: string | null | undefined,
 ): boolean {
-  return agentId ? (latches[agentId] ?? false) : false
+  return kernelReadAgentBusyLatch(latches, agentId)
 }
 
 export function nextAgentBusyLatches(
@@ -24,18 +30,7 @@ export function nextAgentBusyLatches(
   agentId: string | null | undefined,
   busy: boolean,
 ): Record<string, boolean> {
-  if (!agentId || (current[agentId] ?? false) === busy) {
-    return current
-  }
-  if (busy) {
-    return {
-      ...current,
-      [agentId]: true,
-    }
-  }
-  const next = { ...current }
-  delete next[agentId]
-  return next
+  return kernelNextAgentBusyLatches(current, agentId, busy)
 }
 
 export function shouldPreserveAgentActivityLabel(options: {
@@ -43,14 +38,11 @@ export function shouldPreserveAgentActivityLabel(options: {
   session: RuntimeSession
   streamingAgentId: string | null
 }): boolean {
-  const agentId = options.agentId
-  if (!agentId) {
-    return false
-  }
-  return options.streamingAgentId === agentId
-    || agentHasPromptWork(options.session, agentId)
-    || (!sessionHasProjectedRuntimeState(options.session)
-      && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
+  return kernelShouldPreserveAgentActivityLabel({
+    agentId: options.agentId,
+    session: options.session as Parameters<typeof kernelShouldPreserveAgentActivityLabel>[0]["session"],
+    streamingAgentId: options.streamingAgentId,
+  })
 }
 
 export function nextAgentActivityLabels(
@@ -59,13 +51,7 @@ export function nextAgentActivityLabels(
   nextLabel: string | null,
   preserveCurrent: boolean,
 ): Record<string, string | null> {
-  if (!agentId) {
-    return current
-  }
-  return {
-    ...current,
-    [agentId]: nextLabel ?? (preserveCurrent ? (current[agentId] ?? null) : null),
-  }
+  return kernelNextAgentActivityLabels(current, agentId, nextLabel, preserveCurrent)
 }
 
 export function resolveActiveToolLabelForAgent(options: {
@@ -93,7 +79,7 @@ export function deriveFocusedActivityLabel(options: {
   activeToolLabel: string | null
   agentActivityLabel: string | null
 }): string | null {
-  return options.focusedAgentId ? (options.activeToolLabel ?? options.agentActivityLabel) : null
+  return kernelDeriveFocusedActivityLabel(options)
 }
 
 export function deriveFocusedAgentBusy(options: {
@@ -105,18 +91,10 @@ export function deriveFocusedAgentBusy(options: {
   focusedActivityLabel: string | null
   agentBusyLatches: Record<string, boolean>
 }): boolean {
-  const agentId = options.focusedAgentId
-  if (!agentId) {
-    return false
-  }
-  const focused = options.session.agents.find((agent) => agent.id === agentId) ?? null
-  const allowLegacyProcessing = !sessionHasProjectedRuntimeState(options.session)
-  return (options.submitting && options.submittingAgentId === agentId)
-    || agentHasPromptWork(options.session, agentId)
-    || options.streamingAgentId === agentId
-    || Boolean(options.focusedActivityLabel)
-    || readAgentBusyLatch(options.agentBusyLatches, agentId)
-    || Boolean(allowLegacyProcessing && focused && (focused.is_processing || focused.state === "Working"))
+  return kernelDeriveFocusedAgentBusy({
+    ...options,
+    session: options.session as Parameters<typeof kernelDeriveFocusedAgentBusy>[0]["session"],
+  })
 }
 
 export function deriveAllAgentsBusyState(options: {
@@ -127,15 +105,8 @@ export function deriveAllAgentsBusyState(options: {
   agentActivityLabels: Record<string, string | null>
   agentBusyLatches: Record<string, boolean>
 }): AgentBusyState[] {
-  return options.session.agents.map((agent) => {
-    const agentId = agent.id
-    const allowLegacyProcessing = !sessionHasProjectedRuntimeState(options.session)
-    const isBusy = (options.submitting && options.submittingAgentId === agentId)
-      || agentHasPromptWork(options.session, agentId)
-      || options.streamingAgentId === agentId
-      || Boolean(options.agentActivityLabels[agentId])
-      || readAgentBusyLatch(options.agentBusyLatches, agentId)
-      || (allowLegacyProcessing && (agent.is_processing || agent.state === "Working"))
-    return { id: agentId, busy: isBusy }
+  return kernelDeriveAllAgentsBusyState({
+    ...options,
+    session: options.session as Parameters<typeof kernelDeriveAllAgentsBusyState>[0]["session"],
   })
 }
