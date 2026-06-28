@@ -22,6 +22,7 @@ use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProject
 use crate::runtime::state::{KernelRuntimeState, ProviderLaunchStartOutcome};
 
 const DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY: usize = 8;
+const DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY_PER_SESSION: usize = 8;
 const DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT: usize = 16;
 const DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT: usize = 64;
 const PROVIDER_CLI_BATCH_LAUNCH_LIMIT: usize = 16;
@@ -295,6 +296,7 @@ fn provider_batch_launch_effective_concurrency(
         .map(|launch| launch.session_id.as_str())
         .collect::<HashSet<_>>()
         .len()
+        .saturating_mul(DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY_PER_SESSION)
         .max(1);
     requested
         .clamp(1, launches.len())
@@ -608,13 +610,13 @@ mod tests {
     }
 
     #[test]
-    fn batch_launch_concurrency_caps_to_unique_session_count() {
+    fn batch_launch_concurrency_caps_to_per_session_budget() {
         let single_session_launches = (0..64)
             .map(|index| test_launch("session-a", &format!("agent-{index}")))
             .collect::<Vec<_>>();
         assert_eq!(
             provider_batch_launch_effective_concurrency(Some(50), &single_session_launches),
-            1
+            DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY_PER_SESSION
         );
 
         let mixed_session_launches = vec![
@@ -626,7 +628,21 @@ mod tests {
         ];
         assert_eq!(
             provider_batch_launch_effective_concurrency(Some(50), &mixed_session_launches),
-            3
+            5
+        );
+
+        let large_mixed_session_launches = (0..64)
+            .map(|index| {
+                let session_index = index % 3;
+                test_launch(
+                    &format!("session-{session_index}"),
+                    &format!("agent-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provider_batch_launch_effective_concurrency(Some(50), &large_mixed_session_launches),
+            3 * DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY_PER_SESSION
         );
     }
 
