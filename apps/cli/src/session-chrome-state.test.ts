@@ -261,6 +261,15 @@ test("deriveSessionStatusMode and footer hint reflect prompt and failure state",
     }),
     "boom",
   )
+  assert.equal(
+    deriveFooterHint({
+      fatalError: null,
+      activePromptId: null,
+      queueDepth: 0,
+      statusLine: "Connected.",
+    }),
+    "Connected.",
+  )
 })
 
 test("deriveAttachedFooterSummary includes view mode and hotkey hint without focused agent details", () => {
