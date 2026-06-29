@@ -17,6 +17,7 @@ const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
 const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
 const WAITING_ROOM_HOME_MIN_WIDTH = "Home".length
 const WAITING_ROOM_SYNC_MIN_WIDTH = "Sync".length
+const WAITING_ROOM_WORK_MIN_WIDTH = "Work".length
 const WAITING_ROOM_NEXT_MIN_WIDTH = "Next".length
 const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
 const WAITING_ROOM_MENU_TRAILING_PADDING = 2
@@ -45,6 +46,10 @@ export function waitingRoomSessionRows(
   const syncWidth = Math.max(
     WAITING_ROOM_SYNC_MIN_WIDTH,
     ...visibleSessions.map((session) => formatSessionLiveSyncLabel(session).length),
+  )
+  const workWidth = Math.max(
+    WAITING_ROOM_WORK_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatWaitingRoomSessionWork(session).length),
   )
   const nextWidth = Math.max(
     WAITING_ROOM_NEXT_MIN_WIDTH,
@@ -95,6 +100,7 @@ export function waitingRoomSessionRows(
       formatWaitingRoomColumnHeader("Status", statusWidth),
       formatWaitingRoomColumnHeader("Home", homeWidth),
       formatWaitingRoomColumnHeader("Sync", syncWidth),
+      formatWaitingRoomColumnHeader("Work", workWidth),
       formatWaitingRoomColumnHeader("Next", nextWidth),
       formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
       formatWaitingRoomColumnHeader("Created at", createdAtWidth),
@@ -116,6 +122,7 @@ export function waitingRoomSessionRows(
         formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
         formatWaitingRoomColumn(formatSessionHomeLabel(session), homeWidth),
         formatWaitingRoomColumn(formatSessionLiveSyncLabel(session), syncWidth),
+        formatWaitingRoomColumn(formatWaitingRoomSessionWork(session), workWidth),
         formatWaitingRoomColumn(formatWaitingRoomSessionNext(session), nextWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
@@ -152,6 +159,10 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
     WAITING_ROOM_SYNC_MIN_WIDTH,
     ...visibleSessions.map((session) => formatSessionLiveSyncLabel(session).length),
   )
+  const workWidth = Math.max(
+    WAITING_ROOM_WORK_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatWaitingRoomSessionWork(session).length),
+  )
   const nextWidth = Math.max(
     WAITING_ROOM_NEXT_MIN_WIDTH,
     ...visibleSessions.map((session) => formatWaitingRoomSessionNext(session).length),
@@ -173,6 +184,7 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
     formatWaitingRoomColumnHeader("Status", statusWidth),
     formatWaitingRoomColumnHeader("Home", homeWidth),
     formatWaitingRoomColumnHeader("Sync", syncWidth),
+    formatWaitingRoomColumnHeader("Work", workWidth),
     formatWaitingRoomColumnHeader("Next", nextWidth),
     formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
     formatWaitingRoomColumnHeader("Created at", createdAtWidth),
@@ -231,6 +243,23 @@ function formatWaitingRoomSessionStatus(session: SessionListEntry) {
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
   return formatSessionActivityNextAction(session) ?? "-"
+}
+
+function formatWaitingRoomSessionWork(session: SessionListEntry) {
+  const activity = session.activity
+  if (!activity) {
+    return "-"
+  }
+  const parts = [
+    activity.working_agent_count > 0 ? `${activity.working_agent_count} working` : "",
+    activity.active_prompt_count > 0
+      ? `${activity.active_prompt_count} active prompt${activity.active_prompt_count === 1 ? "" : "s"}`
+      : "",
+    activity.queued_prompt_count > 0
+      ? `${activity.queued_prompt_count} queued prompt${activity.queued_prompt_count === 1 ? "" : "s"}`
+      : "",
+  ].filter(Boolean)
+  return parts.length ? parts.join(", ") : "-"
 }
 
 function sessionHasActiveWork(session: SessionListEntry) {
