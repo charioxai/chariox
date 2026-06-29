@@ -337,6 +337,36 @@ test("duplicate trailing prompt echo is ignored for split-agent panes", () => {
   ])
 })
 
+test("duplicate trailing steered prompt echo is ignored for visible transcript", () => {
+  const trailingChecks: Array<{ agentId: string; text: string; promptId: string | null | undefined }> = []
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    hasTrailingUserPrompt: (agentId: string, text: string, promptId?: string | null) => {
+      trailingChecks.push({ agentId, text, promptId })
+      return promptId === "prompt-steered"
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "prompt_echo",
+    prompt_id: "prompt-steered",
+    source_attachment_id: "attachment-2",
+    bytes: [...Buffer.from("steer this\n", "utf8")],
+  })
+
+  assert.deepEqual(trailingChecks, [{
+    agentId: "agent-a",
+    text: "steer this\n",
+    promptId: "prompt-steered",
+  }])
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+  ])
+})
+
 test("visible prompt echo carries kernel prompt identity into transcript entry", () => {
   const appended: Array<Omit<TranscriptEntry, "id">> = []
   const { deps } = createDeps({

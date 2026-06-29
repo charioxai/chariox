@@ -317,8 +317,8 @@
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
-          <td>Kernel API support exists; current TUI action applies returned session state.</td>
-          <td><span class="status gap">Needs parity check</span> for visible echo, ordering, stale action state, and dedupe.</td>
+          <td>TUI appends a non-turn-tracking echo, overlays optimistic queue state, reconciles returned session state, and skips matching kernel prompt echoes.</td>
+          <td><span class="status ok">Aligned</span>.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>

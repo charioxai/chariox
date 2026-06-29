@@ -88,6 +88,27 @@ test("transcript event controller appends steered prompts without starting a new
   assert.deepEqual(harness.working, [])
 })
 
+test("transcript event controller appends steered prompts after current visible entries", () => {
+  const harness = eventHarness({
+    focusedAgentId: "agent-1",
+    responsePrimaryAgentId: "agent-1",
+    entries: [
+      { id: 1, role: "user", text: "original", turnId: 1 },
+      { id: 2, role: "assistant", text: "working", turnId: 1 },
+    ],
+  })
+
+  harness.controller.appendSteeredPrompt("follow-up", "agent-1", {
+    promptId: "prompt-2",
+  })
+
+  assert.deepEqual(harness.entries.map((entry) => [entry.role, entry.text, entry.promptId ?? null]), [
+    ["user", "original", null],
+    ["assistant", "working", null],
+    ["user", "follow-up", "prompt-2"],
+  ])
+})
+
 test("transcript event controller routes split-pane steered prompts to the target pane", () => {
   const harness = eventHarness({
     split: true,
