@@ -185,7 +185,8 @@
         <strong>Decision:</strong>
         registry entries become parameterized workflow generators. Loading a template compiles the
         script with a validated parameter object, applies the generated workflow, and returns the
-        normal session-bearing registry load response.
+        normal session-bearing registry load response. This is the production implementation path,
+        not a staged demo path: every supported surface should use the same kernel-backed behavior.
       </section>
 
       <section>
@@ -202,14 +203,15 @@
             two, defaulting to <code>2</code>. A bracket size of <code>16</code> generates
             16 contestant nodes, 8 first-round judges, 4 second-round judges, 2 semifinal judges,
             1 final judge, and 1 seeder. There should be no hard-coded finite enum of allowed
-            bracket sizes; generated graphs are still subject to the kernel's normal workflow size
-            and validation limits.
+            bracket sizes. Any power-of-two value is valid as input as long as the generated graph
+            stays within the kernel's normal workflow size and validation limits.
           </p>
           <p>
             This is not limited to tournament. The implementation must analyze all 10 built-in
             workflow-code templates and define the minimum useful parameter set for each template
-            that benefits from dynamic generation. Each updated script should generate its graph
-            from those inputs instead of hard-coding a single topology.
+            that benefits from dynamic generation. Each existing template script must either be
+            updated to generate its graph from inputs or be explicitly left static because the
+            analysis shows no meaningful input variable is needed.
           </p>
         </div>
 
@@ -383,6 +385,11 @@ const bracketSize = params.bracket_size;</code></pre>
             workflow dynamically for realistic use cases. Update every script whose topology or
             node count should vary; only keep a script static when the analysis shows that no
             meaningful input variable is needed.
+          </li>
+          <li>
+            Treat tournament as the reference case, not the only case. Other templates may need
+            variables such as worker count, branch count, retry limit, evaluator count, or loop
+            limit depending on the existing script's pattern and realistic user needs.
           </li>
         </ul>
       </section>
