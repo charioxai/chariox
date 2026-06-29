@@ -184,6 +184,54 @@
       </p>
     </section>
 
+    <h2>Progress</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Slice</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Agent pane footer parity</td>
+          <td>TUI footer metadata now includes provider, model, effort, mode, permission, runtime placement, slice, alias, and active turn clock where space allows.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Steered queued prompt echo</td>
+          <td>Steering appends a non-turn-tracking user echo and reconciles returned kernel session state.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queued prompt transcript metadata</td>
+          <td>Queued prompt rows show attachment counts and expose actionability in automation snapshots.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Screen footer queue visibility</td>
+          <td>Footer copy now reports queue-only prompt state even when no prompt is actively running.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room work counts</td>
+          <td>Recent-session rows now surface working, active prompt, and queued prompt counts from runtime activity.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Turn collapse terminology</td>
+          <td>Display helpers and tests now name the stored state as collapsed turn IDs, with compatibility aliases for existing wiring.</td>
+        </tr>
+        <tr>
+          <td><span class="status gap">Remaining</span></td>
+          <td>Dedicated queued-prompt strip</td>
+          <td>Current TUI parity uses transcript rows with steer/cancel. A web-like strip needs a prompt-area or pane-interaction layout pass plus keyboard affordances.</td>
+        </tr>
+      </tbody>
+    </table>
+
     <h2>Code Areas Inspected</h2>
     <div class="grid">
       <section class="card">
