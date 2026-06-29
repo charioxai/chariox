@@ -300,7 +300,7 @@
           <td>Turn lifecycle</td>
           <td>Active turns stay expanded; completed historical turns can collapse to a prompt plus final assistant summary.</td>
           <td>Historical collapse and latest-turn preservation exist in agent pane state.</td>
-          <td><span class="status ok">Mostly aligned</span>; focused tests cover active turns, completed collapse, and refresh preservation.</td>
+          <td><span class="status ok">Aligned</span>; focused tests cover active turns, completed collapse, and refresh preservation.</td>
         </tr>
         <tr>
           <td>History loading</td>
@@ -329,8 +329,8 @@
         <tr>
           <td>Prompt area</td>
           <td>Drafts, attachments, history navigation, send/stop behavior, failed-submit restore, and queued-submit no-echo.</td>
-          <td>Comparable draft, attachment, history, focus retention, failed-submit restore, and queue-aware submit behavior exists.</td>
-          <td><span class="status ok">Mostly aligned</span>; queue depth and active prompt hints need stronger pane/screen visibility.</td>
+          <td>Comparable draft, attachment, history, focus retention, failed-submit restore, queue-aware submit behavior, active prompt footer hints, and pane queued-prompt strip exist.</td>
+          <td><span class="status ok">Aligned</span> for TUI prompt chrome; queued prompts remain visible in the pane strip and active/queued prompt state is prioritized in the screen footer.</td>
         </tr>
         <tr>
           <td>Screen footer</td>
@@ -350,61 +350,61 @@
     <h2>Implementation Plan</h2>
     <ol>
       <li>
-        Add focused parity fixtures for transcript entries and turns. Cover assistant/user/error expanded by default,
+        <strong>Done.</strong> Add focused parity fixtures for transcript entries and turns. Cover assistant/user/error expanded by default,
         non-assistant blobs collapsed by default, active turn expanded, completed older turns collapsed, and history
         refresh preserving collapse state.
       </li>
       <li>
-        Normalize the TUI transcript display terminology. Keep public behavior stable, but make the internal state
+        <strong>Done.</strong> Normalize the TUI transcript display terminology. Keep public behavior stable, but make the internal state
         distinguish collapsed turn IDs from expanded turn IDs so future changes do not invert behavior accidentally.
       </li>
       <li>
-        Add a TUI queued-prompt strip above the pane footer or prompt area. It should use
-        <code>queuedPromptProjectionForAgent</code>, show status/text/attachment count, and expose steer/cancel
+        <strong>Done.</strong> Add a TUI queued-prompt strip above the pane footer or prompt area. It uses
+        <code>queuedPromptProjectionForAgent</code>, shows status/text/attachment count, and exposes steer/cancel
         through both keyboard and mouse.
       </li>
       <li>
-        Preserve existing queued-prompt transcript rows as scrollback context unless the strip fully replaces them
+        <strong>Done.</strong> Preserve existing queued-prompt transcript rows as scrollback context unless the strip fully replaces them
         without losing historical clarity. If both remain, avoid duplicate action affordances fighting each other.
       </li>
       <li>
-        Align queued-prompt actions with web behavior: optimistic <code>steering</code>/<code>cancelling</code> state,
+        <strong>Done.</strong> Align queued-prompt actions with web behavior: optimistic <code>steering</code>/<code>cancelling</code> state,
         stale disabled reason, returned session reconciliation, visible steered prompt echo, and focus returning to
         the prompt area.
       </li>
       <li>
-        Expand the TUI agent footer formatter to include provider, model, variant/effort, mode, permission, runtime
+        <strong>Done.</strong> Expand the TUI agent footer formatter to include provider, model, variant/effort, mode, permission, runtime
         placement, substitute summary, and active turn clock where there is space. Compress predictably at small widths.
       </li>
       <li>
-        Keep web-only footer buttons out of the TUI, but provide analogous commands or keyboard paths for config,
+        <strong>Done.</strong> Keep web-only footer buttons out of the TUI, but provide analogous commands or keyboard paths for config,
         alias edit, substitute actions, and slice actions.
       </li>
       <li>
-        Tighten prompt chrome so active prompt ID plus queue depth appears in the screen footer consistently, and queued
+        <strong>Done.</strong> Tighten prompt chrome so active prompt ID plus queue depth appears in the screen footer consistently, and queued
         submissions never render as normal user turns.
       </li>
       <li>
-        Align Waiting Room row semantics with web: sorting by recent activity, active work markers, unread idle output,
+        <strong>Done.</strong> Align Waiting Room row semantics with web: sorting by recent activity, active work markers, unread idle output,
         active/queued prompt counts where available, remote/slice recovery next actions, and footer hints.
       </li>
       <li>
-        Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
+        <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
         and no pane-button row under agents.
       </li>
     </ol>
 
-    <h2>Tests to Add or Update</h2>
+    <h2>Test Evidence</h2>
     <ul>
-      <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, refresh preservation.</li>
-      <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>: projected actionability, stale controls, strip source state.</li>
-      <li><code>apps/cli/src/transcript-render.test.ts</code> or equivalent renderer test: queued prompt actions and collapsed blob labels.</li>
-      <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement and compression.</li>
-      <li><code>apps/cli/src/session-chrome-state.test.ts</code>: active prompt and queue depth footer priority.</li>
-      <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code>: active work, unread done, queue counts, next actions.</li>
-      <li><code>apps/cli/src/waiting-room-rows.test.ts</code>: menu composition and focus normalization parity.</li>
-      <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: keep web behavior locked while TUI catches up.</li>
-      <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: shared expected behavior for steering and turn collapse.</li>
+      <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, active turn expansion, steered-prompt turn exclusion, and refresh preservation.</li>
+      <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
+      <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
+      <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
+      <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
+      <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
+      <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
+      <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
+      <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
     </ul>
 
     <h2>VS Code Terminal Validation</h2>
