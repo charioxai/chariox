@@ -25,6 +25,10 @@ export function normalizeTranscriptTurnIds(entries: TranscriptEntry[]) {
 
   return entries.map((entry) => {
     const next: TranscriptEntry = { ...entry }
+    if (entry.turnTracking === "none") {
+      delete next.turnId
+      return next
+    }
     if (entry.role === "user") {
       activeTurnId = entry.turnId ?? nextTurnId
       next.turnId = activeTurnId

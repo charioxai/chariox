@@ -73,6 +73,42 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     deps.scrollTranscriptToBottom()
   }
 
+  const appendSteeredPrompt = (
+    text: string,
+    agentId: string,
+    metadata: { promptId?: string | null; sourceAttachmentId?: string | null } = {},
+  ) => {
+    const normalized = trimSingleTrailingNewline(text)
+    if (!normalized) {
+      return
+    }
+    deps.recordTurnActivity("queued_prompt_steer")
+    deps.setStreamingAgentId(agentId)
+    deps.markAgentBusy(agentId)
+    const entry: Omit<TranscriptEntry, "id"> = {
+      role: "user",
+      text: normalized,
+      turnTracking: "none",
+      ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+      ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+    }
+
+    if (
+      deps.splitAgentResponseMode()
+      && agentId
+      && agentId !== deps.responsePrimaryAgent()?.id
+    ) {
+      deps.appendTranscriptEntryToAgentPane(agentId, entry)
+      deps.updateSessionChrome()
+      return
+    }
+
+    deps.appendEntry(entry)
+    deps.syncVisibleTranscriptPreview()
+    deps.updateSessionChrome()
+    deps.scrollTranscriptToBottom()
+  }
+
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
     deps.appendEntry({ role: "notice", text, emphasis })
     deps.syncVisibleTranscriptPreview()
@@ -109,6 +145,7 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     appendCloudNotice,
     appendNotice,
     appendProviderError,
+    appendSteeredPrompt,
     appendUserPrompt,
   }
 }

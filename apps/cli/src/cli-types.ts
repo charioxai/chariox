@@ -1068,6 +1068,7 @@ export type TranscriptEntry = {
   observedAtMs?: number | null
   externalObservation?: SessionHistoryExternalObservation | null
   emphasis?: "muted" | "warning" | "error"
+  turnTracking?: "none"
   turnId?: number
   hidden?: boolean
   toggleMode?: "expand" | "collapse"

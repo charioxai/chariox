@@ -54,6 +54,66 @@ test("transcript event controller routes split-pane user prompts to the target p
   assert.deepEqual(harness.working, [true])
 })
 
+test("transcript event controller appends steered prompts without starting a new turn", () => {
+  const harness = eventHarness({
+    focusedAgentId: "agent-1",
+    responsePrimaryAgentId: "agent-1",
+    nextTurnId: 4,
+  })
+
+  harness.controller.appendSteeredPrompt("steer this\n", "agent-1", {
+    promptId: "prompt-2",
+    sourceAttachmentId: "attachment-2",
+  })
+
+  assert.deepEqual(harness.recordedActivities, ["queued_prompt_steer"])
+  assert.equal(harness.resetTurns, 0)
+  assert.equal(harness.nextTurnId, 4)
+  assert.equal(harness.currentTurnId, null)
+  assert.deepEqual(harness.streamingAgentIds, ["agent-1"])
+  assert.deepEqual(harness.busyMarked, ["agent-1"])
+  assert.deepEqual(harness.entries, [
+    {
+      role: "user",
+      text: "steer this",
+      turnTracking: "none",
+      promptId: "prompt-2",
+      sourceAttachmentId: "attachment-2",
+    },
+  ])
+  assert.equal(harness.previewSynced, 1)
+  assert.equal(harness.sessionChromeUpdates, 1)
+  assert.equal(harness.scrolledToBottom, 1)
+  assert.deepEqual(harness.submitting, [])
+  assert.deepEqual(harness.working, [])
+})
+
+test("transcript event controller routes split-pane steered prompts to the target pane", () => {
+  const harness = eventHarness({
+    split: true,
+    focusedAgentId: "agent-1",
+    responsePrimaryAgentId: "agent-1",
+  })
+
+  harness.controller.appendSteeredPrompt("side steer", "agent-2", {
+    promptId: "prompt-2",
+  })
+
+  assert.deepEqual(harness.paneAppends, [{
+    agentId: "agent-2",
+    entry: {
+      role: "user",
+      text: "side steer",
+      turnTracking: "none",
+      promptId: "prompt-2",
+    },
+    turnIds: undefined,
+  }])
+  assert.equal(harness.previewSynced, 0)
+  assert.equal(harness.sessionChromeUpdates, 1)
+  assert.equal(harness.scrolledToBottom, 0)
+})
+
 test("transcript event controller handles attached and detached cloud notices", () => {
   const attached = eventHarness({ attached: true })
   attached.controller.appendCloudNotice("linked")

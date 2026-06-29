@@ -828,6 +828,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     toggleBlob,
     appendEntry,
     appendUserPrompt,
+    appendSteeredPrompt,
     appendNotice,
     appendCloudNotice,
     appendProviderError,
@@ -1248,6 +1249,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const payload = action === "steer"
           ? await steerQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
           : await cancelQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
+        if (action === "steer") {
+          appendSteeredPrompt(payload.prompt.prompt, queuedPrompt.agentId, {
+            promptId: payload.prompt.id,
+            sourceAttachmentId: payload.prompt.source_attachment_id,
+          })
+        }
         applySessionState(payload.session)
         updateSessionChrome()
       } catch (error) {

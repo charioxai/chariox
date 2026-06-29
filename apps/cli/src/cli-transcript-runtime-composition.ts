@@ -258,6 +258,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     rebuildTranscript: deps.rebuildTranscript,
   })
   const appendUserPrompt = transcriptEventController.appendUserPrompt
+  const appendSteeredPrompt = transcriptEventController.appendSteeredPrompt
   const appendNotice = transcriptEventController.appendNotice
   const appendCloudNotice = transcriptEventController.appendCloudNotice
   const appendProviderError = transcriptEventController.appendProviderError
@@ -346,6 +347,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     toggleBlob,
     appendEntry,
     appendUserPrompt,
+    appendSteeredPrompt,
     appendNotice,
     appendCloudNotice,
     appendProviderError,

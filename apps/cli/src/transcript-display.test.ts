@@ -165,3 +165,23 @@ test("applyTranscriptDisplayState never marks assistant entries as blob-collapsi
   assert.equal(entries.find((entry) => entry.id === 2)?.blobCollapsible, false)
   assert.equal(entries.find((entry) => entry.id === 4)?.blobCollapsible, false)
 })
+
+test("applyTranscriptDisplayState keeps steered prompts out of turn tracking", () => {
+  const entries = applyTranscriptDisplayState([
+    { id: 1, role: "user", text: "Initial prompt", turnId: 1 },
+    { id: 2, role: "assistant", text: "Working...", turnId: 1 },
+    { id: 3, role: "user", text: "Steered prompt", turnTracking: "none" },
+    { id: 4, role: "assistant", text: "Final response", turnId: 1 },
+  ])
+
+  assert.equal(entries.find((entry) => entry.id === 3)?.turnId, undefined)
+  assert.deepEqual(
+    entries.filter((entry) => entry.role !== "turn_toggle").map((entry) => [entry.id, entry.turnId ?? null]),
+    [
+      [1, 1],
+      [2, 1],
+      [3, null],
+      [4, 1],
+    ],
+  )
+})
