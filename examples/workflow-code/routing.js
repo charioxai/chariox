@@ -1,6 +1,23 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      specialist_count: {
+        type: "integer",
+        minimum: 2,
+        maximum: 12,
+        default: 2,
+        title: "Specialist count",
+        description: "Number of specialist branches the classifier can route to.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   alias: "pattern-routing",
-  maxConcurrent: 32,
+  maxConcurrent: Math.max(32, params.specialist_count + 1),
 });
 
 const routeTask = workflow.schema({
@@ -8,10 +25,11 @@ const routeTask = workflow.schema({
   alias: "Routed task",
   schema: {
     type: "object",
-    required: ["task", "reason"],
+    required: ["task", "reason", "specialist"],
     properties: {
       task: { type: "string" },
       reason: { type: "string" },
+      specialist: { type: "integer" },
     },
     additionalProperties: false,
   },
@@ -25,7 +43,7 @@ const finalOutput = workflow.schema({
     required: ["answer", "specialist"],
     properties: {
       answer: { type: "string" },
-      specialist: { enum: ["code", "research"] },
+      specialist: { type: "integer" },
     },
     additionalProperties: false,
   },
@@ -33,41 +51,42 @@ const finalOutput = workflow.schema({
 
 workflow.define({ runOutputSchema: finalOutput });
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function branchY(index, count) {
+  return (index - (count - 1) / 2) * 160 + 160;
+}
+
+const centerY = 160;
 const classifier = workflow.node({
   handle: "classifier",
   agent: workflow.newAgent({ alias: "classifier", provider: "codex", model: "default" }),
   publicLabel: "Classifier",
-  instructions: "Classify the request and emit workflow_handoffs to exactly one specialist edge.",
+  instructions: `Classify the request and emit workflow_handoffs to exactly one of ${params.specialist_count} specialist edges.`,
   canCompleteWorkflowRun: false,
-  canvas: { x: 0, y: 120 },
+  canvas: { x: 0, y: centerY },
 });
 
-const codeSpecialist = workflow.node({
-  handle: "code_specialist",
-  agent: workflow.newAgent({ alias: "code-specialist", provider: "opencode", model: "default" }),
-  publicLabel: "Code specialist",
-  instructions: "Answer code, build, repository, or implementation tasks and submit final output.",
-  canCompleteWorkflowRun: true,
-  canvas: { x: 300, y: 40 },
-});
+for (let index = 0; index < params.specialist_count; index += 1) {
+  const number = index + 1;
+  const defaultHandles = ["code_specialist", "research_specialist"];
+  const defaultLabels = ["Code specialist", "Research specialist"];
+  const handle = params.specialist_count === 2 ? defaultHandles[index] : `specialist_${pad2(number)}`;
+  const specialist = workflow.node({
+    handle,
+    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "opencode" : "claude", model: "default" }),
+    publicLabel: params.specialist_count === 2 ? defaultLabels[index] : `Specialist ${number}`,
+    instructions: `Answer tasks routed to specialist branch ${number} and submit final output.`,
+    canCompleteWorkflowRun: true,
+    canvas: { x: 320, y: branchY(index, params.specialist_count) },
+  });
+  workflow.edge(classifier, specialist, {
+    handle: `to_${handle}`,
+    handoffSchema: routeTask,
+    validationPolicy: "halt",
+  });
+}
 
-const researchSpecialist = workflow.node({
-  handle: "research_specialist",
-  agent: workflow.newAgent({ alias: "research-specialist", provider: "claude", model: "default" }),
-  publicLabel: "Research specialist",
-  instructions: "Answer analysis, summarization, and research tasks and submit final output.",
-  canCompleteWorkflowRun: true,
-  canvas: { x: 300, y: 200 },
-});
-
-workflow.edge(classifier, codeSpecialist, {
-  handle: "to_code",
-  handoffSchema: routeTask,
-  validationPolicy: "halt",
-});
-workflow.edge(classifier, researchSpecialist, {
-  handle: "to_research",
-  handoffSchema: routeTask,
-  validationPolicy: "halt",
-});
-workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
+workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -220, y: centerY } });

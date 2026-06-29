@@ -1,6 +1,25 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      bracket_size: {
+        type: "integer",
+        minimum: 2,
+        xPowerOfTwo: true,
+        default: 2,
+        title: "Bracket size",
+        description: "Number of contestants. Must be a power of two; graph size is still bounded by kernel workflow limits.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
+const bracketSize = params.bracket_size;
+
 workflow.define({
   alias: "pattern-tournament",
-  maxConcurrent: 32,
+  maxConcurrent: Math.max(32, bracketSize),
 });
 
 const contestPrompt = workflow.schema({
@@ -11,7 +30,7 @@ const contestPrompt = workflow.schema({
     required: ["task", "slot"],
     properties: {
       task: { type: "string" },
-      slot: { enum: ["a", "b"] },
+      slot: { type: "integer" },
     },
     additionalProperties: false,
   },
@@ -38,7 +57,7 @@ const finalOutput = workflow.schema({
     type: "object",
     required: ["winner", "reason"],
     properties: {
-      winner: { enum: ["a", "b", "tie"] },
+      winner: { type: "string" },
       reason: { type: "string" },
     },
     additionalProperties: false,
@@ -47,42 +66,65 @@ const finalOutput = workflow.schema({
 
 workflow.define({ runOutputSchema: finalOutput });
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function rowY(index) {
+  return index * 160;
+}
+
+const seederY = ((bracketSize - 1) * 160) / 2;
 const seeder = workflow.node({
   handle: "seeder",
   agent: workflow.newAgent({ alias: "seeder", provider: "codex", model: "default" }),
   publicLabel: "Seeder",
-  instructions: "Send the same task to both contestants with distinct slots.",
-  canvas: { x: 0, y: 120 },
+  instructions: `Send the same task to ${bracketSize} contestants with numbered slots.`,
+  canvas: { x: 0, y: seederY },
 });
 
-const contestantA = workflow.node({
-  handle: "contestant_a",
-  agent: workflow.newAgent({ alias: "contestant-a", provider: "claude", model: "default" }),
-  publicLabel: "Contestant A",
-  instructions: "Produce a tournament entry for slot a.",
-  canvas: { x: 280, y: 40 },
-});
+let currentRound = [];
+for (let index = 0; index < bracketSize; index += 1) {
+  const slot = index + 1;
+  const handle = `contestant_${pad2(slot)}`;
+  const contestant = workflow.node({
+    handle,
+    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    publicLabel: `Contestant ${slot}`,
+    instructions: `Produce a tournament entry for slot ${slot}.`,
+    canvas: { x: 300, y: rowY(index) },
+  });
+  workflow.edge(seeder, contestant, { handle: `seed_${pad2(slot)}`, handoffSchema: contestPrompt });
+  currentRound.push({ node: contestant, y: rowY(index), label: `slot ${slot}` });
+}
 
-const contestantB = workflow.node({
-  handle: "contestant_b",
-  agent: workflow.newAgent({ alias: "contestant-b", provider: "opencode", model: "default" }),
-  publicLabel: "Contestant B",
-  instructions: "Produce a tournament entry for slot b.",
-  canvas: { x: 280, y: 200 },
-});
+let round = 1;
+while (currentRound.length > 1) {
+  const nextRound = [];
+  const isFinalRound = currentRound.length === 2;
+  for (let matchIndex = 0; matchIndex < currentRound.length; matchIndex += 2) {
+    const matchNumber = matchIndex / 2 + 1;
+    const left = currentRound[matchIndex];
+    const right = currentRound[matchIndex + 1];
+    const y = (left.y + right.y) / 2;
+    const handle = isFinalRound ? "final_judge" : `round_${round}_judge_${pad2(matchNumber)}`;
+    const judge = workflow.node({
+      handle,
+      agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: "codex", model: "default" }),
+      publicLabel: isFinalRound ? "Final judge" : `Round ${round} judge ${matchNumber}`,
+      instructions: isFinalRound
+        ? "Wait for both finalist entries, select the tournament winner, and submit final output."
+        : "Wait for both entries, select the winner for the next round, and hand that result forward.",
+      canCompleteWorkflowRun: isFinalRound,
+      waitForAllInputs: true,
+      canvas: { x: 620 + (round - 1) * 320, y },
+    });
+    workflow.edge(left.node, judge, { handle: `${left.node.handle}_to_${handle}`, handoffSchema: entry });
+    workflow.edge(right.node, judge, { handle: `${right.node.handle}_to_${handle}`, handoffSchema: entry });
+    nextRound.push({ node: judge, y, label: `${left.label} vs ${right.label}` });
+  }
+  currentRound = nextRound;
+  round += 1;
+}
 
-const judge = workflow.node({
-  handle: "judge",
-  agent: workflow.newAgent({ alias: "tournament-judge", provider: "codex", model: "default" }),
-  publicLabel: "Judge",
-  instructions: "Wait for both entries, compare them, and submit final output.",
-  canCompleteWorkflowRun: true,
-  waitForAllInputs: true,
-  canvas: { x: 560, y: 120 },
-});
-
-workflow.edge(seeder, contestantA, { handle: "seed_a", handoffSchema: contestPrompt });
-workflow.edge(seeder, contestantB, { handle: "seed_b", handoffSchema: contestPrompt });
-workflow.edge(contestantA, judge, { handle: "entry_a", handoffSchema: entry });
-workflow.edge(contestantB, judge, { handle: "entry_b", handoffSchema: entry });
-workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
+workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -220, y: seederY } });

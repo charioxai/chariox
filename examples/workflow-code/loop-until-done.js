@@ -1,3 +1,20 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      max_iterations: {
+        type: "integer",
+        minimum: 1,
+        maximum: 24,
+        default: 6,
+        title: "Max iterations",
+        description: "Maximum worker/checker loop iterations before the runtime turn budget stops progress.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   alias: "pattern-loop-until-done",
   maxConcurrent: 32,
@@ -51,8 +68,8 @@ const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "loop-worker", provider: "codex", model: "default" }),
   publicLabel: "Worker",
-  instructions: "Create or revise the artifact, then hand it to the checker.",
-  maxTurns: 6,
+  instructions: `Create or revise the artifact, then hand it to the checker. Budget for up to ${params.max_iterations} iteration${params.max_iterations === 1 ? "" : "s"}.`,
+  maxTurns: params.max_iterations,
   canvas: { x: 0, y: 100 },
 });
 
@@ -62,7 +79,7 @@ const checker = workflow.node({
   publicLabel: "Checker",
   instructions: "If work is insufficient, route feedback back to the worker. If accepted, submit final output.",
   canCompleteWorkflowRun: true,
-  maxTurns: 6,
+  maxTurns: params.max_iterations,
   canvas: { x: 300, y: 100 },
 });
 

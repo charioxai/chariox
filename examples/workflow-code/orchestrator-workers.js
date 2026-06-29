@@ -1,6 +1,23 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      worker_count: {
+        type: "integer",
+        minimum: 1,
+        maximum: 12,
+        default: 1,
+        title: "Worker count",
+        description: "Number of delegated workers before synthesis.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   alias: "pattern-orchestrator-workers",
-  maxConcurrent: 32,
+  maxConcurrent: Math.max(32, params.worker_count + 2),
 });
 
 const assignment = workflow.schema({
@@ -47,31 +64,45 @@ const finalOutput = workflow.schema({
 
 workflow.define({ runOutputSchema: finalOutput });
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function branchY(index, count) {
+  return (index - (count - 1) / 2) * 160 + 140;
+}
+
+const centerY = 140;
 const orchestrator = workflow.node({
   handle: "orchestrator",
   agent: workflow.newAgent({ alias: "orchestrator", provider: "codex", model: "default" }),
   publicLabel: "Orchestrator",
-  instructions: "Decompose the task and hand a focused assignment to the worker.",
-  canvas: { x: 0, y: 100 },
-});
-
-const worker = workflow.node({
-  handle: "worker",
-  agent: workflow.newAgent({ alias: "orchestrated-worker", provider: "opencode", model: "default" }),
-  publicLabel: "Worker",
-  instructions: "Complete the assigned subtask and hand the result to the synthesizer.",
-  canvas: { x: 280, y: 100 },
+  instructions: `Decompose the task and hand focused assignments to ${params.worker_count} worker node${params.worker_count === 1 ? "" : "s"}.`,
+  canvas: { x: 0, y: centerY },
 });
 
 const synthesizer = workflow.node({
   handle: "synthesizer",
   agent: workflow.newAgent({ alias: "orchestrated-synthesizer", provider: "claude", model: "default" }),
   publicLabel: "Synthesizer",
-  instructions: "Combine the orchestration context and worker result into final output.",
+  instructions: `Combine orchestration context and all ${params.worker_count} worker result${params.worker_count === 1 ? "" : "s"} into final output.`,
   canCompleteWorkflowRun: true,
-  canvas: { x: 560, y: 100 },
+  waitForAllInputs: params.worker_count > 1,
+  canvas: { x: 620, y: centerY },
 });
 
-workflow.edge(orchestrator, worker, { handle: "orchestrator_to_worker", handoffSchema: assignment });
-workflow.edge(worker, synthesizer, { handle: "worker_to_synthesizer", handoffSchema: result });
-workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });
+for (let index = 0; index < params.worker_count; index += 1) {
+  const number = index + 1;
+  const handle = params.worker_count === 1 ? "worker" : `worker_${pad2(number)}`;
+  const worker = workflow.node({
+    handle,
+    agent: workflow.newAgent({ alias: handle === "worker" ? "orchestrated-worker" : handle.replaceAll("_", "-"), provider: "opencode", model: "default" }),
+    publicLabel: params.worker_count === 1 ? "Worker" : `Worker ${number}`,
+    instructions: "Complete the assigned subtask and hand the result to the synthesizer.",
+    canvas: { x: 300, y: branchY(index, params.worker_count) },
+  });
+  workflow.edge(orchestrator, worker, { handle: `orchestrator_to_${handle}`, handoffSchema: assignment });
+  workflow.edge(worker, synthesizer, { handle: `${handle}_to_synthesizer`, handoffSchema: result });
+}
+
+workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -220, y: centerY } });

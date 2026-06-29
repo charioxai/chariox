@@ -1,6 +1,23 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      critic_count: {
+        type: "integer",
+        minimum: 1,
+        maximum: 12,
+        default: 1,
+        title: "Critic count",
+        description: "Number of independent critics reviewing the proposal before judgment.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   alias: "pattern-adversarial-verification",
-  maxConcurrent: 32,
+  maxConcurrent: Math.max(32, params.critic_count + 2),
 });
 
 const proposal = workflow.schema({
@@ -47,33 +64,47 @@ const finalOutput = workflow.schema({
 
 workflow.define({ runOutputSchema: finalOutput });
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function branchY(index, count) {
+  return (index - (count - 1) / 2) * 160 + 140;
+}
+
+const centerY = 140;
 const proposer = workflow.node({
   handle: "proposer",
   agent: workflow.newAgent({ alias: "proposer", provider: "codex", model: "default" }),
   publicLabel: "Proposer",
-  instructions: "Produce a proposal with evidence and hand it to the critic.",
+  instructions: `Produce a proposal with evidence and hand it to ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"}.`,
   maxTurns: 4,
-  canvas: { x: 0, y: 120 },
-});
-
-const critic = workflow.node({
-  handle: "critic",
-  agent: workflow.newAgent({ alias: "critic", provider: "claude", model: "default" }),
-  publicLabel: "Critic",
-  instructions: "Find flaws. Route back to proposer for revision or forward to judge when ready.",
-  canvas: { x: 280, y: 120 },
+  canvas: { x: 0, y: centerY },
 });
 
 const judge = workflow.node({
   handle: "judge",
   agent: workflow.newAgent({ alias: "judge", provider: "opencode", model: "default" }),
   publicLabel: "Judge",
-  instructions: "Decide whether the proposal survives critique and submit final output.",
+  instructions: `Decide whether the proposal survives critique from ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"} and submit final output.`,
   canCompleteWorkflowRun: true,
-  canvas: { x: 560, y: 120 },
+  waitForAllInputs: params.critic_count > 1,
+  canvas: { x: 620, y: centerY },
 });
 
-workflow.edge(proposer, critic, { handle: "proposal_to_critic", handoffSchema: proposal });
-workflow.edge(critic, proposer, { handle: "critic_loop", handoffSchema: critique, validationPolicy: "warn" });
-workflow.edge(critic, judge, { handle: "critic_to_judge", handoffSchema: critique, validationPolicy: "halt" });
-workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
+for (let index = 0; index < params.critic_count; index += 1) {
+  const number = index + 1;
+  const handle = params.critic_count === 1 ? "critic" : `critic_${pad2(number)}`;
+  const critic = workflow.node({
+    handle,
+    agent: workflow.newAgent({ alias: handle, provider: "claude", model: "default" }),
+    publicLabel: params.critic_count === 1 ? "Critic" : `Critic ${number}`,
+    instructions: "Find flaws. Route back to proposer for revision or forward to judge when ready.",
+    canvas: { x: 300, y: branchY(index, params.critic_count) },
+  });
+  workflow.edge(proposer, critic, { handle: `proposal_to_${handle}`, handoffSchema: proposal });
+  workflow.edge(critic, proposer, { handle: `${handle}_loop`, handoffSchema: critique, validationPolicy: "warn" });
+  workflow.edge(critic, judge, { handle: `${handle}_to_judge`, handoffSchema: critique, validationPolicy: "halt" });
+}
+
+workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -220, y: centerY } });

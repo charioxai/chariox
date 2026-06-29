@@ -1,6 +1,23 @@
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      reviewer_count: {
+        type: "integer",
+        minimum: 2,
+        maximum: 12,
+        default: 2,
+        title: "Reviewer count",
+        description: "Number of independent reviewers before aggregation.",
+      },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   alias: "pattern-parallelization",
-  maxConcurrent: 32,
+  maxConcurrent: Math.max(32, params.reviewer_count + 2),
 });
 
 const reviewTask = workflow.schema({
@@ -48,43 +65,46 @@ const finalOutput = workflow.schema({
 
 workflow.define({ runOutputSchema: finalOutput });
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function branchY(index, count) {
+  return (index - (count - 1) / 2) * 160 + 160;
+}
+
+const centerY = 160;
 const dispatcher = workflow.node({
   handle: "dispatcher",
   agent: workflow.newAgent({ alias: "parallel-dispatcher", provider: "codex", model: "default" }),
   publicLabel: "Dispatcher",
-  instructions: "Send the same review task to both independent reviewer edges.",
+  instructions: `Send the same review task to ${params.reviewer_count} independent reviewer edges.`,
   canCompleteWorkflowRun: false,
-  canvas: { x: 0, y: 120 },
-});
-
-const policyReviewer = workflow.node({
-  handle: "policy_reviewer",
-  agent: workflow.newAgent({ alias: "policy-reviewer", provider: "claude", model: "default" }),
-  publicLabel: "Policy reviewer",
-  instructions: "Review the task from the policy and constraints angle, then hand structured notes to the aggregator.",
-  canvas: { x: 280, y: 40 },
-});
-
-const qualityReviewer = workflow.node({
-  handle: "quality_reviewer",
-  agent: workflow.newAgent({ alias: "quality-reviewer", provider: "opencode", model: "default" }),
-  publicLabel: "Quality reviewer",
-  instructions: "Review the task from the quality and completeness angle, then hand structured notes to the aggregator.",
-  canvas: { x: 280, y: 200 },
+  canvas: { x: 0, y: centerY },
 });
 
 const aggregator = workflow.node({
   handle: "aggregator",
   agent: workflow.newAgent({ alias: "parallel-aggregator", provider: "codex", model: "default" }),
   publicLabel: "Aggregator",
-  instructions: "Wait for both reviewer results, aggregate their votes, and submit final output.",
+  instructions: `Wait for all ${params.reviewer_count} reviewer results, aggregate their votes, and submit final output.`,
   canCompleteWorkflowRun: true,
   waitForAllInputs: true,
-  canvas: { x: 600, y: 120 },
+  canvas: { x: 620, y: centerY },
 });
 
-workflow.edge(dispatcher, policyReviewer, { handle: "to_policy", handoffSchema: reviewTask });
-workflow.edge(dispatcher, qualityReviewer, { handle: "to_quality", handoffSchema: reviewTask });
-workflow.edge(policyReviewer, aggregator, { handle: "policy_to_aggregator", handoffSchema: reviewResult });
-workflow.edge(qualityReviewer, aggregator, { handle: "quality_to_aggregator", handoffSchema: reviewResult });
-workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
+for (let index = 0; index < params.reviewer_count; index += 1) {
+  const number = index + 1;
+  const handle = `reviewer_${pad2(number)}`;
+  const reviewer = workflow.node({
+    handle,
+    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    publicLabel: `Reviewer ${number}`,
+    instructions: "Review the task independently, then hand structured notes to the aggregator.",
+    canvas: { x: 300, y: branchY(index, params.reviewer_count) },
+  });
+  workflow.edge(dispatcher, reviewer, { handle: `dispatcher_to_${handle}`, handoffSchema: reviewTask });
+  workflow.edge(reviewer, aggregator, { handle: `${handle}_to_aggregator`, handoffSchema: reviewResult });
+}
+
+workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -220, y: centerY } });

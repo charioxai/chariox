@@ -5458,7 +5458,94 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 "workflow-code pattern example `{}` should define endpoints",
                 example.slug
             );
+            assert!(
+                result.definition.parameters_schema.is_some(),
+                "workflow-code pattern example `{}` should define input parameters",
+                example.slug
+            );
         }
+    }
+
+    #[test]
+    fn tournament_pattern_generates_power_of_two_brackets() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code pattern examples because node is not available");
+            return;
+        };
+        let tournament = WORKFLOW_CODE_PATTERN_EXAMPLES
+            .iter()
+            .find(|example| example.slug == "tournament")
+            .expect("tournament example should be registered");
+
+        let bracket4 = BTreeMap::from([("bracket_size".to_string(), serde_json::json!(4))]);
+        let result4 = compile_workflow_code_javascript_with_parameters(
+            &node,
+            tournament.source,
+            &WorkflowCodeLimitsConfig::default(),
+            &bracket4,
+        )
+        .expect("tournament bracket_size=4 should compile");
+        assert!(
+            result4.validation.ok,
+            "{:?}",
+            result4.validation.diagnostics
+        );
+        assert_eq!(
+            result4
+                .definition
+                .nodes
+                .iter()
+                .filter(|node| node.handle.starts_with("contestant_"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            result4
+                .definition
+                .nodes
+                .iter()
+                .filter(|node| node.handle.contains("judge"))
+                .count(),
+            3
+        );
+        assert!(result4
+            .definition
+            .nodes
+            .iter()
+            .any(|node| node.handle == "final_judge"));
+
+        let bracket16 = BTreeMap::from([("bracket_size".to_string(), serde_json::json!(16))]);
+        let result16 = compile_workflow_code_javascript_with_parameters(
+            &node,
+            tournament.source,
+            &WorkflowCodeLimitsConfig::default(),
+            &bracket16,
+        )
+        .expect("tournament bracket_size=16 should compile");
+        assert!(
+            result16.validation.ok,
+            "{:?}",
+            result16.validation.diagnostics
+        );
+        assert_eq!(
+            result16
+                .definition
+                .nodes
+                .iter()
+                .filter(|node| node.handle.starts_with("contestant_"))
+                .count(),
+            16
+        );
+        assert_eq!(
+            result16
+                .definition
+                .nodes
+                .iter()
+                .filter(|node| node.handle.contains("judge"))
+                .count(),
+            15
+        );
+        assert_eq!(result16.definition.endpoints.len(), 1);
     }
 
     #[test]
