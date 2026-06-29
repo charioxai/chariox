@@ -7,6 +7,7 @@ import {
   shouldRefreshAgentPanesForSessionChange,
   trimAgentPaneEntries,
 } from "./agent-pane-state.js"
+import { applyTranscriptDisplayState } from "./transcript-display.js"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -488,6 +489,43 @@ test("refreshAgentPaneState can preserve expanded turn ids during refresh", asyn
   })
 
   assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [2, 999] })
+})
+
+test("refreshAgentPaneState preserves collapsed turn display across history refresh", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {
+      "agent-a": [1],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        { id: 1, role: "user", turnId: 1, text: "question" },
+        { id: 2, role: "reasoning", turnId: 1, text: "reasoning" },
+        { id: 3, role: "assistant", turnId: 1, text: "answer" },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries, expandedTurnIds) => applyTranscriptDisplayState(entries, expandedTurnIds),
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.filter((entry) => !entry.hidden).map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [1] })
+  assert.deepEqual(
+    result.visibleEntries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "question"],
+      ["turn_toggle", "click to expand"],
+      ["assistant", "answer"],
+    ],
+  )
 })
 
 test("refreshAgentPaneState preserves loaded history blob content across refresh", async () => {

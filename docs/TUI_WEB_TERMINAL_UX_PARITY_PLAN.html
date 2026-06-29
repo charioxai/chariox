@@ -226,6 +226,11 @@
         </tr>
         <tr>
           <td><span class="status ok">Landed</span></td>
+          <td>Transcript blob parity</td>
+          <td>User, assistant, and error entries stay expanded; reasoning, tool, status, notice, and history blobs collapse by default with focused tests.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
           <td>Dedicated queued-prompt strip</td>
           <td>Queued prompts now render in the pane interaction strip with status, prompt text, attachment counts, mouse actions, and focused-agent <code>Alt+S</code>/<code>Alt+C</code> shortcuts.</td>
         </tr>
@@ -288,14 +293,14 @@
         <tr>
           <td>Transcript blobs</td>
           <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
-          <td>Blob collapse exists through transcript display/render helpers.</td>
-          <td><span class="status gap">Needs parity tests</span> and cleanup around inverted turn expansion naming/state.</td>
+          <td>Blob collapse policy is shared through transcript lineage helpers and covered by TUI display tests.</td>
+          <td><span class="status ok">Aligned</span>.</td>
         </tr>
         <tr>
           <td>Turn lifecycle</td>
           <td>Active turns stay expanded; completed historical turns can collapse to a prompt plus final assistant summary.</td>
           <td>Historical collapse and latest-turn preservation exist in agent pane state.</td>
-          <td><span class="status gap">Needs exact policy alignment</span> for completion, refresh, and history hydration.</td>
+          <td><span class="status ok">Mostly aligned</span>; focused tests cover active turns, completed collapse, and refresh preservation.</td>
         </tr>
         <tr>
           <td>History loading</td>

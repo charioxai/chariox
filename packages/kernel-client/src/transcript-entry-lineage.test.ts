@@ -35,7 +35,9 @@ test("transcript display helpers classify collapsible blobs and turns", () => {
   ]
 
   assert.equal(transcriptEntryIsBlobCollapsible(turnEntries[0]!), false)
+  assert.equal(transcriptEntryIsBlobCollapsible(turnEntries[1]!), true)
   assert.equal(transcriptEntryIsBlobCollapsible(turnEntries[2]!), true)
+  assert.equal(transcriptEntryIsBlobCollapsible({ id: 5, role: "error", text: "visible error" }), false)
   assert.equal(transcriptEntryIsBlobCollapsible({ id: 5, role: "assistant", text: "blob", historyBlobId: "blob-1" }), true)
   assert.equal(transcriptTurnFinalAssistantEntry(turnEntries), turnEntries[3])
   assert.equal(transcriptTurnHasCollapsibleBody(turnEntries, 4), true)

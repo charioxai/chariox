@@ -51,6 +51,31 @@ test("applyTranscriptDisplayState keeps completed turns expanded by default", ()
   assert.equal(toolEntry?.blobSummary, "$ git status")
 })
 
+test("applyTranscriptDisplayState matches web blob defaults by role", () => {
+  const entries = applyTranscriptDisplayState([
+    { id: 1, role: "user", text: "Prompt", turnId: 1 },
+    { id: 2, role: "reasoning", text: "Reasoning details", turnId: 1 },
+    { id: 3, role: "status", text: "Status details", turnId: 1 },
+    { id: 4, role: "tool", text: "Tool details", turnId: 1 },
+    { id: 5, role: "error", text: "Readable error", turnId: 1 },
+    { id: 6, role: "assistant", text: "Assistant response", turnId: 1 },
+  ])
+
+  assert.deepEqual(
+    entries
+      .filter((entry) => entry.role !== "turn_toggle")
+      .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null]),
+    [
+      ["user", false, null],
+      ["reasoning", true, true],
+      ["status", true, true],
+      ["tool", true, true],
+      ["error", false, null],
+      ["assistant", false, null],
+    ],
+  )
+})
+
 test("applyTranscriptDisplayState collapses completed turns when the turn id is in the collapsed set", () => {
   const entries = applyTranscriptDisplayState(baseTurnEntries(), [1])
 

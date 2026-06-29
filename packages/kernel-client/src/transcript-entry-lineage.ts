@@ -45,7 +45,7 @@ export function transcriptEntryIsBlobCollapsible(entry: TranscriptTurnDisplayEnt
   }
   switch (entry.role) {
     case "tool":
-    case "error":
+    case "reasoning":
     case "status":
     case "notice":
       return true
