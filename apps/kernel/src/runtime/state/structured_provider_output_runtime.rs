@@ -2,6 +2,8 @@
 
 use super::*;
 
+const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
+
 impl KernelRuntimeState {
     pub(super) async fn pump_owned_structured_provider_output(
         &self,
@@ -37,6 +39,7 @@ impl KernelRuntimeState {
             }
         }
         let mut records = owned.structured_output_records.take(provider_run_id);
+        let now_ms = crate::session::unix_epoch_ms();
         for finished in owned
             .provider_store
             .drain_finished_structured_output_poll_jobs()
@@ -54,7 +57,13 @@ impl KernelRuntimeState {
             );
             let poll_result = match finished.result {
                 Ok(Some(poll_result)) => poll_result,
-                Ok(None) => continue,
+                Ok(None) => {
+                    owned.structured_output_records.schedule_next_poll(
+                        finished_run_id,
+                        now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
+                    );
+                    continue;
+                }
                 Err(error) => {
                     let reconcile_result = if is_requested_run {
                         self.reconcile_provider_run_exit(session_id, provider_run_id)
@@ -101,6 +110,11 @@ impl KernelRuntimeState {
                 Ok(run) => run,
                 Err(_) => continue,
             };
+            let next_due_at_ms = if provider_prompt_signal_batch_has_activity(&poll_result) {
+                now_ms
+            } else {
+                now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS)
+            };
             let run_session_id = run.session_id().to_string();
             let recipients = if is_requested_run {
                 recipient_attachment_ids.clone()
@@ -122,12 +136,30 @@ impl KernelRuntimeState {
             } else {
                 owned
                     .structured_output_records
-                    .append(finished_run_id, applied);
+                    .append(finished_run_id.clone(), applied);
+            }
+            owned
+                .structured_output_records
+                .schedule_next_poll(finished_run_id, next_due_at_ms);
+        }
+        if owned
+            .structured_output_records
+            .poll_due(provider_run_id, crate::session::unix_epoch_ms())
+        {
+            match owned
+                .provider_store
+                .enqueue_structured_output_poll(provider_run_id)?
+            {
+                true => owned
+                    .structured_output_records
+                    .mark_poll_enqueued(provider_run_id),
+                false => owned.structured_output_records.schedule_next_poll(
+                    provider_run_id.to_string(),
+                    crate::session::unix_epoch_ms()
+                        .saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
+                ),
             }
         }
-        owned
-            .provider_store
-            .enqueue_structured_output_poll(provider_run_id)?;
         Ok(records)
     }
 
@@ -330,6 +362,21 @@ impl KernelRuntimeState {
         }
         Ok(records)
     }
+}
+
+fn provider_prompt_signal_batch_has_activity(
+    batch: &crate::provider::ProviderPromptSignalBatch,
+) -> bool {
+    !batch.chunks.is_empty()
+        || !batch.completions.is_empty()
+        || batch.prompt_completed
+        || batch.terminal_failure.is_some()
+        || !batch.notices.is_empty()
+        || batch.resolved_model.is_some()
+        || batch.resolved_variant.is_some()
+        || batch.resolved_usage_tokens_total.is_some()
+        || batch.resolved_usage.is_some()
+        || batch.resolved_resume_state.is_some()
 }
 
 fn provider_prompt_dispatch_failure_notice(message: &str) -> String {

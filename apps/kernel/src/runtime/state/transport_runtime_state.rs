@@ -173,6 +173,7 @@ impl KernelRuntimeState {
     ) -> u64 {
         transport_runtime_pump_interval_for_state(
             self.transport_runtime_has_active_work(),
+            self.next_structured_output_poll_due_at_ms(),
             self.next_workflow_watchdog_run_at_ms(now_ms),
             now_ms,
             active_interval_ms,
@@ -214,6 +215,34 @@ impl KernelRuntimeState {
                 } else {
                     watchdog.next_run_at_ms()
                 }
+            })
+            .min()
+    }
+
+    fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
+        self.owned
+            .session_store
+            .list_non_ended_sessions_including_hidden()
+            .iter()
+            .flat_map(|session| {
+                super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+                    &self.owned,
+                    session,
+                )
+            })
+            .filter_map(|provider_run_id| {
+                let run = self.owned.provider_store.get_run(&provider_run_id).ok()?;
+                if !run.client_interface().is_arroba()
+                    || !self
+                        .owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                {
+                    return None;
+                }
+                self.owned
+                    .structured_output_records
+                    .poll_due_at_ms(&provider_run_id)
             })
             .min()
     }
@@ -396,25 +425,32 @@ fn provider_run_counts_as_transport_active_work(run: &crate::provider::RuntimePr
 }
 
 fn transport_runtime_pump_interval_for_state(
-    active_work: bool,
+    _active_work: bool,
+    next_structured_output_poll_due_at_ms: Option<u64>,
     next_watchdog_run_at_ms: Option<u64>,
     now_ms: u64,
-    active_interval_ms: u64,
+    minimum_interval_ms: u64,
     idle_interval_ms: u64,
 ) -> u64 {
-    if active_work {
-        return active_interval_ms;
-    }
-    let Some(next_watchdog_run_at_ms) = next_watchdog_run_at_ms else {
-        return idle_interval_ms;
+    let fallback_interval_ms = idle_interval_ms;
+    let next_due_at_ms = [
+        next_structured_output_poll_due_at_ms,
+        next_watchdog_run_at_ms,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let Some(next_due_at_ms) = next_due_at_ms else {
+        return fallback_interval_ms;
     };
-    if next_watchdog_run_at_ms <= now_ms.saturating_add(active_interval_ms) {
-        return active_interval_ms;
+    if next_due_at_ms <= now_ms {
+        return 0;
     }
-    next_watchdog_run_at_ms
+    next_due_at_ms
         .saturating_sub(now_ms)
+        .max(minimum_interval_ms)
+        .min(fallback_interval_ms)
         .min(idle_interval_ms)
-        .max(active_interval_ms)
 }
 
 #[cfg(test)]
@@ -426,28 +462,58 @@ mod tests {
     #[test]
     fn transport_runtime_pump_interval_uses_idle_sweep_without_active_work() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(false, None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(false, None, None, 10_000, 500, 5_000),
             5_000,
         );
     }
 
     #[test]
-    fn transport_runtime_pump_interval_stays_fast_with_active_work() {
+    fn transport_runtime_pump_interval_uses_coarse_sweep_with_active_work() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(true, None, 10_000, 500, 5_000),
-            500,
+            transport_runtime_pump_interval_for_state(true, None, None, 10_000, 500, 5_000),
+            5_000,
         );
     }
 
     #[test]
     fn transport_runtime_pump_interval_tracks_due_watchdogs() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(false, Some(10_250), 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(
+                false,
+                None,
+                Some(10_250),
+                10_000,
+                500,
+                5_000
+            ),
             500,
         );
         assert_eq!(
-            transport_runtime_pump_interval_for_state(false, Some(12_000), 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(
+                false,
+                None,
+                Some(12_000),
+                10_000,
+                500,
+                5_000
+            ),
             2_000,
+        );
+    }
+
+    #[test]
+    fn transport_runtime_pump_interval_tracks_structured_output_poll_due_time() {
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(true, Some(10_250), None, 10_000, 500, 5_000),
+            500,
+        );
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(true, Some(12_000), None, 10_000, 500, 5_000),
+            2_000,
+        );
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(true, Some(9_999), None, 10_000, 500, 5_000),
+            0,
         );
     }
 
