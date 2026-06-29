@@ -24,10 +24,12 @@ impl KernelRuntimeState {
                 .reconcile_provider_run_exit(session_id, provider_run_id)
                 .await?
         {
+            owned.structured_output_records.clear(provider_run_id);
             return Ok(Vec::new());
         }
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            owned.structured_output_records.clear(provider_run_id);
             return Ok(Vec::new());
         }
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
@@ -83,6 +85,7 @@ impl KernelRuntimeState {
                     .reconcile_provider_run_exit(session_id, provider_run_id)
                     .await?
                 {
+                    owned.structured_output_records.clear(provider_run_id);
                     return Ok(Vec::new());
                 }
                 return Err(error);

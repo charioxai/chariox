@@ -2,8 +2,6 @@
 
 use super::*;
 
-const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
-
 impl KernelRuntimeState {
     pub(super) async fn pump_owned_structured_provider_output(
         &self,
@@ -31,6 +29,7 @@ impl KernelRuntimeState {
                     .reconcile_provider_run_exit(session_id, provider_run_id)
                     .await?
                 {
+                    owned.structured_output_records.clear(provider_run_id);
                     return Ok(Vec::new());
                 }
                 if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
@@ -58,10 +57,9 @@ impl KernelRuntimeState {
             let poll_result = match finished.result {
                 Ok(Some(poll_result)) => poll_result,
                 Ok(None) => {
-                    owned.structured_output_records.schedule_next_poll(
-                        finished_run_id,
-                        now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
-                    );
+                    owned
+                        .structured_output_records
+                        .schedule_after_empty_poll(finished_run_id, now_ms);
                     continue;
                 }
                 Err(error) => {
@@ -78,9 +76,15 @@ impl KernelRuntimeState {
                         }
                     };
                     match reconcile_result {
-                        Ok(true) => continue,
+                        Ok(true) => {
+                            owned.structured_output_records.clear(&finished_run_id);
+                            continue;
+                        }
                         Ok(false) if is_requested_run => return Err(error),
                         Ok(false) => {
+                            owned
+                                .structured_output_records
+                                .schedule_after_empty_poll(finished_run_id.clone(), now_ms);
                             crate::logging::error_with_fields(
                                 "daemon.app",
                                 "background structured output poll failed",
@@ -93,6 +97,9 @@ impl KernelRuntimeState {
                         }
                         Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
                         Err(reconcile_error) => {
+                            owned
+                                .structured_output_records
+                                .schedule_after_empty_poll(finished_run_id.clone(), now_ms);
                             crate::logging::error_with_fields(
                                 "daemon.app",
                                 "background structured output poll reconciliation failed",
@@ -108,13 +115,21 @@ impl KernelRuntimeState {
             };
             let run = match owned.provider_store.get_run(&finished_run_id) {
                 Ok(run) => run,
-                Err(_) => continue,
+                Err(_) => {
+                    owned.structured_output_records.clear(&finished_run_id);
+                    continue;
+                }
             };
-            let next_due_at_ms = if provider_prompt_signal_batch_has_activity(&poll_result) {
-                now_ms
-            } else {
-                now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS)
-            };
+            let next_due_at_ms =
+                if crate::app::provider_output::structured_output_batch_should_poll_immediately(
+                    &poll_result,
+                ) {
+                    now_ms
+                } else {
+                    now_ms.saturating_add(
+                        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
+                    )
+                };
             let run_session_id = run.session_id().to_string();
             let recipients = if is_requested_run {
                 recipient_attachment_ids.clone()
@@ -153,10 +168,9 @@ impl KernelRuntimeState {
                 true => owned
                     .structured_output_records
                     .mark_poll_enqueued(provider_run_id),
-                false => owned.structured_output_records.schedule_next_poll(
+                false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
-                    crate::session::unix_epoch_ms()
-                        .saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
+                    crate::session::unix_epoch_ms(),
                 ),
             }
         }
@@ -362,21 +376,6 @@ impl KernelRuntimeState {
         }
         Ok(records)
     }
-}
-
-fn provider_prompt_signal_batch_has_activity(
-    batch: &crate::provider::ProviderPromptSignalBatch,
-) -> bool {
-    !batch.chunks.is_empty()
-        || !batch.completions.is_empty()
-        || batch.prompt_completed
-        || batch.terminal_failure.is_some()
-        || !batch.notices.is_empty()
-        || batch.resolved_model.is_some()
-        || batch.resolved_variant.is_some()
-        || batch.resolved_usage_tokens_total.is_some()
-        || batch.resolved_usage.is_some()
-        || batch.resolved_resume_state.is_some()
 }
 
 fn provider_prompt_dispatch_failure_notice(message: &str) -> String {

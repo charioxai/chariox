@@ -15,6 +15,8 @@ use super::provider_output_fanout::ProviderOutputFanout;
 use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
 
+pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
+
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
@@ -71,6 +73,38 @@ impl StructuredOutputRecordStore {
             .get(provider_run_id)
             .copied()
     }
+
+    pub(crate) fn clear(&self, provider_run_id: &str) {
+        self.records
+            .lock()
+            .expect("structured output record store poisoned")
+            .remove(provider_run_id);
+        self.next_poll_due_at_ms
+            .lock()
+            .expect("structured output poll schedule poisoned")
+            .remove(provider_run_id);
+    }
+
+    pub(crate) fn schedule_after_empty_poll(
+        &self,
+        provider_run_id: impl Into<String>,
+        now_ms: u64,
+    ) {
+        self.schedule_next_poll(
+            provider_run_id.into(),
+            now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
+        );
+    }
+}
+
+pub(crate) fn structured_output_batch_should_poll_immediately(
+    batch: &ProviderPromptSignalBatch,
+) -> bool {
+    !batch.chunks.is_empty()
+        || !batch.completions.is_empty()
+        || batch.prompt_completed
+        || batch.terminal_failure.is_some()
+        || !batch.notices.is_empty()
 }
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
@@ -389,6 +423,77 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
 mod tests {
     use super::*;
 
+    fn structured_provider_test_app() -> (DaemonApp, String, String, String) {
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-structured-poll",
+                "worktree-structured-poll",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-structured-poll",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "zen",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-structured-poll",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-opencode-structured-poll".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-opencode-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        (
+            app,
+            session.id().to_string(),
+            attachment.id().to_string(),
+            run.id().to_string(),
+        )
+    }
+
+    fn pump_structured_test_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        attachment_id: &str,
+        provider_run_id: &str,
+    ) {
+        let recipients = app.attachments.list_session_attachment_ids(session_id);
+        ProviderOutputPump::new(app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids: recipients,
+                initial_liveness_already_checked: false,
+            })
+            .expect("structured provider output pump should succeed");
+        let _ = attachment_id;
+    }
+
     #[test]
     fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
         let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -547,6 +652,89 @@ mod tests {
             .expect("timeout diagnostic should be recorded")
             .contains("Provider prompt produced no output"));
     }
+
+    #[test]
+    fn app_side_structured_pump_defers_empty_poll_reenqueue() {
+        let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(provider_run_id.clone(), Ok(None));
+
+        pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+        let store = app.structured_output_record_store();
+        let first_due_at = store
+            .poll_due_at_ms(&provider_run_id)
+            .expect("empty poll should schedule a next due time");
+        assert!(
+            !store.poll_due(&provider_run_id, crate::session::unix_epoch_ms()),
+            "empty poll should back off instead of immediately re-enqueueing"
+        );
+
+        pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+        assert_eq!(
+            store.poll_due_at_ms(&provider_run_id),
+            Some(first_due_at),
+            "second app-side pump before due time must not alter the poll schedule"
+        );
+    }
+
+    #[test]
+    fn metadata_only_structured_batch_backs_off_polling() {
+        let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                provider_run_id.clone(),
+                Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                    resolved_model: Some("resolved-zen".to_string()),
+                    resolved_variant: Some("plan".to_string()),
+                    resolved_usage_tokens_total: Some(42),
+                    ..crate::provider::ProviderPromptSignalBatch::default()
+                })),
+            );
+
+        pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+        let store = app.structured_output_record_store();
+        assert!(
+            !store.poll_due(&provider_run_id, crate::session::unix_epoch_ms()),
+            "metadata-only updates should not trigger immediate re-polling"
+        );
+        let run = app
+            .providers
+            .get_run(&provider_run_id)
+            .expect("provider run should still exist");
+        assert_eq!(run.model(), "resolved-zen");
+        assert_eq!(run.variant(), Some("plan"));
+        assert_eq!(run.usage_tokens_total(), Some(42));
+    }
+
+    #[test]
+    fn structured_output_record_store_clear_removes_records_and_schedule() {
+        let store = StructuredOutputRecordStore::default();
+        store.schedule_next_poll("provider-run-1".to_string(), 1_500);
+        store.append(
+            "provider-run-1".to_string(),
+            vec![TerminalOutputRecord {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: None,
+                prompt_id: None,
+                source_attachment_id: None,
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: None,
+                recipient_attachment_ids: Vec::new(),
+                bytes: b"pending".to_vec(),
+                pending_recipient_attachment_ids: Vec::new(),
+                external_observation_metadata: None,
+            }],
+        );
+
+        store.clear("provider-run-1");
+
+        assert_eq!(store.poll_due_at_ms("provider-run-1"), None);
+        assert!(store.take("provider-run-1").is_empty());
+    }
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
@@ -597,12 +785,18 @@ impl<'a> ProviderOutputPump<'a> {
                 .context
                 .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
         {
+            self.context
+                .pending_structured_output_records
+                .clear(request.provider_run_id);
             return Ok(Vec::new());
         }
         let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
         if provider_run.state() == ProviderRunState::Ended {
+            self.context
+                .pending_structured_output_records
+                .clear(request.provider_run_id);
             return Ok(Vec::new());
         }
         if provider_run.state() == ProviderRunState::Parked {
@@ -648,6 +842,9 @@ impl<'a> ProviderOutputPump<'a> {
                     .context
                     .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
                 {
+                    self.context
+                        .pending_structured_output_records
+                        .clear(request.provider_run_id);
                     return Ok(Vec::new());
                 }
                 return Err(error);
@@ -876,6 +1073,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         if provider_run.endpoint_mode() != AgentEndpointMode::External {
             if let Err(error) = self.drain_pty_output(provider_run_id) {
                 if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
+                    self.pending_structured_output_records
+                        .clear(provider_run_id);
                     return Ok(Vec::new());
                 }
                 if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
@@ -889,8 +1088,25 @@ impl<'a> ProviderOutputPumpContext<'a> {
             provider_run_id,
             recipient_attachment_ids.clone(),
         )?);
-        self.provider_store
-            .enqueue_structured_output_poll(provider_run_id)?;
+        if self
+            .pending_structured_output_records
+            .poll_due(provider_run_id, crate::session::unix_epoch_ms())
+        {
+            match self
+                .provider_store
+                .enqueue_structured_output_poll(provider_run_id)?
+            {
+                true => self
+                    .pending_structured_output_records
+                    .mark_poll_enqueued(provider_run_id),
+                false => self
+                    .pending_structured_output_records
+                    .schedule_after_empty_poll(
+                        provider_run_id.to_string(),
+                        crate::session::unix_epoch_ms(),
+                    ),
+            }
+        }
         Ok(records)
     }
 
@@ -907,9 +1123,14 @@ impl<'a> ProviderOutputPumpContext<'a> {
         {
             let provider_run_id = finished.provider_run_id.clone();
             let is_requested_run = provider_run_id == requested_provider_run_id;
+            let now_ms = crate::session::unix_epoch_ms();
             let poll_result = match finished.result {
                 Ok(Some(poll_result)) => poll_result,
-                Ok(None) => continue,
+                Ok(None) => {
+                    self.pending_structured_output_records
+                        .schedule_after_empty_poll(provider_run_id, now_ms);
+                    continue;
+                }
                 Err(error) => {
                     let reconcile_result = if is_requested_run {
                         self.reconcile_provider_run_exit(
@@ -925,9 +1146,15 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             })
                     };
                     match reconcile_result {
-                        Ok(true) => continue,
+                        Ok(true) => {
+                            self.pending_structured_output_records
+                                .clear(&provider_run_id);
+                            continue;
+                        }
                         Ok(false) if is_requested_run => return Err(error),
                         Ok(false) => {
+                            self.pending_structured_output_records
+                                .schedule_after_empty_poll(provider_run_id.clone(), now_ms);
                             crate::logging::error_with_fields(
                                 "daemon.app",
                                 "background structured output poll failed",
@@ -940,6 +1167,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
                         }
                         Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
                         Err(reconcile_error) => {
+                            self.pending_structured_output_records
+                                .schedule_after_empty_poll(provider_run_id.clone(), now_ms);
                             crate::logging::error_with_fields(
                                 "daemon.app",
                                 "background structured output poll reconciliation failed",
@@ -955,7 +1184,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
             };
             let provider_run = match self.provider_store.get_run(&provider_run_id) {
                 Ok(run) => run,
-                Err(_) => continue,
+                Err(_) => {
+                    self.pending_structured_output_records
+                        .clear(&provider_run_id);
+                    continue;
+                }
             };
             let session_id = provider_run.session_id().to_string();
             let recipient_attachment_ids = if is_requested_run {
@@ -963,6 +1196,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
             } else {
                 self.recipient_attachment_ids_for_session(&session_id)
             };
+            let next_poll_due_at_ms =
+                if structured_output_batch_should_poll_immediately(&poll_result) {
+                    now_ms
+                } else {
+                    now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS)
+                };
             let records = self.apply_structured_output_batch(
                 &session_id,
                 &provider_run_id,
@@ -973,8 +1212,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 requested_records.extend(records);
             } else {
                 self.pending_structured_output_records
-                    .append(provider_run_id, records);
+                    .append(provider_run_id.clone(), records);
             }
+            self.pending_structured_output_records
+                .schedule_next_poll(provider_run_id, next_poll_due_at_ms);
         }
         Ok(requested_records)
     }

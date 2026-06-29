@@ -172,29 +172,12 @@ impl KernelRuntimeState {
         now_ms: u64,
     ) -> u64 {
         transport_runtime_pump_interval_for_state(
-            self.transport_runtime_has_active_work(),
             self.next_structured_output_poll_due_at_ms(),
             self.next_workflow_watchdog_run_at_ms(now_ms),
             now_ms,
             active_interval_ms,
             idle_interval_ms,
         )
-    }
-
-    fn transport_runtime_has_active_work(&self) -> bool {
-        let sessions = self
-            .owned
-            .session_store
-            .list_non_ended_sessions_including_hidden();
-        if sessions.iter().any(|session| session.has_any_prompt_work()) {
-            return true;
-        }
-        self.owned
-            .provider_store
-            .list_runs()
-            .iter()
-            .chain(self.owned.provider_run_projection.list().iter())
-            .any(provider_run_counts_as_transport_active_work)
     }
 
     fn next_workflow_watchdog_run_at_ms(&self, now_ms: u64) -> Option<u64> {
@@ -414,18 +397,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn provider_run_counts_as_transport_active_work(run: &crate::provider::RuntimeProviderRun) -> bool {
-    match run.state() {
-        crate::provider::ProviderRunState::Starting => true,
-        crate::provider::ProviderRunState::Running => !run.client_interface().is_arroba(),
-        crate::provider::ProviderRunState::Parked | crate::provider::ProviderRunState::Ended => {
-            false
-        }
-    }
-}
-
 fn transport_runtime_pump_interval_for_state(
-    _active_work: bool,
     next_structured_output_poll_due_at_ms: Option<u64>,
     next_watchdog_run_at_ms: Option<u64>,
     now_ms: u64,
@@ -455,22 +427,20 @@ fn transport_runtime_pump_interval_for_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        provider_run_counts_as_transport_active_work, transport_runtime_pump_interval_for_state,
-    };
+    use super::transport_runtime_pump_interval_for_state;
 
     #[test]
     fn transport_runtime_pump_interval_uses_idle_sweep_without_active_work() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(false, None, None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(None, None, 10_000, 500, 5_000),
             5_000,
         );
     }
 
     #[test]
-    fn transport_runtime_pump_interval_uses_coarse_sweep_with_active_work() {
+    fn transport_runtime_pump_interval_uses_coarse_sweep_without_due_work() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(true, None, None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(None, None, 10_000, 500, 5_000),
             5_000,
         );
     }
@@ -478,25 +448,11 @@ mod tests {
     #[test]
     fn transport_runtime_pump_interval_tracks_due_watchdogs() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(
-                false,
-                None,
-                Some(10_250),
-                10_000,
-                500,
-                5_000
-            ),
+            transport_runtime_pump_interval_for_state(None, Some(10_250), 10_000, 500, 5_000),
             500,
         );
         assert_eq!(
-            transport_runtime_pump_interval_for_state(
-                false,
-                None,
-                Some(12_000),
-                10_000,
-                500,
-                5_000
-            ),
+            transport_runtime_pump_interval_for_state(None, Some(12_000), 10_000, 500, 5_000),
             2_000,
         );
     }
@@ -504,73 +460,16 @@ mod tests {
     #[test]
     fn transport_runtime_pump_interval_tracks_structured_output_poll_due_time() {
         assert_eq!(
-            transport_runtime_pump_interval_for_state(true, Some(10_250), None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(Some(10_250), None, 10_000, 500, 5_000),
             500,
         );
         assert_eq!(
-            transport_runtime_pump_interval_for_state(true, Some(12_000), None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(Some(12_000), None, 10_000, 500, 5_000),
             2_000,
         );
         assert_eq!(
-            transport_runtime_pump_interval_for_state(true, Some(9_999), None, 10_000, 500, 5_000),
+            transport_runtime_pump_interval_for_state(Some(9_999), None, 10_000, 500, 5_000),
             0,
         );
-    }
-
-    #[test]
-    fn idle_arroba_provider_run_is_not_transport_active_work() {
-        let request = crate::provider::LaunchProviderRequest::new(
-            "session-1",
-            "agent-1",
-            "opencode",
-            "default",
-            "model",
-        );
-        let mut run = crate::provider::RuntimeProviderRun::new(
-            "provider-run-1",
-            &request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::External,
-                process_label: "test-provider".to_string(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
-                pty_env_remove: Vec::new(),
-                working_directory: None,
-                structured_endpoint: Some("test-runtime".to_string()),
-            },
-        );
-        run.mark_running();
-
-        assert!(!provider_run_counts_as_transport_active_work(&run));
-    }
-
-    #[test]
-    fn starting_arroba_provider_run_is_transport_active_work() {
-        let request = crate::provider::LaunchProviderRequest::new(
-            "session-1",
-            "agent-1",
-            "opencode",
-            "default",
-            "model",
-        );
-        let run = crate::provider::RuntimeProviderRun::new(
-            "provider-run-1",
-            &request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::External,
-                process_label: "test-provider".to_string(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
-                pty_env_remove: Vec::new(),
-                working_directory: None,
-                structured_endpoint: Some("test-runtime".to_string()),
-            },
-        );
-
-        assert!(provider_run_counts_as_transport_active_work(&run));
     }
 }
