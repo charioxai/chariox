@@ -41,7 +41,6 @@ use subscriptions::{
 pub(crate) use subscriptions::{watch_subscription_state, WatchResult};
 
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
-pub(crate) const IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS: u64 = 5_000;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;

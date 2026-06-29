@@ -20,9 +20,8 @@ use crate::runtime::event_log::{EventLog, EventRetentionPolicy, ReplayOutcome};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::command_cache::CommandResultCache;
 use crate::runtime_transport::{
-    WatchResult, IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS, RECENT_EVENT_LIMIT,
-    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WAITING_ROOM_ROW_COALESCE_MS,
-    WATCH_INTERVAL_MS,
+    WatchResult, RECENT_EVENT_LIMIT, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
+    WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,

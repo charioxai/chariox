@@ -117,6 +117,17 @@ impl KernelRuntimeState {
             .await;
     }
 
+    pub(crate) fn workflow_design_change_sequence(&self) -> u64 {
+        self.owned.workflow_design_events.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_workflow_design_change_after(&self, sequence: u64) {
+        self.owned
+            .workflow_design_events
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn transport_runtime_pump_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }

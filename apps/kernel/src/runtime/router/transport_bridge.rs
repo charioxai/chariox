@@ -121,6 +121,16 @@ impl CommandRouter {
             .await;
     }
 
+    pub(crate) fn workflow_design_change_sequence(&self) -> u64 {
+        self.runtime_state.workflow_design_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_workflow_design_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_workflow_design_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn transport_runtime_pump_change_sequence(&self) -> u64 {
         self.runtime_state.transport_runtime_pump_change_sequence()
     }

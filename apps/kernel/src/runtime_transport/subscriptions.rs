@@ -25,9 +25,8 @@ use crate::transport::kernel_protocol::{
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use super::{
     ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
-    IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS, RELAY_DISCOVERY_INTERVAL_TICKS,
-    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
-    WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
+    RELAY_DISCOVERY_INTERVAL_TICKS, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
+    WAITING_ROOM_INVENTORY_INTERVAL_TICKS, WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 
 pub(super) async fn run_subscription_loop(
@@ -52,8 +51,8 @@ pub(super) async fn run_subscription_loop(
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
-    let mut last_snapshot_check_tick = 0_u64;
-    let mut tick: u64 = 0;
+    let mut next_snapshot_reconciliation_at = Instant::now();
+    let mut next_heartbeat_at = Instant::now();
     let event_stream_id =
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
@@ -66,10 +65,11 @@ pub(super) async fn run_subscription_loop(
             router.terminal_session_change_sequence(&subscription.session_id);
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&subscription.session_id);
+        let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
-            || tick.wrapping_sub(last_snapshot_check_tick)
-                >= SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS;
+            || now >= next_snapshot_reconciliation_at;
         let previous_snapshot_for_watch = if should_check_snapshot {
             previous_snapshot.clone()
         } else {
@@ -86,7 +86,8 @@ pub(super) async fn run_subscription_loop(
             .await;
         if should_check_snapshot {
             last_snapshot_projection_sequence = Some(session_projection_change_sequence);
-            last_snapshot_check_tick = tick;
+            next_snapshot_reconciliation_at =
+                Instant::now() + subscription_snapshot_reconciliation_interval();
         }
 
         match watch_result {
@@ -249,8 +250,8 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS)
-                    && !emit_kernel_event(
+                if Instant::now() >= next_heartbeat_at {
+                    if !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
                         &close_tx,
@@ -263,8 +264,13 @@ pub(super) async fn run_subscription_loop(
                         Some(&subscription.attachment_id),
                     )
                     .await
-                {
-                    break;
+                    {
+                        break;
+                    }
+                    next_heartbeat_at = advance_subscription_deadline(
+                        next_heartbeat_at,
+                        subscription_heartbeat_interval(),
+                    );
                 }
             }
             WatchResult::Unavailable(message) => {
@@ -286,33 +292,113 @@ pub(super) async fn run_subscription_loop(
             }
         }
 
-        let wait_ms = router.transport_runtime_pump_interval_ms(
-            WATCH_INTERVAL_MS,
-            IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS,
-            crate::session::unix_epoch_ms(),
-        );
-        let wait_started = Instant::now();
-        let _ = timeout(Duration::from_millis(wait_ms), async {
-            tokio::select! {
-                _ = router.wait_for_terminal_attachment_change_after(
-                    &subscription.session_id,
-                    &subscription.attachment_id,
-                    terminal_attachment_change_sequence
-                ) => {}
-                _ = router.wait_for_terminal_session_change_after(
-                    &subscription.session_id,
-                    terminal_session_change_sequence
-                ) => {}
-                _ = router.wait_for_session_projection_session_change_after(
-                    &subscription.session_id,
-                    session_projection_change_sequence
-                ) => {}
-            }
-        })
+        let _ = timeout(
+            next_subscription_wait_duration(next_heartbeat_at, next_snapshot_reconciliation_at),
+            async {
+                tokio::select! {
+                    _ = router.wait_for_terminal_attachment_change_after(
+                        &subscription.session_id,
+                        &subscription.attachment_id,
+                        terminal_attachment_change_sequence
+                    ) => {}
+                    _ = router.wait_for_terminal_session_change_after(
+                        &subscription.session_id,
+                        terminal_session_change_sequence
+                    ) => {}
+                    _ = router.wait_for_session_projection_session_change_after(
+                        &subscription.session_id,
+                        session_projection_change_sequence
+                    ) => {}
+                    _ = router.wait_for_workflow_design_change_after(
+                        workflow_design_change_sequence
+                    ) => {}
+                }
+            },
+        )
         .await;
-        let elapsed_ticks =
-            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
-        tick = tick.wrapping_add(elapsed_ticks);
+    }
+}
+
+fn subscription_heartbeat_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS)
+}
+
+fn subscription_snapshot_reconciliation_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS)
+}
+
+fn next_subscription_wait_duration(
+    next_heartbeat_at: Instant,
+    next_snapshot_reconciliation_at: Instant,
+) -> Duration {
+    next_heartbeat_at
+        .min(next_snapshot_reconciliation_at)
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::ZERO)
+}
+
+fn advance_subscription_deadline(mut deadline: Instant, interval: Duration) -> Instant {
+    let now = Instant::now();
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
+}
+
+#[cfg(test)]
+mod subscription_deadline_tests {
+    use super::{
+        advance_subscription_deadline, next_subscription_wait_duration,
+        subscription_heartbeat_interval, subscription_snapshot_reconciliation_interval,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn subscription_wait_duration_uses_next_explicit_deadline() {
+        let now = Instant::now();
+        let wait = next_subscription_wait_duration(
+            now + Duration::from_secs(1),
+            now + Duration::from_secs(30),
+        );
+
+        assert!(
+            wait <= Duration::from_secs(1),
+            "wait should be bounded by the next heartbeat deadline"
+        );
+        assert!(
+            wait > Duration::from_millis(900),
+            "wait should not fall back to a short active-work poll"
+        );
+    }
+
+    #[test]
+    fn subscription_wait_duration_is_ready_for_due_deadlines() {
+        let now = Instant::now();
+        let wait = next_subscription_wait_duration(
+            now - Duration::from_millis(1),
+            now + Duration::from_secs(30),
+        );
+
+        assert_eq!(wait, Duration::ZERO);
+    }
+
+    #[test]
+    fn subscription_deadline_intervals_preserve_previous_cadence() {
+        assert_eq!(subscription_heartbeat_interval(), Duration::from_secs(5));
+        assert_eq!(
+            subscription_snapshot_reconciliation_interval(),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn advance_subscription_deadline_skips_missed_intervals() {
+        let advanced = advance_subscription_deadline(
+            Instant::now() - Duration::from_secs(11),
+            Duration::from_secs(5),
+        );
+
+        assert!(advanced > Instant::now());
     }
 }
 

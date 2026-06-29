@@ -331,8 +331,8 @@ pub(super) async fn run_relay_subscription_loop(
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
-    let mut last_snapshot_check_tick = 0_u64;
-    let mut tick: u64 = 0;
+    let mut next_snapshot_reconciliation_at = Instant::now();
+    let mut next_heartbeat_at = Instant::now();
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
@@ -341,10 +341,11 @@ pub(super) async fn run_relay_subscription_loop(
         let terminal_session_change_sequence = router.terminal_session_change_sequence(&session_id);
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&session_id);
+        let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
-            || tick.wrapping_sub(last_snapshot_check_tick)
-                >= SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS;
+            || now >= next_snapshot_reconciliation_at;
         let previous_snapshot_for_watch = if should_check_snapshot {
             previous_snapshot.clone()
         } else {
@@ -361,7 +362,8 @@ pub(super) async fn run_relay_subscription_loop(
             .await;
         if should_check_snapshot {
             last_snapshot_projection_sequence = Some(session_projection_change_sequence);
-            last_snapshot_check_tick = tick;
+            next_snapshot_reconciliation_at =
+                Instant::now() + relay_subscription_snapshot_reconciliation_interval();
         }
 
         match watch_result {
@@ -532,8 +534,8 @@ pub(super) async fn run_relay_subscription_loop(
                         break;
                     }
                 }
-                if tick.is_multiple_of(RELAY_HEARTBEAT_INTERVAL_TICKS)
-                    && emit_relay_event(
+                if Instant::now() >= next_heartbeat_at {
+                    if emit_relay_event(
                         &router,
                         &outgoing_tx,
                         &subscription_id,
@@ -546,8 +548,13 @@ pub(super) async fn run_relay_subscription_loop(
                     )
                     .await
                     .is_err()
-                {
-                    break;
+                    {
+                        break;
+                    }
+                    next_heartbeat_at = advance_relay_subscription_deadline(
+                        next_heartbeat_at,
+                        relay_subscription_heartbeat_interval(),
+                    );
                 }
             }
             WatchResult::Unavailable(message) => {
@@ -568,34 +575,60 @@ pub(super) async fn run_relay_subscription_loop(
             }
         }
 
-        let wait_ms = router.transport_runtime_pump_interval_ms(
-            WATCH_INTERVAL_MS,
-            IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS,
-            crate::session::unix_epoch_ms(),
-        );
-        let wait_started = Instant::now();
-        let _ = timeout(Duration::from_millis(wait_ms), async {
-            tokio::select! {
-                _ = router.wait_for_terminal_attachment_change_after(
-                    &session_id,
-                    &attachment_id,
-                    terminal_attachment_change_sequence
-                ) => {}
-                _ = router.wait_for_terminal_session_change_after(
-                    &session_id,
-                    terminal_session_change_sequence
-                ) => {}
-                _ = router.wait_for_session_projection_session_change_after(
-                    &session_id,
-                    session_projection_change_sequence
-                ) => {}
-            }
-        })
+        let _ = timeout(
+            next_relay_subscription_wait_duration(
+                next_heartbeat_at,
+                next_snapshot_reconciliation_at,
+            ),
+            async {
+                tokio::select! {
+                    _ = router.wait_for_terminal_attachment_change_after(
+                        &session_id,
+                        &attachment_id,
+                        terminal_attachment_change_sequence
+                    ) => {}
+                    _ = router.wait_for_terminal_session_change_after(
+                        &session_id,
+                        terminal_session_change_sequence
+                    ) => {}
+                    _ = router.wait_for_session_projection_session_change_after(
+                        &session_id,
+                        session_projection_change_sequence
+                    ) => {}
+                    _ = router.wait_for_workflow_design_change_after(
+                        workflow_design_change_sequence
+                    ) => {}
+                }
+            },
+        )
         .await;
-        let elapsed_ticks =
-            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
-        tick = tick.wrapping_add(elapsed_ticks);
     }
+}
+
+fn relay_subscription_heartbeat_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * RELAY_HEARTBEAT_INTERVAL_TICKS)
+}
+
+fn relay_subscription_snapshot_reconciliation_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS)
+}
+
+fn next_relay_subscription_wait_duration(
+    next_heartbeat_at: Instant,
+    next_snapshot_reconciliation_at: Instant,
+) -> Duration {
+    next_heartbeat_at
+        .min(next_snapshot_reconciliation_at)
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::ZERO)
+}
+
+fn advance_relay_subscription_deadline(mut deadline: Instant, interval: Duration) -> Instant {
+    let now = Instant::now();
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
 }
 
 async fn run_relay_waiting_room_inventory_subscription_loop(
