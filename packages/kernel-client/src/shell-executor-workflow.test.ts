@@ -402,6 +402,14 @@ test("executeShellCommand manages workflow registry entries", async () => {
       created_at_ms: 1_000,
       updated_at_ms: 1_000,
       validation: { ok: true, diagnostics: [] },
+      parameters_schema: {
+        type: "object",
+        properties: {
+          bracket_size: { type: "integer", default: 2 },
+          dry_run: { type: "boolean", default: false },
+        },
+        additionalProperties: false,
+      },
     }
     const session = makeSession()
     const requests: Record<string, unknown>[] = []
@@ -443,14 +451,15 @@ test("executeShellCommand manages workflow registry entries", async () => {
     const addFile = await executeShellCommand(parseShellCommand("workflow registry add dev-team-small registered.workflow.js --workspace"), context, { client: fake.client })
     const addDir = await executeShellCommand(parseShellCommand("workflow registry add dev-team-dir registered-source --user"), context, { client: fake.client })
     const addFromWorkflow = await executeShellCommand(parseShellCommand("workflow registry add-from-workflow copied-team workflow-1 --existing-agents --user"), context, { client: fake.client })
-    const load = await executeShellCommand(parseShellCommand("workflow load dev-team-small --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
-    const run = await executeShellCommand(parseShellCommand("workflow run dev-team-small --endpoint entry --queue urgent --prompt \"Run it\" --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
+    const load = await executeShellCommand(parseShellCommand("workflow load dev-team-small --inputs-json '{\"mode\":\"fast\"}' --input bracket_size=4 --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
+    const run = await executeShellCommand(parseShellCommand("workflow run dev-team-small --endpoint entry --queue urgent --prompt \"Run it\" --input dry_run=true --input label=smoke --provider-rebinding planner=dev-stub/default"), context, { client: fake.client })
     const deleted = await executeShellCommand(parseShellCommand("workflow registry delete dev-team-small --workspace"), context, { client: fake.client })
 
     assert.equal(list.ok, true)
     assert.match(list.message ?? "", /dev-team-small scope=workspace/)
     assert.equal(get.ok, true)
     assert.match(get.message ?? "", /workflow registry entry dev-team-small/)
+    assert.match(get.message ?? "", /parameters_schema=/)
     assert.equal(addFile.ok, true)
     assert.equal(addDir.ok, true)
     assert.equal(addFromWorkflow.ok, true)
@@ -504,6 +513,7 @@ test("executeShellCommand manages workflow registry entries", async () => {
         LoadWorkflowRegistryEntry: {
           session_id: "session-1",
           name: "dev-team-small",
+          parameters: { mode: "fast", bracket_size: 4 },
           provider_rebindings: [{ node: "planner", provider: "dev-stub", model: "default" }],
         },
       },
@@ -511,6 +521,7 @@ test("executeShellCommand manages workflow registry entries", async () => {
         RunWorkflowRegistryEntry: {
           session_id: "session-1",
           name: "dev-team-small",
+          parameters: { dry_run: true, label: "smoke" },
           provider_rebindings: [{ node: "planner", provider: "dev-stub", model: "default" }],
           endpoint: "entry",
           queue_ref: "urgent",

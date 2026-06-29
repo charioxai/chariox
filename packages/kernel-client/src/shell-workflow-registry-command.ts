@@ -62,10 +62,13 @@ export async function executeWorkflowRegistryLoadCommand(
   }
 
   const [name, ...optionArgs] = args
-  if (!name) return { ok: false, message: "usage: workflow load <registry-name> [--provider-rebinding node=provider/model]" }
+  if (!name) return { ok: false, message: "usage: workflow load <registry-name> [--input key=value] [--inputs-json '{...}'] [--provider-rebinding node=provider/model]" }
   const parsed = parseProviderRebindingOptions(optionArgs, "workflow load")
   if (!parsed.ok) return { ok: false, message: parsed.message }
-  const response = await deps.client.send(loadWorkflowRegistryEntryRequest(sessionId, name, parsed.providerRebindings))
+  const response = await deps.client.send(loadWorkflowRegistryEntryRequest(sessionId, name, {
+    parameters: parsed.parameters,
+    providerRebindings: parsed.providerRebindings,
+  }))
   const payload = expectVariant<{ entry: WorkflowRegistryEntryMetadata; result: { apply?: { workflow_id?: string } }; session: { id: string } & Record<string, unknown> }>(response, "WorkflowRegistryEntryLoaded")
   return {
     ok: true,
@@ -87,11 +90,12 @@ export async function executeWorkflowRegistryRunCommand(
 
   const [name, ...optionArgs] = args
   if (!name) {
-    return { ok: false, message: "usage: workflow run <registry-name> --endpoint <handle> [--queue <handle>] --prompt \"...\" [--provider-rebinding node=provider/model]" }
+    return { ok: false, message: "usage: workflow run <registry-name> --endpoint <handle> [--queue <handle>] --prompt \"...\" [--input key=value] [--inputs-json '{...}'] [--provider-rebinding node=provider/model]" }
   }
   const parsed = parseWorkflowRegistryRunOptions(optionArgs)
   if (!parsed.ok) return { ok: false, message: parsed.message }
   const response = await deps.client.send(runWorkflowRegistryEntryRequest(sessionId, name, parsed.prompt, {
+    parameters: parsed.parameters,
     providerRebindings: parsed.providerRebindings,
     endpoint: parsed.endpoint,
     ...(parsed.queue !== undefined ? { queueRef: parsed.queue } : {}),
@@ -265,10 +269,29 @@ function parseRegistryDeleteArgs(args: string[]): { ok: true; name: string; scop
   return { ok: true, name, ...(scope !== undefined ? { scope } : {}) }
 }
 
-function parseProviderRebindingOptions(args: string[], command: string): { ok: true; providerRebindings: WorkflowCodeProviderRebinding[] } | { ok: false; message: string } {
+function parseProviderRebindingOptions(args: string[], command: string): { ok: true; parameters: Record<string, unknown>; providerRebindings: WorkflowCodeProviderRebinding[] } | { ok: false; message: string } {
+  const parameters: Record<string, unknown> = {}
   const providerRebindings: WorkflowCodeProviderRebinding[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
+    if (arg === "--input") {
+      const value = args[index + 1]
+      if (!value) return { ok: false, message: `usage: ${command} <name> --input key=value` }
+      const parsed = parseWorkflowInput(value)
+      if (!parsed.ok) return parsed
+      parameters[parsed.key] = parsed.value
+      index += 1
+      continue
+    }
+    if (arg === "--inputs-json") {
+      const value = args[index + 1]
+      if (!value) return { ok: false, message: `usage: ${command} <name> --inputs-json '{...}'` }
+      const parsed = parseWorkflowInputsJson(value)
+      if (!parsed.ok) return parsed
+      Object.assign(parameters, parsed.parameters)
+      index += 1
+      continue
+    }
     if (arg === "--provider-rebinding" || arg === "--provider-rebind") {
       const value = args[index + 1]
       if (!value) return { ok: false, message: `usage: ${command} <name> --provider-rebinding node=provider/model` }
@@ -280,16 +303,35 @@ function parseProviderRebindingOptions(args: string[], command: string): { ok: t
     }
     return { ok: false, message: `unknown ${command} option: ${arg}` }
   }
-  return { ok: true, providerRebindings }
+  return { ok: true, parameters, providerRebindings }
 }
 
-function parseWorkflowRegistryRunOptions(args: string[]): { ok: true; providerRebindings: WorkflowCodeProviderRebinding[]; endpoint: string; queue?: string; prompt: string } | { ok: false; message: string } {
+function parseWorkflowRegistryRunOptions(args: string[]): { ok: true; parameters: Record<string, unknown>; providerRebindings: WorkflowCodeProviderRebinding[]; endpoint: string; queue?: string; prompt: string } | { ok: false; message: string } {
+  const parameters: Record<string, unknown> = {}
   const providerRebindings: WorkflowCodeProviderRebinding[] = []
   let endpoint: string | undefined
   let queue: string | undefined
   let prompt: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
+    if (arg === "--input") {
+      const value = args[index + 1]
+      if (!value) return { ok: false, message: "usage: --input key=value" }
+      const parsed = parseWorkflowInput(value)
+      if (!parsed.ok) return parsed
+      parameters[parsed.key] = parsed.value
+      index += 1
+      continue
+    }
+    if (arg === "--inputs-json") {
+      const value = args[index + 1]
+      if (!value) return { ok: false, message: "usage: --inputs-json '{...}'" }
+      const parsed = parseWorkflowInputsJson(value)
+      if (!parsed.ok) return parsed
+      Object.assign(parameters, parsed.parameters)
+      index += 1
+      continue
+    }
     if (arg === "--provider-rebinding" || arg === "--provider-rebind") {
       const value = args[index + 1]
       if (!value) return { ok: false, message: "usage: --provider-rebinding node=provider/model" }
@@ -321,7 +363,51 @@ function parseWorkflowRegistryRunOptions(args: string[]): { ok: true; providerRe
   }
   if (!endpoint) return { ok: false, message: "usage: --endpoint <handle>" }
   if (prompt === undefined) return { ok: false, message: "usage: --prompt <text>" }
-  return { ok: true, providerRebindings, endpoint, ...(queue !== undefined ? { queue } : {}), prompt }
+  return { ok: true, parameters, providerRebindings, endpoint, ...(queue !== undefined ? { queue } : {}), prompt }
+}
+
+function parseWorkflowInput(value: string): { ok: true; key: string; value: unknown } | { ok: false; message: string } {
+  const separator = value.indexOf("=")
+  if (separator <= 0) return { ok: false, message: "usage: --input key=value" }
+  const key = value.slice(0, separator)
+  const rawValue = value.slice(separator + 1)
+  if (!key) return { ok: false, message: "usage: --input key=value" }
+  const parsed = parseWorkflowInputValue(rawValue)
+  if (!parsed.ok) return parsed
+  return { ok: true, key, value: parsed.value }
+}
+
+function parseWorkflowInputsJson(value: string): { ok: true; parameters: Record<string, unknown> } | { ok: false; message: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch (error) {
+    return { ok: false, message: `invalid --inputs-json: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  if (!isPlainObject(parsed)) return { ok: false, message: "--inputs-json must be a JSON object" }
+  return { ok: true, parameters: parsed }
+}
+
+function parseWorkflowInputValue(value: string): { ok: true; value: unknown } | { ok: false; message: string } {
+  const trimmed = value.trim()
+  if (trimmed === "true" || trimmed === "false" || trimmed === "null") {
+    return { ok: true, value: JSON.parse(trimmed) }
+  }
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+    return { ok: true, value: Number(trimmed) }
+  }
+  if (/^[\[{"]/.test(trimmed)) {
+    try {
+      return { ok: true, value: JSON.parse(trimmed) }
+    } catch (error) {
+      return { ok: false, message: `invalid --input JSON value: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+  return { ok: true, value }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function parseProviderRebinding(value: string): { ok: true; rebinding: WorkflowCodeProviderRebinding } | { ok: false; message: string } {
@@ -394,14 +480,18 @@ function sha256(contents: string): string {
 }
 
 function formatRegistryEntry(entry: WorkflowRegistryEntryMetadata): string {
-  return [
+  const lines = [
     `workflow registry entry ${entry.name}`,
     `scope=${entry.source_scope}`,
     `kind=${entry.source_kind}`,
     `source=${entry.source_path}`,
     `sha256=${entry.source_sha256}`,
     `validation=${entry.validation?.ok === false ? "failed" : "ok"}`,
-  ].join(" ")
+  ]
+  if (entry.parameters_schema !== undefined && entry.parameters_schema !== null) {
+    lines.push(`parameters_schema=${JSON.stringify(entry.parameters_schema, null, 2)}`)
+  }
+  return lines.join(" ")
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
