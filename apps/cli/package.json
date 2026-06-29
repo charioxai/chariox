@@ -76,6 +76,7 @@
     "multi-user-freeform-relay:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-relay-freeform-multi-user-drill.mjs",
     "history-outline:tui-drill": "pnpm run build && node scripts/history-outline-tui-drill.mjs",
     "history-outline:tui-e2e-drill": "node scripts/live-history-outline-tui-e2e-drill.mjs",
+    "terminal-output-record-id:drill": "node scripts/terminal-output-record-id-drill.mjs",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
     "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",
