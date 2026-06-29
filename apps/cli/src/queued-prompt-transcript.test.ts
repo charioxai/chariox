@@ -25,6 +25,7 @@ test("syncQueuedPromptEntriesForAgent appends queued prompts and removes settled
     "prompt-1",
   ])
   assert.equal(synced.entries.at(-1)?.text, "new queued")
+  assert.equal(synced.entries.at(-1)?.queuedPrompt?.attachmentCount, 2)
 })
 
 test("syncQueuedPromptEntriesForAgent does not infer steering controls from external active prompts", () => {
@@ -276,6 +277,7 @@ test("syncQueuedPromptEntriesForAgent prefers projected queued prompt controls",
     agentId: "agent-1",
     promptId: "prompt-1",
     status: "dispatching",
+    attachmentCount: 0,
     steerDisabled: true,
     canSteer: false,
     canCancel: false,
@@ -322,6 +324,7 @@ test("syncQueuedPromptEntriesForAgent uses projected queue controls to disable s
     agentId: "agent-1",
     promptId: "prompt-1",
     status: "queued",
+    attachmentCount: 2,
     steerDisabled: true,
     canSteer: false,
     canCancel: true,
@@ -360,6 +363,7 @@ test("syncQueuedPromptEntriesForAgent ignores projected controls with mismatched
     agentId: "agent-1",
     promptId: "prompt-1",
     status: "queued",
+    attachmentCount: 2,
     steerDisabled: false,
     canSteer: true,
     canCancel: true,
@@ -603,6 +607,7 @@ function queuedPrompt(agentId: string, promptId: string, steerDisabled = false):
     agentId,
     promptId,
     status: "queued",
+    attachmentCount: 0,
     steerDisabled,
     canSteer: !steerDisabled,
     canCancel: true,
@@ -633,6 +638,10 @@ function sessionWithQueuedPrompt(
           source_attachment_id: "attachment-1",
           target_agent_id: "agent-1",
           prompt: "new queued",
+          attachments: [
+            { url: "file:///tmp/a.txt", mime: "text/plain", filename: "a.txt" },
+            { url: "file:///tmp/b.txt", mime: "text/plain", filename: "b.txt" },
+          ],
           status: "Queued",
         }],
         ...overrides,

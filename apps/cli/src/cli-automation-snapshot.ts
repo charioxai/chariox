@@ -207,6 +207,7 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
         promptId: entry.queuedPrompt.promptId,
         agentId: entry.queuedPrompt.agentId,
         status: entry.queuedPrompt.status,
+        attachmentCount: entry.queuedPrompt.attachmentCount,
         steerDisabled: entry.queuedPrompt.steerDisabled,
         canSteer: entry.queuedPrompt.canSteer,
         canCancel: entry.queuedPrompt.canCancel,

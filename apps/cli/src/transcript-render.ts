@@ -156,6 +156,7 @@ export function buildTranscriptEntryRenderable(
       && nextEntry.blobTitle === currentEntry.blobTitle
       && nextEntry.blobSummary === currentEntry.blobSummary
       && nextEntry.queuedPrompt?.status === currentEntry.queuedPrompt?.status
+      && nextEntry.queuedPrompt?.attachmentCount === currentEntry.queuedPrompt?.attachmentCount
       && nextEntry.queuedPrompt?.promptId === currentEntry.queuedPrompt?.promptId
       && nextEntry.queuedPrompt?.agentId === currentEntry.queuedPrompt?.agentId
       && nextEntry.queuedPrompt?.steerDisabled === currentEntry.queuedPrompt?.steerDisabled
@@ -244,7 +245,7 @@ function buildQueuedPromptTranscriptContent(
     flexGrow: 0,
   })
   actions.add(new TextRenderable(renderer, {
-    content: ` ${queuedPromptStatusLabel(entry)} `,
+    content: ` ${queuedPromptStatusLabel(entry)}${queuedPromptAttachmentLabel(entry)} `,
     fg: theme.textMuted,
     attributes: TextAttributes.BOLD,
   }))
@@ -284,4 +285,12 @@ function buildQueuedPromptActionLabel(
 
 function queuedPromptStatusLabel(entry: TranscriptEntry): string {
   return entry.queuedPrompt?.status?.trim().toLowerCase().replace(/[_-]+/g, " ") || "queued"
+}
+
+function queuedPromptAttachmentLabel(entry: TranscriptEntry): string {
+  const attachmentCount = entry.queuedPrompt?.attachmentCount ?? 0
+  if (attachmentCount <= 0) {
+    return ""
+  }
+  return ` · ${attachmentCount} file${attachmentCount === 1 ? "" : "s"}`
 }

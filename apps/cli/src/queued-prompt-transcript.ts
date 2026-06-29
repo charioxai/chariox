@@ -49,6 +49,7 @@ export function syncQueuedPromptEntriesForAgent(
         ...entry,
         queuedPrompt: {
           ...entry.queuedPrompt,
+          attachmentCount: prompt?.attachmentCount ?? entry.queuedPrompt.attachmentCount,
           ...actionability,
         },
       }]
@@ -123,6 +124,7 @@ function queuedPromptTranscriptEntry(
       promptId: prompt.id,
       agentId,
       status: prompt.status,
+      attachmentCount: prompt.attachmentCount,
       steerDisabled: prompt.steerDisabled,
       canSteer: prompt.canSteer,
       canCancel: prompt.canCancel,

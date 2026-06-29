@@ -298,6 +298,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
             promptId: "prompt-1",
             agentId: "agent-a",
             status: "queued",
+            attachmentCount: 0,
             steerDisabled: true,
             canSteer: false,
             canCancel: true,

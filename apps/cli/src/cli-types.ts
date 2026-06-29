@@ -1052,6 +1052,7 @@ export type TranscriptEntry = {
     promptId: string
     agentId: string
     status: string
+    attachmentCount: number
     steerDisabled: boolean
     canSteer: boolean
     canCancel: boolean
