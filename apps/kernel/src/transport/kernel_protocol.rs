@@ -741,6 +741,7 @@ mod tests {
     fn terminal_output_event_batches_stay_under_json_byte_cap() {
         let records = (0..20)
             .map(|index| TerminalOutputRecord {
+                record_id: Some(index as u64),
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
@@ -769,6 +770,7 @@ mod tests {
     fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
         let records = (0..5)
             .map(|index| TerminalOutputRecord {
+                record_id: Some(index as u64),
                 session_id: format!("session-{index}"),
                 provider_run_id: format!("provider-run-{index}"),
                 agent_id: Some(format!("agent-{index}")),

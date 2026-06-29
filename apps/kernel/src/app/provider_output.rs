@@ -716,6 +716,7 @@ mod tests {
         store.append(
             "provider-run-1".to_string(),
             vec![TerminalOutputRecord {
+                record_id: None,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: None,

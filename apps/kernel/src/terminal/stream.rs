@@ -33,6 +33,8 @@ pub enum TerminalOutputKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOutputRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<u64>,
     pub session_id: String,
     pub provider_run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -674,6 +676,7 @@ impl TerminalStreamService {
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
+            record_id: None,
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -713,6 +716,7 @@ impl TerminalStreamService {
         for output in outputs {
             let recipient_attachment_ids = Vec::from(output.recipient_attachment_ids.as_ref());
             let record = TerminalOutputRecord {
+                record_id: None,
                 session_id: output.session_id,
                 provider_run_id: output.provider_run_id,
                 agent_id: output.agent_id,
@@ -768,6 +772,7 @@ impl TerminalStreamService {
         external_observation_metadata: TerminalOutputExternalObservationMetadata,
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
+            record_id: None,
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -804,6 +809,7 @@ impl TerminalStreamService {
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
+            record_id: None,
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -984,7 +990,7 @@ impl TerminalStreamService {
                             .saturating_add(scoped_json_bytes)
                     };
                     (
-                        scoped_output_record(record, attachment_id),
+                        scoped_output_record(record, record_id, attachment_id),
                         candidate_json_bytes,
                         stored.pending_recipient_count <= 1,
                     )
@@ -1049,10 +1055,12 @@ impl TerminalStreamService {
 
     fn output_record_view(
         &self,
-        _record_id: u64,
+        record_id: u64,
         stored: &StoredTerminalOutputRecord,
     ) -> TerminalOutputRecord {
-        stored.record.clone()
+        let mut record = stored.record.clone();
+        record.record_id = Some(record_id);
+        record
     }
 
     fn enforce_pending_output_record_limits_for_keys(&mut self, keys: BTreeSet<(String, String)>) {
@@ -1369,9 +1377,11 @@ fn is_coalescible_output_kind(kind: &TerminalOutputKind) -> bool {
 
 fn scoped_output_record(
     record: &TerminalOutputRecord,
+    record_id: u64,
     attachment_id: &str,
 ) -> TerminalOutputRecord {
     TerminalOutputRecord {
+        record_id: Some(record_id),
         session_id: record.session_id.clone(),
         provider_run_id: record.provider_run_id.clone(),
         agent_id: record.agent_id.clone(),
@@ -1619,6 +1629,7 @@ mod tests {
 
         let first = terminal.drain_output_records("session-1", "attachment-1");
         assert_eq!(first.len(), 1);
+        assert_eq!(first[0].record_id, Some(0));
         assert_eq!(first[0].recipient_attachment_ids, vec!["attachment-1"]);
         assert_eq!(
             first[0].pending_recipient_attachment_ids,
@@ -1629,9 +1640,11 @@ mod tests {
             terminal.output_records()[0].pending_recipient_attachment_ids,
             vec!["attachment-2".to_string()]
         );
+        assert_eq!(terminal.output_records()[0].record_id, Some(0));
 
         let second = terminal.drain_output_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
+        assert_eq!(second[0].record_id, first[0].record_id);
         assert_eq!(second[0].recipient_attachment_ids, vec!["attachment-2"]);
         assert_eq!(
             second[0].pending_recipient_attachment_ids,
@@ -1850,6 +1863,7 @@ mod tests {
     #[test]
     fn output_drain_size_estimator_bounds_scoped_json() {
         let record = TerminalOutputRecord {
+            record_id: None,
             session_id: "session-\n1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-\"1\"".to_string()),
@@ -1866,7 +1880,7 @@ mod tests {
             external_observation_metadata: None,
         };
 
-        let scoped = scoped_output_record(&record, "attachment-2");
+        let scoped = scoped_output_record(&record, 7, "attachment-2");
         let actual_len = serde_json::to_vec(&scoped)
             .expect("scoped terminal output should serialize")
             .len();

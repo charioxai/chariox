@@ -904,6 +904,7 @@ export type RuntimeNoticeRecord = {
 }
 
 export type TerminalOutputRecord = {
+  record_id?: number | null
   agent_id?: string | null
   prompt_id?: string | null
   source_attachment_id?: string | null
