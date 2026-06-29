@@ -201,15 +201,22 @@ export function waitingRoomSessions(sessions: SessionListEntry[]) {
   return sessions
     .filter((session) => session.status !== "Ended")
     .slice()
-    .sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
+    .sort((left, right) => sessionLastActiveMs(right) - sessionLastActiveMs(left))
 }
 
 export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
   return waitingRoomSessions(sessions).slice(0, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
 }
 
-function sessionSortTime(session: SessionListEntry) {
-  return session.last_used_at_ms ?? session.created_at_ms ?? 0
+export function sessionLastActiveMs(session: SessionListEntry) {
+  return numberOrZero(session.last_prompt_sent_at_ms)
+    || numberOrZero(session.last_activity_at_ms)
+    || numberOrZero(session.last_used_at_ms)
+    || numberOrZero(session.created_at_ms)
+}
+
+function numberOrZero(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
 }
 
 function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, start: number) {

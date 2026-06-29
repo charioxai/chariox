@@ -32,6 +32,8 @@ export type SessionListEntry = {
   status: string
   created_at_ms?: number
   last_used_at_ms?: number | null
+  last_activity_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
   attachment_ids?: string[]
   connected_cli_count?: number
   activity?: SessionActivitySummary
