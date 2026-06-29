@@ -216,6 +216,16 @@ test("deriveSessionStatusMode and footer hint reflect prompt and failure state",
     "working",
   )
   assert.equal(
+    deriveSessionStatusMode({
+      daemonDisconnected: false,
+      working: false,
+      hasActivePrompt: false,
+      submitting: false,
+      queueDepth: 1,
+    }),
+    "working",
+  )
+  assert.equal(
     deriveFooterHint({
       fatalError: null,
       activePromptId: "prompt-1",
@@ -223,6 +233,24 @@ test("deriveSessionStatusMode and footer hint reflect prompt and failure state",
       statusLine: "Connected.",
     }),
     "Processing prompt-1; 2 queued.",
+  )
+  assert.equal(
+    deriveFooterHint({
+      fatalError: null,
+      activePromptId: null,
+      queueDepth: 1,
+      statusLine: "Connected.",
+    }),
+    "1 queued prompt.",
+  )
+  assert.equal(
+    deriveFooterHint({
+      fatalError: null,
+      activePromptId: null,
+      queueDepth: 2,
+      statusLine: "Connected.",
+    }),
+    "2 queued prompts.",
   )
   assert.equal(
     deriveFooterHint({

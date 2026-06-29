@@ -149,6 +149,9 @@ export function deriveFooterHint(options: {
       ? `Processing ${options.activePromptId}; ${options.queueDepth} queued.`
       : `Processing ${options.activePromptId}.`
   }
+  if (options.queueDepth > 0) {
+    return `${options.queueDepth} queued prompt${options.queueDepth === 1 ? "" : "s"}.`
+  }
   return options.statusLine
 }
 
