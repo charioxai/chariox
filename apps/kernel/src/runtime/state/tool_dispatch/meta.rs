@@ -1128,6 +1128,7 @@ impl KernelRuntimeState {
                     crate::local::LoadWorkflowRegistryEntryRequest {
                         session_id: session.id().to_string(),
                         name: args.name,
+                        parameters: args.parameters,
                         provider_rebindings: args.provider_rebindings,
                     },
                 ),
@@ -1162,6 +1163,7 @@ impl KernelRuntimeState {
                     crate::local::RunWorkflowRegistryEntryRequest {
                         session_id: session.id().to_string(),
                         name: args.name,
+                        parameters: args.parameters,
                         provider_rebindings: args.provider_rebindings,
                         endpoint: args.endpoint,
                         queue_ref: args.queue,

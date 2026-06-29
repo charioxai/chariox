@@ -110,6 +110,8 @@ pub struct DeleteWorkflowRegistryEntryRequest {
 pub struct LoadWorkflowRegistryEntryRequest {
     pub session_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
@@ -118,6 +120,8 @@ pub struct LoadWorkflowRegistryEntryRequest {
 pub struct RunWorkflowRegistryEntryRequest {
     pub session_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -919,6 +919,7 @@ impl KernelRuntimeState {
                     app,
                     &request.session_id,
                     &request.name,
+                    &request.parameters,
                     &request.provider_rebindings,
                     caller_user_id,
                     controlled_by_metaagent_id,
@@ -955,6 +956,7 @@ impl KernelRuntimeState {
             .with_app_side_effect({
                 let session_id = session_id.clone();
                 let name = request.name.clone();
+                let parameters = request.parameters.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
                 let endpoint = request.endpoint.clone();
                 let queue_ref = request.queue_ref.clone();
@@ -964,6 +966,7 @@ impl KernelRuntimeState {
                         app,
                         &session_id,
                         &name,
+                        &parameters,
                         &provider_rebindings,
                         caller_user_id,
                         controlled_by_metaagent_id,
@@ -1506,6 +1509,7 @@ fn workflow_registry_apply_result(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
     name: &str,
+    parameters: &std::collections::BTreeMap<String, serde_json::Value>,
     provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
     caller_user_id: String,
     controlled_by_metaagent_id: Option<String>,
@@ -1522,13 +1526,15 @@ fn workflow_registry_apply_result(
     let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
     let limits = app.config().workflow_code_limits();
     let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
-    let compile = crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
-        &node_path,
-        &entry.source,
-        crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-        &limits,
-        entry.schema_import_root.as_deref(),
-    )?;
+    let compile =
+        crate::workflow_code::compile_workflow_code_source_with_parameters_and_schema_import_root(
+            &node_path,
+            &entry.source,
+            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+            &limits,
+            parameters,
+            entry.schema_import_root.as_deref(),
+        )?;
     reject_invalid_workflow_code_run_compile(operation, &compile.validation)?;
     let metaagent_id = controlled_by_metaagent_id.as_deref();
     let (definition, validation) = crate::app::KernelSessionService::new(app)

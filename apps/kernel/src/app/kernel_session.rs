@@ -48,6 +48,7 @@ mod tests {
     fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
         WorkflowCodeDefinition {
             schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+            parameters_schema: None,
             workflow: WorkflowCodeWorkflow {
                 alias: Some("generated_agents".to_string()),
                 prompt: None,

@@ -24,6 +24,7 @@ fn completion_with_message(message: impl Into<String>) -> WorkflowCompletionSnap
 fn workflow_code_definition() -> WorkflowCodeDefinition {
     WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+        parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
             alias: Some("coded_flow".to_string()),
             prompt: Some("Run the coded flow.".to_string()),
@@ -429,6 +430,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
 
     let definition = WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+        parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
             alias: Some("coded_router".to_string()),
             prompt: None,

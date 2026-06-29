@@ -2491,6 +2491,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
     };
     let definition = crate::workflow_code::WorkflowCodeDefinition {
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
+        parameters_schema: None,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
             alias: Some("invalid_import".to_string()),
             prompt: None,
@@ -2593,6 +2594,7 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
     };
     let definition = crate::workflow_code::WorkflowCodeDefinition {
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
+        parameters_schema: None,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
             alias: Some("mismatch_import".to_string()),
             prompt: None,

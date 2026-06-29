@@ -541,11 +541,13 @@ mod tests {
             LocalDaemonRequest::LoadWorkflowRegistryEntry(LoadWorkflowRegistryEntryRequest {
                 session_id: session_id.clone(),
                 name: "prompt-chaining".to_string(),
+                parameters: Default::default(),
                 provider_rebindings: Vec::new(),
             }),
             LocalDaemonRequest::RunWorkflowRegistryEntry(RunWorkflowRegistryEntryRequest {
                 session_id: session_id.clone(),
                 name: "prompt-chaining".to_string(),
+                parameters: Default::default(),
                 provider_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: None,

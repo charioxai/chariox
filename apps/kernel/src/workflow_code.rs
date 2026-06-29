@@ -178,6 +178,7 @@ function createBuilder() {
   const sourceSpans = {}
   const state = {
     schema_version: 1,
+    parameters_schema: undefined,
     workflow: {},
     schemas: [],
     nodes: [],
@@ -203,6 +204,114 @@ function createBuilder() {
   function recordSourceSpan(handle) {
     const span = sourceSpan()
     if (span) sourceSpans[handle] = span
+  }
+  function isPlainObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+  }
+  function own(value, key) {
+    return Object.prototype.hasOwnProperty.call(value, key)
+  }
+  function validateParameterSchema(schema, pathLabel = "parameters schema") {
+    if (!isPlainObject(schema)) throw new Error(`${pathLabel} must be an object`)
+    const supported = new Set([
+      "type",
+      "properties",
+      "required",
+      "default",
+      "minimum",
+      "maximum",
+      "multipleOf",
+      "title",
+      "description",
+      "enum",
+      "additionalProperties",
+      "xPowerOfTwo"
+    ])
+    for (const key of Object.keys(schema)) {
+      if (!supported.has(key)) throw new Error(`${pathLabel}.${key} is not supported`)
+    }
+    const type = schema.type
+    if (type !== undefined && !["object", "string", "number", "integer", "boolean"].includes(type)) {
+      throw new Error(`${pathLabel}.type is not supported`)
+    }
+    if (schema.enum !== undefined && !Array.isArray(schema.enum)) {
+      throw new Error(`${pathLabel}.enum must be an array`)
+    }
+    if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some((item) => typeof item !== "string"))) {
+      throw new Error(`${pathLabel}.required must be an array of strings`)
+    }
+    if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") {
+      throw new Error(`${pathLabel}.additionalProperties must be a boolean`)
+    }
+    if (schema.xPowerOfTwo !== undefined && typeof schema.xPowerOfTwo !== "boolean") {
+      throw new Error(`${pathLabel}.xPowerOfTwo must be a boolean`)
+    }
+    for (const numberKey of ["minimum", "maximum", "multipleOf"]) {
+      if (schema[numberKey] !== undefined && typeof schema[numberKey] !== "number") {
+        throw new Error(`${pathLabel}.${numberKey} must be a number`)
+      }
+    }
+    if (schema.properties !== undefined) {
+      if (!isPlainObject(schema.properties)) throw new Error(`${pathLabel}.properties must be an object`)
+      for (const [key, child] of Object.entries(schema.properties)) {
+        validateParameterSchema(child, `${pathLabel}.properties.${key}`)
+      }
+    }
+  }
+  function validateParameterValue(name, value, schema) {
+    const type = schema.type
+    if (schema.enum !== undefined && !schema.enum.some((item) => Object.is(item, value))) {
+      throw new Error(`parameter ${name} must be one of the declared enum values`)
+    }
+    if (type === "string" && typeof value !== "string") throw new Error(`parameter ${name} must be a string`)
+    if (type === "boolean" && typeof value !== "boolean") throw new Error(`parameter ${name} must be a boolean`)
+    if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) throw new Error(`parameter ${name} must be a number`)
+    if (type === "integer" && (!Number.isSafeInteger(value))) throw new Error(`parameter ${name} must be an integer`)
+    if ((type === "number" || type === "integer") && schema.minimum !== undefined && value < schema.minimum) {
+      throw new Error(`parameter ${name} must be >= ${schema.minimum}`)
+    }
+    if ((type === "number" || type === "integer") && schema.maximum !== undefined && value > schema.maximum) {
+      throw new Error(`parameter ${name} must be <= ${schema.maximum}`)
+    }
+    if ((type === "number" || type === "integer") && schema.multipleOf !== undefined && value % schema.multipleOf !== 0) {
+      throw new Error(`parameter ${name} must be a multiple of ${schema.multipleOf}`)
+    }
+    if (schema.xPowerOfTwo === true) {
+      if (!Number.isSafeInteger(value) || value < 1 || Math.log2(value) % 1 !== 0) {
+        throw new Error(`parameter ${name} must be a power of two`)
+      }
+    }
+  }
+  function resolveParameters(schema) {
+    validateParameterSchema(schema)
+    if (schema.type !== "object") throw new Error("parameters schema.type must be object")
+    const supplied = input.parameters === undefined ? {} : input.parameters
+    if (!isPlainObject(supplied)) throw new Error("workflow-code parameters must be an object")
+    const properties = schema.properties || {}
+    const required = new Set(schema.required || [])
+    const resolved = {}
+    for (const key of Object.keys(supplied)) {
+      if (!own(properties, key) && schema.additionalProperties === false) {
+        throw new Error(`parameter ${key} is not declared by the schema`)
+      }
+    }
+    for (const [key, propertySchema] of Object.entries(properties)) {
+      if (own(supplied, key)) {
+        validateParameterValue(key, supplied[key], propertySchema)
+        resolved[key] = supplied[key]
+      } else if (own(propertySchema, "default")) {
+        validateParameterValue(key, propertySchema.default, propertySchema)
+        resolved[key] = propertySchema.default
+      } else if (required.has(key)) {
+        throw new Error(`parameter ${key} is required`)
+      }
+    }
+    if (schema.additionalProperties !== false) {
+      for (const [key, value] of Object.entries(supplied)) {
+        if (!own(resolved, key)) resolved[key] = value
+      }
+    }
+    return Object.freeze(resolved)
   }
   function loadSchemaFromFile(schemaPath) {
     if (typeof schemaPath !== "string" || schemaPath.trim() === "") {
@@ -252,6 +361,14 @@ function createBuilder() {
     throw new Error("node agent must be created with workflow.newAgent or workflow.existingAgent")
   }
   const api = {
+    parameters(options = {}) {
+      const schema = options.schema
+      if (state.parameters_schema !== undefined) {
+        throw new Error("workflow.parameters may only be called once")
+      }
+      state.parameters_schema = schema
+      return resolveParameters(schema)
+    },
     define(options = {}) {
       state.workflow = {
         ...state.workflow,
@@ -379,7 +496,10 @@ function createBuilder() {
       return { __workflowCodeHandle: "watchdog", handle: item.handle }
     },
     export() {
-      return state
+      return {
+        ...state,
+        ...(state.parameters_schema !== undefined ? { parameters_schema: state.parameters_schema } : {})
+      }
     },
     __sourceSpans() {
       return sourceSpans
@@ -503,6 +623,7 @@ struct WorkflowCodeCompilerInput<'a> {
     language: &'static str,
     timeout_ms: u64,
     max_schema_bytes: u32,
+    parameters: &'a BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_import_root: Option<&'a Path>,
 }
@@ -813,9 +934,11 @@ pub struct WorkflowRegistryEntryMetadata {
     pub validation: WorkflowRegistryValidationSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<WorkflowRegistryEntrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters_schema: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowRegistryResolvedEntry {
     pub metadata: WorkflowRegistryEntryMetadata,
     pub source: String,
@@ -828,6 +951,7 @@ struct WorkflowRegistrySummaryCacheEntry {
     validation: WorkflowRegistryValidationSummary,
     definition_sha256: Option<String>,
     summary: Option<WorkflowRegistryEntrySummary>,
+    parameters_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -848,6 +972,8 @@ struct StoredWorkflowRegistryManifest {
     validation: WorkflowRegistryValidationSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     summary: Option<WorkflowRegistryEntrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parameters_schema: Option<Value>,
 }
 
 pub struct WorkflowRegistry {
@@ -1434,6 +1560,7 @@ impl WorkflowRegistry {
             summary: Some(WorkflowRegistryEntrySummary::from_definition(
                 &compile.definition,
             )),
+            parameters_schema: compile.definition.parameters_schema.clone(),
         };
         write_workflow_registry_manifest(&entry_dir.join("manifest.json"), &manifest)?;
         Ok(manifest.into_metadata(scope))
@@ -1565,6 +1692,7 @@ impl StoredWorkflowRegistryManifest {
             updated_at_ms: self.updated_at_ms,
             validation: self.validation,
             summary: self.summary,
+            parameters_schema: self.parameters_schema,
         }
     }
 }
@@ -1574,6 +1702,8 @@ impl StoredWorkflowRegistryManifest {
 pub struct WorkflowCodeDefinition {
     #[serde(default = "default_workflow_code_schema_version")]
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters_schema: Option<Value>,
     pub workflow: WorkflowCodeWorkflow,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schemas: Vec<WorkflowCodeSchemaDefinition>,
@@ -1614,6 +1744,22 @@ pub fn compile_workflow_code_javascript(
     )
 }
 
+pub fn compile_workflow_code_javascript_with_parameters(
+    node_path: impl AsRef<Path>,
+    source: &str,
+    limits: &WorkflowCodeLimitsConfig,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    compile_workflow_code_source_with_parameters_and_schema_import_root(
+        node_path,
+        source,
+        WorkflowCodeLanguage::JavaScript,
+        limits,
+        parameters,
+        None,
+    )
+}
+
 pub fn compile_workflow_code_javascript_with_schema_import_root(
     node_path: impl AsRef<Path>,
     source: &str,
@@ -1636,6 +1782,24 @@ pub fn compile_workflow_code_source_with_schema_import_root(
     limits: &WorkflowCodeLimitsConfig,
     schema_import_root: Option<&Path>,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    compile_workflow_code_source_with_parameters_and_schema_import_root(
+        node_path,
+        source,
+        language,
+        limits,
+        &BTreeMap::new(),
+        schema_import_root,
+    )
+}
+
+pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
+    node_path: impl AsRef<Path>,
+    source: &str,
+    language: WorkflowCodeLanguage,
+    limits: &WorkflowCodeLimitsConfig,
+    parameters: &BTreeMap<String, Value>,
+    schema_import_root: Option<&Path>,
+) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
     let max_old_space_mb = u64::max(16, limits.script_memory_bytes.div_ceil(1024 * 1024));
     let mut child = Command::new(node_path.as_ref())
         .arg(format!("--max-old-space-size={max_old_space_mb}"))
@@ -1656,6 +1820,7 @@ pub fn compile_workflow_code_source_with_schema_import_root(
         language: language.compiler_name(),
         timeout_ms: limits.script_timeout_ms,
         max_schema_bytes: limits.max_schema_bytes,
+        parameters,
         schema_import_root,
     })
     .map_err(|error| crate::DaemonError::LocalTransport {
@@ -3180,6 +3345,7 @@ fn single_file_workflow_registry_metadata(
             diagnostics: Vec::new(),
         },
         summary: None,
+        parameters_schema: None,
     })
 }
 
@@ -3201,6 +3367,7 @@ fn builtin_workflow_registry_metadata(
             diagnostics: Vec::new(),
         },
         summary: None,
+        parameters_schema: None,
     }
 }
 
@@ -3247,6 +3414,7 @@ pub fn enrich_workflow_registry_entry_summary(
                 validation,
                 definition_sha256,
                 summary,
+                parameters_schema: compile.definition.parameters_schema.clone(),
             }
         }
         Err(error) => {
@@ -3259,6 +3427,7 @@ pub fn enrich_workflow_registry_entry_summary(
                 },
                 definition_sha256: metadata.definition_sha256.clone(),
                 summary: None,
+                parameters_schema: metadata.parameters_schema.clone(),
             }
         }
     };
@@ -3274,6 +3443,7 @@ pub fn enrich_workflow_registry_entry_summary(
     metadata.validation = cached.validation;
     metadata.definition_sha256 = metadata.definition_sha256.or(cached.definition_sha256);
     metadata.summary = cached.summary;
+    metadata.parameters_schema = cached.parameters_schema;
     metadata
 }
 
@@ -3533,6 +3703,7 @@ fn workflow_code_definition_from_session_workflow(
 
     Ok(WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+        parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
             alias: workflow.alias().map(str::to_string),
             prompt: None,
@@ -4171,6 +4342,7 @@ mod tests {
     fn minimal_definition() -> WorkflowCodeDefinition {
         WorkflowCodeDefinition {
             schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+            parameters_schema: None,
             workflow: WorkflowCodeWorkflow {
                 alias: Some("toy".to_string()),
                 prompt: Some("Run the toy workflow.".to_string()),
@@ -4890,6 +5062,131 @@ workflow.endpoint(planner, { alias: "entry" })
     }
 
     #[test]
+    fn javascript_compiler_resolves_parameter_defaults() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      worker_count: { type: "integer", minimum: 1, default: 2, title: "Worker count" }
+    },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "parameterized", maxConcurrent: params.worker_count })
+let previous = null
+for (let index = 0; index < params.worker_count; index += 1) {
+  const worker = workflow.node({
+    handle: `worker_${index + 1}`,
+    agent: workflow.newAgent({ provider: "dev-stub" }),
+    publicLabel: `Worker ${index + 1}`
+  })
+  if (index === 0) workflow.endpoint(worker, { handle: "entry" })
+  if (previous) workflow.edge(previous, worker)
+  previous = worker
+}
+"#;
+
+        let result =
+            compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+                .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(result.definition.nodes.len(), 2);
+        assert_eq!(result.definition.workflow.max_concurrent, Some(2));
+        assert_eq!(
+            result
+                .definition
+                .parameters_schema
+                .as_ref()
+                .and_then(|schema| schema.pointer("/properties/worker_count/type")),
+            Some(&serde_json::json!("integer"))
+        );
+    }
+
+    #[test]
+    fn javascript_compiler_applies_explicit_parameters() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      worker_count: { type: "integer", minimum: 1, default: 2 }
+    },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "parameterized", maxConcurrent: params.worker_count })
+let previous = null
+for (let index = 0; index < params.worker_count; index += 1) {
+  const worker = workflow.node({
+    handle: `worker_${index + 1}`,
+    agent: workflow.newAgent({ provider: "dev-stub" }),
+    publicLabel: `Worker ${index + 1}`
+  })
+  if (index === 0) workflow.endpoint(worker, { handle: "entry" })
+  if (previous) workflow.edge(previous, worker)
+  previous = worker
+}
+"#;
+        let parameters = BTreeMap::from([("worker_count".to_string(), serde_json::json!(4))]);
+
+        let result = compile_workflow_code_javascript_with_parameters(
+            node,
+            source,
+            &WorkflowCodeLimitsConfig::default(),
+            &parameters,
+        )
+        .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(result.definition.nodes.len(), 4);
+        assert_eq!(result.definition.workflow.max_concurrent, Some(4));
+    }
+
+    #[test]
+    fn javascript_compiler_rejects_non_power_of_two_parameter() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+const params = workflow.parameters({
+  schema: {
+    type: "object",
+    properties: {
+      bracket_size: { type: "integer", minimum: 2, xPowerOfTwo: true, default: 2 }
+    },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "tournament", maxConcurrent: params.bracket_size })
+"#;
+        let parameters = BTreeMap::from([("bracket_size".to_string(), serde_json::json!(3))]);
+
+        let error = compile_workflow_code_javascript_with_parameters(
+            node,
+            source,
+            &WorkflowCodeLimitsConfig::default(),
+            &parameters,
+        )
+        .expect_err("non-power-of-two parameter should fail");
+
+        assert!(format!("{error}").contains("power of two"));
+    }
+
+    #[test]
     fn javascript_compiler_ignores_source_console_output() {
         let Some(node) = find_node() else {
             eprintln!("skipping workflow-code JS compiler test because node is not available");
@@ -5461,6 +5758,7 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
                         diagnostics: Vec::new(),
                     },
                     summary: None,
+                    parameters_schema: None,
                 },
                 source: "not valid workflow code".to_string(),
                 node_path: "broken.js".to_string(),

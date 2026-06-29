@@ -1511,7 +1511,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 210
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 211
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1950,6 +1950,7 @@ export type WorkflowSchemaDefinition = {
 
 export type WorkflowCodeDefinition = {
   schema_version?: number
+  parameters_schema?: unknown | null
   workflow: WorkflowCodeWorkflow
   schemas?: WorkflowCodeSchemaDefinition[]
   nodes?: WorkflowCodeNodeDefinition[]
@@ -2243,6 +2244,7 @@ export type WorkflowRegistryEntryMetadata = {
   updated_at_ms: number
   validation: WorkflowRegistryValidationSummary
   summary?: WorkflowRegistryEntrySummary | null
+  parameters_schema?: unknown | null
 }
 
 export type WorkflowCodeSourceExport = {

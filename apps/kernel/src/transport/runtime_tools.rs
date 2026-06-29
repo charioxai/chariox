@@ -689,6 +689,8 @@ pub struct MetaWorkflowRegistryDeleteArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MetaWorkflowRegistryLoadArgs {
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
@@ -696,6 +698,8 @@ pub struct MetaWorkflowRegistryLoadArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MetaWorkflowRegistryRunArgs {
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1815,6 +1819,10 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["name"],
                 "properties": {
                     "name": {"type": "string"},
+                    "parameters": {
+                        "type": "object",
+                        "description": "Workflow-code template input parameters, using keys from the registry entry's parameters_schema."
+                    },
                     "provider_rebindings": {
                         "type": "array",
                         "items": {
@@ -1842,6 +1850,10 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["name"],
                 "properties": {
                     "name": {"type": "string"},
+                    "parameters": {
+                        "type": "object",
+                        "description": "Workflow-code template input parameters, using keys from the registry entry's parameters_schema."
+                    },
                     "prompt": {"type": "string"},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},

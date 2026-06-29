@@ -281,6 +281,7 @@ export type LoadWorkflowRegistryEntryRequest = {
   LoadWorkflowRegistryEntry: {
     session_id: string
     name: string
+    parameters?: Record<string, unknown>
     provider_rebindings?: WorkflowCodeProviderRebinding[]
   }
 }
@@ -288,12 +289,24 @@ export type LoadWorkflowRegistryEntryRequest = {
 export function loadWorkflowRegistryEntryRequest(
   sessionId: string,
   name: string,
-  providerRebindings: WorkflowCodeProviderRebinding[] = [],
+  optionsOrProviderRebindings:
+    | WorkflowCodeProviderRebinding[]
+    | {
+        parameters?: Record<string, unknown>
+        providerRebindings?: WorkflowCodeProviderRebinding[]
+      } = {},
 ): LoadWorkflowRegistryEntryRequest {
+  const options = Array.isArray(optionsOrProviderRebindings)
+    ? { providerRebindings: optionsOrProviderRebindings }
+    : optionsOrProviderRebindings
+  const providerRebindings = options.providerRebindings ?? []
   return {
     LoadWorkflowRegistryEntry: {
       session_id: sessionId,
       name,
+      ...(options.parameters && Object.keys(options.parameters).length > 0
+        ? { parameters: options.parameters }
+        : {}),
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
     },
   }
@@ -303,6 +316,7 @@ export type RunWorkflowRegistryEntryRequest = {
   RunWorkflowRegistryEntry: {
     session_id: string
     name: string
+    parameters?: Record<string, unknown>
     provider_rebindings?: WorkflowCodeProviderRebinding[]
     endpoint?: string | null
     queue_ref?: string | null
@@ -315,6 +329,7 @@ export function runWorkflowRegistryEntryRequest(
   name: string,
   prompt: string,
   options: {
+    parameters?: Record<string, unknown>
     providerRebindings?: WorkflowCodeProviderRebinding[]
     endpoint?: string | null
     queueRef?: string | null
@@ -325,6 +340,9 @@ export function runWorkflowRegistryEntryRequest(
     RunWorkflowRegistryEntry: {
       session_id: sessionId,
       name,
+      ...(options.parameters && Object.keys(options.parameters).length > 0
+        ? { parameters: options.parameters }
+        : {}),
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
       ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
       ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
