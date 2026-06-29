@@ -168,6 +168,7 @@ export function createCliAppState(options: {
   const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
   const [sessionHydrating, setSessionHydrating] = createSignal(false)
   const [loadingHistory, setLoadingHistory] = createSignal(false)
+  const [historyLoadingMessage, setHistoryLoadingMessage] = createSignal<string | null>(null)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
   const [working, setWorking] = createSignal(sessionHasPromptWork(initialSession))
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
@@ -301,6 +302,8 @@ export function createCliAppState(options: {
     setSessionHydrating,
     loadingHistory,
     setLoadingHistory,
+    historyLoadingMessage,
+    setHistoryLoadingMessage,
     workingAnimationFrame,
     setWorkingAnimationFrame,
     working,

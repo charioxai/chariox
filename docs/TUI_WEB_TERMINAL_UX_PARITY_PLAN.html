@@ -305,8 +305,8 @@
         <tr>
           <td>History loading</td>
           <td>Per-agent history state tracks loading, older-page loading, cursors, and minimum loader visibility.</td>
-          <td>TUI loads history pages and backfills older history to preserve renderable count after refresh.</td>
-          <td><span class="status gap">Needs user-visible loading/error parity</span> and tests for expansion preservation.</td>
+          <td>TUI loads older pages, backfills history to preserve renderable count, keeps collapse state across refresh, and renders loading/error messages in the transcript history loader.</td>
+          <td><span class="status ok">Aligned</span> for TUI-visible loading/error state and expansion preservation tests.</td>
         </tr>
         <tr>
           <td>Queued prompts</td>

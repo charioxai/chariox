@@ -252,9 +252,12 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         sessionId: session.id,
         agentId: visibleAgentId,
       })
+      deps.setHistoryLoadingState(false, "Failed to load older history.")
       return false
     } finally {
-      deps.setHistoryLoadingState(false)
+      if (deps.loadingHistory()) {
+        deps.setHistoryLoadingState(false)
+      }
     }
   }
 

@@ -2,6 +2,7 @@ export type CliLoadingStateControllerDeps = {
   getSessionHydrating: () => boolean
   setSessionHydrating: (next: boolean) => void
   setLoadingHistory: (next: boolean) => void
+  setHistoryLoadingMessage: (next: string | null) => void
   renderHistoryLoadingIndicator: () => void
   isAttached: () => boolean
   visibleTranscriptEntryCount: () => number
@@ -13,8 +14,9 @@ export type CliLoadingStateControllerDeps = {
 export function createCliLoadingStateController(
   deps: CliLoadingStateControllerDeps,
 ) {
-  const setHistoryLoadingState = (next: boolean) => {
+  const setHistoryLoadingState = (next: boolean, message: string | null = null) => {
     deps.setLoadingHistory(next)
+    deps.setHistoryLoadingMessage(next ? null : message)
     deps.renderHistoryLoadingIndicator()
   }
 

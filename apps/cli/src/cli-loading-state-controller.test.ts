@@ -11,8 +11,22 @@ test("cli loading state controller renders history loading changes", () => {
 
   assert.deepEqual(harness.calls, [
     "setLoadingHistory:true",
+    "setHistoryLoadingMessage:null",
     "renderHistoryLoadingIndicator",
     "setLoadingHistory:false",
+    "setHistoryLoadingMessage:null",
+    "renderHistoryLoadingIndicator",
+  ])
+})
+
+test("cli loading state controller keeps history error visible after loading fails", () => {
+  const harness = createHarness()
+
+  harness.controller.setHistoryLoadingState(false, "Failed to load older history.")
+
+  assert.deepEqual(harness.calls, [
+    "setLoadingHistory:false",
+    "setHistoryLoadingMessage:Failed to load older history.",
     "renderHistoryLoadingIndicator",
   ])
 })
@@ -84,6 +98,9 @@ function createHarness(options: {
     },
     setLoadingHistory: (next) => {
       calls.push(`setLoadingHistory:${next}`)
+    },
+    setHistoryLoadingMessage: (next) => {
+      calls.push(`setHistoryLoadingMessage:${next}`)
     },
     renderHistoryLoadingIndicator: () => {
       calls.push("renderHistoryLoadingIndicator")

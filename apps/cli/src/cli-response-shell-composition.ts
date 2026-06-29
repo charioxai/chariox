@@ -86,6 +86,7 @@ export type CliResponseShellCompositionDeps = {
   sessionHydrating: AnyFn
   setSessionHydrating: AnyFn
   setLoadingHistory: AnyFn
+  setHistoryLoadingMessage: AnyFn
   rebuildTranscript: AnyFn
   focusedStatusBadge: AnyFn
   runtimeDebugLogger: {
@@ -192,6 +193,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getSessionHydrating: deps.sessionHydrating,
     setSessionHydrating: deps.setSessionHydrating,
     setLoadingHistory: deps.setLoadingHistory,
+    setHistoryLoadingMessage: deps.setHistoryLoadingMessage,
     renderHistoryLoadingIndicator: deps.renderHistoryLoadingIndicator,
     isAttached: deps.isAttached,
     visibleTranscriptEntryCount: deps.transcriptEntryProjectionController.visibleEntryCount,

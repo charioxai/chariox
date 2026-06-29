@@ -272,6 +272,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setSessionHydrating,
     loadingHistory,
     setLoadingHistory,
+    historyLoadingMessage,
+    setHistoryLoadingMessage,
     workingAnimationFrame,
     setWorkingAnimationFrame,
     working,
@@ -475,6 +477,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const historyLoadingRenderController = createHistoryLoadingRenderController({
     renderer,
     loading: loadingHistory,
+    message: historyLoadingMessage,
     renderIndicator: renderHistoryLoadingIndicatorView,
   })
   const renderHistoryLoadingIndicator = historyLoadingRenderController.render
@@ -1036,6 +1039,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionHydrating,
     setSessionHydrating,
     setLoadingHistory,
+    setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),
     focusedStatusBadge,
     runtimeDebugLogger,
