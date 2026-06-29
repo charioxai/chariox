@@ -63,6 +63,12 @@ impl ProviderProcessServiceStore {
         self.read().native_interaction_bridge()
     }
 
+    pub(crate) fn run_actor_completion_signal(
+        &self,
+    ) -> crate::provider::ProviderRunActorCompletionSignal {
+        self.read().run_actor_completion_signal()
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
     }

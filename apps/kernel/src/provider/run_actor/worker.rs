@@ -19,6 +19,7 @@ use super::finished_jobs::{
 use super::in_flight::ProviderRunInFlightState;
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
 use super::runtime_slots::ProviderRunRuntimeRegistry;
+use super::ProviderRunActorCompletionSignal;
 
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
@@ -67,6 +68,7 @@ pub(super) struct ProviderRunWorkerDeps {
     pub(super) finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     pub(super) finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     pub(super) finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    pub(super) completion_signal: ProviderRunActorCompletionSignal,
     pub(super) output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
 }
 
@@ -95,6 +97,7 @@ impl ProviderRunWorkerDeps {
                             result,
                         };
                         push_finished_submit(&self.finished_submits, finished);
+                        self.completion_signal.record_completion();
                     }
                     ProviderRunActorCommand::Abort {
                         session_id,
@@ -109,6 +112,7 @@ impl ProviderRunWorkerDeps {
                             result,
                         };
                         push_finished_abort(&self.finished_aborts, finished);
+                        self.completion_signal.record_completion();
                     }
                     ProviderRunActorCommand::Utility {
                         provider_run_id,
@@ -161,6 +165,7 @@ impl ProviderRunWorkerDeps {
                             result,
                         };
                         push_finished_selection_sync(&self.finished_selection_syncs, finished);
+                        self.completion_signal.record_completion();
                     }
                     ProviderRunActorCommand::PollOutput {
                         provider_run_id,
@@ -179,6 +184,7 @@ impl ProviderRunWorkerDeps {
                             result,
                         };
                         push_finished_output_poll(&self.finished_output_polls, finished);
+                        self.completion_signal.record_completion();
                     }
                     ProviderRunActorCommand::Stop => break,
                 }

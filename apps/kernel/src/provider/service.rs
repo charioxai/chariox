@@ -13,7 +13,8 @@ pub use store::ProviderProcessServiceStore;
 
 use super::{
     LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderRegistry,
-    ProviderRunActorMailbox, ProviderRunState, RuntimeProviderRun,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunState,
+    RuntimeProviderRun,
 };
 
 pub struct ProviderProcessService {
@@ -48,6 +49,10 @@ impl ProviderProcessService {
         &self,
     ) -> Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>> {
         self.run_actor_mailbox.native_interaction_bridge()
+    }
+
+    pub(crate) fn run_actor_completion_signal(&self) -> ProviderRunActorCompletionSignal {
+        self.run_actor_mailbox.completion_signal()
     }
 }
 

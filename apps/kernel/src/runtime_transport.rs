@@ -250,6 +250,8 @@ where
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
+            let provider_actor_completion_sequence =
+                pump_router.provider_run_actor_completion_sequence();
             let delay_ms = pump_router.transport_runtime_pump_interval_ms(
                 PUMP_INTERVAL_MS,
                 IDLE_PUMP_INTERVAL_MS,
@@ -259,6 +261,7 @@ where
                 _ = sleep(Duration::from_millis(delay_ms)) => {}
                 _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
+                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
             }
         }
     });

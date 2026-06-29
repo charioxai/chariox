@@ -150,6 +150,21 @@ impl KernelRuntimeState {
             .await;
     }
 
+    pub(crate) fn provider_run_actor_completion_sequence(&self) -> u64 {
+        self.owned
+            .provider_store
+            .run_actor_completion_signal()
+            .sequence()
+    }
+
+    pub(crate) async fn wait_for_provider_run_actor_completion_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .run_actor_completion_signal()
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn transport_runtime_pump_interval_ms(
         &self,
         active_interval_ms: u64,

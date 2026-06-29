@@ -290,6 +290,7 @@ impl ProviderRunActorMailbox {
         finished: FinishedProviderOutputPollJob,
     ) {
         push_finished_output_poll(&self.finished_output_polls, finished);
+        self.completion_signal.record_completion();
     }
 
     pub(super) fn worker_for_run(
@@ -315,6 +316,7 @@ impl ProviderRunActorMailbox {
             finished_aborts: Arc::clone(&self.finished_aborts),
             finished_selection_syncs: Arc::clone(&self.finished_selection_syncs),
             finished_output_polls: Arc::clone(&self.finished_output_polls),
+            completion_signal: self.completion_signal.clone(),
             output_poll_delays: Arc::clone(&self.output_poll_delays),
         }
     }
@@ -379,6 +381,26 @@ mod tests {
             mailbox.operation_lanes.health_snapshot().enqueued_commands,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn finished_output_poll_wakes_completion_waiters() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let signal = mailbox.completion_signal();
+        let sequence = signal.sequence();
+
+        mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
+            provider_run_id: "run-1".to_string(),
+            result: Ok(None),
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            signal.wait_for_change_after(sequence),
+        )
+        .await
+        .expect("finished structured output poll should wake completion waiters");
+        assert_eq!(mailbox.drain_finished_output_polls().len(), 1);
     }
 
     #[test]

@@ -63,8 +63,8 @@ pub use prompt_signals::{
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution, ProviderRunActorMailbox,
-    ProviderRunOperationLanes,
+    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub(crate) use runtime_run::projected_leased_provider_run_id;
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};

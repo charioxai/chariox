@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tokio::sync::Notify;
 
 mod command_enqueue;
 mod command_execution;
@@ -49,12 +52,28 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    completion_signal: ProviderRunActorCompletionSignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderRunActorCompletionSignal {
+    inner: Arc<ProviderRunActorCompletionSignalState>,
+}
+
+#[derive(Debug, Default)]
+struct ProviderRunActorCompletionSignalState {
+    sequence: AtomicU64,
+    notify: Notify,
 }
 
 impl ProviderRunActorMailbox {
     pub(crate) fn operation_lanes(&self) -> ProviderRunOperationLanes {
         self.operation_lanes.clone()
+    }
+
+    pub(crate) fn completion_signal(&self) -> ProviderRunActorCompletionSignal {
+        self.completion_signal.clone()
     }
 
     pub(crate) fn set_native_interaction_bridge(
@@ -134,6 +153,29 @@ impl ProviderRunActorMailbox {
         self.in_flight.output_poll_in_flight(run_id)
     }
 }
+
+impl ProviderRunActorCompletionSignal {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.inner.sequence.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
+        if self.sequence() != sequence {
+            return;
+        }
+        let notified = self.inner.notify.notified();
+        if self.sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+
+    pub(super) fn record_completion(&self) {
+        self.inner.sequence.fetch_add(1, Ordering::AcqRel);
+        self.inner.notify.notify_waiters();
+    }
+}
+
 fn provider_actor_enqueue_error(
     operation: &'static str,
     provider_run_id: &str,
