@@ -70,14 +70,14 @@ export function collapseLatestTranscriptTurn(
 
 export function applyTranscriptDisplayState(
   entries: TranscriptEntry[],
-  expandedTurnIds: readonly number[] = [],
+  collapsedTurnIds: readonly number[] = [],
   activeTurnId: number | null = null,
 ) {
   const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries)).map((entry) => ({
     ...entry,
     hidden: false,
   }))
-  const collapsedTurnIdSet = new Set(expandedTurnIds)
+  const collapsedTurnIdSet = new Set(collapsedTurnIds)
   let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
 
@@ -139,23 +139,23 @@ export function applyTranscriptDisplayState(
 export function setTranscriptTurnExpanded(
   entries: TranscriptEntry[],
   turnId: number,
-  expandedTurnIds: readonly number[],
+  collapsedTurnIds: readonly number[],
   expanded: boolean,
   activeTurnId: number | null = null,
 ) {
-  const nextExpandedTurnIds = new Set(expandedTurnIds)
+  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
   if (expanded) {
-    nextExpandedTurnIds.delete(turnId)
+    nextCollapsedTurnIds.delete(turnId)
   } else {
-    nextExpandedTurnIds.add(turnId)
+    nextCollapsedTurnIds.add(turnId)
   }
-  return applyTranscriptDisplayState(entries, [...nextExpandedTurnIds].sort((left, right) => left - right), activeTurnId)
+  return applyTranscriptDisplayState(entries, [...nextCollapsedTurnIds].sort((left, right) => left - right), activeTurnId)
 }
 
 export function setTranscriptBlobCollapsed(
   entries: TranscriptEntry[],
   entryId: number,
-  expandedTurnIds: readonly number[] = [],
+  collapsedTurnIds: readonly number[] = [],
   collapsed: boolean,
   activeTurnId: number | null = null,
 ) {
@@ -168,7 +168,7 @@ export function setTranscriptBlobCollapsed(
       blobCollapsed: collapsed,
     }
   })
-  return applyTranscriptDisplayState(updated, expandedTurnIds, activeTurnId)
+  return applyTranscriptDisplayState(updated, collapsedTurnIds, activeTurnId)
 }
 
 export function findVisibleTurnToggle(

@@ -4,7 +4,8 @@ import {
   collapseLatestTranscriptTurn,
 } from "./transcript-display.js"
 
-export type ExpandedTurnIdsByAgent = Record<string, number[]>
+export type CollapsedTurnIdsByAgent = Record<string, number[]>
+export type ExpandedTurnIdsByAgent = CollapsedTurnIdsByAgent
 
 export type TranscriptTurnExpansionControllerDeps = {
   expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
@@ -23,7 +24,7 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
       return
     }
     deps.updateExpandedTurnIdsByAgent((current) =>
-      updateExpandedTurnState(current, agentId, turnId, expanded))
+      updateCollapsedTurnState(current, agentId, turnId, expanded))
   }
 
   const replaceExpandedTurnsForAgent = (
@@ -34,7 +35,7 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
       return
     }
     deps.updateExpandedTurnIdsByAgent((current) =>
-      replaceExpandedTurnIds(current, agentId, turnIds))
+      replaceCollapsedTurnIds(current, agentId, turnIds))
   }
 
   const collapseLatestTurnForAgent = (
@@ -50,22 +51,22 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
   }
 
   return {
-    applyExpandedTurns,
+    applyExpandedTurns: applyCollapsedTurns,
     collapseLatestTurnForAgent,
     replaceExpandedTurnsForAgent,
     setExpandedTurnState,
   }
 }
 
-export function applyExpandedTurns(
+export function applyCollapsedTurns(
   entries: TranscriptEntry[],
-  expandedTurnIds: readonly number[],
+  collapsedTurnIds: readonly number[],
 ) {
-  return applyTranscriptDisplayState(entries, expandedTurnIds)
+  return applyTranscriptDisplayState(entries, collapsedTurnIds)
 }
 
-export function updateExpandedTurnState(
-  current: ExpandedTurnIdsByAgent,
+export function updateCollapsedTurnState(
+  current: CollapsedTurnIdsByAgent,
   agentId: string,
   turnId: number,
   expanded: boolean,
@@ -76,11 +77,11 @@ export function updateExpandedTurnState(
   } else {
     previous.add(turnId)
   }
-  return replaceExpandedTurnIds(current, agentId, previous)
+  return replaceCollapsedTurnIds(current, agentId, previous)
 }
 
-export function replaceExpandedTurnIds(
-  current: ExpandedTurnIdsByAgent,
+export function replaceCollapsedTurnIds(
+  current: CollapsedTurnIdsByAgent,
   agentId: string,
   turnIds: Iterable<number>,
 ) {
@@ -106,3 +107,7 @@ export function replaceExpandedTurnIds(
     [agentId]: nextTurnIds,
   }
 }
+
+export const applyExpandedTurns = applyCollapsedTurns
+export const updateExpandedTurnState = updateCollapsedTurnState
+export const replaceExpandedTurnIds = replaceCollapsedTurnIds
