@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI and Web Terminal UX Parity Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-soft: #141720;
+      --text: #eef1f6;
+      --muted: #a7afbd;
+      --line: #303746;
+      --accent: #f28c45;
+      --good: #7edc91;
+      --warn: #f0c66a;
+      --code: #222838;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 44px 24px 72px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 34px;
+    }
+
+    h2 {
+      margin-top: 36px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+      color: var(--accent);
+      font-size: 23px;
+    }
+
+    h3 {
+      margin-top: 22px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 10px 0 0;
+      color: var(--muted);
+    }
+
+    ul, ol {
+      margin: 12px 0 0;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--code);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0 0;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--code);
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      margin-top: 16px;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .summary {
+      margin-top: 20px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .status {
+      font-weight: 700;
+    }
+
+    .ok {
+      color: var(--good);
+    }
+
+    .gap {
+      color: var(--warn);
+    }
+
+    .repo {
+      color: var(--accent);
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TUI and Web Terminal UX Parity Plan</h1>
+    <p>
+      Plan to close the local TUI UX gap against the web terminal for Freeform agent panes,
+      prompt queue and steering behavior, prompt chrome, screen footer, and Waiting Room.
+      Workflow canvas behavior is intentionally out of scope because the TUI has no canvas.
+    </p>
+
+    <section class="summary" aria-label="Summary">
+      <strong>Target outcome</strong>
+      <p>
+        The TUI should feel analogous to the web Freeform terminal where the medium allows it:
+        assistant messages expanded, non-assistant activity blobs collapsed by default, historical turns
+        auto-collapsed, queue/steering visible and actionable, footer state consistent, and Waiting Room
+        rows/footers driven by the same runtime facts.
+      </p>
+    </section>
+
+    <h2>Code Areas Inspected</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>OSS TUI</h3>
+        <ul>
+          <li><code>apps/cli/src/transcript-display.ts</code></li>
+          <li><code>apps/cli/src/transcript-render.ts</code></li>
+          <li><code>apps/cli/src/agent-pane-state.ts</code></li>
+          <li><code>apps/cli/src/queued-prompt-transcript.ts</code></li>
+          <li><code>apps/cli/src/split-pane-footer.ts</code></li>
+          <li><code>apps/cli/src/split-pane-footer-renderer.ts</code></li>
+          <li><code>apps/cli/src/cli-prompt-surface-composition.ts</code></li>
+          <li><code>apps/cli/src/waiting-room-*.ts</code></li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Web Terminal</h3>
+        <ul>
+          <li><code>apps/web/src/terminal/freeform-transcript-renderer.ts</code></li>
+          <li><code>apps/web/src/terminal/turn-state.ts</code></li>
+          <li><code>apps/web/src/terminal/agent-history-state.ts</code></li>
+          <li><code>apps/web/src/react/terminal/FreeformQueuedPromptStripMount.tsx</code></li>
+          <li><code>apps/web/src/terminal/queued-prompt-action-controller.ts</code></li>
+          <li><code>apps/web/src/react/terminal/FreeformPaneShellMount.tsx</code></li>
+          <li><code>apps/web/src/terminal/freeform-pane-footer-controller.ts</code></li>
+          <li><code>apps/web/src/ui/waiting-room-*.ts</code></li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Shared Kernel Support</h3>
+        <ul>
+          <li><code>packages/kernel-client/src/queued-prompt-controls.ts</code></li>
+          <li><code>packages/kernel-client/src/shell-agent-activity.ts</code></li>
+          <li><code>packages/kernel-client/src/waiting-room-activity.ts</code></li>
+          <li><code>apps/kernel/src/runtime/state/prompt_dispatch.rs</code></li>
+          <li><code>apps/kernel/src/app/kernel_agent/prompt_commands/queue.rs</code></li>
+        </ul>
+      </section>
+    </div>
+
+    <h2>Parity Matrix</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Web Behavior</th>
+          <th>TUI State</th>
+          <th>Gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Transcript blobs</td>
+          <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
+          <td>Blob collapse exists through transcript display/render helpers.</td>
+          <td><span class="status gap">Needs parity tests</span> and cleanup around inverted turn expansion naming/state.</td>
+        </tr>
+        <tr>
+          <td>Turn lifecycle</td>
+          <td>Active turns stay expanded; completed historical turns can collapse to a prompt plus final assistant summary.</td>
+          <td>Historical collapse and latest-turn preservation exist in agent pane state.</td>
+          <td><span class="status gap">Needs exact policy alignment</span> for completion, refresh, and history hydration.</td>
+        </tr>
+        <tr>
+          <td>History loading</td>
+          <td>Per-agent history state tracks loading, older-page loading, cursors, and minimum loader visibility.</td>
+          <td>TUI loads history pages and backfills older history to preserve renderable count after refresh.</td>
+          <td><span class="status gap">Needs user-visible loading/error parity</span> and tests for expansion preservation.</td>
+        </tr>
+        <tr>
+          <td>Queued prompts</td>
+          <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
+          <td>Queued prompts are special transcript rows with clickable <code>[steer]</code> and <code>[cancel]</code>.</td>
+          <td><span class="status gap">Needs TUI strip or footer-adjacent queue area</span> plus keyboard-first controls.</td>
+        </tr>
+        <tr>
+          <td>Steering echo</td>
+          <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
+          <td>Kernel API support exists; current TUI action applies returned session state.</td>
+          <td><span class="status gap">Needs parity check</span> for visible echo, ordering, stale action state, and dedupe.</td>
+        </tr>
+        <tr>
+          <td>Agent pane footer</td>
+          <td>Status badge, alias edit, runtime placement, config menu, substitute actions, slice link, and turn clock.</td>
+          <td>Status badge plus alias/meta/slice label. Render slots for provider/model/mode exist but formatter mostly omits them.</td>
+          <td><span class="status gap">Needs footer state expansion</span> using TUI-appropriate text and menus.</td>
+        </tr>
+        <tr>
+          <td>Prompt area</td>
+          <td>Drafts, attachments, history navigation, send/stop behavior, failed-submit restore, and queued-submit no-echo.</td>
+          <td>Comparable draft, attachment, history, focus retention, failed-submit restore, and queue-aware submit behavior exists.</td>
+          <td><span class="status ok">Mostly aligned</span>; queue depth and active prompt hints need stronger pane/screen visibility.</td>
+        </tr>
+        <tr>
+          <td>Screen footer</td>
+          <td>Status region reports connect/session/focus/action feedback and Waiting Room hints.</td>
+          <td>TUI derives active prompt, queue depth, status line, hotkeys, connection, and sync footer text.</td>
+          <td><span class="status gap">Needs consistent copy and priority order</span> against web footer semantics.</td>
+        </tr>
+        <tr>
+          <td>Waiting Room</td>
+          <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
+          <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme.</td>
+          <td><span class="status gap">Needs state priority parity</span>; web-only unattached-agent list remains intentionally omitted.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Implementation Plan</h2>
+    <ol>
+      <li>
+        Add focused parity fixtures for transcript entries and turns. Cover assistant/user/error expanded by default,
+        non-assistant blobs collapsed by default, active turn expanded, completed older turns collapsed, and history
+        refresh preserving collapse state.
+      </li>
+      <li>
+        Normalize the TUI transcript display terminology. Keep public behavior stable, but make the internal state
+        distinguish collapsed turn IDs from expanded turn IDs so future changes do not invert behavior accidentally.
+      </li>
+      <li>
+        Add a TUI queued-prompt strip above the pane footer or prompt area. It should use
+        <code>queuedPromptProjectionForAgent</code>, show status/text/attachment count, and expose steer/cancel
+        through both keyboard and mouse.
+      </li>
+      <li>
+        Preserve existing queued-prompt transcript rows as scrollback context unless the strip fully replaces them
+        without losing historical clarity. If both remain, avoid duplicate action affordances fighting each other.
+      </li>
+      <li>
+        Align queued-prompt actions with web behavior: optimistic <code>steering</code>/<code>cancelling</code> state,
+        stale disabled reason, returned session reconciliation, visible steered prompt echo, and focus returning to
+        the prompt area.
+      </li>
+      <li>
+        Expand the TUI agent footer formatter to include provider, model, variant/effort, mode, permission, runtime
+        placement, substitute summary, and active turn clock where there is space. Compress predictably at small widths.
+      </li>
+      <li>
+        Keep web-only footer buttons out of the TUI, but provide analogous commands or keyboard paths for config,
+        alias edit, substitute actions, and slice actions.
+      </li>
+      <li>
+        Tighten prompt chrome so active prompt ID plus queue depth appears in the screen footer consistently, and queued
+        submissions never render as normal user turns.
+      </li>
+      <li>
+        Align Waiting Room row semantics with web: sorting by recent activity, active work markers, unread idle output,
+        active/queued prompt counts where available, remote/slice recovery next actions, and footer hints.
+      </li>
+      <li>
+        Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
+        and no pane-button row under agents.
+      </li>
+    </ol>
+
+    <h2>Tests to Add or Update</h2>
+    <ul>
+      <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, refresh preservation.</li>
+      <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>: projected actionability, stale controls, strip source state.</li>
+      <li><code>apps/cli/src/transcript-render.test.ts</code> or equivalent renderer test: queued prompt actions and collapsed blob labels.</li>
+      <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement and compression.</li>
+      <li><code>apps/cli/src/session-chrome-state.test.ts</code>: active prompt and queue depth footer priority.</li>
+      <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code>: active work, unread done, queue counts, next actions.</li>
+      <li><code>apps/cli/src/waiting-room-rows.test.ts</code>: menu composition and focus normalization parity.</li>
+      <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: keep web behavior locked while TUI catches up.</li>
+      <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: shared expected behavior for steering and turn collapse.</li>
+    </ul>
+
+    <h2>VS Code Terminal Validation</h2>
+    <p>
+      Run these from the VS Code integrated terminal so the final TUI behavior is visible in the same screen surface
+      used for manual validation.
+    </p>
+
+    <h3>Build and focused tests</h3>
+    <pre><code>cd /Users/miguel/arroba
+pnpm --filter @arroba/cli run build
+pnpm --filter @arroba/cli exec node --test \
+  dist/transcript-display.test.js \
+  dist/queued-prompt-transcript.test.js \
+  dist/split-pane-footer.test.js \
+  dist/session-chrome-state.test.js \
+  dist/waiting-room-session-rows.test.js \
+  dist/waiting-room-rows.test.js</code></pre>
+
+    <h3>Existing TUI drills</h3>
+    <pre><code>cd /Users/miguel/arroba
+pnpm --filter @arroba/cli run agent-footer-status:drill
+pnpm --filter @arroba/cli run history-outline:tui-drill
+pnpm run validation:suite</code></pre>
+
+    <h3>Live visual TUI session</h3>
+    <pre><code>cd /Users/miguel/arroba
+ARROBA_KERNEL_URL=ws://127.0.0.1:44120/kernel \
+pnpm run start:cli -- \
+  --kernel-url ws://127.0.0.1:44120/kernel \
+  --create-session \
+  --alias tui-freeform-parity \
+  --workspace /Users/miguel/arroba \
+  --worktree /Users/miguel/arroba \
+  --provider codex \
+  --model gpt-5.2</code></pre>
+
+    <h3>Manual visual checklist</h3>
+    <ul>
+      <li>Assistant messages remain expanded and readable.</li>
+      <li>Tool, reasoning, status, and history blobs start collapsed.</li>
+      <li>Old completed turns collapse while the active/latest turn stays expanded.</li>
+      <li>Loading older history does not lose blob or turn collapse state.</li>
+      <li>Queued prompt strip appears with prompt preview, status, attachment count, steer, and cancel.</li>
+      <li>Steer and cancel work through keyboard and mouse.</li>
+      <li>Steered prompt appears in the correct chronological position without creating a new active turn.</li>
+      <li>Pane footer shows the same runtime facts as web in TUI form: status, alias, provider, model, mode, permission, runtime placement, and slice/substitute hints.</li>
+      <li>Screen footer prioritizes fatal errors, active prompt, queue depth, status line, connection, and hotkeys consistently.</li>
+      <li>Waiting Room rows show working/done/idle sessions, remote and slice next actions, and footer hints matching web semantics where applicable.</li>
+    </ul>
+
+    <h2>Non-Goals</h2>
+    <ul>
+      <li>Do not add a workflow canvas to TUI.</li>
+      <li>Do not add web-only buttons under TUI agent panes.</li>
+      <li>Do not make the relay or web app the runtime authority for any of this behavior.</li>
+      <li>Do not create a separate prompt, permission, attachment, history, or relay path for native provider TUIs.</li>
+    </ul>
+  </main>
+</body>
+</html>

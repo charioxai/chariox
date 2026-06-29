@@ -19,17 +19,8 @@ import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
 export type SplitPaneFooterTextGroup = {
-  agentText?: TextRenderable
-  agentDividerText?: TextRenderable
-  providerText?: TextRenderable
-  providerDividerText?: TextRenderable
-  modelText?: TextRenderable
-  modelDividerText?: TextRenderable
-  variantText?: TextRenderable
-  variantDividerText?: TextRenderable
-  modeText?: TextRenderable
-  modeDividerText?: TextRenderable
-  permissionText?: TextRenderable
+  texts: TextRenderable[]
+  dividers: TextRenderable[]
 }
 
 export type SplitPaneFooterRenderState = {
@@ -51,9 +42,12 @@ type SplitPaneFooterTaskGroup = {
 }
 
 type ProviderSelection = {
+  provider?: string
   model: string
   effort: string
 }
+
+const MAX_FOOTER_PARTS = 10
 
 export type SplitPaneFooterRenderOptions = {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
@@ -164,29 +158,17 @@ function ensureFooterRenderables(
     badgeBox.add(text)
   }
   const nextParts: SplitPaneFooterTextGroup = {
-    agentText: new TextRenderable(renderer, { wrapMode: "none" }),
-    agentDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    providerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    providerDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    modelText: new TextRenderable(renderer, { wrapMode: "none" }),
-    modelDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    variantText: new TextRenderable(renderer, { wrapMode: "none" }),
-    variantDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    modeText: new TextRenderable(renderer, { wrapMode: "none" }),
-    modeDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
-    permissionText: new TextRenderable(renderer, { wrapMode: "none" }),
+    texts: [],
+    dividers: [],
   }
-  infoBox.add(nextParts.agentText!)
-  infoBox.add(nextParts.agentDividerText!)
-  infoBox.add(nextParts.providerText!)
-  infoBox.add(nextParts.providerDividerText!)
-  infoBox.add(nextParts.modelText!)
-  infoBox.add(nextParts.modelDividerText!)
-  infoBox.add(nextParts.variantText!)
-  infoBox.add(nextParts.variantDividerText!)
-  infoBox.add(nextParts.modeText!)
-  infoBox.add(nextParts.modeDividerText!)
-  infoBox.add(nextParts.permissionText!)
+  for (let index = 0; index < MAX_FOOTER_PARTS; index += 1) {
+    const text = new TextRenderable(renderer, { wrapMode: "none" })
+    const divider = new TextRenderable(renderer, { wrapMode: "none" })
+    nextParts.texts.push(text)
+    nextParts.dividers.push(divider)
+    infoBox.add(text)
+    infoBox.add(divider)
+  }
   const nextTaskParts: SplitPaneFooterTaskGroup = {
     taskBox,
     statusText: new TextRenderable(renderer, { wrapMode: "none" }),
@@ -220,17 +202,12 @@ function clearFooter(
 }
 
 function clearFooterParts(parts: SplitPaneFooterTextGroup): void {
-  setTextRenderable(parts.agentText, "", theme.textMuted)
-  setTextRenderable(parts.agentDividerText, "", theme.textMuted)
-  setTextRenderable(parts.providerText, "", theme.textMuted)
-  setTextRenderable(parts.providerDividerText, "", theme.textMuted)
-  setTextRenderable(parts.modelText, "", theme.textMuted)
-  setTextRenderable(parts.modelDividerText, "", theme.textMuted)
-  setTextRenderable(parts.variantText, "", theme.textMuted)
-  setTextRenderable(parts.variantDividerText, "", theme.textMuted)
-  setTextRenderable(parts.modeText, "", theme.textMuted)
-  setTextRenderable(parts.modeDividerText, "", theme.textMuted)
-  setTextRenderable(parts.permissionText, "", theme.textMuted)
+  for (const text of parts.texts) {
+    setTextRenderable(text, "", theme.textMuted)
+  }
+  for (const divider of parts.dividers) {
+    setTextRenderable(divider, "", theme.textMuted)
+  }
 }
 
 function renderFooter(
@@ -262,6 +239,7 @@ function renderFooter(
   const activeRun = options.providerRun && options.providerRun.agent_instance_id === agent?.id
     ? {
         agentInstanceId: options.providerRun.agent_instance_id,
+        provider: options.providerRun.provider,
         model: options.providerRun.model,
         variant: options.providerRun.variant,
       }
@@ -280,11 +258,9 @@ function renderFooter(
     activeRun,
     null,
     selectionOverride
-      ? { model: selectionOverride.model, variant: selectionOverride.effort }
+      ? { provider: selectionOverride.provider, model: selectionOverride.model, variant: selectionOverride.effort }
       : undefined,
   )
-  const partTones = nextParts.map((part) => part.tone)
-  const partTexts = nextParts.map((part) => part.text)
   const setPart = (
     text: TextRenderable | undefined,
     content: string,
@@ -298,17 +274,11 @@ function renderFooter(
       bold ? TextAttributes.BOLD : TextAttributes.NONE,
     )
   }
-  setPart(state.parts.agentText, partTexts[0] ?? "", partTones[0], focused)
-  setTextRenderable(state.parts.agentDividerText, partTexts[1] ? " • " : "", theme.textMuted)
-  setPart(state.parts.providerText, partTexts[1] ?? "", partTones[1], focused)
-  setTextRenderable(state.parts.providerDividerText, partTexts[2] ? " • " : "", theme.textMuted)
-  setPart(state.parts.modelText, partTexts[2] ?? "", partTones[2], focused)
-  setTextRenderable(state.parts.modelDividerText, partTexts[3] ? " • " : "", theme.textMuted)
-  setPart(state.parts.variantText, partTexts[3] ?? "", partTones[3], focused)
-  setTextRenderable(state.parts.variantDividerText, partTexts[4] ? " • " : "", theme.textMuted)
-  setPart(state.parts.modeText, partTexts[4] ?? "", partTones[4], focused)
-  setTextRenderable(state.parts.modeDividerText, partTexts[5] ? " • " : "", theme.textMuted)
-  setPart(state.parts.permissionText, partTexts[5] ?? "", partTones[5], focused)
+  for (let index = 0; index < MAX_FOOTER_PARTS; index += 1) {
+    const part = nextParts[index]
+    setPart(state.parts.texts[index], part?.text ?? "", part?.tone, focused && index === 0)
+    setTextRenderable(state.parts.dividers[index], nextParts[index + 1] ? " • " : "", theme.textMuted)
+  }
   footerBox?.requestRender()
 }
 

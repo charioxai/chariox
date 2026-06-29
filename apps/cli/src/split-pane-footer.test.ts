@@ -80,20 +80,21 @@ test("agentPaneStatusBadge can ignore stale legacy processing state", () => {
   })
 })
 
-test("formatSplitPaneFooter uses alias without runtime metadata", () => {
+test("formatSplitPaneFooter includes alias and runtime config metadata", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null),
-    "Planner",
+    "Planner • OpenAI • GPT-5.4",
   )
   assert.equal(
     formatSplitPaneFooter(secondaryAgent, null, "gpt-5.4"),
-    "agent",
+    "agent • OpenAI • GPT-5.4",
   )
 })
 
 test("formatSplitPaneFooter prefers the active run model for the matching agent", () => {
   const activeRun: SplitPaneFooterActiveRun = {
     agentInstanceId: "agent-a",
+    provider: "opencode",
     model: "opencode/gpt-5.4",
     variant: "high",
   }
@@ -104,25 +105,25 @@ test("formatSplitPaneFooter prefers the active run model for the matching agent"
       activeRun,
       null,
     ),
-    "Planner",
+    "Planner • OpenCode • OpenCode GPT-5.4 • High",
   )
 })
 
 test("formatSplitPaneFooter prefers an override variant when idle", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null, { variant: "high" }),
-    "Planner",
+    "Planner • OpenAI • GPT-5.4 • High",
   )
 })
 
 test("formatSplitPaneFooter marks Meta mode agents", () => {
   assert.equal(
     formatSplitPaneFooter({ ...primaryAgent, meta_mode: { activated_at_ms: 1 } }, null, null),
-    "Planner • Meta mode",
+    "Planner • Meta mode • OpenAI • GPT-5.4",
   )
 })
 
-test("formatSplitPaneFooterParts keeps only agent identity and slice entry inline", () => {
+test("formatSplitPaneFooterParts includes agent identity and provider metadata", () => {
   const parts = formatSplitPaneFooterParts(primaryAgent, null, null)
   assert.deepEqual(
     parts.map((part) => ({
@@ -131,6 +132,8 @@ test("formatSplitPaneFooterParts keeps only agent identity and slice entry inlin
     })),
     [
       { kind: "agent", text: "Planner" },
+      { kind: "provider", text: "OpenAI" },
+      { kind: "model", text: "GPT-5.4" },
     ],
   )
 })
@@ -145,6 +148,51 @@ test("formatSplitPaneFooterParts shows only view slice before the menu for slice
     [
       { kind: "agent", text: "Planner" },
       { kind: "location", text: "view slice" },
+      { kind: "provider", text: "OpenAI" },
+      { kind: "model", text: "GPT-5.4" },
+    ],
+  )
+})
+
+test("formatSplitPaneFooterParts includes mode and permission overrides", () => {
+  const parts = formatSplitPaneFooterParts({
+    ...primaryAgent,
+    execution_mode: "plan",
+    permission_level: "required",
+  }, null, null)
+  assert.deepEqual(
+    parts.map((part) => ({
+      kind: part.kind,
+      text: part.text,
+    })),
+    [
+      { kind: "agent", text: "Planner" },
+      { kind: "provider", text: "OpenAI" },
+      { kind: "model", text: "GPT-5.4" },
+      { kind: "mode", text: "plan" },
+      { kind: "permission", text: "required" },
+    ],
+  )
+})
+
+test("formatSplitPaneFooterParts shows active substitute summary", () => {
+  const parts = formatSplitPaneFooterParts({
+    ...primaryAgent,
+    substitutes: [
+      { provider: "codex", model: "gpt-5.4", variant: "high" },
+    ],
+    active_substitute_index: 0,
+  }, null, null)
+  assert.deepEqual(
+    parts.map((part) => ({
+      kind: part.kind,
+      text: part.text,
+    })),
+    [
+      { kind: "agent", text: "Planner" },
+      { kind: "provider", text: "OpenAI" },
+      { kind: "model", text: "GPT-5.4" },
+      { kind: "substitute", text: "sub 1: codex/gpt-5.4/high" },
     ],
   )
 })
@@ -170,7 +218,7 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
   assert.deepEqual(state.primary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.deepEqual(state.secondary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.equal(state.secondary.focused, true)
-  assert.equal(state.secondary.info, "agent")
+  assert.equal(state.secondary.info, "agent • OpenAI • GPT-5.4")
 })
 
 test("buildSplitPaneFooterState uses activity labels and focus per pane", () => {
@@ -193,6 +241,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
     },
     activeRun: {
       agentInstanceId: "agent-a",
+      provider: "opencode",
       model: "opencode/gpt-5.4",
       variant: "high",
     },
@@ -202,7 +251,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
   assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })
   assert.deepEqual(state.secondary.badge, { label: "READING", tone: "working" })
   assert.equal(state.primary.focused, true)
-  assert.equal(state.primary.info, "Planner")
+  assert.equal(state.primary.info, "Planner • OpenCode • OpenCode GPT-5.4 • High")
 })
 
 test("buildSplitPaneFooterState keeps a pane working while its busy latch is set", () => {

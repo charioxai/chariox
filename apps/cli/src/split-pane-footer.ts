@@ -1,5 +1,9 @@
 import { getSessionStatusLabel } from "./runtime.js"
-import { type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
+import {
+  formatPromptMetaParts,
+  type PromptMetaPart,
+  type PromptMetaTone,
+} from "./prompt-meta.js"
 
 export type StatusBadgeTone = "idle" | "working" | "disconnected" | "error"
 
@@ -26,11 +30,13 @@ export type SplitPaneFooterAgent = {
 
 export type SplitPaneFooterActiveRun = {
   agentInstanceId: string | null
+  provider?: string | null
   model: string | null
   variant: string | null
 }
 
 export type SplitPaneFooterOverride = {
+  provider?: string | null
   model?: string | null
   variant?: string | null
 }
@@ -40,7 +46,7 @@ export type SplitPaneFooterPart = PromptMetaPart | {
   text: string
   tone: PromptMetaTone
 } | {
-  kind: "mode" | "permission" | "location" | "role"
+  kind: "mode" | "permission" | "location" | "role" | "substitute"
   text: string
   tone: PromptMetaTone
 }
@@ -122,22 +128,83 @@ export function formatSplitPaneFooterParts(
     return []
   }
 
-  void activeRun
-  void fallbackModel
-  void override
   const aliasLabel = agent.alias?.trim() || "agent"
-  const slicePart = agent.location_label?.trim().toLowerCase().startsWith("slice")
-    ? { kind: "location" as const, text: "view slice", tone: "accent" as const }
-    : null
-  return [
+  const provider = nonBlank(activeRun?.provider)
+    ?? nonBlank(override?.provider)
+    ?? nonBlank(agent.provider)
+    ?? "opencode"
+  const model = nonBlank(activeRun?.model)
+    ?? nonBlank(override?.model)
+    ?? nonBlank(agent.model)
+    ?? nonBlank(fallbackModel)
+    ?? "default"
+  const variant = nonBlank(activeRun?.variant)
+    ?? nonBlank(override?.variant)
+    ?? nonBlank(agent.effort)
+    ?? ""
+  const runtimeLocationPart = footerLocationPart(agent.location_label)
+  const substitutePart = footerSubstitutePart(agent)
+  const mode = nonBlank(agent.execution_mode)
+  const permission = nonBlank(agent.permission_level)
+  return compactParts([
     {
       kind: "agent",
       text: aliasLabel,
       tone: toneForAgent(aliasLabel),
     },
-    ...(agent.meta_mode ? [{ kind: "role" as const, text: "Meta mode", tone: "accent" as const }] : []),
-    ...(slicePart ? [slicePart] : []),
-  ]
+    agent.meta_mode ? { kind: "role" as const, text: "Meta mode", tone: "accent" as const } : null,
+    runtimeLocationPart,
+    ...formatPromptMetaParts(provider, model, variant),
+    mode ? { kind: "mode" as const, text: mode, tone: "info" as const } : null,
+    permission ? { kind: "permission" as const, text: permission, tone: permission === "required" ? "warning" as const : "success" as const } : null,
+    substitutePart,
+  ])
+}
+
+function footerLocationPart(locationLabel: string | null | undefined): SplitPaneFooterPart | null {
+  const location = nonBlank(locationLabel)
+  if (!location) {
+    return null
+  }
+  if (location.toLowerCase().startsWith("slice")) {
+    return { kind: "location", text: "view slice", tone: "accent" }
+  }
+  return { kind: "location", text: location, tone: "accent" }
+}
+
+function footerSubstitutePart(agent: SplitPaneFooterAgent): SplitPaneFooterPart | null {
+  const substitutes = agent.substitutes ?? []
+  if (substitutes.length === 0 && !agent.last_substitution) {
+    return null
+  }
+  const activeIndex = agent.active_substitute_index
+  if (typeof activeIndex === "number" && activeIndex >= 0 && substitutes[activeIndex]) {
+    const active = substitutes[activeIndex]
+    const label = [
+      nonBlank(active.provider),
+      nonBlank(active.model),
+      nonBlank(active.variant),
+    ].filter(Boolean).join("/")
+    return {
+      kind: "substitute",
+      text: label ? `sub ${activeIndex + 1}: ${label}` : `sub ${activeIndex + 1}`,
+      tone: "warning",
+    }
+  }
+  return {
+    kind: "substitute",
+    text: `${substitutes.length} sub${substitutes.length === 1 ? "" : "s"}`,
+    tone: "text",
+  }
+}
+
+function compactParts(parts: readonly (SplitPaneFooterPart | null | undefined)[]): SplitPaneFooterPart[] {
+  return parts.filter((part): part is SplitPaneFooterPart => Boolean(part?.text.trim()))
+}
+
+function nonBlank(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
 }
 
 export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {
