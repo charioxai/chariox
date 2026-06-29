@@ -1,4 +1,5 @@
 import type { RuntimeInteraction } from "./cli-types.js"
+import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 
 type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: string }> = {
   renderer: TRenderer
@@ -12,6 +13,8 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
+  queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
 }
 
 export type AgentInteractionStripControllerDeps<
@@ -30,6 +33,8 @@ export type AgentInteractionStripControllerDeps<
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
+  queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   renderStrips: (options: AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent>) => void
 }
 
@@ -54,6 +59,8 @@ export function createAgentInteractionStripController<
         setSelectedChoiceIndex: deps.setSelectedChoiceIndex,
         customReply: deps.customReply,
         customEditing: deps.customEditing,
+        queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+        onQueuedPromptAction: deps.onQueuedPromptAction,
       })
     },
   }

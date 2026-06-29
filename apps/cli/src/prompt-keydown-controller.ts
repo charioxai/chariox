@@ -17,6 +17,7 @@ export type PromptKeyDownEvent = {
 export type PromptKeyDownControllerDeps = {
   handleFocusedInteractionKey: (event: PromptKeyDownEvent) => boolean
   handleCommandCenterKey: (event: PromptKeyDownEvent) => boolean
+  handleQueuedPromptKey: (event: PromptKeyDownEvent) => boolean
   isAttached: () => boolean
   promptFocused: () => boolean
   commandCenterOpen: () => boolean
@@ -68,6 +69,9 @@ export function createPromptKeyDownController(
         return true
       }
       if (deps.handleCommandCenterKey(event)) {
+        return true
+      }
+      if (deps.handleQueuedPromptKey(event)) {
         return true
       }
       if (handlePromptHistoryKey(event)) {

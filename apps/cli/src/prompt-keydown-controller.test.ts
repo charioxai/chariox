@@ -27,6 +27,25 @@ test("prompt keydown controller delegates command center before prompt history",
   assert.deepEqual(harness.calls(), ["focused:up", "command-center:up"])
 })
 
+test("prompt keydown controller delegates queued prompt shortcuts before prompt history", () => {
+  const harness = createHarness({
+    queuedPromptHandled: true,
+    attached: true,
+    promptFocused: true,
+    currentText: "first\nsecond",
+    cursorOffset: 0,
+    historyHandled: true,
+  })
+  const event = keyEvent("s", { alt: true })
+
+  assert.equal(harness.controller.handleKeyDown(event), true)
+  assert.deepEqual(harness.calls(), [
+    "focused:s",
+    "command-center:s",
+    "queued-prompt:s",
+  ])
+})
+
 test("prompt keydown controller navigates prompt history and consumes handled events", () => {
   const harness = createHarness({
     attached: true,
@@ -43,6 +62,7 @@ test("prompt keydown controller navigates prompt history and consumes handled ev
   assert.deepEqual(harness.calls(), [
     "focused:up",
     "command-center:up",
+    "queued-prompt:up",
     "history:previous",
   ])
 })
@@ -60,6 +80,7 @@ test("prompt keydown controller does not handle unowned prompt history direction
   assert.deepEqual(harness.calls(), [
     "focused:down",
     "command-center:down",
+    "queued-prompt:down",
     "hotkeys:down",
   ])
 })
@@ -72,6 +93,7 @@ test("prompt keydown controller delegates hotkey toggles when no prompt owner ha
   assert.deepEqual(harness.calls(), [
     "focused:t",
     "command-center:t",
+    "queued-prompt:t",
     "hotkeys:t",
   ])
 })
@@ -87,6 +109,7 @@ function createHarness(options: {
   promptHistoryIndex?: number | null
   promptHistoryDraft?: string | null
   historyHandled?: boolean
+  queuedPromptHandled?: boolean
   hotkeysHandled?: boolean
 } = {}) {
   const calls: string[] = []
@@ -98,6 +121,10 @@ function createHarness(options: {
     handleCommandCenterKey: (event) => {
       calls.push(`command-center:${event.name}`)
       return options.commandCenterHandled ?? false
+    },
+    handleQueuedPromptKey: (event) => {
+      calls.push(`queued-prompt:${event.name}`)
+      return options.queuedPromptHandled ?? false
     },
     isAttached: () => options.attached ?? false,
     promptFocused: () => options.promptFocused ?? false,

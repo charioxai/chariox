@@ -83,6 +83,11 @@ import {
   syncQueuedPromptEntriesForAgent,
 } from "./queued-prompt-transcript.js"
 import {
+  queuedPromptStripItemsForAgent,
+  queuedPromptStripItemToTranscriptEntry,
+  type QueuedPromptStripItem,
+} from "./queued-prompt-strip-state.js"
+import {
   type BackendProviderId,
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
@@ -1020,6 +1025,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentLocationLabel,
     workingAnimationFrame,
     activeInteractionForAgent,
+    queuedPromptStripItemsForAgent: (agentId) => queuedPromptStripItemsForAgent(
+      sessionState(),
+      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
+      agentId,
+    ),
+    onQueuedPromptAction: handleQueuedPromptStripAction,
     interactionChoiceStore,
     promptUsageMeta,
     sessionHydrating,
@@ -1200,8 +1211,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   syncQueuedPromptsForSession = (session: RuntimeSession) => {
+    let changed = false
     const byAgent = syncQueuedPromptEntriesByAgent(agentPaneEntries(), session)
     if (byAgent.changed) {
+      changed = true
       setAgentPaneEntries(reconcile(byAgent.entriesByAgent))
       setAgentPanePreviews((current) => ({
         ...current,
@@ -1211,6 +1224,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const visibleAgentId = visibleTranscriptAgentId()
     if (!visibleAgentId) {
+      if (changed) {
+        renderAgentInteractions()
+        applyResponseLayout()
+      }
       return
     }
     const visibleSync = syncQueuedPromptEntriesForAgent(
@@ -1219,7 +1236,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       visibleAgentId,
     )
     if (visibleSync.changed) {
+      changed = true
       replaceTranscriptEntries(visibleSync.entries, visibleAgentId)
+    }
+    if (changed) {
+      renderAgentInteractions()
+      applyResponseLayout()
     }
   }
 
@@ -1264,6 +1286,54 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })()
   }
 
+  function handleQueuedPromptStripAction(item: QueuedPromptStripItem, action: "steer" | "cancel") {
+    handleQueuedPromptAction(queuedPromptStripItemToTranscriptEntry(item), action)
+  }
+
+  function handleQueuedPromptStripKey(event: {
+    name?: string
+    eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
+    shift?: boolean
+    preventDefault?: () => void
+    stopPropagation?: () => void
+  }) {
+    if (
+      !isAttached()
+      || commandCenterOpen()
+      || event.eventType === "release"
+      || event.ctrl
+      || event.meta
+      || event.shift
+      || !event.alt
+    ) {
+      return false
+    }
+    const action = event.name === "s"
+      ? "steer"
+      : event.name === "c"
+        ? "cancel"
+        : null
+    if (!action) {
+      return false
+    }
+    const agentId = focusedAgentId()
+    const item = queuedPromptStripItemsForAgent(
+      sessionState(),
+      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
+      agentId,
+    )[0]
+    if (!item) {
+      return false
+    }
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    handleQueuedPromptStripAction(item, action)
+    return true
+  }
+
   function updateQueuedPromptEntryStatus(
     agentId: string,
     promptId: string,
@@ -1293,6 +1363,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
     }
     setAgentTranscriptEntries(agentId, updateEntries(currentAgentPaneEntries(agentId)))
+    renderAgentInteractions()
+    applyResponseLayout()
   }
 
   const workflowActions = createCliAppWorkflowActionComposition({
@@ -1543,6 +1615,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     closeActiveDialogOverlay,
     activePrompt,
     handleCommandCenterKey,
+    handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen,
     promptHistoryIndex,
     promptHistoryDraft,

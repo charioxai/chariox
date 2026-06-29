@@ -145,6 +145,7 @@ export type CliInputRoutingCompositionDeps = {
   closeActiveDialogOverlay: AnyFn
   activePrompt: AnyFn
   handleCommandCenterKey: AnyFn
+  handleQueuedPromptKey: AnyFn
   commandCenterOpen: AnyFn
   promptHistoryIndex: AnyFn
   promptHistoryDraft: AnyFn
@@ -435,6 +436,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const promptKeyDownController = createPromptKeyDownController({
     handleFocusedInteractionKey,
     handleCommandCenterKey: deps.handleCommandCenterKey,
+    handleQueuedPromptKey: deps.handleQueuedPromptKey,
     isAttached: deps.isAttached,
     promptFocused: deps.promptInputRefController.isFocused,
     commandCenterOpen: deps.commandCenterOpen,

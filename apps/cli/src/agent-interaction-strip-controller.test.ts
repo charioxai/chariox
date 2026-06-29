@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { RuntimeInteraction } from "./cli-types.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
+import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 
 test("agent interaction strip controller renders current pane and interaction inputs", () => {
   const interaction = interactionFixture()
@@ -22,6 +23,8 @@ test("agent interaction strip controller renders current pane and interaction in
     setSelectedChoiceIndex: () => {},
     customReply: () => "custom",
     customEditing: () => true,
+    queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-a" ? [queuedPromptFixture()] : [],
+    onQueuedPromptAction: () => {},
     renderStrips: (options) => {
       rendered.push(options)
     },
@@ -45,6 +48,7 @@ test("agent interaction strip controller renders current pane and interaction in
     selectedChoiceIndex: (interactionId: string) => number
     customReply: (interactionId: string) => string
     customEditing: (interactionId: string) => boolean
+    queuedPromptStripItemsForAgent: (agentId: string) => readonly QueuedPromptStripItem[]
   }
   assert.equal(first.renderer, "renderer")
   assert.equal(first.primaryBox, "primary")
@@ -56,6 +60,7 @@ test("agent interaction strip controller renders current pane and interaction in
   assert.equal(first.selectedChoiceIndex("interaction-a"), 1)
   assert.equal(first.customReply("interaction-a"), "custom")
   assert.equal(first.customEditing("interaction-a"), true)
+  assert.deepEqual(first.queuedPromptStripItemsForAgent("agent-a").map((item) => item.promptId), ["prompt-a"])
 
   const second = rendered[1] as { primaryBox: string; auxiliaryBoxes: string[]; visibleAgents: Array<{ id: string }> }
   assert.equal(second.primaryBox, "next-primary")
@@ -72,5 +77,21 @@ function interactionFixture(): RuntimeInteraction {
     message: "Choose",
     choices: [{ id: "approve", label: "Approve", reply: "approve" }],
     requested_at_ms: 1,
+  }
+}
+
+function queuedPromptFixture(): QueuedPromptStripItem {
+  return {
+    promptId: "prompt-a",
+    agentId: "agent-a",
+    sourceAttachmentId: "attachment-a",
+    prompt: "Queued prompt",
+    status: "queued",
+    attachmentCount: 0,
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
   }
 }

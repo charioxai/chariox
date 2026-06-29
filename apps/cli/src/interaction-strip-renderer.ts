@@ -1,14 +1,17 @@
 import {
   BoxRenderable,
+  MouseButton,
   TextAttributes,
   TextRenderable,
 } from "@opentui/core"
+import { setTimeout as startTimeout } from "node:timers"
 
 import type {
   AgentInstance,
   RuntimeInteraction,
 } from "./cli-types.js"
 import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
+import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 import { theme } from "./theme.js"
 
 type InteractionStripRenderOptions = {
@@ -23,6 +26,8 @@ type InteractionStripRenderOptions = {
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
+  queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
 }
 
 export function renderAgentInteractionStrips(options: InteractionStripRenderOptions): void {
@@ -49,45 +54,126 @@ function renderInteractionStrip(
     child.destroyRecursively?.()
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
-  box.visible = Boolean(interaction)
+  const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
+  const visible = Boolean(interaction) || queuedPrompts.length > 0
+  box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
-  box.paddingLeft = interaction ? 1 : 0
-  box.paddingRight = interaction ? 1 : 0
+  box.paddingLeft = visible ? 1 : 0
+  box.paddingRight = visible ? 1 : 0
   box.paddingTop = interaction ? 0 : 0
   box.paddingBottom = interaction ? 0 : 0
   box.backgroundColor = theme.backgroundElement
-  if (!interaction) {
+  if (!visible) {
     box.requestRender?.()
     return
   }
 
   const focused = agent?.id === options.focusedAgentId
-  const titleLine = new TextRenderable(options.renderer, {
-    wrapMode: "char",
-    fg: interaction.level === "critical"
-      ? theme.error
-      : interaction.level === "warning"
-        ? theme.warning
-        : theme.info,
-    attributes: TextAttributes.BOLD,
-  })
-  const titlePrefix = interaction.level.toUpperCase()
-  titleLine.content = interaction.title
-    ? `${titlePrefix} • ${interaction.title}`
-    : titlePrefix
-  const messageLine = new TextRenderable(options.renderer, {
-    wrapMode: "word",
-    fg: theme.text,
-  })
-  const timeoutSuffix = interaction.timeout_sec
-    ? ` • timeout ${interaction.timeout_sec}s`
-    : ""
-  messageLine.content = `${interaction.message}${timeoutSuffix}`
-  box.add(titleLine)
-  box.add(messageLine)
-  renderInteractionChoices(options, box, interaction, focused)
+  if (interaction) {
+    const titleLine = new TextRenderable(options.renderer, {
+      wrapMode: "char",
+      fg: interaction.level === "critical"
+        ? theme.error
+        : interaction.level === "warning"
+          ? theme.warning
+          : theme.info,
+      attributes: TextAttributes.BOLD,
+    })
+    const titlePrefix = interaction.level.toUpperCase()
+    titleLine.content = interaction.title
+      ? `${titlePrefix} • ${interaction.title}`
+      : titlePrefix
+    const messageLine = new TextRenderable(options.renderer, {
+      wrapMode: "word",
+      fg: theme.text,
+    })
+    const timeoutSuffix = interaction.timeout_sec
+      ? ` • timeout ${interaction.timeout_sec}s`
+      : ""
+    messageLine.content = `${interaction.message}${timeoutSuffix}`
+    box.add(titleLine)
+    box.add(messageLine)
+    renderInteractionChoices(options, box, interaction, focused)
+  }
+  renderQueuedPromptStrip(options, box, queuedPrompts, focused)
   box.requestRender?.()
+}
+
+function renderQueuedPromptStrip(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  items: readonly QueuedPromptStripItem[],
+  focused: boolean,
+): void {
+  if (items.length === 0) {
+    return
+  }
+  const title = new TextRenderable(options.renderer, {
+    content: `QUEUE • ${items.length} prompt${items.length === 1 ? "" : "s"}`,
+    fg: theme.info,
+    attributes: TextAttributes.BOLD,
+    wrapMode: "none",
+  })
+  container.add(title)
+  items.forEach((item, index) => {
+    const row = new BoxRenderable(options.renderer, {
+      width: "100%",
+      flexDirection: "row",
+      gap: 1,
+      flexShrink: 0,
+    })
+    const prompt = new TextRenderable(options.renderer, {
+      content: item.prompt,
+      fg: theme.text,
+      wrapMode: "word",
+    })
+    prompt.flexGrow = 1
+    row.add(prompt)
+    const meta = new TextRenderable(options.renderer, {
+      content: queuedPromptMetaLabel(item),
+      fg: theme.textMuted,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    })
+    row.add(meta)
+    row.add(renderQueuedPromptAction(options, item, "steer", focused && index === 0 ? "Alt+S steer" : "steer"))
+    row.add(renderQueuedPromptAction(options, item, "cancel", focused && index === 0 ? "Alt+C cancel" : "cancel"))
+    container.add(row)
+  })
+}
+
+function renderQueuedPromptAction(
+  options: InteractionStripRenderOptions,
+  item: QueuedPromptStripItem,
+  action: "steer" | "cancel",
+  label: string,
+): TextRenderable {
+  const disabled = action === "steer" ? item.canSteer !== true : item.canCancel !== true
+  const text = new TextRenderable(options.renderer, {
+    content: disabled ? label : `[${label}]`,
+    fg: disabled ? theme.textMuted : theme.primary,
+    attributes: disabled ? TextAttributes.NONE : TextAttributes.BOLD,
+    wrapMode: "none",
+  })
+  text.onMouseUp = (event) => {
+    if (disabled || event.button !== MouseButton.LEFT) {
+      return
+    }
+    event.stopPropagation()
+    startTimeout(() => {
+      options.onQueuedPromptAction(item, action)
+    }, 0)
+  }
+  return text
+}
+
+function queuedPromptMetaLabel(item: QueuedPromptStripItem): string {
+  const status = item.status.trim().toLowerCase().replace(/[_-]+/g, " ") || "queued"
+  const attachments = item.attachmentCount > 0
+    ? ` · ${item.attachmentCount} file${item.attachmentCount === 1 ? "" : "s"}`
+    : ""
+  return `${status}${attachments}`
 }
 
 function renderInteractionChoices(

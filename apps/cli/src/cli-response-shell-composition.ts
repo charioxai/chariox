@@ -79,6 +79,8 @@ export type CliResponseShellCompositionDeps = {
   agentLocationLabel: AnyFn
   workingAnimationFrame: AnyFn
   activeInteractionForAgent: AnyFn
+  queuedPromptStripItemsForAgent: AnyFn
+  onQueuedPromptAction: AnyFn
   interactionChoiceStore: any
   promptUsageMeta: AnyFn
   sessionHydrating: AnyFn
@@ -168,6 +170,8 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     setSelectedChoiceIndex: deps.interactionChoiceStore.setSelectedIndex,
     customReply: deps.interactionChoiceStore.customReply,
     customEditing: deps.interactionChoiceStore.isCustomEditing,
+    queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    onQueuedPromptAction: deps.onQueuedPromptAction,
     renderStrips: renderAgentInteractionStrips,
   })
   const renderAgentInteractions = agentInteractionStripController.render

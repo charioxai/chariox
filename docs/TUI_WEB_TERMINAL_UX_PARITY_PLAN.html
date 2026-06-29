@@ -225,9 +225,9 @@
           <td>Display helpers and tests now name the stored state as collapsed turn IDs, with compatibility aliases for existing wiring.</td>
         </tr>
         <tr>
-          <td><span class="status gap">Remaining</span></td>
+          <td><span class="status ok">Landed</span></td>
           <td>Dedicated queued-prompt strip</td>
-          <td>Current TUI parity uses transcript rows with steer/cancel. A web-like strip needs a prompt-area or pane-interaction layout pass plus keyboard affordances.</td>
+          <td>Queued prompts now render in the pane interaction strip with status, prompt text, attachment counts, mouse actions, and focused-agent <code>Alt+S</code>/<code>Alt+C</code> shortcuts.</td>
         </tr>
       </tbody>
     </table>
@@ -306,8 +306,8 @@
         <tr>
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
-          <td>Queued prompts are special transcript rows with clickable <code>[steer]</code> and <code>[cancel]</code>.</td>
-          <td><span class="status gap">Needs TUI strip or footer-adjacent queue area</span> plus keyboard-first controls.</td>
+          <td>Queued prompts render in transcript scrollback and in a pane interaction strip above the footer.</td>
+          <td><span class="status ok">Aligned</span> with TUI-specific <code>Alt+S</code>/<code>Alt+C</code> keyboard actions for the focused agent's first queued prompt.</td>
         </tr>
         <tr>
           <td>Steering echo</td>
