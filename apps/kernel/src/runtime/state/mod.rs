@@ -72,6 +72,7 @@ struct KernelRuntimeOwnedState {
     prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
+    pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
@@ -243,13 +244,14 @@ impl KernelRuntimeState {
         metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let (external_provider_sessions, attached_provider_transcript_cursors) = {
+        let (external_provider_sessions, attached_provider_transcript_cursors, pty_output_signal) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
                     break (
                         app.external_provider_session_index_store(),
                         app.attached_provider_transcript_cursor_store(),
+                        app.pty_output_signal(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -282,6 +284,7 @@ impl KernelRuntimeState {
             prompt_activity,
             prompt_workspace_claims,
             structured_output_records,
+            pty_output_signal,
             terminal_stream,
             workflow_design_events,
             metaagent_events,
@@ -312,6 +315,7 @@ impl KernelRuntimeState {
         prompt_activity: PromptActivityStore,
         prompt_workspace_claims: PromptWorkspaceClaimStore,
         structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
+        pty_output_signal: crate::pty::PtyOutputSignal,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workflow_design_events: WorkflowDesignEventStore,
         metaagent_events: MetaagentEventStore,
@@ -374,6 +378,7 @@ impl KernelRuntimeState {
                 prompt_activity,
                 prompt_workspace_claims,
                 structured_output_records,
+                pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,

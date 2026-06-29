@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use tokio::sync::Notify;
 
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
@@ -14,6 +17,7 @@ const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 pub struct PtyManager {
     process_aliases: BTreeMap<String, String>,
     processes: BTreeMap<String, PtyProcess>,
+    output_signal: PtyOutputSignal,
 }
 
 pub struct PtySpawnRequest {
@@ -32,6 +36,17 @@ pub struct PtySpawnRequest {
 pub struct PtyOutputChunk {
     pub provider_run_id: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PtyOutputSignal {
+    inner: Arc<PtyOutputSignalState>,
+}
+
+#[derive(Debug, Default)]
+struct PtyOutputSignalState {
+    sequence: AtomicU64,
+    notify: Notify,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -54,7 +69,12 @@ impl PtyManager {
         Self {
             process_aliases: BTreeMap::new(),
             processes: BTreeMap::new(),
+            output_signal: PtyOutputSignal::default(),
         }
+    }
+
+    pub(crate) fn output_signal(&self) -> PtyOutputSignal {
+        self.output_signal.clone()
     }
 
     pub fn spawn_for_run(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
@@ -158,6 +178,7 @@ impl PtyManager {
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
 
+        let output_signal = self.output_signal.clone();
         thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
 
@@ -169,7 +190,9 @@ impl PtyManager {
                 if output_tx.send(buffer[..size].to_vec()).is_err() {
                     break;
                 }
+                output_signal.record_output();
             }
+            output_signal.record_output();
         });
 
         self.processes.insert(
@@ -367,6 +390,28 @@ impl PtyManager {
     }
 }
 
+impl PtyOutputSignal {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.inner.sequence.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
+        if self.sequence() != sequence {
+            return;
+        }
+        let notified = self.inner.notify.notified();
+        if self.sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+
+    fn record_output(&self) {
+        self.inner.sequence.fetch_add(1, Ordering::AcqRel);
+        self.inner.notify.notify_waiters();
+    }
+}
+
 impl Default for PtyManager {
     fn default() -> Self {
         Self::new()
@@ -461,6 +506,39 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[tokio::test]
+    async fn pty_output_signal_wakes_when_reader_enqueues_output() {
+        let run = test_run();
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&run)
+            .expect("pty-backed provider process should spawn");
+        let signal = manager.output_signal();
+        let sequence = signal.sequence();
+        manager
+            .write_input(run.id(), b"wake from pty\n")
+            .expect("pty input should be written");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            signal.wait_for_change_after(sequence),
+        )
+        .await
+        .expect("PTY output signal should wake after reader enqueues bytes");
+
+        let output = wait_for_output(&mut manager, run.id());
+        let combined = output
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<u8>>();
+        assert!(String::from_utf8_lossy(&combined).contains("wake from pty"));
+
+        manager
+            .remove_process(run.id())
+            .expect("pty process cleanup should succeed");
     }
 
     #[test]

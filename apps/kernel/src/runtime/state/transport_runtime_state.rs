@@ -139,6 +139,17 @@ impl KernelRuntimeState {
             .await;
     }
 
+    pub(crate) fn pty_output_change_sequence(&self) -> u64 {
+        self.owned.pty_output_signal.sequence()
+    }
+
+    pub(crate) async fn wait_for_pty_output_change_after(&self, sequence: u64) {
+        self.owned
+            .pty_output_signal
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn transport_runtime_pump_interval_ms(
         &self,
         active_interval_ms: u64,

@@ -83,7 +83,7 @@ use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,
 };
-use crate::pty::PtyManager;
+use crate::pty::{PtyManager, PtyOutputSignal};
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
@@ -496,6 +496,10 @@ impl DaemonApp {
 
     pub fn pty(&self) -> &PtyManager {
         &self.pty
+    }
+
+    pub(crate) fn pty_output_signal(&self) -> PtyOutputSignal {
+        self.pty.output_signal()
     }
 
     pub(crate) fn pty_mut(&mut self) -> &mut PtyManager {
