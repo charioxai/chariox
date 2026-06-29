@@ -298,6 +298,20 @@ fn remember_provider_transcript_path(provider: &str, provider_session_id: &str, 
     let Some(fingerprint) = provider_transcript_file_fingerprint(path) else {
         return;
     };
+    remember_provider_transcript_path_with_fingerprint(
+        provider,
+        provider_session_id,
+        path,
+        fingerprint,
+    );
+}
+
+fn remember_provider_transcript_path_with_fingerprint(
+    provider: &str,
+    provider_session_id: &str,
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) {
     let key = provider_transcript_path_index_key(provider, provider_session_id);
     if let Ok(mut index) = provider_transcript_path_index().lock() {
         let previous = index.get(&key).filter(|existing| {
@@ -752,8 +766,9 @@ fn codex_observed_turns_from_path(
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
     let fingerprint = provider_transcript_file_fingerprint(path)?;
+    let observed_fingerprint = complete_jsonl_fingerprint(path, fingerprint)?;
     if let Some(turns) =
-        cached_provider_observed_turns("codex", provider_session_id, path, fingerprint)
+        cached_provider_observed_turns("codex", provider_session_id, path, observed_fingerprint)
     {
         return Some(turns);
     }
@@ -767,15 +782,20 @@ fn codex_observed_turns_from_path(
     }
     let previous_transcript =
         cached_provider_observed_transcript_for_path("codex", provider_session_id, path);
-    remember_provider_transcript_path("codex", provider_session_id, path);
+    remember_provider_transcript_path_with_fingerprint(
+        "codex",
+        provider_session_id,
+        path,
+        observed_fingerprint,
+    );
     if let Some(turns) =
-        incremental_codex_observed_turns(path, previous_transcript.as_ref(), fingerprint)
+        incremental_codex_observed_turns(path, previous_transcript.as_ref(), observed_fingerprint)
     {
         remember_provider_observed_turns(
             "codex",
             provider_session_id,
             path,
-            fingerprint,
+            observed_fingerprint,
             turns.clone(),
         );
         return Some(turns);
@@ -795,7 +815,7 @@ fn codex_observed_turns_from_path(
         "codex",
         provider_session_id,
         path,
-        fingerprint,
+        observed_fingerprint,
         turns.clone(),
     );
     Some(turns)
@@ -1138,8 +1158,9 @@ fn claude_observed_turns_from_path(
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
     let fingerprint = provider_transcript_file_fingerprint(path)?;
+    let observed_fingerprint = complete_jsonl_fingerprint(path, fingerprint)?;
     if let Some(turns) =
-        cached_provider_observed_turns("claude", provider_session_id, path, fingerprint)
+        cached_provider_observed_turns("claude", provider_session_id, path, observed_fingerprint)
     {
         return Some(turns);
     }
@@ -1159,15 +1180,20 @@ fn claude_observed_turns_from_path(
         cached_provider_observed_turns_for_path("claude", provider_session_id, path);
     let previous_transcript =
         cached_provider_observed_transcript_for_path("claude", provider_session_id, path);
-    remember_provider_transcript_path("claude", provider_session_id, path);
+    remember_provider_transcript_path_with_fingerprint(
+        "claude",
+        provider_session_id,
+        path,
+        observed_fingerprint,
+    );
     if let Some(turns) =
-        incremental_claude_observed_turns(path, previous_transcript.as_ref(), fingerprint)
+        incremental_claude_observed_turns(path, previous_transcript.as_ref(), observed_fingerprint)
     {
         remember_provider_observed_turns(
             "claude",
             provider_session_id,
             path,
-            fingerprint,
+            observed_fingerprint,
             turns.clone(),
         );
         return Some(turns);
@@ -1183,7 +1209,7 @@ fn claude_observed_turns_from_path(
         "claude",
         provider_session_id,
         path,
-        fingerprint,
+        observed_fingerprint,
         turns.clone(),
     );
     Some(turns)
@@ -2734,6 +2760,49 @@ fn provider_transcript_file_fingerprint(path: &Path) -> Option<ProviderTranscrip
         })
 }
 
+fn complete_jsonl_fingerprint(
+    path: &Path,
+    fingerprint: ProviderTranscriptFileFingerprint,
+) -> Option<ProviderTranscriptFileFingerprint> {
+    Some(ProviderTranscriptFileFingerprint {
+        len: complete_jsonl_offset(path, fingerprint.len)?,
+        modified_at_ms: fingerprint.modified_at_ms,
+    })
+}
+
+fn complete_jsonl_offset(path: &Path, file_len: u64) -> Option<u64> {
+    if file_len == 0 {
+        return Some(0);
+    }
+    let mut file = fs::File::open(path).ok()?;
+    if file.seek(SeekFrom::Start(file_len - 1)).is_err() {
+        return None;
+    }
+    let mut last = [0u8; 1];
+    if file.read_exact(&mut last).is_err() {
+        return None;
+    }
+    if last[0] == b'\n' {
+        return Some(file_len);
+    }
+    let mut remaining = file_len;
+    while remaining > 0 {
+        let chunk_len = remaining.min(RECENT_JSONL_TAIL_CHUNK_BYTES);
+        remaining = remaining.saturating_sub(chunk_len);
+        if file.seek(SeekFrom::Start(remaining)).is_err() {
+            return None;
+        }
+        let mut chunk = vec![0u8; chunk_len as usize];
+        if file.read_exact(&mut chunk).is_err() {
+            return None;
+        }
+        if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            return Some(remaining + index as u64 + 1);
+        }
+    }
+    Some(0)
+}
+
 fn parse_timestamp_millis(value: &str) -> Option<u64> {
     value
         .parse::<u64>()
@@ -3300,6 +3369,44 @@ mod tests {
         assert!(appended
             .iter()
             .any(|turn| turn.text == "Indexed assistant after append."));
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_does_not_advance_offset_past_partial_trailing_jsonl() {
+        let temp = temp_dir("codex-observed-partial-tail");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("partial-tail.jsonl");
+        let prefix = concat!(
+            "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-partial-tail\",\"cwd\":\"/repo\"}}\n",
+            "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"partial-user\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Prompt before partial tail.\"}]}}\n",
+        );
+        let assistant = concat!(
+            "{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"partial-assistant\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Assistant after partial tail.\"}]}}\n",
+        );
+        fs::write(&transcript, prefix).unwrap();
+
+        let first = read_codex_observed_turns(root, "thread-partial-tail");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].provider_turn_id.as_deref(), Some("partial-user"));
+
+        fs::write(
+            &transcript,
+            format!("{prefix}{}", &assistant[..assistant.len() / 2]),
+        )
+        .unwrap();
+        let partial = read_codex_observed_turns(root, "thread-partial-tail");
+        assert_eq!(
+            partial, first,
+            "partial trailing JSONL must not advance the observed offset"
+        );
+
+        fs::write(&transcript, format!("{prefix}{assistant}")).unwrap();
+        let completed = read_codex_observed_turns(root, "thread-partial-tail");
+        assert!(completed.iter().any(|turn| turn.provider_turn_id.as_deref()
+            == Some("partial-assistant")
+            && turn.text == "Assistant after partial tail."));
     }
 
     #[test]
