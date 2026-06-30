@@ -88,6 +88,30 @@ test("cli polling controller appends runtime notices", async () => {
   ])
 })
 
+test("cli polling controller suppresses queued prompt lifecycle notices", async () => {
+  const harness = createHarness({
+    pollRuntimeNotices: async () => [
+      {
+        message: "A queued message from attachment `attachment-4` was added to agent `agent-1` in session `session-1` as `prompt-7`. Queue depth is now 1.",
+      },
+      {
+        message: "Attachment `attachment-1` steered queued prompt `prompt-4` to agent `agent-1`.",
+      },
+      {
+        message: "Provider prompt dispatch failed: denied",
+      },
+    ],
+  })
+
+  await harness.controller.pollNotices()
+
+  assert.deepEqual(harness.calls, [
+    "pollRuntimeNotices:session-1:attachment-1",
+    "activity:runtime_notices",
+    "notice:Provider prompt dispatch failed: denied",
+  ])
+})
+
 test("cli polling controller refreshes session state and provider run metadata", async () => {
   const refreshedRun = providerRun("run-2", { model: "next-model" })
   const nextSession = session({

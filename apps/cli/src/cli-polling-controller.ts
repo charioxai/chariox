@@ -11,6 +11,7 @@ import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
   sessionHasPromptWork,
 } from "./session-state.js"
+import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
 type PollLoop = typeof defaultRunPollingLoop
 
@@ -116,6 +117,9 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         const notices = await deps.pollRuntimeNotices(deps.getSession().id, attachment.id)
         deps.recordDaemonActivity("runtime_notices")
         for (const notice of notices) {
+          if (!runtimeNoticeShouldRenderInAgentPane(notice.message)) {
+            continue
+          }
           deps.appendNotice(notice.message)
         }
       },

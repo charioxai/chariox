@@ -320,6 +320,11 @@
           <td>Queue transient status</td>
           <td>Queued-prompt steer/cancel actions now use a strip-local optimistic status overlay, so <code>steering</code> and <code>cancelling</code> states remain visible even though live queued prompts are no longer transcript rows.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue notice suppression</td>
+          <td>Successful queued-prompt lifecycle notices are now filtered from both event-stream and polling runtime-notice paths, while failure notices still render in transcript history.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -403,7 +408,7 @@
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
-          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback, and pending steer/cancel actions show transient strip status.</td>
+          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, and pending steer/cancel actions show transient strip status.</td>
           <td><span class="status gap">Gap</span>: finish the clean steering-prompt lifecycle with footer/status assertions in the live drill.</td>
         </tr>
         <tr>
