@@ -109,6 +109,13 @@ pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
         source: include_str!("../../../examples/workflow-code/loop-until-done.js"),
     },
     WorkflowCodePatternExample {
+        slug: "planner-worker-reviewer",
+        title: "Planner-worker-reviewer",
+        summary: "A planner assigns work, a worker implements it, and a reviewer routes revisions or accepted steps back to the planner.",
+        path: "examples/workflow-code/planner-worker-reviewer.js",
+        source: include_str!("../../../examples/workflow-code/planner-worker-reviewer.js"),
+    },
+    WorkflowCodePatternExample {
         slug: "orchestrator-workers",
         title: "Orchestrator-workers",
         summary: "An orchestrator delegates to a worker and a synthesizer produces final output.",

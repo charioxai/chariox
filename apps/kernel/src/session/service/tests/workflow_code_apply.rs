@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::session::{CreateSessionRequest, WorkflowHandoffValidationPolicy};
 use crate::workflow_code::{
@@ -1046,4 +1047,106 @@ fn workflow_code_canonical_patterns_compile_and_apply_with_provider_rebindings()
             example.slug
         );
     }
+}
+
+#[test]
+fn planner_worker_reviewer_pattern_preserves_goal_workflow_contract() {
+    let node_path = match discover_workflow_code_node_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("skipping planner-worker-reviewer pattern test: {error}");
+            return;
+        }
+    };
+    let example = WORKFLOW_CODE_PATTERN_EXAMPLES
+        .iter()
+        .find(|example| example.slug == "planner-worker-reviewer")
+        .expect("planner-worker-reviewer pattern should be bundled");
+    let compiled = compile_workflow_code_javascript(
+        &node_path,
+        example.source,
+        &WorkflowCodeLimitsConfig::default(),
+    )
+    .expect("planner-worker-reviewer should compile")
+    .definition;
+
+    assert_eq!(
+        compiled.workflow.alias.as_deref(),
+        Some("pattern-planner-worker-reviewer")
+    );
+    assert_eq!(compiled.nodes.len(), 3);
+    assert_eq!(compiled.edges.len(), 4);
+    assert_eq!(compiled.endpoints.len(), 1);
+    assert_eq!(compiled.schemas.len(), 5);
+    assert_eq!(compiled.workflow.run_output_schema.as_deref(), Some("final_output"));
+
+    let planner = compiled
+        .nodes
+        .iter()
+        .find(|node| node.handle == "planner")
+        .expect("planner node should exist");
+    assert_eq!(planner.can_complete_workflow_run, Some(true));
+    assert!(
+        planner
+            .instructions
+            .as_deref()
+            .unwrap_or_default()
+            .contains("only node allowed to finish")
+    );
+    for node in compiled
+        .nodes
+        .iter()
+        .filter(|node| node.handle == "worker" || node.handle == "reviewer")
+    {
+        assert_ne!(
+            node.can_complete_workflow_run,
+            Some(true),
+            "{} must not complete the workflow",
+            node.handle
+        );
+    }
+
+    let edge_pairs = compiled
+        .edges
+        .iter()
+        .map(|edge| {
+            (
+                edge.handle.as_str(),
+                edge.from_node.as_str(),
+                edge.to_node.as_str(),
+                edge.handoff_schema.as_deref(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(edge_pairs.contains(&(
+        "planner_to_worker",
+        "planner",
+        "worker",
+        Some("implementation_assignment"),
+    )));
+    assert!(edge_pairs.contains(&(
+        "worker_to_reviewer",
+        "worker",
+        "reviewer",
+        Some("implementation_result"),
+    )));
+    assert!(edge_pairs.contains(&(
+        "reviewer_to_worker",
+        "reviewer",
+        "worker",
+        Some("revision_request"),
+    )));
+    assert!(edge_pairs.contains(&(
+        "reviewer_to_planner",
+        "reviewer",
+        "planner",
+        Some("accepted_step_report"),
+    )));
+    assert_eq!(compiled.endpoints[0].handle, "entry");
+    assert_eq!(compiled.endpoints[0].entry_node, "planner");
+    assert!(compiled
+        .parameters_schema
+        .as_ref()
+        .and_then(|schema| schema.pointer("/properties/max_review_cycles_per_step/default"))
+        .is_some_and(|value| value == 6));
 }
