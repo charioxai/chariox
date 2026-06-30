@@ -200,6 +200,7 @@
       <li>Latest live assertions include <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>loaded-history</code>, <code>loaded-history-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> through the visual-control automation socket.</li>
       <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, loaded-history, and Waiting Room states.</li>
       <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 150 focused tests, syntax checks, and drill JSON validation.</li>
+      <li><code>pnpm run validation:suite</code> passed with 534 shared non-live validation tests.</li>
       <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
 
@@ -640,6 +641,7 @@
       <li>Loaded-history live PTY evidence: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
       <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, <code>terminal-captures/loaded-history-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
       <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 150 tests plus script syntax and drill JSON checks.</li>
+      <li><code>pnpm run validation:suite</code>: passed with 534 tests.</li>
     </ul>
 
     <h2>VS Code Terminal Validation</h2>
