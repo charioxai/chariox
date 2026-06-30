@@ -63,6 +63,7 @@ export type CliAutomationProcessCompositionDeps = {
   agentPaneEntries: AnyFn
   queuedPromptStripItemsForAgent: AnyFn
   selectedQueuedPromptIndexForAgent: AnyFn
+  onQueuedPromptAction: AnyFn
   footerFlash: AnyFn
   getInteractionChoiceSelection: AnyFn
   getInteractionCustomReply: AnyFn
@@ -166,6 +167,9 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     toggleAgentPaneTurn: deps.toggleAgentPaneTurn,
     toggleBlob: deps.toggleBlob,
     toggleAgentPaneBlob: deps.toggleAgentPaneBlob,
+    queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
+    onQueuedPromptAction: deps.onQueuedPromptAction,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
   })

@@ -345,6 +345,11 @@
           <td>Waiting Room row width assertions</td>
           <td>Waiting Room menu rows now format through a width-bounded helper, with 80-column truncation and wider-row preservation covered by focused tests.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queued prompt action automation</td>
+          <td>The automation server can now invoke the selected or addressed queued-prompt strip item through the same steer/cancel handler as the TUI strip, and the visual-control drill exposes <code>steer-queued</code>/<code>cancel-queued</code> evidence commands.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -429,7 +434,7 @@
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
           <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, and pending steer/cancel actions show transient strip status.</td>
-          <td><span class="status gap">Gap</span>: finish the clean steering-prompt lifecycle with footer/status assertions in the live drill.</td>
+          <td><span class="status gap">Gap</span>: visual-control can now trigger queued steer/cancel through the strip handler; final PTY drill still needs saved footer/status snapshots after real terminal shortcut delivery.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>
@@ -562,6 +567,7 @@
       <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
       <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
+      <li><code>apps/cli/src/cli-automation-handler.test.ts</code>: automation queued-prompt steer/cancel actions route through the selected or addressed strip item.</li>
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
       <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
       <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
@@ -609,6 +615,8 @@ pnpm --filter @arroba/cli run tui-web-parity:visual-session
 
 # In a second terminal while the live session is open:
 pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action assert --label initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action steer-queued --label post-steer
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action cancel-queued --label post-cancel
 pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-blob --label blob-expanded
 pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-turn --label turn-toggled
 pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action report</code></pre>

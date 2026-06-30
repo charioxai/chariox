@@ -25,6 +25,8 @@ export type CliAutomationRequest = {
   turnId?: unknown
   agentId?: unknown
   collapsed?: unknown
+  promptId?: unknown
+  queuedPromptAction?: unknown
   externalSessionId?: unknown
   externalSessionIndex?: unknown
   machineRef?: unknown

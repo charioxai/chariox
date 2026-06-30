@@ -279,6 +279,53 @@ test("automation action handler toggles an agent pane turn when agentId is provi
   assert.deepEqual(result, { toggles })
 })
 
+test("automation action handler runs queued prompt action for selected strip item", async () => {
+  const actions: Array<{ promptId: string; action: "steer" | "cancel" }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    focusedAgentId: () => "agent-1",
+    queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-1"
+      ? [queuedPromptItem("prompt-1"), queuedPromptItem("prompt-2")]
+      : [],
+    selectedQueuedPromptIndexForAgent: () => 1,
+    onQueuedPromptAction: async (item, action) => {
+      actions.push({ promptId: item.promptId, action })
+    },
+    snapshot: () => ({ actions }),
+  })
+
+  const result = await handler({
+    action: "queued_prompt_action",
+    queuedPromptAction: "cancel",
+  })
+
+  assert.deepEqual(actions, [{ promptId: "prompt-2", action: "cancel" }])
+  assert.deepEqual(result, { actions })
+})
+
+test("automation action handler can target queued prompt action by prompt id", async () => {
+  const actions: Array<{ promptId: string; action: "steer" | "cancel" }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-1"
+      ? [queuedPromptItem("prompt-1"), queuedPromptItem("prompt-2")]
+      : [],
+    onQueuedPromptAction: (item, action) => {
+      actions.push({ promptId: item.promptId, action })
+    },
+    snapshot: () => ({ actions }),
+  })
+
+  await handler({
+    action: "queued_prompt_action",
+    agentId: "agent-1",
+    promptId: "prompt-1",
+    queuedPromptAction: "steer",
+  })
+
+  assert.deepEqual(actions, [{ promptId: "prompt-1", action: "steer" }])
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -307,10 +354,29 @@ function baseDeps() {
     setInteractionCustomEditing: () => {},
     toggleTurn: () => {},
     toggleBlob: () => {},
+    queuedPromptStripItemsForAgent: () => [],
+    selectedQueuedPromptIndexForAgent: () => 0,
+    onQueuedPromptAction: () => {},
     restoreTerminalAndExit: async () => {},
     waitingRoomState: () => waitingRoomFixture(),
     setWaitingRoomState: () => {},
     externalProviderSessionsState: () => [],
+  }
+}
+
+function queuedPromptItem(promptId: string) {
+  return {
+    promptId,
+    agentId: "agent-1",
+    sourceAttachmentId: null,
+    prompt: `queued prompt ${promptId}`,
+    status: "queued",
+    attachmentCount: 0,
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
   }
 }
 

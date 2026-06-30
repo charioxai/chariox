@@ -8,6 +8,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaLogger } from "./logging.js"
+import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import {
   automationSnapshotMatches,
@@ -52,6 +53,9 @@ export type CliAutomationActionDeps = {
   toggleAgentPaneTurn?: ((agentId: string, turnId: number, toggleEntryId?: number) => void) | undefined
   toggleBlob: (entryId: number, collapsed: boolean) => void
   toggleAgentPaneBlob?: ((agentId: string, entryId: number, collapsed: boolean) => void) | undefined
+  queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
+  onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void | Promise<void>
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
@@ -271,6 +275,25 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           return deps.snapshot()
         }
         deps.toggleTurn(turnId, toggleEntryId)
+        return deps.snapshot()
+      }
+      case "queued_prompt_action": {
+        const queuedPromptAction = request.queuedPromptAction === "steer" || request.queuedPromptAction === "cancel"
+          ? request.queuedPromptAction
+          : null
+        if (!queuedPromptAction) {
+          throw new Error("usage: queued_prompt_action queuedPromptAction=steer|cancel [agentId=<id>] [promptId=<id>]")
+        }
+        const agentId = typeof request.agentId === "string" ? request.agentId : deps.focusedAgentId()
+        const items = deps.queuedPromptStripItemsForAgent(agentId)
+        const requestedPromptId = typeof request.promptId === "string" ? request.promptId : null
+        const item = requestedPromptId
+          ? items.find((candidate) => candidate.promptId === requestedPromptId)
+          : items[deps.selectedQueuedPromptIndexForAgent(agentId)] ?? items[0]
+        if (!item) {
+          throw new Error("queued_prompt_action could not find a queued prompt strip item")
+        }
+        await deps.onQueuedPromptAction(item, queuedPromptAction)
         return deps.snapshot()
       }
       case "wait_for": {

@@ -24,7 +24,7 @@ function parseArgs(argv) {
     else if (arg === '--label') options.label = next()
     else if (arg === '--json') options.json = JSON.parse(next())
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
+      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -199,6 +199,7 @@ async function writeReport(manifest) {
       footersAndPromptArea: 'requires screen captures and status/footer snapshot summaries',
       waitingRoom: 'requires waiting-room snapshot and screen capture',
       queuedPromptStripProjection: 'automation snapshots expose queuedPromptStrips with selectedIndex, prompt text, status, attachment count, steer, and cancel actionability',
+      queuedPromptActions: 'steer-queued and cancel-queued route through the same queued_prompt_action automation path as the TUI strip action handler',
     },
   }
   await mkdir(path.dirname(manifest.reportPath), { recursive: true })
@@ -218,6 +219,11 @@ async function main() {
       snapshot = await automation.send('snapshot')
     } else if (options.action === 'assert') {
       snapshot = await automation.send('snapshot')
+    } else if (options.action === 'steer-queued' || options.action === 'cancel-queued') {
+      snapshot = await automation.send('queued_prompt_action', {
+        queuedPromptAction: options.action === 'steer-queued' ? 'steer' : 'cancel',
+        ...(options.json && typeof options.json === 'object' ? options.json : {}),
+      })
     } else if (options.action === 'toggle-first-blob') {
       const before = await automation.send('snapshot')
       const entry = firstCollapsedBlob(before, manifest)

@@ -23,6 +23,7 @@ const FOCUSED_TESTS = [
   "dist/transcript-history-autoload-controller.test.js",
   "dist/agent-pane-state.test.js",
   "dist/cli-automation-snapshot.test.js",
+  "dist/cli-automation-handler.test.js",
 ]
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..")
