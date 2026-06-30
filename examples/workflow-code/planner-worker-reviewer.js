@@ -133,7 +133,7 @@ const worker = workflow.node({
 After each implementation attempt, send the result to the reviewer on the worker_to_reviewer edge using the implementation_result schema. Include changed files or artifacts, verification performed, and open questions.
 
 If the reviewer routes revision feedback back to you on reviewer_to_worker, apply the requested changes and send a new implementation result to the reviewer. Do not submit final workflow output.`,
-  canvas: { x: 320, y: 140 },
+  canvas: { x: 460, y: 140 },
 });
 
 const reviewer = workflow.node({
@@ -149,7 +149,7 @@ If the implementation is acceptable, route an accepted step report to the planne
 If this is the ${params.max_review_cycles_per_step} review cycle for the current assignment, route to reviewer_to_planner even if issues remain. In that accepted step report, set accepted according to your judgment and include unresolved issues in remaining_risks so the planner can decide the next assignment.
 
 Do not submit final workflow output. Do not route directly to planner unless you are reporting an accepted step or returning control after the review-cycle limit.`,
-  canvas: { x: 640, y: 140 },
+  canvas: { x: 920, y: 140 },
 });
 
 workflow.edge(planner, worker, {
