@@ -504,15 +504,13 @@
     <ol>
       <li>
         <strong>Make the queue a single Web-like surface.</strong>
-        Stop projecting queued prompts as normal freeform transcript entries when the dedicated queue strip is active.
-        Add TUI notice filtering equivalent to Web Terminal so queued prompt lifecycle notices do not become permanent
-        agent-pane scrollback.
+        Done: queued prompts render through the dedicated strip, live queued prompt rows are not duplicated in
+        transcript scrollback, and successful queued-prompt lifecycle notices are filtered from agent-pane history.
       </li>
       <li>
         <strong>Normalize queue lifecycle rendering.</strong>
-        On steer, render one intentional steering prompt entry with dedicated role metadata. On cancel, remove the queued
-        item without leaving the old prompt text and a permanent cancel notice in the transcript. Keep status feedback
-        transient in the footer or strip.
+        Done: steering renders one intentional non-turn-tracking user echo, cancellation removes the queued item without
+        stale transcript residue, and steering/cancelling feedback stays transient in the strip.
       </li>
       <li>
         <strong>Fix queue keyboard control.</strong>
@@ -521,8 +519,8 @@
       </li>
       <li>
         <strong>Rebuild queue strip layout.</strong>
-        Replace long inline action labels with stable fixed columns, compact focused controls, and prompt/meta truncation.
-        The strip must not clip or overlap at 80 columns, and it must hide cleanly when the queue is empty.
+        Done: focused queue rows use compact <code>[S]</code>/<code>[C]</code> controls, prompt/meta truncation, and
+        generated 80x24/120x32 captures prove the strip stays bounded.
       </li>
       <li>
         <strong>Upgrade collapsed blob presentation.</strong>
@@ -544,9 +542,9 @@
       </li>
       <li>
         <strong>Keep this below clients where possible.</strong>
-        Prefer shared projection helpers for runtime notice filtering, queued prompt lifecycle display state, and blob
-        summaries. Do not introduce a parallel prompt, history, permission, attachment, or relay authority path. If any
-        serialized protocol shape changes, bump the local daemon protocol version and update protocol snapshot/hash tests.
+        Done for this parity plan: queue projection, notice filtering, blob summaries, history loading, footer state,
+        and Waiting Room rows stay in shared TUI/kernel-client paths with no parallel prompt, history, permission,
+        attachment, or relay authority path. No serialized protocol shape change was required for the TUI parity slices.
       </li>
     </ol>
 
