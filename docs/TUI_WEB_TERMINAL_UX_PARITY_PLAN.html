@@ -315,6 +315,11 @@
           <td>Queue keyboard selection</td>
           <td>The focused queue strip now tracks a selected queued prompt, supports <code>Alt+J/K</code> and <code>Alt+Up/Down</code> selection, and sends <code>Alt+S</code>/<code>Alt+C</code> actions to the selected row instead of always using the first prompt.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue transient status</td>
+          <td>Queued-prompt steer/cancel actions now use a strip-local optimistic status overlay, so <code>steering</code> and <code>cancelling</code> states remain visible even though live queued prompts are no longer transcript rows.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -398,8 +403,8 @@
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
-          <td>TUI can steer through the kernel request path and successful queue lifecycle notices are filtered out of scrollback.</td>
-          <td><span class="status gap">Gap</span>: use one clean steering-prompt lifecycle with explicit transient strip/footer status.</td>
+          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback, and pending steer/cancel actions show transient strip status.</td>
+          <td><span class="status gap">Gap</span>: finish the clean steering-prompt lifecycle with footer/status assertions in the live drill.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>

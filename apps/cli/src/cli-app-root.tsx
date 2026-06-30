@@ -86,6 +86,7 @@ import {
   queuedPromptStripItemsForAgent,
   queuedPromptStripItemToTranscriptEntry,
   type QueuedPromptStripItem,
+  type QueuedPromptStripStatusOverride,
 } from "./queued-prompt-strip-state.js"
 import {
   nextQueuedPromptSelectionId,
@@ -401,6 +402,9 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
   const [selectedQueuedPromptIdsByAgent, setSelectedQueuedPromptIdsByAgent] = createSignal<Record<string, string>>({})
+  const [queuedPromptStatusOverridesByAgent, setQueuedPromptStatusOverridesByAgent] = createSignal<
+    Record<string, Record<string, QueuedPromptStripStatusOverride>>
+  >({})
 
   const {
     isAttached,
@@ -1033,11 +1037,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentLocationLabel,
     workingAnimationFrame,
     activeInteractionForAgent,
-    queuedPromptStripItemsForAgent: (agentId) => queuedPromptStripItemsForAgent(
-      sessionState(),
-      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
-      agentId,
-    ),
+    queuedPromptStripItemsForAgent: queuedPromptStripItemsForAgentId,
     selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: handleQueuedPromptStripAction,
     interactionChoiceStore,
@@ -1288,6 +1288,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           })
         }
         applySessionState(payload.session)
+        updateQueuedPromptStatusOverride(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
         updateSessionChrome()
       } catch (error) {
         updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
@@ -1305,7 +1306,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       sessionState(),
       agentId ? (agentPaneEntries()[agentId] ?? []) : [],
       agentId,
+      queuedPromptStatusOverridesForAgent(agentId),
     )
+  }
+
+  function queuedPromptStatusOverridesForAgent(agentId: string | null | undefined): QueuedPromptStripStatusOverride[] {
+    return agentId ? Object.values(queuedPromptStatusOverridesByAgent()[agentId] ?? {}) : []
   }
 
   function selectedQueuedPromptIndexForAgent(agentId: string | null | undefined): number {
@@ -1402,6 +1408,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptId: string,
     status: "queued" | "steering" | "cancelling",
   ) {
+    updateQueuedPromptStatusOverride(agentId, promptId, status)
     const updateEntries = (currentEntries: TranscriptEntry[]) => currentEntries.map((candidate) => {
       if (candidate.queuedPrompt?.agentId !== agentId || candidate.queuedPrompt.promptId !== promptId) {
         return candidate
@@ -1428,6 +1435,40 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentTranscriptEntries(agentId, updateEntries(currentAgentPaneEntries(agentId)))
     renderAgentInteractions()
     applyResponseLayout()
+  }
+
+  function updateQueuedPromptStatusOverride(
+    agentId: string,
+    promptId: string,
+    status: "queued" | "steering" | "cancelling",
+  ) {
+    setQueuedPromptStatusOverridesByAgent((current) => {
+      const next = { ...current }
+      const agentOverrides = { ...(next[agentId] ?? {}) }
+      if (status === "queued") {
+        delete agentOverrides[promptId]
+      } else {
+        const pendingReason = status === "steering"
+          ? "This prompt is currently being steered."
+          : "This prompt is currently being cancelled."
+        agentOverrides[promptId] = {
+          promptId,
+          agentId,
+          status,
+          steerDisabled: true,
+          canSteer: false,
+          canCancel: false,
+          steerDisabledReason: pendingReason,
+          cancelDisabledReason: pendingReason,
+        }
+      }
+      if (Object.keys(agentOverrides).length === 0) {
+        delete next[agentId]
+      } else {
+        next[agentId] = agentOverrides
+      }
+      return next
+    })
   }
 
   const workflowActions = createCliAppWorkflowActionComposition({

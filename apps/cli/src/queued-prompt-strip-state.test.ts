@@ -60,6 +60,37 @@ test("queuedPromptStripItemsForAgent overlays optimistic transcript action state
   assert.equal(item?.attachmentCount, 2)
 })
 
+test("queuedPromptStripItemsForAgent overlays optimistic status outside transcript rows", () => {
+  const [item] = queuedPromptStripItemsForAgent(session(), [], "agent-1", [{
+    promptId: "prompt-1",
+    agentId: "agent-1",
+    status: "cancelling",
+    steerDisabled: true,
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: "This prompt is currently being cancelled.",
+    cancelDisabledReason: "This prompt is currently being cancelled.",
+  }])
+
+  assert.deepEqual({
+    status: item?.status,
+    canSteer: item?.canSteer,
+    canCancel: item?.canCancel,
+    steerDisabledReason: item?.steerDisabledReason,
+    cancelDisabledReason: item?.cancelDisabledReason,
+    prompt: item?.prompt,
+    attachmentCount: item?.attachmentCount,
+  }, {
+    status: "cancelling",
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: "This prompt is currently being cancelled.",
+    cancelDisabledReason: "This prompt is currently being cancelled.",
+    prompt: "queued prompt",
+    attachmentCount: 2,
+  })
+})
+
 test("queuedPromptStripItemsForAgent uses projected queue controls", () => {
   const [item] = queuedPromptStripItemsForAgent(session({
     prompt_states: {
@@ -140,6 +171,48 @@ test("queuedPromptStripItemsForAgent preserves transcript rows when projection i
   } as unknown as RuntimeSession, entries, "agent-1")
 
   assert.deepEqual(items.map((item) => item.promptId), ["prompt-preserved"])
+})
+
+test("queuedPromptStripItemsForAgent applies status overrides when preserving transcript rows", () => {
+  const entries: TranscriptEntry[] = [{
+    id: 1,
+    role: "user",
+    text: "preserved queued",
+    queuedPrompt: {
+      promptId: "prompt-preserved",
+      agentId: "agent-1",
+      status: "queued",
+      attachmentCount: 1,
+      steerDisabled: false,
+      canSteer: true,
+      canCancel: true,
+      steerDisabledReason: null,
+      cancelDisabledReason: null,
+    },
+  }]
+  const [item] = queuedPromptStripItemsForAgent({
+    ...session(),
+    prompt_states: undefined,
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+      },
+    },
+  } as unknown as RuntimeSession, entries, "agent-1", [{
+    promptId: "prompt-preserved",
+    agentId: "agent-1",
+    status: "steering",
+    steerDisabled: true,
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: "This prompt is currently being steered.",
+    cancelDisabledReason: "This prompt is currently being steered.",
+  }])
+
+  assert.equal(item?.status, "steering")
+  assert.equal(item?.canSteer, false)
+  assert.equal(item?.canCancel, false)
 })
 
 test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript action path", () => {
