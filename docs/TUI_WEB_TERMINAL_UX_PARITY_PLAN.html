@@ -194,8 +194,9 @@
     <ul>
       <li><code>pnpm --filter @arroba/cli run build</code> passed before the drill.</li>
       <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
-      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/67829-1782836084601/evidence</code>.</li>
-      <li>Latest live assertions: <code>initial</code>, <code>blobs-initial</code>, <code>blob-expanded</code>, and <code>waiting-room</code> passed through the visual-control automation socket.</li>
+      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Latest live assertions: <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> passed through the visual-control automation socket.</li>
+      <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, and Waiting Room states.</li>
       <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 140 focused tests, syntax checks, and drill JSON validation.</li>
       <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
@@ -223,7 +224,7 @@
         <tr>
           <td>Queue controls</td>
           <td>Direct kernel steer/cancel calls worked, but PTY <code>Alt+S</code>/<code>Alt+C</code> did not update the queue during the drill.</td>
-          <td><span class="status ok">Mostly closed</span>: visual-control invokes the same strip handler, and raw stdin escape-prefix keys now normalize into queued-prompt shortcuts; remaining coverage is terminal-emulator screenshot capture.</td>
+          <td><span class="status ok">Closed</span>: visual-control invokes the same strip handler, raw stdin escape-prefix keys normalize into queued-prompt shortcuts, and the latest live PTY run saved post-shortcut narrow/wide terminal captures.</td>
         </tr>
         <tr>
           <td>Multiple queued prompts</td>
@@ -238,7 +239,7 @@
         <tr>
           <td>Blob rendering</td>
           <td>Lazy blob expansion works after async content loads, but collapsed rows are sparse and lack useful Web-like summaries/loading feedback.</td>
-          <td><span class="status ok">Mostly closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, and live assertions for reasoning/tool/status-or-notice/history placeholders; remaining coverage is terminal-emulator screenshots across narrow and wide sizes.</td>
+          <td><span class="status ok">Mostly closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, live assertions, and narrow/wide terminal captures for collapsed plus expanded reasoning states; residual coverage is loaded lazy-content detail.</td>
         </tr>
         <tr>
           <td>Turn collapse</td>
@@ -248,7 +249,7 @@
         <tr>
           <td>Waiting Room</td>
           <td><code>/waiting</code> transitioned successfully and rows populated, but footer text showed the same clipping risk as the queue strip.</td>
-          <td><span class="status ok">Mostly closed</span>: row/footer width assertions are present and the live drill now validates attached transition plus seeded idle/done session rows; remaining coverage is narrow/wide physical terminal capture.</td>
+          <td><span class="status ok">Closed</span>: row/footer width assertions are present and the live drill now validates attached transition plus seeded idle/done session rows with generated 80x24 and 120x32 terminal captures.</td>
         </tr>
       </tbody>
     </table>
@@ -373,6 +374,11 @@
           <td>Raw PTY queue shortcuts</td>
           <td>Raw stdin key handling now routes queued-prompt shortcuts before prompt-owned input and normalizes terminal escape-prefix keys such as <code>Esc+s</code> into the existing <code>Alt+S</code> strip action path.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Generated terminal capture evidence</td>
+          <td>The live visual-control drill now writes bounded 80x24 and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, and Waiting Room states, with line-width assertions before artifact creation.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -433,7 +439,7 @@
           <td>Transcript blobs</td>
           <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
           <td>Blob collapse policy exists; collapsed rows show headers, role/status metadata, summaries, and lazy history loading/error/retry states.</td>
-          <td><span class="status gap">Gap</span>: live assertions cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, and normal entry expansion; remaining work is terminal-emulator screenshots across narrow/wide sizes and loaded lazy-content detail.</td>
+          <td><span class="status ok">Mostly closed</span>: live assertions and generated 80x24/120x32 captures cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, expanded reasoning, and normal entry expansion; residual coverage is loaded lazy-content detail.</td>
         </tr>
         <tr>
           <td>Turn lifecycle</td>
@@ -451,13 +457,13 @@
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
           <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; raw stdin escape-prefix shortcuts route to the same strip handler; automation snapshots expose strip rows and selection; the live visual-control drill asserts the projection.</td>
-          <td><span class="status gap">Gap</span>: terminal-emulator screenshot evidence still needs to be saved across narrow and wide captures.</td>
+          <td><span class="status ok">Aligned</span>: generated narrow/wide terminal captures are saved for the attached queue strip and the post-raw-steer state.</td>
         </tr>
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
           <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, pending steer/cancel actions show transient strip status, visual-control can trigger the same strip handler live, and raw stdin shortcut routing reaches that handler.</td>
-          <td><span class="status gap">Gap</span>: final PTY drill still needs saved footer/status screenshots after terminal shortcut delivery.</td>
+          <td><span class="status ok">Aligned</span>: the latest PTY run used raw <code>Esc+s</code> delivery and saved post-shortcut status/footer captures.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>
@@ -475,13 +481,13 @@
           <td>Screen footer</td>
           <td>Status region reports connect/session/focus/action feedback and Waiting Room hints.</td>
           <td>TUI derives active prompt, queue depth, status line, hotkeys, connection, sync footer text, and width-bounded attached/Waiting Room footer summaries.</td>
-          <td><span class="status gap">Gap</span>: pane-specific action strips still need broader live-drill assertions, but the screen footer summary now compacts at 80 columns.</td>
+          <td><span class="status ok">Aligned</span>: broader live-drill assertions now include generated 80x24 and 120x32 footer/status captures for attached and Waiting Room states.</td>
         </tr>
         <tr>
           <td>Waiting Room</td>
           <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
           <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme, with recent-activity sorting, work/done markers, prompt counts, and recovery next actions.</td>
-          <td><span class="status gap">Partial</span>: row semantics, screen footer compaction, row width assertions, and attached transition validation are present; remaining work is wider/narrower terminal-emulator capture coverage.</td>
+          <td><span class="status ok">Aligned</span>: row semantics, screen footer compaction, row width assertions, attached transition validation, and wider/narrower terminal capture coverage are present for the TUI Waiting Room surface.</td>
         </tr>
       </tbody>
     </table>
@@ -502,8 +508,8 @@
       </li>
       <li>
         <strong>Fix queue keyboard control.</strong>
-        Done for focused queue selection, deterministic TUI input handling, automation controls, and raw stdin
-        escape-prefix shortcut routing. Remaining work is saved emulator screenshot evidence after shortcut delivery.
+        Done for focused queue selection, deterministic TUI input handling, automation controls, raw stdin
+        escape-prefix shortcut routing, and saved post-shortcut narrow/wide terminal captures.
       </li>
       <li>
         <strong>Rebuild queue strip layout.</strong>
@@ -513,20 +519,20 @@
       <li>
         <strong>Upgrade collapsed blob presentation.</strong>
         Done for the core TUI projection: collapsed blobs have useful headers, type/status metadata, compact summaries,
-        loading/error states, and live PTY assertions. Remaining work is screenshot-backed polish across narrow/wide
-        terminal sizes and loaded lazy-content detail.
+        loading/error states, live PTY assertions, and screenshot-backed narrow/wide terminal captures. Residual follow-up
+        is loaded lazy-content detail.
       </li>
       <li>
         <strong>Apply the same compact layout rules to Waiting Room and footer actions.</strong>
-        Done for row/footer formatting, session-row truncation tests, and live attached transition validation.
-        Remaining work is physical terminal capture at 80x24 and wider widths.
+        Done for row/footer formatting, session-row truncation tests, live attached transition validation, and generated
+        terminal capture at 80x24 and 120x32 widths.
       </li>
       <li>
         <strong>Add parity drills as invariants.</strong>
         Done for behavior assertions in the seeded TUI/Web fixture: queued prompt appears once, queued notices are
-        excluded from transcript scrollback, steer/cancel removes stale rows, blobs expose collapsed/expanded state,
-        turn collapse still works in focused tests, and Waiting Room rows/footer hints render without overlap.
-        Remaining work is emulator screenshot coverage as a second layer.
+        excluded from transcript scrollback, raw shortcut steering removes stale rows, blobs expose collapsed/expanded
+        state, turn collapse still works in focused tests, Waiting Room rows/footer hints render without overlap, and
+        generated emulator-style terminal captures are saved as a second layer.
       </li>
       <li>
         <strong>Keep this below clients where possible.</strong>
@@ -592,6 +598,10 @@
         <code>Esc+j</code>, and <code>Esc+k</code>.
       </li>
       <li>
+        <strong>Done.</strong> Add a <code>capture-layouts</code> live visual-control action that writes bounded 80x24
+        and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, and Waiting Room states.
+      </li>
+      <li>
         <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
         and no pane-button row under agents.
       </li>
@@ -613,8 +623,9 @@
       <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
       <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
       <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
-      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code> and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, normal message expansion, attached transition, and seeded idle/done Waiting Room rows.</li>
-      <li>Latest live PTY evidence: <code>target/live-tui-web-parity-visual-session/67829-1782836084601/evidence</code>.</li>
+      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code>, <code>capture-layouts</code>, and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, normal message expansion, attached transition, seeded idle/done Waiting Room rows, raw queue shortcut delivery, and bounded terminal captures.</li>
+      <li>Latest live PTY evidence: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
       <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 140 tests plus script syntax and drill JSON checks.</li>
     </ul>
 
@@ -656,12 +667,19 @@ pnpm --filter @arroba/cli run tui-web-parity:visual-session
 
 # In a second terminal while the live session is open:
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert --label initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label attached-initial
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label blob-expanded-layout
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
+
+# To validate terminal shortcut delivery, press Esc+s or Alt+S in the live PTY, then capture:
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label post-raw-steer
+
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action waiting-room --label waiting-room
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label waiting-room-layout
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action report</code></pre>
 
     <h3>Manual visual checklist</h3>

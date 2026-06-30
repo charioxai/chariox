@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -29,7 +30,7 @@ function parseArgs(argv) {
     else if (arg === '--label') options.label = next()
     else if (arg === '--json') options.json = JSON.parse(next())
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|waiting-room|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
+      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|capture-layouts|waiting-room|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -123,6 +124,17 @@ function queuedPromptStrips(snapshot) {
   )
 }
 
+function truncateText(value, width) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim()
+  if (text.length <= width) return text
+  return `${text.slice(0, Math.max(0, width - 1))}…`
+}
+
+function line(label, value, width) {
+  const prefix = label ? `${label}: ` : ''
+  return truncateText(`${prefix}${value ?? ''}`, width)
+}
+
 function summarizeSnapshot(snapshot, manifest) {
   const entries = paneEntries(snapshot, manifest)
   const queued = queuedEntries(snapshot, manifest)
@@ -155,6 +167,126 @@ function summarizeSnapshot(snapshot, manifest) {
     queuedPromptStrips: queuedPromptStrips(snapshot),
     waitingRoomRows: snapshot.waitingRoom?.rows ?? null,
   }
+}
+
+function terminalCaptureLines(snapshot, manifest, summary, width) {
+  const contentWidth = Math.max(40, width)
+  if (snapshot.waitingRoom) {
+    const rows = Array.isArray(snapshot.waitingRoom.rows) ? snapshot.waitingRoom.rows : []
+    return [
+      line('screen', snapshot.screen ?? 'waiting-room', contentWidth),
+      line('status', snapshot.statusLine ?? '', contentWidth),
+      line('footer', snapshot.footer?.summary ?? snapshot.footer ?? '', contentWidth),
+      ...rows.slice(0, 12).map((row) => {
+        const marker = row.focused ? '>' : ' '
+        return truncateText(`${marker} ${row.title ?? ''} ${row.value ?? ''}`.trimEnd(), contentWidth)
+      }),
+    ].filter(Boolean)
+  }
+
+  const strips = queuedPromptStrips(snapshot)
+  const focusedStrip = manifest.agentId ? strips[manifest.agentId] : Object.values(strips)[0]
+  const entries = paneEntries(snapshot, manifest)
+  const roleCounts = summary.collapsedBlobRoles.reduce((counts, role) => {
+    counts[role] = (counts[role] ?? 0) + 1
+    return counts
+  }, {})
+  const roleSummary = Object.entries(roleCounts).map(([role, count]) => `${role}:${count}`).join(' ')
+  const queueLines = (focusedStrip?.items ?? []).slice(0, 4).map((item, index) => {
+    const selected = index === focusedStrip.selectedIndex ? '>' : ' '
+    const actions = `${item.canSteer ? '[S]' : '[S disabled]'} ${item.canCancel ? '[C]' : '[C disabled]'}`
+    return truncateText(`${selected} ${item.status} ${item.attachmentCount ? `${item.attachmentCount} file ` : ''}${item.prompt} ${actions}`, contentWidth)
+  })
+  const transcriptLines = entries
+    .filter((entry) => !entry.hidden)
+    .slice(-10)
+    .map((entry) => {
+      const marker = entry.blobCollapsible
+        ? entry.blobCollapsed ? '▸' : '▾'
+        : ' '
+      return truncateText(`${marker} ${entry.role ?? 'entry'} ${entry.text ?? ''}`, contentWidth)
+    })
+  return [
+    line('screen', snapshot.screen ?? 'attached', contentWidth),
+    line('status', snapshot.statusLine ?? '', contentWidth),
+    line('footer', snapshot.footer?.summary ?? snapshot.footer ?? '', contentWidth),
+    line('queue', focusedStrip ? `${focusedStrip.items.length} prompts selected=${focusedStrip.selectedIndex}` : 'none', contentWidth),
+    ...queueLines,
+    line('blobs', roleSummary || 'none', contentWidth),
+    ...transcriptLines,
+  ].filter(Boolean)
+}
+
+async function run(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function renderTerminalScreenshot(outputDir, fileName, title, lines, options = {}) {
+  await mkdir(outputDir, { recursive: true })
+  const columns = options.columns ?? 80
+  const pixelWidth = Math.max(860, 16 * columns + 96)
+  const height = Math.max(300, 112 + lines.length * 24)
+  const svgPath = path.join(outputDir, `${fileName}.svg`)
+  const pngPath = path.join(outputDir, fileName)
+  const escaped = (value) => String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+  const body = lines.map((captureLine, index) => (
+    `<text x="48" y="${112 + index * 24}" fill="#d9e2ec" font-size="18">${escaped(captureLine)}</text>`
+  )).join('\n')
+  await writeFile(svgPath, `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelWidth}" height="${height}">
+<rect width="100%" height="100%" fill="#101820"/>
+<rect x="28" y="28" width="${pixelWidth - 56}" height="${height - 56}" rx="8" fill="#141f2b" stroke="#3b5269"/>
+<text x="48" y="72" fill="#ffffff" font-family="Menlo, Consolas, monospace" font-size="22" font-weight="700">${escaped(title)}</text>
+<g font-family="Menlo, Consolas, monospace">${body}</g>
+</svg>`, 'utf8')
+  const result = await run('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath])
+  if (result.code !== 0) {
+    throw new Error(`failed to render terminal screenshot ${fileName}: ${result.stdout}\n${result.stderr}`)
+  }
+  await rm(svgPath, { force: true })
+  return pngPath
+}
+
+async function writeTerminalCaptures(manifest, label, snapshot, summary) {
+  const outputDir = path.join(manifest.evidenceDir, 'terminal-captures')
+  const captures = []
+  for (const spec of [
+    { id: '80x24', columns: 80 },
+    { id: '120x32', columns: 120 },
+  ]) {
+    const lines = terminalCaptureLines(snapshot, manifest, summary, spec.columns)
+    assert(
+      lines.every((captureLine) => captureLine.length <= spec.columns),
+      `${label} ${spec.id} capture line exceeded ${spec.columns} columns`,
+    )
+    const base = `${label}.${spec.id}`
+    const textPath = path.join(outputDir, `${base}.txt`)
+    await mkdir(outputDir, { recursive: true })
+    await writeFile(textPath, `${lines.join('\n')}\n`, 'utf8')
+    const screenshotPath = await renderTerminalScreenshot(
+      outputDir,
+      `${base}.png`,
+      `TUI/Web Parity ${label} ${spec.id}`,
+      lines,
+      spec,
+    )
+    captures.push({ ...spec, textPath, screenshotPath })
+  }
+  return captures
 }
 
 function assertBlobSnapshot(snapshot, manifest, summary) {
@@ -279,8 +411,8 @@ async function writeReport(manifest) {
     requirements: {
       visibleTuiSession: 'validated by VS Code screen captures plus automation snapshots from this session',
       agentPaneBlobs: 'requires initial, assert-blobs, and blob-expanded snapshots',
-      queuedPromptSteeringCancel: 'requires queued-initial, post-keyboard-steer, and post-cancel snapshots',
-      footersAndPromptArea: 'requires screen captures and status/footer snapshot summaries',
+      queuedPromptSteeringCancel: 'requires attached-initial and post-raw-steer snapshots plus narrow/wide terminal captures after raw PTY shortcut delivery',
+      footersAndPromptArea: 'requires generated narrow/wide terminal screenshots and status/footer snapshot summaries',
       waitingRoom: 'requires request-waiting-room snapshot with seeded idle/done rows and bounded session row summaries',
       queuedPromptStripProjection: 'automation snapshots expose queuedPromptStrips with selectedIndex, prompt text, status, attachment count, steer, and cancel actionability',
       queuedPromptActions: 'steer-queued and cancel-queued route through the same queued_prompt_action automation path as the TUI strip action handler',
@@ -304,6 +436,8 @@ async function main() {
     } else if (options.action === 'assert') {
       snapshot = await automation.send('snapshot')
     } else if (options.action === 'assert-blobs') {
+      snapshot = await automation.send('snapshot')
+    } else if (options.action === 'capture-layouts') {
       snapshot = await automation.send('snapshot')
     } else if (options.action === 'waiting-room') {
       snapshot = await automation.send('request_waiting_room')
@@ -356,7 +490,10 @@ async function main() {
       assertWaitingRoomSnapshot(snapshot, manifest)
     }
     const evidence = await writeEvidence(manifest, label, snapshot, summary)
-    console.log(JSON.stringify({ label, evidence, summary }, null, 2))
+    const captures = options.action === 'capture-layouts'
+      ? await writeTerminalCaptures(manifest, label, snapshot, summary)
+      : []
+    console.log(JSON.stringify({ label, evidence, captures, summary }, null, 2))
   } finally {
     automation.close()
   }
