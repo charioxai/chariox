@@ -43,6 +43,7 @@ export type CliAutomationActionDeps = {
   setPromptText: (value: string) => void
   submitPrompt: () => Promise<void>
   activateWaitingRoom: () => Promise<void>
+  requestWaitingRoom?: (() => Promise<boolean>) | undefined
   connectDetachedKernelFromWaitingRoom: () => Promise<void>
   refreshWaitingRoomData: () => Promise<void>
   submitFocusedInteractionChoice: (choiceIndex?: number) => Promise<unknown>
@@ -144,6 +145,17 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           throw new Error("cannot activate waiting room while attached")
         }
         await deps.activateWaitingRoom()
+        return deps.snapshot()
+      }
+      case "request_waiting_room": {
+        if (!deps.isAttached()) {
+          await deps.activateWaitingRoom()
+          return deps.snapshot()
+        }
+        if (!deps.requestWaitingRoom) {
+          throw new Error("request_waiting_room is not available in this CLI")
+        }
+        await deps.requestWaitingRoom()
         return deps.snapshot()
       }
       case "activate_unattached_agent": {

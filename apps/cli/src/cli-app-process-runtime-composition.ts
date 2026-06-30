@@ -83,6 +83,7 @@ export function createCliAppProcessRuntimeComposition(
     setPromptText: deps.setPromptText,
     submitPrompt: deps.submitPrompt,
     activateWaitingRoom: deps.activateWaitingRoom,
+    requestWaitingRoom: deps.requestWaitingRoom,
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     refreshWaitingRoomData: deps.refreshWaitingRoomData,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,

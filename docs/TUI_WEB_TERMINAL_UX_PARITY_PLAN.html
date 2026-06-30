@@ -188,13 +188,15 @@
     <p>
       Live visual PTY drills were run against the TUI using the seeded web-parity visual session. The first pass exposed
       duplicate queue rendering, unreliable queue action projection, narrow-row clipping, and sparse collapsed blob rows.
-      Follow-up slices closed the queue rendering and actionability gaps and added bounded footer/Waiting Room rows.
+      Follow-up slices closed the queue rendering and actionability gaps, added bounded footer/Waiting Room rows,
+      and extended the live visual drill to cover collapsed blobs plus attached-to-Waiting-Room transition state.
     </p>
     <ul>
       <li><code>pnpm --filter @arroba/cli run build</code> passed before the drill.</li>
       <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
-      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/58494-1782835154733/evidence</code>.</li>
-      <li>Latest live assertions: <code>queued-strip-wired</code>, <code>queued-strip-steer</code>, and <code>queued-strip-cancel</code> passed through the visual-control automation socket.</li>
+      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/67829-1782836084601/evidence</code>.</li>
+      <li>Latest live assertions: <code>initial</code>, <code>blobs-initial</code>, <code>blob-expanded</code>, and <code>waiting-room</code> passed through the visual-control automation socket.</li>
+      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 140 focused tests, syntax checks, and drill JSON validation.</li>
       <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
 
@@ -236,7 +238,7 @@
         <tr>
           <td>Blob rendering</td>
           <td>Lazy blob expansion works after async content loads, but collapsed rows are sparse and lack useful Web-like summaries/loading feedback.</td>
-          <td>The blob data path is mostly present; the TUI component quality is the remaining gap.</td>
+          <td><span class="status ok">Mostly closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, and live assertions for reasoning/tool/status-or-notice/history placeholders; remaining coverage is terminal-emulator screenshots across narrow and wide sizes.</td>
         </tr>
         <tr>
           <td>Turn collapse</td>
@@ -246,7 +248,7 @@
         <tr>
           <td>Waiting Room</td>
           <td><code>/waiting</code> transitioned successfully and rows populated, but footer text showed the same clipping risk as the queue strip.</td>
-          <td><span class="status gap">Partial</span>: row and footer width assertions are present; live visual assertions still need 80x24 and wider capture coverage.</td>
+          <td><span class="status ok">Mostly closed</span>: row/footer width assertions are present and the live drill now validates attached transition plus seeded idle/done session rows; remaining coverage is narrow/wide physical terminal capture.</td>
         </tr>
       </tbody>
     </table>
@@ -356,6 +358,16 @@
           <td>Live queue strip validation</td>
           <td>The live PTY drill now asserts that rendered queue strips appear in automation snapshots, that queued prompts are not duplicated as transcript rows, and that steer/cancel actions update strip-local status.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Live blob and Waiting Room validation</td>
+          <td>The live PTY drill now asserts collapsed blob roles, lazy history placeholders, normal assistant/user/error expansion, attached-to-Waiting-Room transition, seeded idle/done session rows, and compact session row summaries.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room transition wiring</td>
+          <td>The app root now passes slice state into the primary transcript composition so a detached Waiting Room redraw can render slice and recent-session rows during live transition drills.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -416,7 +428,7 @@
           <td>Transcript blobs</td>
           <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
           <td>Blob collapse policy exists; collapsed rows show headers, role/status metadata, summaries, and lazy history loading/error/retry states.</td>
-          <td><span class="status gap">Gap</span>: broader live-drill assertions still need to cover lazy expansion and tool/reasoning/status visual distinction across narrow and wide PTY sizes.</td>
+          <td><span class="status gap">Gap</span>: live assertions cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, and normal entry expansion; remaining work is terminal-emulator screenshots across narrow/wide sizes and loaded lazy-content detail.</td>
         </tr>
         <tr>
           <td>Turn lifecycle</td>
@@ -464,7 +476,7 @@
           <td>Waiting Room</td>
           <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
           <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme, with recent-activity sorting, work/done markers, prompt counts, and recovery next actions.</td>
-          <td><span class="status gap">Partial</span>: row semantics, screen footer compaction, and row width assertions are present; live visual assertions still need to cover 80x24 and wider terminal captures.</td>
+          <td><span class="status gap">Partial</span>: row semantics, screen footer compaction, row width assertions, and attached transition validation are present; remaining work is wider/narrower terminal-emulator capture coverage.</td>
         </tr>
       </tbody>
     </table>
@@ -496,20 +508,21 @@
       </li>
       <li>
         <strong>Upgrade collapsed blob presentation.</strong>
-        Build a TUI blob component with a useful header, type/status metadata, compact summary, chevron, loading state,
-        loaded state, and error state. Reuse the shared tool display model where practical so tool, reasoning, status,
-        notice, and error blobs are visually distinct.
+        Done for the core TUI projection: collapsed blobs have useful headers, type/status metadata, compact summaries,
+        loading/error states, and live PTY assertions. Remaining work is screenshot-backed polish across narrow/wide
+        terminal sizes and loaded lazy-content detail.
       </li>
       <li>
         <strong>Apply the same compact layout rules to Waiting Room and footer actions.</strong>
-        Waiting Room rows already expose the right semantics, but action/footer text needs fixed-width formatting,
-        predictable truncation, and snapshot coverage at 80x24 and wider widths.
+        Done for row/footer formatting, session-row truncation tests, and live attached transition validation.
+        Remaining work is physical terminal capture at 80x24 and wider widths.
       </li>
       <li>
         <strong>Add parity drills as invariants.</strong>
-        Keep the seeded TUI/Web fixture and assert behavior, not pixels: queued prompt appears once, queued notices are
-        excluded from transcript scrollback, steer/cancel removes stale rows, lazy blobs expand with visible loading,
-        turn collapse still works, and Waiting Room rows/footer hints render without overlap.
+        Done for behavior assertions in the seeded TUI/Web fixture: queued prompt appears once, queued notices are
+        excluded from transcript scrollback, steer/cancel removes stale rows, blobs expose collapsed/expanded state,
+        turn collapse still works in focused tests, and Waiting Room rows/footer hints render without overlap.
+        Remaining work is emulator screenshot coverage as a second layer.
       </li>
       <li>
         <strong>Keep this below clients where possible.</strong>
@@ -561,6 +574,15 @@
         active/queued prompt counts where available, remote/slice recovery next actions, and footer hints.
       </li>
       <li>
+        <strong>Done.</strong> Add live visual-control assertions for collapsed transcript blobs, lazy history placeholders,
+        assistant/user/error expansion, attached-to-Waiting-Room transition, seeded idle/done session rows, and bounded
+        session row summaries.
+      </li>
+      <li>
+        <strong>Done.</strong> Add a <code>request_waiting_room</code> automation action that routes through the same attached
+        Waiting Room transition path as the TUI, with focused handler coverage for attached and detached states.
+      </li>
+      <li>
         <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
         and no pane-button row under agents.
       </li>
@@ -573,7 +595,7 @@
       <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
       <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
-      <li><code>apps/cli/src/cli-automation-handler.test.ts</code>: automation queued-prompt steer/cancel actions route through the selected or addressed strip item.</li>
+      <li><code>apps/cli/src/cli-automation-handler.test.ts</code>: automation queued-prompt steer/cancel actions route through the selected or addressed strip item, and <code>request_waiting_room</code> uses the attached or detached Waiting Room path as appropriate.</li>
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
       <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
       <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
@@ -581,6 +603,9 @@
       <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
       <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
       <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
+      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code> and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, normal message expansion, attached transition, and seeded idle/done Waiting Room rows.</li>
+      <li>Latest live PTY evidence: <code>target/live-tui-web-parity-visual-session/67829-1782836084601/evidence</code>.</li>
+      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 140 tests plus script syntax and drill JSON checks.</li>
     </ul>
 
     <h2>VS Code Terminal Validation</h2>
@@ -621,10 +646,12 @@ pnpm --filter @arroba/cli run tui-web-parity:visual-session
 
 # In a second terminal while the live session is open:
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert --label initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action waiting-room --label waiting-room
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action report</code></pre>
 
     <h3>Manual visual checklist</h3>

@@ -115,6 +115,39 @@ test("automation prompt submit does not relaunch when the session has an active 
   assert.deepEqual(result, { promptText: "hello", submitted: true })
 })
 
+test("automation action handler requests waiting room through attached transition", async () => {
+  let requested = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => true,
+    requestWaitingRoom: async () => {
+      requested = true
+      return true
+    },
+    snapshot: () => ({ requested }),
+  })
+
+  const result = await handler({ action: "request_waiting_room" })
+
+  assert.deepEqual(result, { requested: true })
+})
+
+test("automation action handler activates waiting room when already detached", async () => {
+  let activated = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => false,
+    activateWaitingRoom: async () => {
+      activated = true
+    },
+    snapshot: () => ({ activated }),
+  })
+
+  const result = await handler({ action: "request_waiting_room" })
+
+  assert.deepEqual(result, { activated: true })
+})
+
 test("automation action handler activates a selected unattached agent", async () => {
   let waitingRoomState: WaitingRoomState = waitingRoomFixture()
   let activated = false

@@ -29,7 +29,7 @@ function parseArgs(argv) {
     else if (arg === '--label') options.label = next()
     else if (arg === '--json') options.json = JSON.parse(next())
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
+      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|waiting-room|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -87,7 +87,13 @@ function paneEntries(snapshot, manifest) {
 }
 
 function firstCollapsedBlob(snapshot, manifest) {
-  return paneEntries(snapshot, manifest).find((entry) =>
+  const entries = paneEntries(snapshot, manifest)
+  return entries.find((entry) =>
+    entry
+    && entry.blobCollapsible === true
+    && entry.blobCollapsed === true
+    && !entry.historyBlobId,
+  ) ?? entries.find((entry) =>
     entry
     && entry.blobCollapsible === true
     && (entry.blobCollapsed === true || entry.historyBlobId),
@@ -127,6 +133,8 @@ function summarizeSnapshot(snapshot, manifest) {
   const expandedBlobs = entries.filter((entry) => entry.blobCollapsible === true && entry.blobCollapsed === false)
   const historyPlaceholders = entries.filter((entry) => entry.historyBlobId && !entry.historyBlobLoaded)
   const hiddenTurnEntries = entries.filter((entry) => entry.hidden)
+  const collapsedBlobRoles = collapsedBlobs.map((entry) => entry.role)
+  const expandedBlobRoles = expandedBlobs.map((entry) => entry.role)
   return {
     screen: snapshot.screen,
     statusLine: snapshot.statusLine,
@@ -138,6 +146,8 @@ function summarizeSnapshot(snapshot, manifest) {
     errorEntryCount: errorEntries.length,
     collapsedBlobCount: collapsedBlobs.length,
     expandedBlobCount: expandedBlobs.length,
+    collapsedBlobRoles,
+    expandedBlobRoles,
     historyPlaceholderCount: historyPlaceholders.length,
     hiddenTurnEntryCount: hiddenTurnEntries.length,
     visibleTexts: entries.map((entry) => entry.text).filter(Boolean),
@@ -145,6 +155,75 @@ function summarizeSnapshot(snapshot, manifest) {
     queuedPromptStrips: queuedPromptStrips(snapshot),
     waitingRoomRows: snapshot.waitingRoom?.rows ?? null,
   }
+}
+
+function assertBlobSnapshot(snapshot, manifest, summary) {
+  const entries = paneEntries(snapshot, manifest)
+  const collapsedBlobs = entries.filter((entry) => entry.blobCollapsible === true && entry.blobCollapsed === true)
+  const expandedBlobs = entries.filter((entry) => entry.blobCollapsible === true && entry.blobCollapsed === false)
+  const expandedNormalRoles = entries
+    .filter((entry) => ['assistant', 'user', 'error'].includes(entry.role) && !entry.hidden)
+    .map((entry) => entry.role)
+  for (const role of ['reasoning', 'tool']) {
+    assert(
+      collapsedBlobs.some((entry) => entry.role === role),
+      `expected a collapsed ${role} blob in the live agent pane`,
+    )
+  }
+  assert(
+    collapsedBlobs.some((entry) => entry.role === 'status' || entry.role === 'notice'),
+    'expected a collapsed status/notice runtime blob in the live agent pane',
+  )
+  assert(
+    collapsedBlobs.some((entry) => entry.historyBlobId && entry.historyBlobLoaded === false),
+    'expected at least one collapsed lazy history blob placeholder',
+  )
+  assert(
+    expandedNormalRoles.includes('assistant') && expandedNormalRoles.includes('user') && expandedNormalRoles.includes('error'),
+    `expected assistant/user/error entries to stay expanded, saw ${expandedNormalRoles.join(',')}`,
+  )
+  assert.equal(
+    expandedBlobs.some((entry) => ['assistant', 'user', 'error'].includes(entry.role)),
+    false,
+    'assistant/user/error entries should not be represented as collapsed/expanded blob rows',
+  )
+  assert(
+    summary.collapsedBlobCount >= 3,
+    `expected at least three collapsed blobs, saw ${summary.collapsedBlobCount}`,
+  )
+}
+
+function assertWaitingRoomSnapshot(snapshot, manifest) {
+  assert(snapshot.waitingRoom, 'snapshot should be detached in waiting room')
+  const rows = Array.isArray(snapshot.waitingRoom.rows) ? snapshot.waitingRoom.rows : []
+  assert(rows.length > 0, 'waiting room should render at least one row')
+  const rowIds = rows.map((row) => row.id).filter(Boolean)
+  const idleRowId = `session:${manifest.waitingRoom?.idleSessionId}`
+  const doneRowId = `session:${manifest.waitingRoom?.doneSessionId}`
+  assert(
+    rowIds.includes(idleRowId),
+    `waiting room rows should include seeded idle session ${idleRowId}`,
+  )
+  assert(
+    rowIds.includes(doneRowId),
+    `waiting room rows should include seeded done session ${doneRowId}`,
+  )
+  const rowText = rows.map((row) => `${row.focused ? '> ' : '  '}${row.title ?? ''} ${row.value ?? ''}`.trimEnd())
+  assert(
+    rowText.some((line) => line.includes('wr-idle-parity')),
+    'waiting room rows should include idle session alias text',
+  )
+  assert(
+    rowText.some((line) => line.includes('wr-done-parity') || line.includes('DONE')),
+    'waiting room rows should include done session state',
+  )
+  const sessionRowText = rows
+    .filter((row) => typeof row.id === 'string' && row.id.startsWith('session:'))
+    .map((row) => `${row.title ?? ''} ${row.value ?? ''}`.trimEnd())
+  assert(
+    sessionRowText.every((line) => line.length <= 120),
+    `waiting room session row projection should stay bounded for visual drill summaries: ${sessionRowText.find((line) => line.length > 120)}`,
+  )
 }
 
 function assertParitySnapshot(snapshot, manifest, summary) {
@@ -199,10 +278,10 @@ async function writeReport(manifest) {
     agentId: manifest.agentId,
     requirements: {
       visibleTuiSession: 'validated by VS Code screen captures plus automation snapshots from this session',
-      agentPaneBlobs: 'requires initial, blob-expanded, and turn-toggle snapshots',
+      agentPaneBlobs: 'requires initial, assert-blobs, and blob-expanded snapshots',
       queuedPromptSteeringCancel: 'requires queued-initial, post-keyboard-steer, and post-cancel snapshots',
       footersAndPromptArea: 'requires screen captures and status/footer snapshot summaries',
-      waitingRoom: 'requires waiting-room snapshot and screen capture',
+      waitingRoom: 'requires request-waiting-room snapshot with seeded idle/done rows and bounded session row summaries',
       queuedPromptStripProjection: 'automation snapshots expose queuedPromptStrips with selectedIndex, prompt text, status, attachment count, steer, and cancel actionability',
       queuedPromptActions: 'steer-queued and cancel-queued route through the same queued_prompt_action automation path as the TUI strip action handler',
     },
@@ -224,6 +303,10 @@ async function main() {
       snapshot = await automation.send('snapshot')
     } else if (options.action === 'assert') {
       snapshot = await automation.send('snapshot')
+    } else if (options.action === 'assert-blobs') {
+      snapshot = await automation.send('snapshot')
+    } else if (options.action === 'waiting-room') {
+      snapshot = await automation.send('request_waiting_room')
     } else if (options.action === 'steer-queued' || options.action === 'cancel-queued') {
       snapshot = await automation.send('queued_prompt_action', {
         queuedPromptAction: options.action === 'steer-queued' ? 'steer' : 'cancel',
@@ -238,6 +321,11 @@ async function main() {
         entryId: entry.id,
         collapsed: false,
       })
+      const toggled = paneEntries(snapshot, manifest).find((candidate) => candidate.id === entry.id)
+      assert(
+        toggled?.blobCollapsed === false || toggled?.historyBlobLoading === true || toggled?.historyBlobLoaded === true,
+        'toggled blob should be expanded or show lazy history loading in the resulting snapshot',
+      )
     } else if (options.action === 'toggle-first-turn') {
       const before = await automation.send('snapshot')
       const entry = firstVisibleTurn(before, manifest)
@@ -262,6 +350,10 @@ async function main() {
     const summary = summarizeSnapshot(snapshot, manifest)
     if (options.action === 'assert') {
       assertParitySnapshot(snapshot, manifest, summary)
+    } else if (options.action === 'assert-blobs') {
+      assertBlobSnapshot(snapshot, manifest, summary)
+    } else if (options.action === 'waiting-room') {
+      assertWaitingRoomSnapshot(snapshot, manifest)
     }
     const evidence = await writeEvidence(manifest, label, snapshot, summary)
     console.log(JSON.stringify({ label, evidence, summary }, null, 2))

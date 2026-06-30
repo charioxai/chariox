@@ -205,6 +205,8 @@ async function seedVisualSession(client, requests, workspace) {
   await submitPrompt(client, requests, session.id, attachment.id, agent.id, 'Active latest user prompt should remain expanded while running.', [])
   await sleep(40)
   await appendOutput(client, requests, session.id, attachment.id, seeded.providerRun.id, 'provider_reasoning', 'Active latest reasoning blob should be collapsed but the active turn should remain expanded.', 'active-reasoning')
+  await appendOutput(client, requests, session.id, attachment.id, seeded.providerRun.id, 'provider_tool', 'Active latest tool blob should be collapsed and visually distinct.', 'active-tool')
+  await appendOutput(client, requests, session.id, attachment.id, seeded.providerRun.id, 'provider_status', 'Active latest status blob should be collapsed and visually distinct.', 'active-status')
   await appendOutput(client, requests, session.id, attachment.id, seeded.providerRun.id, 'provider_output', 'Active latest assistant message should be visible and readable.', 'active-assistant')
 
   const attachmentPart = {
@@ -421,7 +423,7 @@ async function main() {
       ...visual,
       waitingRoom,
       command: {
-        control: `pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --manifest ${options.manifestPath}`,
+        control: `pnpm --filter @arroba/cli run tui-web-parity:visual-control --manifest ${options.manifestPath}`,
       },
     }
     await writeManifest(options.manifestPath, manifest)
