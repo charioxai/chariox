@@ -61,6 +61,8 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onWorkspace: (command) => calls.push(`workspace:${command.args.join(" ")}`),
     onWorktree: (command) => calls.push(`worktree:${command.args.join(" ")}`),
     onWorkflow: (command) => calls.push(`workflow:${command.args.join(" ")}`),
+    onLoop: (command) => calls.push(`loop:${command.prompt}`),
+    onGoal: (command) => calls.push(`goal:${command.prompt}`),
     onMcp: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     onSkill: (command) => calls.push(`skill:${command.args.join(" ")}`),
     onEnv: (command) => calls.push(`env:${command.args.join(" ")}`),

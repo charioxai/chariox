@@ -148,6 +148,8 @@ function createHarness(options: {
     handleWorkspaceCommand: (command) => calls.push(`workspace:${command.args.join(" ")}`),
     handleWorktreeCommand: (command) => calls.push(`worktree:${command.args.join(" ")}`),
     handleWorkflowCommand: (command) => calls.push(`workflow:${command.args.join(" ")}`),
+    handleLoopCommand: (command) => calls.push(`loop:${command.prompt}`),
+    handleGoalCommand: (command) => calls.push(`goal:${command.prompt}`),
     handleMcpCommand: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     handleSkillCommand: (command) => calls.push(`skill:${command.args.join(" ")}`),
     handleEnvCommand: (command) => calls.push(`env:${command.args.join(" ")}`),

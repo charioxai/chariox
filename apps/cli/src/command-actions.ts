@@ -114,6 +114,12 @@ type CommandActionDeps =
   currentVariantId: () => string
   currentProviderId: () => string
   focusedAgentId: () => string | null
+  runWorkflowRegistryEntry?: (
+    name: string,
+    endpointRef: string,
+    prompt: string,
+    queueRef?: string | null,
+  ) => Promise<{ entry: { name: string }; result: { apply?: { apply?: { workflow_id?: string } }; invocation?: { kind?: string } }; session: RuntimeSession }>
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
@@ -312,6 +318,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleWorkflowSlashCommand(workflowCommandDeps(), command)
   }
 
+  const handleLoopCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "loop" }>,
+  ): Promise<void> => {
+    await handleRootWorkflowShortcut(deps, "loop-until-done", "/loop", command.prompt)
+  }
+
+  const handleGoalCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "goal" }>,
+  ): Promise<void> => {
+    await handleRootWorkflowShortcut(deps, "planner-worker-reviewer", "/goal", command.prompt)
+  }
+
   return {
     handleSessionCommand,
     handleProviderCommand,
@@ -332,6 +350,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorkspaceCommand,
     handleWorktreeCommand,
     handleWorkflowCommand,
+    handleLoopCommand,
+    handleGoalCommand,
     handleMcpCommand,
     handleSkillCommand,
     handleEnvCommand,
@@ -340,4 +360,35 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleConnectorCommand,
     handleExtensionCommand,
   }
+}
+
+async function handleRootWorkflowShortcut(
+  deps: CommandActionDeps,
+  templateName: string,
+  commandName: string,
+  prompt: string,
+): Promise<void> {
+  if (!prompt.trim()) {
+    deps.flashFooter(`usage: ${commandName} <prompt>`, "error")
+    return
+  }
+  if (!deps.isAttached()) {
+    deps.flashFooter("must be attached to a session to run workflow shortcuts", "error")
+    return
+  }
+  if (!deps.runWorkflowRegistryEntry) {
+    deps.flashFooter(`${commandName} is unavailable in this daemon`, "error")
+    return
+  }
+  const payload = await deps.runWorkflowRegistryEntry(templateName, "entry", prompt.trim(), null)
+  deps.applySessionState(payload.session)
+  const workflowId = payload.result.apply?.apply?.workflow_id ?? null
+  if (workflowId) {
+    deps.selectWorkflowCanvas(workflowId)
+    deps.showWorkflowScreen()
+  }
+  deps.flashFooter(
+    `ran workflow ${payload.entry.name}${workflowId ? ` as ${workflowId}` : ""} [${payload.result.invocation?.kind ?? "invoked"}]`,
+    "info",
+  )
 }

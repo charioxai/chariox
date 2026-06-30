@@ -30,6 +30,26 @@ test("parseSlashCommand parses workflow commands and args", () => {
     raw: "/workflow new review-flow",
     args: ["new", "review-flow"],
   })
+  assert.deepEqual(parseSlashCommand("/loop Build a Kanban app"), {
+    kind: "loop",
+    raw: "/loop Build a Kanban app",
+    prompt: "Build a Kanban app",
+  })
+  assert.deepEqual(parseSlashCommand("/goal Build a Kanban app"), {
+    kind: "goal",
+    raw: "/goal Build a Kanban app",
+    prompt: "Build a Kanban app",
+  })
+  assert.deepEqual(parseSlashCommand("/loop"), {
+    kind: "loop",
+    raw: "/loop",
+    prompt: "",
+  })
+  assert.deepEqual(parseSlashCommand("/goal"), {
+    kind: "goal",
+    raw: "/goal",
+    prompt: "",
+  })
 })
 
 test("parseSlashCommand parses workspace link commands and args", () => {
@@ -91,6 +111,8 @@ test("shouldClearCommandCenterForSlashCommand only clears selector-backed comman
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/undo")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/loop Build a Kanban app")!), true)
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/goal Build a Kanban app")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/stop")!), false)
 })
@@ -120,6 +142,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onWorkspace: () => calls.push("workspace"),
     onWorktree: () => calls.push("worktree"),
     onWorkflow: () => calls.push("workflow"),
+    onLoop: () => calls.push("loop"),
+    onGoal: () => calls.push("goal"),
     onMcp: () => calls.push("mcp"),
     onSkill: () => calls.push("skill"),
     onEnv: () => calls.push("env"),
@@ -161,6 +185,8 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onWorkspace: () => undefined,
     onWorktree: () => undefined,
     onWorkflow: () => undefined,
+    onLoop: () => undefined,
+    onGoal: () => undefined,
     onMcp: () => undefined,
     onSkill: () => undefined,
     onEnv: () => undefined,

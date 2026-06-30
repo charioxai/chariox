@@ -244,6 +244,7 @@ export type CliCommandActionCompositionDeps = {
   setWorkflowNodeIntermediateOutputSchema: AnyFn
   setWorkflowNodeMaxTurns: AnyFn
   invokeWorkflowEndpoint: AnyFn
+  runWorkflowRegistryEntry: AnyFn
   createWorkflowWatchdog: AnyFn
   listWorkflowWatchdogs: AnyFn
   setWorkflowWatchdogEnabled: AnyFn
@@ -336,6 +337,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
+    runWorkflowRegistryEntry,
     createWorkflowWatchdog,
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
@@ -772,6 +774,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
+    runWorkflowRegistryEntry,
     createWorkflowWatchdog,
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,

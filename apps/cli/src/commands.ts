@@ -29,6 +29,8 @@ export type ParsedSlashCommand =
   | { kind: "workspace"; raw: string; args: string[] }
   | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
+  | { kind: "loop"; raw: string; prompt: string }
+  | { kind: "goal"; raw: string; prompt: string }
   | { kind: "mcp"; raw: string; args: string[] }
   | { kind: "skill"; raw: string; args: string[] }
   | { kind: "env"; raw: string; args: string[] }
@@ -60,6 +62,8 @@ export type SlashCommandHandlers = {
   onWorkspace: (command: Extract<ParsedSlashCommand, { kind: "workspace" }>) => Promise<unknown> | unknown
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
+  onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
+  onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
   onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
   onEnv: (command: Extract<ParsedSlashCommand, { kind: "env" }>) => Promise<unknown> | unknown
@@ -208,6 +212,20 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed === "/loop" || trimmed.startsWith("/loop ")) {
+    return {
+      kind: "loop",
+      raw: trimmed,
+      prompt: trimmed.replace(/^\/loop\s*/, "").trim(),
+    }
+  }
+  if (trimmed === "/goal" || trimmed.startsWith("/goal ")) {
+    return {
+      kind: "goal",
+      raw: trimmed,
+      prompt: trimmed.replace(/^\/goal\s*/, "").trim(),
+    }
+  }
   if (trimmed.startsWith("/workflow")) {
     return {
       kind: "workflow",
@@ -343,6 +361,12 @@ export async function executeSlashCommand(
     case "workflow":
       await handlers.onWorkflow(command)
       break
+    case "loop":
+      await handlers.onLoop(command)
+      break
+    case "goal":
+      await handlers.onGoal(command)
+      break
     case "mcp":
       await handlers.onMcp(command)
       break
@@ -387,6 +411,8 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "workspace":
     case "worktree":
     case "workflow":
+    case "loop":
+    case "goal":
     case "mcp":
     case "skill":
     case "env":

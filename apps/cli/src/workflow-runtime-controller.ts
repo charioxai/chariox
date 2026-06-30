@@ -18,6 +18,7 @@ import {
   removeQueuedWorkflowPromptRequest,
   removeWorkflowPromptQueueRequest,
   resumeWorkflowRunRequest,
+  runWorkflowRegistryEntryRequest,
   updateQueuedWorkflowPromptRequest,
   updateWorkflowPromptQueueRequest,
 } from "./ipc-requests.js"
@@ -55,6 +56,27 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
       endpoint: WorkflowEndpointDefinition
       session: RuntimeSession
     }>(response, "WorkflowPromptEnqueued")
+    deps.applyWorkflowSessionRefresh(payload.session)
+    return payload
+  }
+
+  const runWorkflowRegistryEntry = async (
+    name: string,
+    endpointRef: string,
+    prompt: string,
+    queueRef?: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      runWorkflowRegistryEntryRequest(deps.sessionId(), name, prompt, {
+        endpoint: endpointRef,
+        ...(queueRef ? { queueRef } : {}),
+      }),
+    )
+    const payload = expectVariant<{
+      entry: { name: string }
+      result: { apply?: { apply?: { workflow_id?: string } }; invocation?: { kind?: string } }
+      session: RuntimeSession
+    }>(response, "WorkflowRegistryEntryRun")
     deps.applyWorkflowSessionRefresh(payload.session)
     return payload
   }
@@ -185,6 +207,7 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
 
   return {
     invokeWorkflowEndpoint,
+    runWorkflowRegistryEntry,
     listWorkflowPromptQueues,
     createWorkflowPromptQueue,
     updateWorkflowPromptQueue,

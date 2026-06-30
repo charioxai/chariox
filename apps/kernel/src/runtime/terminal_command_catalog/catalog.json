@@ -14,6 +14,32 @@
     ]
   },
   {
+    "id": "loop",
+    "label": "/loop",
+    "description": "Run the iterate-until-done workflow immediately with a prompt",
+    "value": "/loop ",
+    "searchAliases": [
+      "workflow",
+      "iterate until done",
+      "loop until done",
+      "auto run",
+      "agent workflow"
+    ]
+  },
+  {
+    "id": "goal",
+    "label": "/goal",
+    "description": "Run the planner-worker-reviewer workflow immediately with a prompt",
+    "value": "/goal ",
+    "searchAliases": [
+      "workflow",
+      "planner worker reviewer",
+      "implementation goal",
+      "review loop",
+      "auto run"
+    ]
+  },
+  {
     "id": "session",
     "label": "/session",
     "description": "Create, attach, list, or delete sessions",

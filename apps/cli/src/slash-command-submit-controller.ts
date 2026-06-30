@@ -41,6 +41,8 @@ export type SlashCommandSubmitControllerDeps = {
   handleWorkspaceCommand: (command: SlashCommand<"workspace">) => Promise<unknown> | unknown
   handleWorktreeCommand: (command: SlashCommand<"worktree">) => Promise<unknown> | unknown
   handleWorkflowCommand: (command: SlashCommand<"workflow">) => Promise<unknown> | unknown
+  handleLoopCommand: (command: SlashCommand<"loop">) => Promise<unknown> | unknown
+  handleGoalCommand: (command: SlashCommand<"goal">) => Promise<unknown> | unknown
   handleMcpCommand: (command: SlashCommand<"mcp">) => Promise<unknown> | unknown
   handleSkillCommand: (command: SlashCommand<"skill">) => Promise<unknown> | unknown
   handleEnvCommand: (command: SlashCommand<"env">) => Promise<unknown> | unknown
@@ -136,6 +138,8 @@ export function createSlashCommandSubmitController(
         onWorkspace: (command) => runWithFooterError(deps.handleWorkspaceCommand, command),
         onWorktree: (command) => runWithFooterError(deps.handleWorktreeCommand, command),
         onWorkflow: (command) => runWithFooterError(deps.handleWorkflowCommand, command),
+        onLoop: (command) => runWithFooterError(deps.handleLoopCommand, command),
+        onGoal: (command) => runWithFooterError(deps.handleGoalCommand, command),
         onMcp: (command) => runWithFooterError(deps.handleMcpCommand, command),
         onSkill: (command) => runWithFooterError(deps.handleSkillCommand, command),
         onEnv: (command) => runWithFooterError(deps.handleEnvCommand, command),

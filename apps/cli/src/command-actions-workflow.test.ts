@@ -8,6 +8,66 @@ import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentLi
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
+test("root workflow shortcuts run registered templates", async () => {
+  const calls: string[] = []
+  const flashes: string[] = []
+  const selectedWorkflowIds: (string | null)[] = []
+  const screenOpens: string[] = []
+  const session = makeSession()
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string, tone: string) => flashes.push(`${message}:${tone}`),
+    selectWorkflowCanvas: (workflowId: string | null) => selectedWorkflowIds.push(workflowId),
+    showWorkflowScreen: () => screenOpens.push("workflow"),
+    runWorkflowRegistryEntry: async (name: string, endpointRef: string, prompt: string, queueRef: string | null) => {
+      calls.push(`${name}:${endpointRef}:${prompt}:${queueRef ?? "default"}`)
+      return {
+        entry: { name },
+        result: { apply: { apply: { workflow_id: `workflow-${name}` } }, invocation: { kind: "run_started" } },
+        session,
+      }
+    },
+  }))
+
+  await handlers.handleLoopCommand({ kind: "loop", raw: "/loop Build a Kanban app", prompt: "Build a Kanban app" })
+  await handlers.handleGoalCommand({ kind: "goal", raw: "/goal Build a Kanban app", prompt: "Build a Kanban app" })
+
+  assert.deepEqual(calls, [
+    "loop-until-done:entry:Build a Kanban app:default",
+    "planner-worker-reviewer:entry:Build a Kanban app:default",
+  ])
+  assert.deepEqual(selectedWorkflowIds, ["workflow-loop-until-done", "workflow-planner-worker-reviewer"])
+  assert.deepEqual(screenOpens, ["workflow", "workflow"])
+  assert.deepEqual(flashes, [
+    "ran workflow loop-until-done as workflow-loop-until-done [run_started]:info",
+    "ran workflow planner-worker-reviewer as workflow-planner-worker-reviewer [run_started]:info",
+  ])
+})
+
+test("root workflow shortcuts reject empty prompts", async () => {
+  const calls: string[] = []
+  const flashes: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string, tone: string) => flashes.push(`${message}:${tone}`),
+    runWorkflowRegistryEntry: async (name: string) => {
+      calls.push(name)
+      return {
+        entry: { name },
+        result: { apply: { apply: { workflow_id: "workflow-1" } }, invocation: { kind: "run_started" } },
+        session: makeSession(),
+      }
+    },
+  }))
+
+  await handlers.handleLoopCommand({ kind: "loop", raw: "/loop", prompt: "" })
+  await handlers.handleGoalCommand({ kind: "goal", raw: "/goal", prompt: "" })
+
+  assert.deepEqual(calls, [])
+  assert.deepEqual(flashes, [
+    "usage: /loop <prompt>:error",
+    "usage: /goal <prompt>:error",
+  ])
+})
+
 test("workflow add node all adds only agents missing from the selected workflow", async () => {
   const existingAgent = makeAgent({
     id: "agent-existing",
