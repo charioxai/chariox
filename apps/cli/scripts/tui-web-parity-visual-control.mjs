@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 import net from 'node:net'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+const defaultLatestManifest = path.join(repoRoot, 'target', 'live-tui-web-parity-visual-session', 'latest.json')
 
 function parseArgs(argv) {
   const options = {
-    manifestPath: path.resolve('target/live-tui-web-parity-visual-session/latest.json'),
+    manifestPath: defaultLatestManifest,
     action: 'snapshot',
     label: null,
     json: null,

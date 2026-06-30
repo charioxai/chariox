@@ -186,18 +186,19 @@
 
     <h2>Live PTY Drill Update - 2026-06-30</h2>
     <p>
-      A live visual PTY drill was run against the TUI using the seeded web-parity visual session. The drill confirmed
-      that the kernel queue APIs work, but the TUI presentation and interaction layer still falls short of the Web
-      Terminal.
+      Live visual PTY drills were run against the TUI using the seeded web-parity visual session. The first pass exposed
+      duplicate queue rendering, unreliable queue action projection, narrow-row clipping, and sparse collapsed blob rows.
+      Follow-up slices closed the queue rendering and actionability gaps and added bounded footer/Waiting Room rows.
     </p>
     <ul>
       <li><code>pnpm --filter @arroba/cli run build</code> passed before the drill.</li>
       <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
-      <li>Evidence directory: <code>target/live-tui-web-parity-visual-session/35114-1782827488586/evidence</code>.</li>
-      <li>The live PTY wrapper was exited cleanly after the run.</li>
+      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/58494-1782835154733/evidence</code>.</li>
+      <li>Latest live assertions: <code>queued-strip-wired</code>, <code>queued-strip-steer</code>, and <code>queued-strip-cancel</code> passed through the visual-control automation socket.</li>
+      <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
 
-    <h3>Observed Gaps</h3>
+    <h3>Observed Gaps From Initial Drill</h3>
     <table>
       <thead>
         <tr>
@@ -210,27 +211,27 @@
         <tr>
           <td>Queued prompt rendering</td>
           <td>Queued prompts rendered both as freeform transcript rows and in the bottom queue strip.</td>
-          <td>The TUI has duplicate queue surfaces. Web keeps queued prompt notices out of scrollback and uses one dedicated strip.</td>
+          <td><span class="status ok">Closed</span>: live queued prompts now render through the strip only, matching Web's single queue surface.</td>
         </tr>
         <tr>
           <td>Queue lifecycle</td>
           <td>After steering/canceling, old queued prompt text stayed visible in transcript along with permanent status notices.</td>
-          <td>Queue state changes leave scrollback residue instead of producing a clean steering/cancel lifecycle.</td>
+          <td><span class="status ok">Closed</span>: successful lifecycle notices are filtered and the strip shows transient steering/cancelling states.</td>
         </tr>
         <tr>
           <td>Queue controls</td>
           <td>Direct kernel steer/cancel calls worked, but PTY <code>Alt+S</code>/<code>Alt+C</code> did not update the queue during the drill.</td>
-          <td>The issue is in TUI input/projection rather than the kernel request path. The current shortcut path is not reliable enough for PTY use.</td>
+          <td><span class="status gap">Partial</span>: visual-control now invokes the same strip handler; physical PTY shortcut delivery still needs emulator coverage.</td>
         </tr>
         <tr>
           <td>Multiple queued prompts</td>
           <td>The keyboard handler targets the first queued strip item only.</td>
-          <td>Users cannot reliably select and act on later queued prompts from the keyboard.</td>
+          <td><span class="status ok">Closed</span>: the strip tracks selected queued prompt IDs and keyboard/automation actions target the selected or addressed prompt.</td>
         </tr>
         <tr>
           <td>Queue strip layout</td>
           <td>Action labels clipped and overlapped in narrow PTY output, for example <code>Alt+S ste</code> colliding with <code>Alt+C canc</code>.</td>
-          <td>The strip needs stable columns, truncation, and compact focused controls.</td>
+          <td><span class="status ok">Closed</span>: focused rows use compact <code>[S]</code>/<code>[C]</code> controls and the title carries the action legend.</td>
         </tr>
         <tr>
           <td>Blob rendering</td>
@@ -245,7 +246,7 @@
         <tr>
           <td>Waiting Room</td>
           <td><code>/waiting</code> transitioned successfully and rows populated, but footer text showed the same clipping risk as the queue strip.</td>
-          <td>Waiting Room semantics are present; compact footer/action rendering still needs polish.</td>
+          <td><span class="status gap">Partial</span>: row and footer width assertions are present; live visual assertions still need 80x24 and wider capture coverage.</td>
         </tr>
       </tbody>
     </table>
@@ -350,6 +351,11 @@
           <td>Queued prompt action automation</td>
           <td>The automation server can now invoke the selected or addressed queued-prompt strip item through the same steer/cancel handler as the TUI strip, and the visual-control drill exposes <code>steer-queued</code>/<code>cancel-queued</code> evidence commands.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Live queue strip validation</td>
+          <td>The live PTY drill now asserts that rendered queue strips appear in automation snapshots, that queued prompts are not duplicated as transcript rows, and that steer/cancel actions update strip-local status.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -427,14 +433,14 @@
         <tr>
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
-          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; automation snapshots expose strip rows and selection.</td>
+          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; automation snapshots expose strip rows and selection; the live visual-control drill asserts the projection.</td>
           <td><span class="status gap">Gap</span>: PTY shortcut delivery still needs final live-drill hardening across real terminal emulators.</td>
         </tr>
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
-          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, and pending steer/cancel actions show transient strip status.</td>
-          <td><span class="status gap">Gap</span>: visual-control can now trigger queued steer/cancel through the strip handler; final PTY drill still needs saved footer/status snapshots after real terminal shortcut delivery.</td>
+          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, pending steer/cancel actions show transient strip status, and visual-control can trigger the same strip handler live.</td>
+          <td><span class="status gap">Gap</span>: final PTY drill still needs saved footer/status snapshots after physical terminal shortcut delivery.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>
@@ -614,12 +620,12 @@ pnpm run validation:suite</code></pre>
 pnpm --filter @arroba/cli run tui-web-parity:visual-session
 
 # In a second terminal while the live session is open:
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action assert --label initial
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action steer-queued --label post-steer
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action cancel-queued --label post-cancel
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-blob --label blob-expanded
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-turn --label turn-toggled
-pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action report</code></pre>
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert --label initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action report</code></pre>
 
     <h3>Manual visual checklist</h3>
     <ul>
