@@ -50,6 +50,30 @@ test("cli stdin key controller routes exit and focused interaction shortcuts bef
   assert.deepEqual(focusedHarness.calls(), ["parse:x:true", "session-browser:return", "focused:return"])
 })
 
+test("cli stdin key controller delegates queued prompt shortcuts before command center prompt input", () => {
+  let queuedEvent: CliStdinKeyEvent | null = null
+  const harness = createHarness({
+    queuedPromptHandled: true,
+    promptFocused: true,
+    commandCenterOpen: true,
+    parsedEvent: keyEvent("s", { meta: true }),
+    onQueuedPromptKey: (event) => {
+      queuedEvent = event
+      return true
+    },
+  })
+
+  assert.equal(harness.controller.handleData("x"), true)
+  assert.equal(queuedEvent?.alt, true)
+  assert.equal(queuedEvent?.meta, false)
+  assert.deepEqual(harness.calls(), [
+    "parse:x:true",
+    "session-browser:s",
+    "focused:s",
+    "queued-prompt:s",
+  ])
+})
+
 test("cli stdin key controller lets command center own prompt input", () => {
   const harness = createHarness({
     promptFocused: true,
@@ -109,6 +133,7 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
     "parse:x:true",
     "session-browser:c",
     "focused:c",
+    "queued-prompt:c",
     "copy",
   ])
 
@@ -211,6 +236,8 @@ function createHarness(options: {
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionHandled?: boolean
+  queuedPromptHandled?: boolean
+  onQueuedPromptKey?: (event: CliStdinKeyEvent) => boolean
   promptFocused?: boolean
   commandCenterOpen?: boolean
   commandCenterQuery?: string
@@ -248,6 +275,13 @@ function createHarness(options: {
     handleFocusedInteractionKey: (event) => {
       calls.push(`focused:${event.name}`)
       return options.focusedInteractionHandled ?? false
+    },
+    handleQueuedPromptKey: (event) => {
+      calls.push(`queued-prompt:${event.name}`)
+      if (options.onQueuedPromptKey) {
+        return options.onQueuedPromptKey(event)
+      }
+      return options.queuedPromptHandled ?? false
     },
     promptFocused: () => options.promptFocused ?? false,
     commandCenterOpen: () => options.commandCenterOpen ?? false,
@@ -306,6 +340,7 @@ function keyEvent(name: string, options: {
   eventType?: string
   ctrl?: boolean
   meta?: boolean
+  alt?: boolean
   shift?: boolean
 } = {}): CliStdinKeyEvent {
   const event: CliStdinKeyEvent = { name }
@@ -317,6 +352,9 @@ function keyEvent(name: string, options: {
   }
   if (options.meta !== undefined) {
     event.meta = options.meta
+  }
+  if (options.alt !== undefined) {
+    event.alt = options.alt
   }
   if (options.shift !== undefined) {
     event.shift = options.shift

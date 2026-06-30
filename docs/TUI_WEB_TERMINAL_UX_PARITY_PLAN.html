@@ -223,7 +223,7 @@
         <tr>
           <td>Queue controls</td>
           <td>Direct kernel steer/cancel calls worked, but PTY <code>Alt+S</code>/<code>Alt+C</code> did not update the queue during the drill.</td>
-          <td><span class="status gap">Partial</span>: visual-control now invokes the same strip handler; physical PTY shortcut delivery still needs emulator coverage.</td>
+          <td><span class="status ok">Mostly closed</span>: visual-control invokes the same strip handler, and raw stdin escape-prefix keys now normalize into queued-prompt shortcuts; remaining coverage is terminal-emulator screenshot capture.</td>
         </tr>
         <tr>
           <td>Multiple queued prompts</td>
@@ -368,6 +368,11 @@
           <td>Waiting Room transition wiring</td>
           <td>The app root now passes slice state into the primary transcript composition so a detached Waiting Room redraw can render slice and recent-session rows during live transition drills.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Raw PTY queue shortcuts</td>
+          <td>Raw stdin key handling now routes queued-prompt shortcuts before prompt-owned input and normalizes terminal escape-prefix keys such as <code>Esc+s</code> into the existing <code>Alt+S</code> strip action path.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -445,14 +450,14 @@
         <tr>
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
-          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; automation snapshots expose strip rows and selection; the live visual-control drill asserts the projection.</td>
-          <td><span class="status gap">Gap</span>: PTY shortcut delivery still needs final live-drill hardening across real terminal emulators.</td>
+          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; raw stdin escape-prefix shortcuts route to the same strip handler; automation snapshots expose strip rows and selection; the live visual-control drill asserts the projection.</td>
+          <td><span class="status gap">Gap</span>: terminal-emulator screenshot evidence still needs to be saved across narrow and wide captures.</td>
         </tr>
         <tr>
           <td>Steering echo</td>
           <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
-          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, pending steer/cancel actions show transient strip status, and visual-control can trigger the same strip handler live.</td>
-          <td><span class="status gap">Gap</span>: final PTY drill still needs saved footer/status snapshots after physical terminal shortcut delivery.</td>
+          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, pending steer/cancel actions show transient strip status, visual-control can trigger the same strip handler live, and raw stdin shortcut routing reaches that handler.</td>
+          <td><span class="status gap">Gap</span>: final PTY drill still needs saved footer/status screenshots after terminal shortcut delivery.</td>
         </tr>
         <tr>
           <td>Agent pane footer</td>
@@ -497,9 +502,8 @@
       </li>
       <li>
         <strong>Fix queue keyboard control.</strong>
-        Add a focused queue selection/index so keyboard actions can target any queued prompt, not only the first item.
-        Route queue actions through deterministic TUI input handling and automation controls, with PTY shortcut behavior
-        covered by a live drill.
+        Done for focused queue selection, deterministic TUI input handling, automation controls, and raw stdin
+        escape-prefix shortcut routing. Remaining work is saved emulator screenshot evidence after shortcut delivery.
       </li>
       <li>
         <strong>Rebuild queue strip layout.</strong>
@@ -583,6 +587,11 @@
         Waiting Room transition path as the TUI, with focused handler coverage for attached and detached states.
       </li>
       <li>
+        <strong>Done.</strong> Route raw stdin queued-prompt shortcuts through the same strip handler as prompt textarea
+        shortcuts, including terminal escape-prefix normalization for <code>Esc+s</code>, <code>Esc+c</code>,
+        <code>Esc+j</code>, and <code>Esc+k</code>.
+      </li>
+      <li>
         <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
         and no pane-button row under agents.
       </li>
@@ -596,6 +605,7 @@
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
       <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
       <li><code>apps/cli/src/cli-automation-handler.test.ts</code>: automation queued-prompt steer/cancel actions route through the selected or addressed strip item, and <code>request_waiting_room</code> uses the attached or detached Waiting Room path as appropriate.</li>
+      <li><code>apps/cli/src/cli-stdin-key-controller.test.ts</code> and <code>prompt-keydown-controller.test.ts</code>: raw stdin and prompt textarea shortcuts route queued-prompt actions before prompt-owned handlers, with escape-prefix stdin keys normalized into the existing Alt shortcut shape.</li>
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
       <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
       <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>

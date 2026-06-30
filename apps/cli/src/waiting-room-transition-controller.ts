@@ -16,7 +16,7 @@ type WaitingRoomTransitionControllerOptions = {
   shouldEndSessionOnExit: (createdSession: boolean, connectedClientCount: number) => boolean
   archiveSession: (sessionId: string) => Promise<void>
   detachAttachment: (attachmentId: string) => Promise<void>
-  transitionToWaitingRoom: (message: string) => void
+  transitionToWaitingRoom: (message: string) => Promise<void> | void
   onWaitingRoomRequested: (createdSession: boolean) => void
   onPromptDraftFlushFailed: (error: unknown) => void
   onPromptDraftPersistFailed: (sessionId: string, error: unknown) => void
@@ -60,7 +60,7 @@ export function createWaitingRoomTransitionController(
         options.onCleanupFailed(error)
       }
 
-      options.transitionToWaitingRoom("Returned to waiting room.")
+      await options.transitionToWaitingRoom("Returned to waiting room.")
       options.onTransitionCompleted()
       return true
     },

@@ -17,6 +17,7 @@ export type CliStdinKeyControllerDeps = {
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
   requestExit: () => void
   handleFocusedInteractionKey: (event: CliStdinKeyEvent) => boolean
+  handleQueuedPromptKey: (event: CliStdinKeyEvent) => boolean
   promptFocused: () => boolean
   commandCenterOpen: () => boolean
   commandCenterQuery: () => string
@@ -63,6 +64,10 @@ export function createCliStdinKeyController(
         return true
       }
       if (deps.handleFocusedInteractionKey(event)) {
+        return true
+      }
+      const queuedPromptKeyEvent = queuedPromptKeyEventFromStdin(event)
+      if (queuedPromptKeyEvent && deps.handleQueuedPromptKey(queuedPromptKeyEvent)) {
         return true
       }
       if (deps.promptFocused() && deps.commandCenterOpen()) {
@@ -135,5 +140,35 @@ export function createCliStdinKeyController(
       }
       return false
     },
+  }
+}
+
+function queuedPromptKeyEventFromStdin(event: CliStdinKeyEvent): CliStdinKeyEvent | null {
+  if (
+    event.ctrl
+    || event.shift
+  ) {
+    return null
+  }
+  if (
+    event.name !== "s"
+    && event.name !== "c"
+    && event.name !== "j"
+    && event.name !== "k"
+    && event.name !== "up"
+    && event.name !== "down"
+  ) {
+    return null
+  }
+  if (event.alt) {
+    return event
+  }
+  if (!event.meta) {
+    return null
+  }
+  return {
+    ...event,
+    alt: true,
+    meta: false,
   }
 }

@@ -426,7 +426,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     },
     detachAttachment: (attachmentId) => detachSessionAttachment(deps.client, attachmentId),
     transitionToWaitingRoom: (message) => {
-      void transitionToNoSession(message)
+      return transitionToNoSession(message)
     },
     onWaitingRoomRequested: (createdSession) => {
       deps.appLogger?.info("requested waiting room", {

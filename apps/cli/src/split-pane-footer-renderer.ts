@@ -29,7 +29,7 @@ export type SplitPaneFooterRenderState = {
 }
 
 type SplitPaneFooterSlotState = {
-  parts: SplitPaneFooterTextGroup
+  parts: Partial<SplitPaneFooterTextGroup>
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
 }
@@ -131,7 +131,7 @@ function ensureFooterRenderables(
   state: SplitPaneFooterSlotState,
   badgeWidth: number,
 ): void {
-  if (!footerBox || state.parts.agentText) {
+  if (!footerBox || hasFooterTextGroup(state.parts)) {
     return
   }
   footerBox.flexDirection = "column"
@@ -201,7 +201,10 @@ function clearFooter(
   footerBox?.requestRender()
 }
 
-function clearFooterParts(parts: SplitPaneFooterTextGroup): void {
+function clearFooterParts(parts: Partial<SplitPaneFooterTextGroup>): void {
+  if (!hasFooterTextGroup(parts)) {
+    return
+  }
   for (const text of parts.texts) {
     setTextRenderable(text, "", theme.textMuted)
   }
@@ -217,6 +220,9 @@ function renderFooter(
   state: SplitPaneFooterSlotState | undefined,
 ): void {
   if (!state) {
+    return
+  }
+  if (!footerBox || !hasFooterTextGroup(state.parts)) {
     return
   }
   const selectionOverride = agent?.id === options.focusedAgentId
@@ -280,6 +286,10 @@ function renderFooter(
     setTextRenderable(state.parts.dividers[index], nextParts[index + 1] ? " • " : "", theme.textMuted)
   }
   footerBox?.requestRender()
+}
+
+function hasFooterTextGroup(parts: Partial<SplitPaneFooterTextGroup>): parts is SplitPaneFooterTextGroup {
+  return Array.isArray(parts.texts) && Array.isArray(parts.dividers)
 }
 
 function renderTaskParts(

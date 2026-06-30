@@ -69,6 +69,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   terminalsState: AnyFn
   externalProviderSessionsState: AnyFn
   externalProviderSessionsPageState: AnyFn
+  slicesState: AnyFn
   waitingRoomTargets: AnyFn
   themeRegistryState: AnyFn
   transcriptScrollboxRefController: {
@@ -165,6 +166,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         externalProviderSessions: deps.externalProviderSessionsState(),
         externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
         externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+        slices: deps.slicesState(),
       }, deps.waitingRoomTargets(), deps.themeRegistryState()),
     buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       deps.renderer,
