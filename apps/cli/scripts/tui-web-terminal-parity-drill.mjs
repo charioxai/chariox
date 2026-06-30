@@ -17,6 +17,7 @@ const FOCUSED_TESTS = [
   "dist/prompt-chrome-projection-controller.test.js",
   "dist/waiting-room-session-rows.test.js",
   "dist/waiting-room-rows.test.js",
+  "dist/waiting-room-menu-row.test.js",
   "dist/history-loading-render-controller.test.js",
   "dist/cli-loading-state-controller.test.js",
   "dist/transcript-history-autoload-controller.test.js",

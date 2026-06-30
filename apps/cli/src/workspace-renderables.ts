@@ -28,9 +28,9 @@ import type { WorkflowComponentSelection } from "./workflow-component-selection.
 import {
   arrobaArtFrame,
   waitingRoomMenuMinWidth,
-  waitingRoomMenuTrailingPadding,
   waitingRoomRows,
 } from "./waiting-room.js"
+import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
@@ -211,6 +211,7 @@ export function buildNoSessionRenderable(
   remote: WaitingRoomRemoteState = {},
   targets?: WaitingRoomTargetState,
   themeRegistry?: ThemeRegistry,
+  maxMenuWidth = terminalColumnWidth(),
 ) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
@@ -223,15 +224,7 @@ export function buildNoSessionRenderable(
   const rows = waitingRoomRows(state, sessions, catalog, remote, targets, themeRegistry)
   const noSessionText = "No session attached. Dial in and choose your next run."
   const sessionWarning = theme.warning
-  const menuRows = rows.map((row) => {
-    const prefix = row.focused ? ">" : " "
-    const indent = "  ".repeat(row.indent)
-    const titleWidth = Math.max(24, row.titleWidth ?? 24)
-    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
-    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
-    const titleWidthSpace = Math.max(0, titleWidth - row.indent)
-    return `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`
-  })
+  const menuRows = rows.map((row) => formatWaitingRoomMenuRow(row, maxMenuWidth))
   const baseMenuWidth = Math.max(
     menuRows.reduce((width, row) => Math.max(width, row.length), 0),
     waitingRoomMenuMinWidth(sessions),
@@ -256,7 +249,7 @@ export function buildNoSessionRenderable(
   wrapper.add(intro)
   const renderedRows = rows.map((row, index) => ({
     row,
-    content: `${menuRows[index]}${" ".repeat(waitingRoomMenuTrailingPadding())}`,
+    content: menuRows[index] ?? "",
   }))
   const finalMenuWidth = Math.max(
     renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
@@ -310,6 +303,12 @@ export function buildNoSessionRenderable(
   content.add(helpTextContainer)
   wrapper.add(content)
   return wrapper
+}
+
+function terminalColumnWidth() {
+  return process.stdout.isTTY && Number.isFinite(process.stdout.columns)
+    ? process.stdout.columns
+    : Number.POSITIVE_INFINITY
 }
 
 function buildAsciiCanvasRenderable(

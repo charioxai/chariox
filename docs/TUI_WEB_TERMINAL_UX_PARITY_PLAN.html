@@ -340,6 +340,11 @@
           <td>Queue strip automation assertions</td>
           <td>CLI automation snapshots now expose dedicated queued-prompt strip items and selected index per agent, and the live visual-control drill can assert strip projection without relying on transcript-row residue.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room row width assertions</td>
+          <td>Waiting Room menu rows now format through a width-bounded helper, with 80-column truncation and wider-row preservation covered by focused tests.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -448,7 +453,7 @@
           <td>Waiting Room</td>
           <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
           <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme, with recent-activity sorting, work/done markers, prompt counts, and recovery next actions.</td>
-          <td><span class="status gap">Partial</span>: row semantics and screen footer compaction are present; row/action snapshot assertions still need to cover 80x24 and wider widths.</td>
+          <td><span class="status gap">Partial</span>: row semantics, screen footer compaction, and row width assertions are present; live visual assertions still need to cover 80x24 and wider terminal captures.</td>
         </tr>
       </tbody>
     </table>
@@ -560,6 +565,7 @@
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
       <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
       <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
+      <li><code>apps/cli/src/waiting-room-menu-row.test.ts</code>: Waiting Room menu rows truncate at 80 columns and preserve full content on wider terminal budgets.</li>
       <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
       <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
       <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
@@ -586,6 +592,7 @@ pnpm --filter @arroba/cli exec node --test \
   dist/session-chrome-render-controller.test.js \
   dist/session-chrome-state.test.js \
   dist/cli-automation-snapshot.test.js \
+  dist/waiting-room-menu-row.test.js \
   dist/waiting-room-session-rows.test.js \
   dist/waiting-room-rows.test.js</code></pre>
 
