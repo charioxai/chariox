@@ -6,6 +6,7 @@ import {
   transcriptTurnIsCollapsible,
 } from "@arroba/kernel-client/transcript-entry-lineage"
 import type { TranscriptEntry } from "./cli-types.js"
+import { roleBlobTitle } from "./transcript-collapsed-blob.js"
 import {
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
@@ -208,15 +209,8 @@ function describeCollapsedBlob(entry: TranscriptEntry) {
   if (entry.role === "tool") {
     return describeToolBlob(entry)
   }
-  const title = entry.role === "assistant"
-    ? "assistant"
-    : entry.role === "error"
-      ? "error"
-      : entry.role === "status"
-        ? "status"
-        : "note"
   return {
-    title,
+    title: roleBlobTitle(entry.role),
     summary: summarizeText(entry.text),
   }
 }

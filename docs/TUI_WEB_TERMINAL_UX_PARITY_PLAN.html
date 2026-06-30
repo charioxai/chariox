@@ -330,6 +330,11 @@
           <td>Compact screen footer summary</td>
           <td>The attached-session and Waiting Room screen footer summaries now compact action labels and truncate as a last resort against the live terminal width, keeping 80-column footer text bounded.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Collapsed blob presentation</td>
+          <td>Collapsed transcript blobs now render an explicit header, role/status metadata, loading/error/retry labels for lazy history blobs, and role-specific titles for reasoning, status, and notice entries.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -389,8 +394,8 @@
         <tr>
           <td>Transcript blobs</td>
           <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
-          <td>Blob collapse policy exists, and lazy blob expansion works after content loads.</td>
-          <td><span class="status gap">Gap</span>: collapsed rows are too sparse, loading feedback is weak, and tool/reasoning/status presentation is not yet Web-quality.</td>
+          <td>Blob collapse policy exists; collapsed rows show headers, role/status metadata, summaries, and lazy history loading/error/retry states.</td>
+          <td><span class="status gap">Gap</span>: broader live-drill assertions still need to cover lazy expansion and tool/reasoning/status visual distinction across narrow and wide PTY sizes.</td>
         </tr>
         <tr>
           <td>Turn lifecycle</td>
@@ -543,6 +548,7 @@
     <h2>Test Evidence</h2>
     <ul>
       <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, active turn expansion, steered-prompt turn exclusion, and refresh preservation.</li>
+      <li><code>apps/cli/src/transcript-collapsed-blob.test.ts</code>: collapsed blob headers, role metadata, history loading labels, and retry/error labels.</li>
       <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>

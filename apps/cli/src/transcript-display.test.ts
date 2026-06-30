@@ -64,14 +64,14 @@ test("applyTranscriptDisplayState matches web blob defaults by role", () => {
   assert.deepEqual(
     entries
       .filter((entry) => entry.role !== "turn_toggle")
-      .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null]),
+      .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null, entry.blobTitle ?? null]),
     [
-      ["user", false, null],
-      ["reasoning", true, true],
-      ["status", true, true],
-      ["tool", true, true],
-      ["error", false, null],
-      ["assistant", false, null],
+      ["user", false, null, null],
+      ["reasoning", true, true, "reasoning"],
+      ["status", true, true, "status"],
+      ["tool", true, true, "tool"],
+      ["error", false, null, null],
+      ["assistant", false, null, null],
     ],
   )
 })

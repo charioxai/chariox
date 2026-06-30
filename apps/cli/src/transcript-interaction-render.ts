@@ -8,6 +8,7 @@ import {
 } from "@opentui/core"
 
 import type { TranscriptEntry } from "./cli-types.js"
+import { collapsedTranscriptBlobPresentation } from "./transcript-collapsed-blob.js"
 import { theme } from "./theme.js"
 import { transcriptTextColor } from "./transcript-render-theme.js"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"
@@ -43,15 +44,23 @@ export function buildCollapsedTranscriptBlob(
   entry: TranscriptEntry,
   onToggleBlob: (entryId: number, collapsed: boolean) => void,
 ) {
+  const presentation = collapsedTranscriptBlobPresentation(entry)
   body.add(
     new TextRenderable(renderer, {
-      content: [entry.blobTitle, entry.blobSummary].filter(Boolean).join("  "),
+      content: presentation.headline,
       fg: transcriptTextColor(entry),
       wrapMode: "word",
       attributes: TextAttributes.BOLD,
     }),
   )
-  body.add(buildBlobToggleLabel(renderer, "click to expand", () => onToggleBlob(entry.id, false)))
+  body.add(
+    new TextRenderable(renderer, {
+      content: presentation.detail,
+      fg: theme.textMuted,
+      wrapMode: "word",
+    }),
+  )
+  body.add(buildBlobToggleLabel(renderer, presentation.actionLabel, () => onToggleBlob(entry.id, false)))
 }
 
 export function buildBlobToggleLabel(renderer: RenderContext, content: string, onClick: () => void) {
