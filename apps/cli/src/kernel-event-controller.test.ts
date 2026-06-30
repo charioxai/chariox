@@ -303,6 +303,37 @@ test("runtime notices and transport lifecycle update the kernel connection state
   ])
 })
 
+test("queued prompt lifecycle runtime notices stay out of transcript scrollback", () => {
+  const { deps, calls, notices } = createDeps()
+  const controller = createKernelEventController(deps as never)
+
+  controller.applyRuntimeNotices([
+    {
+      message: "A queued message from attachment `attachment-4` was added to agent `agent-1` in session `session-1` as `prompt-7`. Queue depth is now 1.",
+    },
+    {
+      message: "Attachment `attachment-1` steered queued prompt `prompt-4` to agent `agent-1`.",
+    },
+    {
+      message: "Attachment `attachment-1` cancelled queued prompt `prompt-5` for agent `agent-1`.",
+    },
+    {
+      message: "Attachment `attachment-1` updated queued prompt `prompt-6` for agent `agent-1`.",
+    },
+    {
+      message: "Provider prompt dispatch failed: denied",
+    },
+  ] satisfies RuntimeNoticeRecord[])
+
+  assert.deepEqual(calls, [
+    "activity:kernel_runtime_notices",
+    "notice:Provider prompt dispatch failed: denied:default",
+  ])
+  assert.deepEqual(notices, [
+    { message: "Provider prompt dispatch failed: denied", tone: undefined },
+  ])
+})
+
 test("assistant completion clears the agent completion state without relying on idle status", () => {
   const { deps, calls } = createDeps()
   const controller = createKernelEventController(deps as never)

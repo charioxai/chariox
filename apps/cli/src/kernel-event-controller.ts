@@ -5,6 +5,7 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
 } from "@arroba/kernel-client/external-provider-observation"
+import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 import { isProviderIdleStatus } from "./runtime.js"
 
 type KernelEventControllerDeps = {
@@ -250,6 +251,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
   const applyRuntimeNotices = (notices: RuntimeNoticeRecord[]) => {
     deps.recordDaemonActivity("kernel_runtime_notices")
     for (const notice of notices) {
+      if (!runtimeNoticeShouldRenderInAgentPane(notice.message)) {
+        continue
+      }
       deps.appendNotice(notice.message)
     }
   }

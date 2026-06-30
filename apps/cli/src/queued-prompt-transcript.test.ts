@@ -7,529 +7,67 @@ import {
   syncQueuedPromptEntriesForAgent,
 } from "./queued-prompt-transcript.js"
 
-test("syncQueuedPromptEntriesForAgent appends queued prompts and removes settled queued entries", () => {
-  const existing: TranscriptEntry[] = [
+test("syncQueuedPromptEntriesForAgent keeps live queued prompts out of transcript scrollback", () => {
+  const synced = syncQueuedPromptEntriesForAgent([
     { id: 1, role: "assistant", text: "ready" },
+  ], sessionWithQueuedPrompt(), "agent-1")
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(synced.entries, [
+    { id: 1, role: "assistant", text: "ready" },
+  ])
+})
+
+test("syncQueuedPromptEntriesForAgent removes legacy queued transcript rows when projection is authoritative", () => {
+  const existing: TranscriptEntry[] = [
+    { id: 7, role: "assistant", text: "ready" },
     {
-      id: 2,
+      id: 8,
       role: "user",
-      text: "old queued",
-      queuedPrompt: queuedPrompt("agent-1", "old-prompt"),
+      text: "legacy queued",
+      queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
     },
+    { id: 9, role: "assistant", text: "still here" },
   ]
 
   const synced = syncQueuedPromptEntriesForAgent(existing, sessionWithQueuedPrompt(), "agent-1")
 
   assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries.map((entry) => entry.queuedPrompt?.promptId).filter(Boolean), [
-    "prompt-1",
+  assert.deepEqual(synced.entries, [
+    { id: 1, role: "assistant", text: "ready" },
+    { id: 2, role: "assistant", text: "still here" },
   ])
-  assert.equal(synced.entries.at(-1)?.text, "new queued")
-  assert.equal(synced.entries.at(-1)?.queuedPrompt?.attachmentCount, 2)
 })
 
-test("syncQueuedPromptEntriesForAgent does not infer steering controls from external active prompts", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: {
-        id: "prompt-external",
-        source_attachment_id: "attachment-external",
-        target_agent_id: "agent-1",
-        prompt: "external running",
-        status: "Running",
-        prompt_origin: "external",
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores legacy external active prompt origins for steering", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: {
-        id: "prompt-external",
-        source_attachment_id: "attachment-external",
-        target_agent_id: "agent-1",
-        prompt: "external running",
-        status: "Running",
-        prompt_origin: " External ",
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent does not infer steering controls from external active turns", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-external",
-            provider_run_id: "run-external",
-            prompt_origin: "external",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores projected external active turn origins for steering", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-external",
-            provider_run_id: "run-external",
-            prompt_origin: " External ",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores active turn external metadata for steering", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-external",
-            provider_run_id: "run-external",
-            external_provider: "codex",
-            external_provider_session_id: "thread-1",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores prompt state external metadata for steering", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: activePromptWithExternalMetadata(),
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores top-level active prompt external metadata for steering", () => {
-  const session = sessionWithoutPromptStates({
-    active_prompt: activePromptWithExternalMetadata(),
-    queued_prompts: [{
-      id: "prompt-queued",
-      source_attachment_id: "attachment-queued",
-      target_agent_id: "agent-1",
-      prompt: "queued after external",
-      status: "Queued",
-    }],
-  })
-  const synced = syncQueuedPromptEntriesForAgent([], session, "agent-1")
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent ignores stale active prompt origin when projected activity exists", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: {
-        id: "prompt-stale",
-        source_attachment_id: "attachment-stale",
-        target_agent_id: "agent-1",
-        prompt: "stale external running",
-        status: "Running",
-        prompt_origin: "external",
-      },
-    }, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-arroba",
-            provider_run_id: "run-arroba",
-            prompt_origin: "arroba",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-})
-
-test("syncQueuedPromptEntriesForAgent prefers projected queued prompt controls", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: {
-        id: "prompt-stale",
-        source_attachment_id: "attachment-stale",
-        target_agent_id: "agent-1",
-        prompt: "stale arroba running",
-        status: "Running",
-        prompt_origin: "arroba",
-      },
-      queued_prompts: [{
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "new queued",
-        status: "Queued",
-      }],
-    }, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          queued_prompt_controls: {
-            "prompt-1": {
-              prompt_id: "prompt-1",
-              status: "dispatching",
-              can_steer: false,
-              can_cancel: false,
-              steer_disabled_reason: "This prompt is no longer waiting in the queue.",
-              cancel_disabled_reason: "This prompt is no longer waiting in the queue.",
-            },
-          },
-          active_turn: {
-            prompt_id: "prompt-external",
-            provider_run_id: "run-external",
-            prompt_origin: "external",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
-    agentId: "agent-1",
-    promptId: "prompt-1",
-    status: "dispatching",
-    attachmentCount: 0,
-    steerDisabled: true,
-    canSteer: false,
-    canCancel: false,
-    steerDisabledReason: "This prompt is no longer waiting in the queue.",
-    cancelDisabledReason: "This prompt is no longer waiting in the queue.",
-  })
-})
-
-test("syncQueuedPromptEntriesForAgent uses projected queue controls to disable steering behind external turns", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          queued_prompt_controls: {
-            "prompt-1": {
-              prompt_id: "prompt-1",
-              status: "queued",
-              can_steer: false,
-              can_cancel: true,
-              steer_disabled_reason: "Kernel projected external turn reason.",
-              cancel_disabled_reason: null,
-            },
-          },
-          active_turn: {
-            prompt_id: "prompt-external",
-            provider_run_id: "run-external",
-            prompt_origin: "external",
-            status: "running",
-            phase: "streaming",
-            started_at_ms: 2,
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
-    agentId: "agent-1",
-    promptId: "prompt-1",
-    status: "queued",
-    attachmentCount: 2,
-    steerDisabled: true,
-    canSteer: false,
-    canCancel: true,
-    steerDisabledReason: "Kernel projected external turn reason.",
-    cancelDisabledReason: null,
-  })
-})
-
-test("syncQueuedPromptEntriesForAgent ignores projected controls with mismatched prompt ids", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          queued_prompt_controls: {
-            "prompt-1": {
-              prompt_id: "prompt-other",
-              status: "dispatching",
-              can_steer: false,
-              can_cancel: false,
-              steer_disabled_reason: "stale control",
-              cancel_disabled_reason: "stale control",
-            },
-          },
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries[0]?.queuedPrompt, {
-    agentId: "agent-1",
-    promptId: "prompt-1",
-    status: "queued",
-    attachmentCount: 2,
-    steerDisabled: false,
-    canSteer: true,
-    canCancel: true,
-    steerDisabledReason: null,
-    cancelDisabledReason: null,
-  })
-})
-
-test("syncQueuedPromptEntriesForAgent ignores prompt state origin when projected activity is busy without active turn", () => {
-  const synced = syncQueuedPromptEntriesForAgent(
-    [],
-    sessionWithQueuedPrompt({
-      active_prompt: {
-        id: "prompt-external",
-        source_attachment_id: "attachment-external",
-        target_agent_id: "agent-1",
-        prompt: "external running",
-        status: "Running",
-        prompt_origin: "external",
-      },
-    }, {
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, false)
-  assert.equal(synced.entries[0]?.queuedPrompt?.canSteer, true)
-})
-
-test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projected activity is idle", () => {
+test("syncQueuedPromptEntriesForAgent preserves legacy queued rows when projection is unavailable", () => {
   const existing: TranscriptEntry[] = [{
     id: 1,
     role: "user",
-    text: "new queued",
-    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
+    text: "preserved queued",
+    queuedPrompt: queuedPrompt("agent-1", "prompt-preserved"),
   }]
-
-  const synced = syncQueuedPromptEntriesForAgent(
-    existing,
-    sessionWithQueuedPrompt({}, {
-      agent_activity: {
-        "agent-1": {
-          status: "idle",
-          prompt_status: "none",
-          busy: false,
-        },
-      },
-    }),
-    "agent-1",
-  )
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries, [])
-})
-
-test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected busy omits queue state", () => {
-  const existing: TranscriptEntry[] = [{
-    id: 1,
-    role: "user",
-    text: "new queued",
-    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
-  }]
-
   const session = sessionWithoutPromptStates({
     queued_prompts: [],
     agent_activity: {
       "agent-1": {
         status: "working",
-        prompt_status: "running",
-        busy: true,
       },
     },
   })
+
   const synced = syncQueuedPromptEntriesForAgent(existing, session, "agent-1")
 
   assert.equal(synced.changed, false)
   assert.deepEqual(synced.entries, existing)
 })
 
-test("syncQueuedPromptEntriesForAgent ignores top-level queued prompts when projected busy omits queue state", () => {
-  const session = sessionWithoutPromptStates({
-    queued_prompts: [{
-      id: "prompt-stale",
-      source_attachment_id: "attachment-stale",
-      target_agent_id: "agent-1",
-      prompt: "stale top-level queued",
-      status: "Queued",
-    }],
-    agent_activity: {
-      "agent-1": {
-        status: "working",
-        prompt_status: "running",
-        busy: true,
-      },
-    },
-  })
-  const synced = syncQueuedPromptEntriesForAgent([], session, "agent-1")
-
-  assert.equal(synced.changed, false)
-  assert.deepEqual(synced.entries, [])
-})
-
-test("syncQueuedPromptEntriesForAgent clears stale queued prompts when projected queue state is empty", () => {
-  const existing: TranscriptEntry[] = [{
-    id: 1,
-    role: "user",
-    text: "new queued",
-    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
-  }]
-
-  const session = sessionWithQueuedPrompt({}, {
-    prompt_states: {},
-    queued_prompts: [],
-    agent_activity: {
-      "agent-1": {
-        status: "working",
-        prompt_status: "none",
-        busy: false,
-      },
-    },
-  })
-  const synced = syncQueuedPromptEntriesForAgent(existing, session, "agent-1")
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entries, [])
-})
-
-test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected status is working", () => {
-  const existing: TranscriptEntry[] = [{
-    id: 1,
-    role: "user",
-    text: "new queued",
-    queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
-  }]
-
-  const session = sessionWithoutPromptStates({
-    queued_prompts: [],
-    agent_activity: {
-      "agent-1": {
-        status: "working",
-        prompt_status: "none",
-        busy: false,
-      },
-    },
-  })
-  const synced = syncQueuedPromptEntriesForAgent(existing, session, "agent-1")
-
-  assert.equal(synced.changed, false)
-  assert.deepEqual(synced.entries, existing)
-})
-
-test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from authoritative prompt states", () => {
+test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from projected agents", () => {
   const synced = syncQueuedPromptEntriesByAgent({
-    "agent-stale": [{
+    "agent-1": [{
       id: 1,
       role: "user",
-      text: "stale queued",
-      queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
+      text: "legacy queued",
+      queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
     }],
   }, sessionWithQueuedPrompt({}, {
     prompt_states: {
@@ -538,62 +76,33 @@ test("syncQueuedPromptEntriesByAgent prunes stale queued prompt panes from autho
         queued_prompts: [],
       },
     },
-    agents: [{
-      ...sessionWithQueuedPrompt().agents[0]!,
-      id: "agent-1",
-    }],
   }))
 
   assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entriesByAgent["agent-stale"], [])
-  assert.deepEqual(synced.previews["agent-stale"], "")
+  assert.deepEqual(synced.entriesByAgent["agent-1"], [])
+  assert.deepEqual(synced.previews["agent-1"], "")
 })
 
-test("syncQueuedPromptEntriesByAgent projects activity-only agents", () => {
-  const session = sessionWithoutPromptStates({
-    agents: [],
-    agent_activity: {
-      "agent-stale": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-      },
-    },
-  })
-  const synced = syncQueuedPromptEntriesByAgent({
-    "agent-stale": [{
-      id: 1,
-      role: "user",
-      text: "stale queued",
-      queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
-    }],
-  }, session)
-
-  assert.equal(synced.changed, true)
-  assert.deepEqual(synced.entriesByAgent["agent-stale"], [])
-  assert.deepEqual(synced.previews["agent-stale"], "")
-})
-
-test("syncQueuedPromptEntriesByAgent preserves stale queued prompt panes without authoritative projection", () => {
-  const session = sessionWithoutPromptStates({
-    agents: [{
-      ...sessionWithQueuedPrompt().agents[0]!,
-      id: "agent-1",
-    }],
-    queued_prompts: [],
-  })
+test("syncQueuedPromptEntriesByAgent preserves legacy queued panes without authoritative projection", () => {
   const existing: TranscriptEntry[] = [{
     id: 1,
     role: "user",
-    text: "stale queued",
-    queuedPrompt: queuedPrompt("agent-stale", "queued-stale"),
+    text: "preserved queued",
+    queuedPrompt: queuedPrompt("agent-1", "prompt-preserved"),
   }]
-  const synced = syncQueuedPromptEntriesByAgent({
-    "agent-stale": existing,
-  }, session)
+  const session = sessionWithoutPromptStates({
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+      },
+    },
+  })
+
+  const synced = syncQueuedPromptEntriesByAgent({ "agent-1": existing }, session)
 
   assert.equal(synced.changed, false)
-  assert.deepEqual(synced.entriesByAgent["agent-stale"], existing)
+  assert.deepEqual(synced.entriesByAgent["agent-1"], existing)
 })
 
 function sessionWithoutPromptStates(sessionOverrides: Partial<RuntimeSession> = {}): RuntimeSession {
@@ -602,16 +111,16 @@ function sessionWithoutPromptStates(sessionOverrides: Partial<RuntimeSession> = 
   return session
 }
 
-function queuedPrompt(agentId: string, promptId: string, steerDisabled = false): NonNullable<TranscriptEntry["queuedPrompt"]> {
+function queuedPrompt(agentId: string, promptId: string): NonNullable<TranscriptEntry["queuedPrompt"]> {
   return {
     agentId,
     promptId,
     status: "queued",
     attachmentCount: 0,
-    steerDisabled,
-    canSteer: !steerDisabled,
+    steerDisabled: false,
+    canSteer: true,
     canCancel: true,
-    steerDisabledReason: steerDisabled ? "disabled by test" : null,
+    steerDisabledReason: null,
     cancelDisabledReason: null,
   }
 }
@@ -638,10 +147,6 @@ function sessionWithQueuedPrompt(
           source_attachment_id: "attachment-1",
           target_agent_id: "agent-1",
           prompt: "new queued",
-          attachments: [
-            { url: "file:///tmp/a.txt", mime: "text/plain", filename: "a.txt" },
-            { url: "file:///tmp/b.txt", mime: "text/plain", filename: "b.txt" },
-          ],
           status: "Queued",
         }],
         ...overrides,
@@ -671,20 +176,5 @@ function sessionWithQueuedPrompt(
       values: {},
     },
     ...sessionOverrides,
-  }
-}
-
-function activePromptWithExternalMetadata(): NonNullable<RuntimeSession["active_prompt"]> & {
-  external_provider: string
-  external_provider_session_id: string
-} {
-  return {
-    id: "prompt-external",
-    source_attachment_id: "attachment-external",
-    target_agent_id: "agent-1",
-    prompt: "external running",
-    status: "Running",
-    external_provider: "codex",
-    external_provider_session_id: "thread-1",
   }
 }

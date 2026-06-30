@@ -60,6 +60,57 @@ test("queuedPromptStripItemsForAgent overlays optimistic transcript action state
   assert.equal(item?.attachmentCount, 2)
 })
 
+test("queuedPromptStripItemsForAgent uses projected queue controls", () => {
+  const [item] = queuedPromptStripItemsForAgent(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued prompt\n",
+          attachments: [{ kind: "file" }, { kind: "image" }],
+          status: "queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        queued_prompt_controls: {
+          "prompt-1": {
+            prompt_id: "prompt-1",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: false,
+            steer_disabled_reason: "This prompt is no longer waiting in the queue.",
+            cancel_disabled_reason: "This prompt is no longer waiting in the queue.",
+          },
+        },
+      },
+    },
+  }), [], "agent-1")
+
+  assert.deepEqual({
+    status: item?.status,
+    attachmentCount: item?.attachmentCount,
+    canSteer: item?.canSteer,
+    canCancel: item?.canCancel,
+    steerDisabledReason: item?.steerDisabledReason,
+    cancelDisabledReason: item?.cancelDisabledReason,
+  }, {
+    status: "dispatching",
+    attachmentCount: 2,
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: "This prompt is no longer waiting in the queue.",
+    cancelDisabledReason: "This prompt is no longer waiting in the queue.",
+  })
+})
+
 test("queuedPromptStripItemsForAgent preserves transcript rows when projection is unavailable", () => {
   const entries: TranscriptEntry[] = [{
     id: 1,
@@ -110,7 +161,7 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
   })
 })
 
-function session(): RuntimeSession {
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
     alias: "session",
@@ -123,5 +174,6 @@ function session(): RuntimeSession {
       attachments: [{ kind: "file" }, { kind: "image" }],
       status: "queued",
     }],
+    ...overrides,
   } as unknown as RuntimeSession
 }

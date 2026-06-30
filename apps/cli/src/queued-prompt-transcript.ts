@@ -3,13 +3,11 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  queuedPromptActionabilityMatches,
   queuedPromptProjectionForAgent,
-  type ProjectedQueuedPrompt,
 } from "@arroba/kernel-client/queued-prompt-controls"
 import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
-import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
+import { reindexTranscriptEntries } from "./transcript-text.js"
 
 export type QueuedPromptTranscriptSyncResult = {
   entries: TranscriptEntry[]
@@ -28,55 +26,22 @@ export function syncQueuedPromptEntriesForAgent(
   if (projection.action === "preserve") {
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
-  const queuedPrompts = projection.prompts
-  const queuedById = new Map(queuedPrompts.map((prompt) => [prompt.id, prompt]))
-  const queuedIds = new Set(queuedById.keys())
   let changed = false
   const retained = entries.flatMap((entry) => {
     if (!entry.queuedPrompt) {
       return [entry]
     }
-    const keep = entry.queuedPrompt.agentId === agentId && queuedIds.has(entry.queuedPrompt.promptId)
-    if (!keep) {
+    if (entry.queuedPrompt.agentId === agentId) {
       changed = true
       return []
     }
-    const prompt = queuedById.get(entry.queuedPrompt.promptId)
-    const actionability = prompt ?? entry.queuedPrompt
-    if (!queuedPromptActionabilityMatches(entry.queuedPrompt, actionability)) {
-      changed = true
-      return [{
-        ...entry,
-        queuedPrompt: {
-          ...entry.queuedPrompt,
-          attachmentCount: prompt?.attachmentCount ?? entry.queuedPrompt.attachmentCount,
-          ...actionability,
-        },
-      }]
-    }
     return [entry]
   })
-  const existingQueuedIds = new Set(
-    retained
-      .map((entry) => entry.queuedPrompt?.promptId)
-      .filter((promptId): promptId is string => Boolean(promptId)),
-  )
-  let nextEntries = retained
-  for (const prompt of queuedPrompts) {
-    if (existingQueuedIds.has(prompt.id)) {
-      continue
-    }
-    changed = true
-    nextEntries = [
-      ...nextEntries,
-      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries)),
-    ]
-  }
   if (!changed) {
     return { entries: entries.map((entry) => ({ ...entry })), changed: false }
   }
   return {
-    entries: reindexTranscriptEntries(nextEntries.map((entry) => ({ ...entry })), 0),
+    entries: reindexTranscriptEntries(retained.map((entry) => ({ ...entry })), 0),
     changed: true,
   }
 }
@@ -109,31 +74,4 @@ export function syncQueuedPromptEntriesByAgent(
     }
   }
   return { entriesByAgent: entriesByAgentNext, previews, changed }
-}
-
-function queuedPromptTranscriptEntry(
-  prompt: ProjectedQueuedPrompt,
-  agentId: string,
-  id: number,
-): TranscriptEntry {
-  return {
-    id,
-    role: "user",
-    text: trimSingleTrailingNewline(prompt.prompt),
-    queuedPrompt: {
-      promptId: prompt.id,
-      agentId,
-      status: prompt.status,
-      attachmentCount: prompt.attachmentCount,
-      steerDisabled: prompt.steerDisabled,
-      canSteer: prompt.canSteer,
-      canCancel: prompt.canCancel,
-      steerDisabledReason: prompt.steerDisabledReason,
-      cancelDisabledReason: prompt.cancelDisabledReason,
-    },
-  }
-}
-
-function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {
-  return entries.reduce((maxId, entry) => Math.max(maxId, entry.id), 0) + 1
 }
