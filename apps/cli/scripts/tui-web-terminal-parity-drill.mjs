@@ -19,6 +19,7 @@ const FOCUSED_TESTS = [
   "dist/waiting-room-rows.test.js",
   "dist/waiting-room-menu-row.test.js",
   "dist/history-loading-render-controller.test.js",
+  "dist/session-history-outline.test.js",
   "dist/cli-loading-state-controller.test.js",
   "dist/transcript-history-autoload-controller.test.js",
   "dist/agent-pane-state.test.js",
@@ -86,6 +87,7 @@ async function verifyPlan() {
     "Queue notice suppression",
     "Compact screen footer summary",
     "Collapsed blob presentation",
+    "Loaded lazy history blob detail",
     "broader live-drill assertions",
   ]
   const missing = requiredMarkers.filter((marker) => !html.includes(marker))

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const defaultLatestManifest = path.join(repoRoot, 'target', 'live-tui-web-parity-visual-session', 'latest.json')
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function parseArgs(argv) {
   const options = {
@@ -30,7 +31,7 @@ function parseArgs(argv) {
     else if (arg === '--label') options.label = next()
     else if (arg === '--json') options.json = JSON.parse(next())
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|capture-layouts|waiting-room|steer-queued|cancel-queued|toggle-first-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
+      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|capture-layouts|waiting-room|steer-queued|cancel-queued|toggle-first-blob|expand-history-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -105,6 +106,16 @@ function firstVisibleTurn(snapshot, manifest) {
   return paneEntries(snapshot, manifest).find((entry) => Number.isInteger(entry?.turnId))
 }
 
+function firstHistoryBlob(snapshot, manifest) {
+  return paneEntries(snapshot, manifest).find((entry) =>
+    entry
+    && entry.blobCollapsible === true
+    && entry.blobCollapsed === true
+    && entry.historyBlobId
+    && entry.historyBlobLoaded !== true,
+  )
+}
+
 function queuedEntries(snapshot, manifest) {
   return paneEntries(snapshot, manifest).filter((entry) => entry?.queuedPrompt)
 }
@@ -144,9 +155,12 @@ function summarizeSnapshot(snapshot, manifest) {
   const collapsedBlobs = entries.filter((entry) => entry.blobCollapsible === true && entry.blobCollapsed === true)
   const expandedBlobs = entries.filter((entry) => entry.blobCollapsible === true && entry.blobCollapsed === false)
   const historyPlaceholders = entries.filter((entry) => entry.historyBlobId && !entry.historyBlobLoaded)
+  const loadedHistoryBlobs = entries.filter((entry) => entry.historyBlobLoaded === true && entry.historyBlobSourceId)
   const hiddenTurnEntries = entries.filter((entry) => entry.hidden)
   const collapsedBlobRoles = collapsedBlobs.map((entry) => entry.role)
   const expandedBlobRoles = expandedBlobs.map((entry) => entry.role)
+  const loadedHistoryBlobRoles = loadedHistoryBlobs.map((entry) => entry.role)
+  const loadedHistoryBlobTexts = loadedHistoryBlobs.map((entry) => entry.text).filter(Boolean)
   return {
     screen: snapshot.screen,
     statusLine: snapshot.statusLine,
@@ -161,6 +175,9 @@ function summarizeSnapshot(snapshot, manifest) {
     collapsedBlobRoles,
     expandedBlobRoles,
     historyPlaceholderCount: historyPlaceholders.length,
+    loadedHistoryBlobCount: loadedHistoryBlobs.length,
+    loadedHistoryBlobRoles,
+    loadedHistoryBlobTexts,
     hiddenTurnEntryCount: hiddenTurnEntries.length,
     visibleTexts: entries.map((entry) => entry.text).filter(Boolean),
     queuedPrompts: queued.map((entry) => entry.queuedPrompt),
@@ -192,6 +209,10 @@ function terminalCaptureLines(snapshot, manifest, summary, width) {
     return counts
   }, {})
   const roleSummary = Object.entries(roleCounts).map(([role, count]) => `${role}:${count}`).join(' ')
+  const loadedHistoryLines = (summary.loadedHistoryBlobTexts ?? []).slice(0, 3).map((text, index) => {
+    const role = summary.loadedHistoryBlobRoles?.[index] ?? 'entry'
+    return line('loaded history', `${role} ${text}`, contentWidth)
+  })
   const queueLines = (focusedStrip?.items ?? []).slice(0, 4).map((item, index) => {
     const selected = index === focusedStrip.selectedIndex ? '>' : ' '
     const actions = `${item.canSteer ? '[S]' : '[S disabled]'} ${item.canCancel ? '[C]' : '[C disabled]'}`
@@ -213,8 +234,29 @@ function terminalCaptureLines(snapshot, manifest, summary, width) {
     line('queue', focusedStrip ? `${focusedStrip.items.length} prompts selected=${focusedStrip.selectedIndex}` : 'none', contentWidth),
     ...queueLines,
     line('blobs', roleSummary || 'none', contentWidth),
+    ...loadedHistoryLines,
     ...transcriptLines,
   ].filter(Boolean)
+}
+
+async function waitForLoadedHistoryBlob(automation, manifest, placeholder) {
+  const deadline = Date.now() + 10_000
+  let snapshot = await automation.send('snapshot')
+  while (Date.now() < deadline) {
+    const entries = paneEntries(snapshot, manifest)
+    const placeholderStillVisible = entries.some((entry) => entry.historyBlobId === placeholder.historyBlobId)
+    const loadedEntries = entries.filter((entry) =>
+      entry.historyBlobLoaded === true
+      && entry.historyBlobSourceId === placeholder.historyBlobId
+      && entry.historyBlobSourceAgentId === placeholder.historyBlobAgentId,
+    )
+    if (!placeholderStillVisible && loadedEntries.length > 0 && loadedEntries.some((entry) => entry.text)) {
+      return snapshot
+    }
+    await sleep(100)
+    snapshot = await automation.send('snapshot')
+  }
+  throw new Error(`timed out waiting for loaded history blob ${placeholder.historyBlobId}`)
 }
 
 async function run(command, args, options = {}) {
@@ -411,6 +453,7 @@ async function writeReport(manifest) {
     requirements: {
       visibleTuiSession: 'validated by VS Code screen captures plus automation snapshots from this session',
       agentPaneBlobs: 'requires initial, assert-blobs, and blob-expanded snapshots',
+      loadedHistoryBlobDetail: 'requires expand-history-blob and loaded-history-layout snapshots proving lazy history placeholders become loaded text entries',
       queuedPromptSteeringCancel: 'requires attached-initial and post-raw-steer snapshots plus narrow/wide terminal captures after raw PTY shortcut delivery',
       footersAndPromptArea: 'requires generated narrow/wide terminal screenshots and status/footer snapshot summaries',
       waitingRoom: 'requires request-waiting-room snapshot with seeded idle/done rows and bounded session row summaries',
@@ -460,6 +503,16 @@ async function main() {
         toggled?.blobCollapsed === false || toggled?.historyBlobLoading === true || toggled?.historyBlobLoaded === true,
         'toggled blob should be expanded or show lazy history loading in the resulting snapshot',
       )
+    } else if (options.action === 'expand-history-blob') {
+      const before = await automation.send('snapshot')
+      const entry = firstHistoryBlob(before, manifest)
+      assert(entry, 'no collapsed lazy history blob found')
+      await automation.send('toggle_blob', {
+        agentId: manifest.agentId,
+        entryId: entry.id,
+        collapsed: false,
+      })
+      snapshot = await waitForLoadedHistoryBlob(automation, manifest, entry)
     } else if (options.action === 'toggle-first-turn') {
       const before = await automation.send('snapshot')
       const entry = firstVisibleTurn(before, manifest)

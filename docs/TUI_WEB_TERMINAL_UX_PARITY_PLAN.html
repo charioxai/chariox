@@ -189,15 +189,17 @@
       Live visual PTY drills were run against the TUI using the seeded web-parity visual session. The first pass exposed
       duplicate queue rendering, unreliable queue action projection, narrow-row clipping, and sparse collapsed blob rows.
       Follow-up slices closed the queue rendering and actionability gaps, added bounded footer/Waiting Room rows,
-      and extended the live visual drill to cover collapsed blobs plus attached-to-Waiting-Room transition state.
+      extended the live visual drill to cover collapsed blobs plus attached-to-Waiting-Room transition state,
+      and added direct loaded lazy-history blob evidence.
     </p>
     <ul>
       <li><code>pnpm --filter @arroba/cli run build</code> passed before the drill.</li>
       <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
-      <li>Latest evidence directory: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
-      <li>Latest live assertions: <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> passed through the visual-control automation socket.</li>
-      <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, and Waiting Room states.</li>
-      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 140 focused tests, syntax checks, and drill JSON validation.</li>
+      <li>Full parity evidence directory: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Loaded-history evidence directory: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
+      <li>Latest live assertions include <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>loaded-history</code>, <code>loaded-history-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> through the visual-control automation socket.</li>
+      <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, loaded-history, and Waiting Room states.</li>
+      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 150 focused tests, syntax checks, and drill JSON validation.</li>
       <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
 
@@ -239,7 +241,7 @@
         <tr>
           <td>Blob rendering</td>
           <td>Lazy blob expansion works after async content loads, but collapsed rows are sparse and lack useful Web-like summaries/loading feedback.</td>
-          <td><span class="status ok">Mostly closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, live assertions, and narrow/wide terminal captures for collapsed plus expanded reasoning states; residual coverage is loaded lazy-content detail.</td>
+          <td><span class="status ok">Closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, live assertions, narrow/wide terminal captures for collapsed plus expanded reasoning states, and loaded lazy-history detail.</td>
         </tr>
         <tr>
           <td>Turn collapse</td>
@@ -377,7 +379,12 @@
         <tr>
           <td><span class="status ok">Landed</span></td>
           <td>Generated terminal capture evidence</td>
-          <td>The live visual-control drill now writes bounded 80x24 and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, and Waiting Room states, with line-width assertions before artifact creation.</td>
+          <td>The live visual-control drill now writes bounded 80x24 and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, loaded-history, and Waiting Room states, with line-width assertions before artifact creation.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Loaded lazy history blob detail</td>
+          <td>The live visual-control drill can expand a lazy history blob through the same TUI toggle path, wait for the placeholder to become loaded text entries, summarize loaded roles/text, and capture the loaded state at 80x24 and 120x32.</td>
         </tr>
       </tbody>
     </table>
@@ -439,7 +446,7 @@
           <td>Transcript blobs</td>
           <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
           <td>Blob collapse policy exists; collapsed rows show headers, role/status metadata, summaries, and lazy history loading/error/retry states.</td>
-          <td><span class="status ok">Mostly closed</span>: live assertions and generated 80x24/120x32 captures cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, expanded reasoning, and normal entry expansion; residual coverage is loaded lazy-content detail.</td>
+          <td><span class="status ok">Aligned</span>: live assertions and generated 80x24/120x32 captures cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, expanded reasoning, loaded lazy-history content, and normal entry expansion.</td>
         </tr>
         <tr>
           <td>Turn lifecycle</td>
@@ -519,8 +526,8 @@
       <li>
         <strong>Upgrade collapsed blob presentation.</strong>
         Done for the core TUI projection: collapsed blobs have useful headers, type/status metadata, compact summaries,
-        loading/error states, live PTY assertions, and screenshot-backed narrow/wide terminal captures. Residual follow-up
-        is loaded lazy-content detail.
+        loading/error states, live PTY assertions, screenshot-backed narrow/wide terminal captures, and loaded
+        lazy-history content detail.
       </li>
       <li>
         <strong>Apply the same compact layout rules to Waiting Room and footer actions.</strong>
@@ -602,6 +609,10 @@
         and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, and Waiting Room states.
       </li>
       <li>
+        <strong>Done.</strong> Add an <code>expand-history-blob</code> live visual-control action that expands a lazy
+        history blob, waits for loaded replacement entries, and records loaded history role/text summaries.
+      </li>
+      <li>
         <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
         and no pane-button row under agents.
       </li>
@@ -611,6 +622,7 @@
     <ul>
       <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, active turn expansion, steered-prompt turn exclusion, and refresh preservation.</li>
       <li><code>apps/cli/src/transcript-collapsed-blob.test.ts</code>: collapsed blob headers, role metadata, history loading labels, and retry/error labels.</li>
+      <li><code>apps/cli/src/session-history-outline.test.ts</code> and <code>history-outline:tui-drill</code>: lazy history blob placeholders load into replacement entries and remove the placeholder row.</li>
       <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
       <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
@@ -623,10 +635,11 @@
       <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
       <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
       <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
-      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code>, <code>capture-layouts</code>, and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, normal message expansion, attached transition, seeded idle/done Waiting Room rows, raw queue shortcut delivery, and bounded terminal captures.</li>
-      <li>Latest live PTY evidence: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
-      <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
-      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 140 tests plus script syntax and drill JSON checks.</li>
+      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code>, <code>expand-history-blob</code>, <code>capture-layouts</code>, and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, loaded lazy-history text, normal message expansion, attached transition, seeded idle/done Waiting Room rows, raw queue shortcut delivery, and bounded terminal captures.</li>
+      <li>Full live PTY evidence: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Loaded-history live PTY evidence: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
+      <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, <code>terminal-captures/loaded-history-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
+      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 150 tests plus script syntax and drill JSON checks.</li>
     </ul>
 
     <h2>VS Code Terminal Validation</h2>
@@ -671,6 +684,8 @@ pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-lay
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label blob-expanded-layout
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action expand-history-blob --label loaded-history
+pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label loaded-history-layout
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
 pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
