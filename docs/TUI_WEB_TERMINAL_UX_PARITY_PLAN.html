@@ -305,6 +305,11 @@
           <td>Queue scrollback cleanup</td>
           <td>Live queued prompts are no longer appended into transcript scrollback when the strip is active, legacy queued transcript rows are pruned from authoritative queue projections, and successful queue lifecycle runtime notices stay out of agent-pane history.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Compact queue strip controls</td>
+          <td>The focused queue strip now advertises <code>S steer</code>/<code>C cancel</code> in the title and renders compact <code>[S]</code>/<code>[C]</code> row actions so 80-column PTY rows no longer collide.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -383,7 +388,7 @@
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
           <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows.</td>
-          <td><span class="status gap">Gap</span>: clipped actions, unreliable PTY shortcuts, and first-item-only keyboard targeting remain.</td>
+          <td><span class="status gap">Gap</span>: unreliable PTY shortcuts and first-item-only keyboard targeting remain.</td>
         </tr>
         <tr>
           <td>Steering echo</td>

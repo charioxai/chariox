@@ -11,6 +11,11 @@ import type {
   RuntimeInteraction,
 } from "./cli-types.js"
 import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
+import {
+  queuedPromptActionLabel,
+  queuedPromptMetaLabel,
+  queuedPromptTitleLabel,
+} from "./queued-prompt-strip-labels.js"
 import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 import { theme } from "./theme.js"
 
@@ -110,7 +115,7 @@ function renderQueuedPromptStrip(
     return
   }
   const title = new TextRenderable(options.renderer, {
-    content: `QUEUE • ${items.length} prompt${items.length === 1 ? "" : "s"}`,
+    content: queuedPromptTitleLabel(items.length, focused),
     fg: theme.info,
     attributes: TextAttributes.BOLD,
     wrapMode: "none",
@@ -128,7 +133,9 @@ function renderQueuedPromptStrip(
       fg: theme.text,
       wrapMode: "word",
     })
+    prompt.flexBasis = 0
     prompt.flexGrow = 1
+    prompt.flexShrink = 1
     row.add(prompt)
     const meta = new TextRenderable(options.renderer, {
       content: queuedPromptMetaLabel(item),
@@ -136,9 +143,10 @@ function renderQueuedPromptStrip(
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
     })
+    meta.flexShrink = 0
     row.add(meta)
-    row.add(renderQueuedPromptAction(options, item, "steer", focused && index === 0 ? "Alt+S steer" : "steer"))
-    row.add(renderQueuedPromptAction(options, item, "cancel", focused && index === 0 ? "Alt+C cancel" : "cancel"))
+    row.add(renderQueuedPromptAction(options, item, "steer", queuedPromptActionLabel("steer", focused && index === 0)))
+    row.add(renderQueuedPromptAction(options, item, "cancel", queuedPromptActionLabel("cancel", focused && index === 0)))
     container.add(row)
   })
 }
@@ -156,6 +164,7 @@ function renderQueuedPromptAction(
     attributes: disabled ? TextAttributes.NONE : TextAttributes.BOLD,
     wrapMode: "none",
   })
+  text.flexShrink = 0
   text.onMouseUp = (event) => {
     if (disabled || event.button !== MouseButton.LEFT) {
       return
@@ -166,14 +175,6 @@ function renderQueuedPromptAction(
     }, 0)
   }
   return text
-}
-
-function queuedPromptMetaLabel(item: QueuedPromptStripItem): string {
-  const status = item.status.trim().toLowerCase().replace(/[_-]+/g, " ") || "queued"
-  const attachments = item.attachmentCount > 0
-    ? ` · ${item.attachmentCount} file${item.attachmentCount === 1 ? "" : "s"}`
-    : ""
-  return `${status}${attachments}`
 }
 
 function renderInteractionChoices(
