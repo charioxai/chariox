@@ -335,6 +335,11 @@
           <td>Collapsed blob presentation</td>
           <td>Collapsed transcript blobs now render an explicit header, role/status metadata, loading/error/retry labels for lazy history blobs, and role-specific titles for reasoning, status, and notice entries.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue strip automation assertions</td>
+          <td>CLI automation snapshots now expose dedicated queued-prompt strip items and selected index per agent, and the live visual-control drill can assert strip projection without relying on transcript-row residue.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -412,8 +417,8 @@
         <tr>
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
-          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt.</td>
-          <td><span class="status gap">Gap</span>: PTY shortcut delivery still needs live-drill hardening and automation assertions.</td>
+          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; automation snapshots expose strip rows and selection.</td>
+          <td><span class="status gap">Gap</span>: PTY shortcut delivery still needs final live-drill hardening across real terminal emulators.</td>
         </tr>
         <tr>
           <td>Steering echo</td>
@@ -551,6 +556,7 @@
       <li><code>apps/cli/src/transcript-collapsed-blob.test.ts</code>: collapsed blob headers, role metadata, history loading labels, and retry/error labels.</li>
       <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
       <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
+      <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
       <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
       <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
       <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
@@ -569,10 +575,17 @@
     <pre><code>cd /Users/miguel/arroba
 pnpm --filter @arroba/cli run build
 pnpm --filter @arroba/cli exec node --test \
+  dist/transcript-collapsed-blob.test.js \
   dist/transcript-display.test.js \
   dist/queued-prompt-transcript.test.js \
+  dist/queued-prompt-strip-state.test.js \
+  dist/agent-interaction-strip-controller.test.js \
+  dist/prompt-keydown-controller.test.js \
+  dist/footer-summary-compact.test.js \
   dist/split-pane-footer.test.js \
+  dist/session-chrome-render-controller.test.js \
   dist/session-chrome-state.test.js \
+  dist/cli-automation-snapshot.test.js \
   dist/waiting-room-session-rows.test.js \
   dist/waiting-room-rows.test.js</code></pre>
 
@@ -585,15 +598,13 @@ pnpm run validation:suite</code></pre>
 
     <h3>Live visual TUI session</h3>
     <pre><code>cd /Users/miguel/arroba
-ARROBA_KERNEL_URL=ws://127.0.0.1:44120/kernel \
-pnpm run start:cli -- \
-  --kernel-url ws://127.0.0.1:44120/kernel \
-  --create-session \
-  --alias tui-freeform-parity \
-  --workspace /Users/miguel/arroba \
-  --worktree /Users/miguel/arroba \
-  --provider codex \
-  --model gpt-5.2</code></pre>
+pnpm --filter @arroba/cli run tui-web-parity:visual-session
+
+# In a second terminal while the live session is open:
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action assert --label initial
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-blob --label blob-expanded
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action toggle-first-turn --label turn-toggled
+pnpm --filter @arroba/cli run tui-web-parity:visual-control -- --action report</code></pre>
 
     <h3>Manual visual checklist</h3>
     <ul>

@@ -54,6 +54,10 @@ export type CliAutomationSnapshot = {
   shell?: Record<string, unknown> & { entries?: unknown[] }
   transcript?: Record<string, unknown> & { entries?: unknown[] }
   agentPanes?: Record<string, Array<Record<string, unknown>>>
+  queuedPromptStrips?: Record<string, {
+    selectedIndex?: unknown
+    items?: Array<Record<string, unknown>>
+  }>
 }
 
 export type CliAutomationServer = NetServer

@@ -10,6 +10,7 @@ import type {
   ExternalProviderSessionRecord,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
+import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -61,6 +62,8 @@ export type CliAutomationSnapshotDeps = {
   transcriptEntries: () => TranscriptEntry[]
   visibleTranscriptAgentId: () => string | null
   agentPaneEntries: () => Record<string, TranscriptEntry[]>
+  queuedPromptStripItemsForAgent?: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  selectedQueuedPromptIndexForAgent?: (agentId: string | null | undefined) => number
   footerFlash: () => unknown
   interactionChoiceSelection: (interactionId: string) => number
   interactionCustomReply: (interactionId: string) => string
@@ -189,7 +192,35 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
         entries.map(automationTranscriptEntry),
       ]),
     ),
+    queuedPromptStrips: Object.fromEntries(
+      session.agents.flatMap((agent) => {
+        const items = deps.queuedPromptStripItemsForAgent?.(agent.id) ?? []
+        if (items.length === 0) {
+          return []
+        }
+        return [[agent.id, {
+          selectedIndex: deps.selectedQueuedPromptIndexForAgent?.(agent.id) ?? 0,
+          items: items.map(automationQueuedPromptStripItem),
+        }]]
+      }),
+    ),
     footer: deps.footerFlash(),
+  }
+}
+
+function automationQueuedPromptStripItem(item: QueuedPromptStripItem): Record<string, unknown> {
+  return {
+    promptId: item.promptId,
+    agentId: item.agentId,
+    sourceAttachmentId: item.sourceAttachmentId,
+    prompt: item.prompt,
+    status: item.status,
+    attachmentCount: item.attachmentCount,
+    steerDisabled: item.steerDisabled,
+    canSteer: item.canSteer,
+    canCancel: item.canCancel,
+    steerDisabledReason: item.steerDisabledReason,
+    cancelDisabledReason: item.cancelDisabledReason,
   }
 }
 

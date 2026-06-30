@@ -4,12 +4,15 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 const FOCUSED_TESTS = [
+  "dist/transcript-collapsed-blob.test.js",
   "dist/transcript-display.test.js",
   "dist/queued-prompt-transcript.test.js",
   "dist/queued-prompt-strip-state.test.js",
   "dist/agent-interaction-strip-controller.test.js",
   "dist/prompt-keydown-controller.test.js",
+  "dist/footer-summary-compact.test.js",
   "dist/split-pane-footer.test.js",
+  "dist/session-chrome-render-controller.test.js",
   "dist/session-chrome-state.test.js",
   "dist/prompt-chrome-projection-controller.test.js",
   "dist/waiting-room-session-rows.test.js",
@@ -18,6 +21,7 @@ const FOCUSED_TESTS = [
   "dist/cli-loading-state-controller.test.js",
   "dist/transcript-history-autoload-controller.test.js",
   "dist/agent-pane-state.test.js",
+  "dist/cli-automation-snapshot.test.js",
 ]
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..")
@@ -29,6 +33,8 @@ async function main() {
   const steps = []
 
   await runStep(steps, "focused-tests", process.execPath, ["--test", ...FOCUSED_TESTS], { cwd: CLI_ROOT })
+  await runStep(steps, "visual-session-syntax", process.execPath, ["--check", "scripts/live-tui-web-parity-visual-session.mjs"], { cwd: CLI_ROOT })
+  await runStep(steps, "visual-control-syntax", process.execPath, ["--check", "scripts/tui-web-parity-visual-control.mjs"], { cwd: CLI_ROOT })
   await runStep(steps, "agent-footer-status-drill", process.execPath, ["scripts/agent-footer-status-drill.mjs"], { cwd: CLI_ROOT })
   await runStep(steps, "history-outline-tui-drill", process.execPath, ["scripts/history-outline-tui-drill.mjs"], { cwd: CLI_ROOT })
   await verifyPlan()
@@ -70,13 +76,26 @@ async function runStep(steps, name, command, args, options) {
 
 async function verifyPlan() {
   const html = await readFile(PLAN_PATH, "utf8")
-  const staleMarkers = [
-    "status gap",
-    "Needs",
+  const requiredMarkers = [
+    "Live PTY Drill Update - 2026-06-30",
+    "Dedicated queued-prompt strip",
+    "Queue scrollback cleanup",
+    "Queue keyboard selection",
+    "Queue notice suppression",
+    "Compact screen footer summary",
+    "Collapsed blob presentation",
+    "broader live-drill assertions",
+  ]
+  const missing = requiredMarkers.filter((marker) => !html.includes(marker))
+  if (missing.length > 0) {
+    throw new Error(`parity plan is missing current evidence markers: ${missing.join(", ")}`)
+  }
+
+  const retiredMarkers = [
     "Mostly aligned",
     "Tests to Add or Update",
   ]
-  const found = staleMarkers.filter((marker) => html.includes(marker))
+  const found = retiredMarkers.filter((marker) => html.includes(marker))
   if (found.length > 0) {
     throw new Error(`parity plan still contains stale markers: ${found.join(", ")}`)
   }

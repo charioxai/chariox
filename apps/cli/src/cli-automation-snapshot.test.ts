@@ -208,6 +208,22 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         },
       }],
     }),
+    queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-1"
+      ? [{
+        promptId: "prompt-1",
+        agentId: "agent-1",
+        sourceAttachmentId: null,
+        prompt: "queued behind external turn",
+        status: "queued",
+        attachmentCount: 0,
+        steerDisabled: true,
+        canSteer: false,
+        canCancel: true,
+        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+        cancelDisabledReason: null,
+      }]
+      : [],
+    selectedQueuedPromptIndexForAgent: () => 0,
     footerFlash: () => null,
     interactionChoiceSelection: () => 0,
     interactionCustomReply: () => "",
@@ -260,6 +276,22 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     canCancel: true,
     steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
     cancelDisabledReason: null,
+  })
+  assert.deepEqual(snapshot.queuedPromptStrips?.["agent-1"], {
+    selectedIndex: 0,
+    items: [{
+      promptId: "prompt-1",
+      agentId: "agent-1",
+      sourceAttachmentId: null,
+      prompt: "queued behind external turn",
+      status: "queued",
+      attachmentCount: 0,
+      steerDisabled: true,
+      canSteer: false,
+      canCancel: true,
+      steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+      cancelDisabledReason: null,
+    }],
   })
   assert.deepEqual(pickExternalFields((snapshot.transcript?.entries as Array<Record<string, unknown>>)[1]), {
     source: "provider_output",

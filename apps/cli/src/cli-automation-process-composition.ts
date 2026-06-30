@@ -61,6 +61,8 @@ export type CliAutomationProcessCompositionDeps = {
   transcriptEntries: AnyFn
   visibleTranscriptAgentId: AnyFn
   agentPaneEntries: AnyFn
+  queuedPromptStripItemsForAgent: AnyFn
+  selectedQueuedPromptIndexForAgent: AnyFn
   footerFlash: AnyFn
   getInteractionChoiceSelection: AnyFn
   getInteractionCustomReply: AnyFn
@@ -123,6 +125,8 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     transcriptEntries: deps.transcriptEntries,
     visibleTranscriptAgentId: deps.visibleTranscriptAgentId,
     agentPaneEntries: deps.agentPaneEntries,
+    queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
     getInteractionCustomReply: deps.getInteractionCustomReply,

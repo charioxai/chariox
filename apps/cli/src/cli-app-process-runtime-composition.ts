@@ -65,6 +65,8 @@ export function createCliAppProcessRuntimeComposition(
     transcriptEntries: deps.transcriptEntries,
     visibleTranscriptAgentId: deps.visibleTranscriptAgentId,
     agentPaneEntries: deps.agentPaneEntries,
+    queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
     getInteractionCustomReply: deps.getInteractionCustomReply,
