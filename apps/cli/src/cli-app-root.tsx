@@ -9,7 +9,7 @@ import {
 } from "@arroba/kernel-client"
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect } from "solid-js"
+import { batch, createEffect, createSignal } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -87,6 +87,10 @@ import {
   queuedPromptStripItemToTranscriptEntry,
   type QueuedPromptStripItem,
 } from "./queued-prompt-strip-state.js"
+import {
+  nextQueuedPromptSelectionId,
+  selectedQueuedPromptIndex,
+} from "./queued-prompt-selection-state.js"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,
@@ -396,6 +400,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderScheduler.requestRenderable(renderable)
     },
   })
+  const [selectedQueuedPromptIdsByAgent, setSelectedQueuedPromptIdsByAgent] = createSignal<Record<string, string>>({})
 
   const {
     isAttached,
@@ -1033,6 +1038,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       agentId ? (agentPaneEntries()[agentId] ?? []) : [],
       agentId,
     ),
+    selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: handleQueuedPromptStripAction,
     interactionChoiceStore,
     promptUsageMeta,
@@ -1294,6 +1300,39 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleQueuedPromptAction(queuedPromptStripItemToTranscriptEntry(item), action)
   }
 
+  function queuedPromptStripItemsForAgentId(agentId: string | null | undefined): QueuedPromptStripItem[] {
+    return queuedPromptStripItemsForAgent(
+      sessionState(),
+      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
+      agentId,
+    )
+  }
+
+  function selectedQueuedPromptIndexForAgent(agentId: string | null | undefined): number {
+    if (!agentId) {
+      return -1
+    }
+    return selectedQueuedPromptIndex(
+      queuedPromptStripItemsForAgentId(agentId),
+      selectedQueuedPromptIdsByAgent()[agentId],
+    )
+  }
+
+  function selectQueuedPromptByDelta(agentId: string, delta: number): boolean {
+    const items = queuedPromptStripItemsForAgentId(agentId)
+    const nextPromptId = nextQueuedPromptSelectionId(items, selectedQueuedPromptIdsByAgent()[agentId], delta)
+    if (!nextPromptId) {
+      return false
+    }
+    setSelectedQueuedPromptIdsByAgent((current) => ({
+      ...current,
+      [agentId]: nextPromptId,
+    }))
+    renderAgentInteractions()
+    applyResponseLayout()
+    return true
+  }
+
   function handleQueuedPromptStripKey(event: {
     name?: string
     eventType?: string
@@ -1315,6 +1354,23 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ) {
       return false
     }
+    const agentId = focusedAgentId()
+    if (!agentId) {
+      return false
+    }
+    const selectionDelta = event.name === "down" || event.name === "j"
+      ? 1
+      : event.name === "up" || event.name === "k"
+        ? -1
+        : null
+    if (selectionDelta !== null) {
+      if (!selectQueuedPromptByDelta(agentId, selectionDelta)) {
+        return false
+      }
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return true
+    }
     const action = event.name === "s"
       ? "steer"
       : event.name === "c"
@@ -1323,14 +1379,17 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!action) {
       return false
     }
-    const agentId = focusedAgentId()
-    const item = queuedPromptStripItemsForAgent(
-      sessionState(),
-      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
-      agentId,
-    )[0]
+    const items = queuedPromptStripItemsForAgentId(agentId)
+    const selectedIndex = selectedQueuedPromptIndex(items, selectedQueuedPromptIdsByAgent()[agentId])
+    const item = selectedIndex >= 0 ? items[selectedIndex] : undefined
     if (!item) {
       return false
+    }
+    if (selectedQueuedPromptIdsByAgent()[agentId] !== item.promptId) {
+      setSelectedQueuedPromptIdsByAgent((current) => ({
+        ...current,
+        [agentId]: item.promptId,
+      }))
     }
     event.preventDefault?.()
     event.stopPropagation?.()

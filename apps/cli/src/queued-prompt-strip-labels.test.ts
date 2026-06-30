@@ -8,7 +8,7 @@ import {
 } from "./queued-prompt-strip-labels.js"
 
 test("queued prompt strip uses compact focused action labels", () => {
-  assert.equal(queuedPromptTitleLabel(2, true), "QUEUE • 2 prompts • S steer • C cancel")
+  assert.equal(queuedPromptTitleLabel(2, true), "QUEUE • 2 prompts • J/K select • S steer • C cancel")
   assert.equal(queuedPromptActionLabel("steer", true), "S")
   assert.equal(queuedPromptActionLabel("cancel", true), "C")
 })

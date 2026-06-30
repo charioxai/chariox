@@ -24,6 +24,7 @@ test("agent interaction strip controller renders current pane and interaction in
     customReply: () => "custom",
     customEditing: () => true,
     queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-a" ? [queuedPromptFixture()] : [],
+    selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
     renderStrips: (options) => {
       rendered.push(options)
@@ -49,6 +50,7 @@ test("agent interaction strip controller renders current pane and interaction in
     customReply: (interactionId: string) => string
     customEditing: (interactionId: string) => boolean
     queuedPromptStripItemsForAgent: (agentId: string) => readonly QueuedPromptStripItem[]
+    selectedQueuedPromptIndexForAgent: (agentId: string) => number
   }
   assert.equal(first.renderer, "renderer")
   assert.equal(first.primaryBox, "primary")
@@ -61,6 +63,7 @@ test("agent interaction strip controller renders current pane and interaction in
   assert.equal(first.customReply("interaction-a"), "custom")
   assert.equal(first.customEditing("interaction-a"), true)
   assert.deepEqual(first.queuedPromptStripItemsForAgent("agent-a").map((item) => item.promptId), ["prompt-a"])
+  assert.equal(first.selectedQueuedPromptIndexForAgent("agent-a"), 0)
 
   const second = rendered[1] as { primaryBox: string; auxiliaryBoxes: string[]; visibleAgents: Array<{ id: string }> }
   assert.equal(second.primaryBox, "next-primary")

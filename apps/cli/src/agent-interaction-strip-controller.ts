@@ -14,6 +14,7 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
 }
 
@@ -34,6 +35,7 @@ export type AgentInteractionStripControllerDeps<
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   renderStrips: (options: AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent>) => void
 }
@@ -60,6 +62,7 @@ export function createAgentInteractionStripController<
         customReply: deps.customReply,
         customEditing: deps.customEditing,
         queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+        selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
       })
     },

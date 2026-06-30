@@ -310,6 +310,11 @@
           <td>Compact queue strip controls</td>
           <td>The focused queue strip now advertises <code>S steer</code>/<code>C cancel</code> in the title and renders compact <code>[S]</code>/<code>[C]</code> row actions so 80-column PTY rows no longer collide.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue keyboard selection</td>
+          <td>The focused queue strip now tracks a selected queued prompt, supports <code>Alt+J/K</code> and <code>Alt+Up/Down</code> selection, and sends <code>Alt+S</code>/<code>Alt+C</code> actions to the selected row instead of always using the first prompt.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -387,8 +392,8 @@
         <tr>
           <td>Queued prompts</td>
           <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
-          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows.</td>
-          <td><span class="status gap">Gap</span>: unreliable PTY shortcuts and first-item-only keyboard targeting remain.</td>
+          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt.</td>
+          <td><span class="status gap">Gap</span>: PTY shortcut delivery still needs live-drill hardening and automation assertions.</td>
         </tr>
         <tr>
           <td>Steering echo</td>

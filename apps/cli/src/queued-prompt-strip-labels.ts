@@ -1,7 +1,7 @@
 export function queuedPromptTitleLabel(count: number, focused: boolean): string {
   const countLabel = `QUEUE • ${count} prompt${count === 1 ? "" : "s"}`
   return focused
-    ? `${countLabel} • S steer • C cancel`
+    ? `${countLabel} • J/K select • S steer • C cancel`
     : countLabel
 }
 

@@ -32,6 +32,7 @@ type InteractionStripRenderOptions = {
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
 }
 
@@ -75,6 +76,9 @@ function renderInteractionStrip(
   }
 
   const focused = agent?.id === options.focusedAgentId
+  const selectedQueuedPromptIndex = focused
+    ? options.selectedQueuedPromptIndexForAgent(agent?.id ?? null)
+    : -1
   if (interaction) {
     const titleLine = new TextRenderable(options.renderer, {
       wrapMode: "char",
@@ -101,7 +105,7 @@ function renderInteractionStrip(
     box.add(messageLine)
     renderInteractionChoices(options, box, interaction, focused)
   }
-  renderQueuedPromptStrip(options, box, queuedPrompts, focused)
+  renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
   box.requestRender?.()
 }
 
@@ -110,6 +114,7 @@ function renderQueuedPromptStrip(
   container: BoxRenderable,
   items: readonly QueuedPromptStripItem[],
   focused: boolean,
+  selectedIndex: number,
 ): void {
   if (items.length === 0) {
     return
@@ -122,6 +127,7 @@ function renderQueuedPromptStrip(
   })
   container.add(title)
   items.forEach((item, index) => {
+    const selected = focused && index === selectedIndex
     const row = new BoxRenderable(options.renderer, {
       width: "100%",
       flexDirection: "row",
@@ -129,8 +135,8 @@ function renderQueuedPromptStrip(
       flexShrink: 0,
     })
     const prompt = new TextRenderable(options.renderer, {
-      content: item.prompt,
-      fg: theme.text,
+      content: selected ? `> ${item.prompt}` : `  ${item.prompt}`,
+      fg: selected ? theme.primary : theme.text,
       wrapMode: "word",
     })
     prompt.flexBasis = 0
@@ -145,8 +151,8 @@ function renderQueuedPromptStrip(
     })
     meta.flexShrink = 0
     row.add(meta)
-    row.add(renderQueuedPromptAction(options, item, "steer", queuedPromptActionLabel("steer", focused && index === 0)))
-    row.add(renderQueuedPromptAction(options, item, "cancel", queuedPromptActionLabel("cancel", focused && index === 0)))
+    row.add(renderQueuedPromptAction(options, item, "steer", queuedPromptActionLabel("steer", selected)))
+    row.add(renderQueuedPromptAction(options, item, "cancel", queuedPromptActionLabel("cancel", selected)))
     container.add(row)
   })
 }
