@@ -325,6 +325,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getFocusedHasPromptWork: () => agentHasPromptWork(deps.sessionState(), deps.focusedAgentId()),
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
+    getTerminalWidth: deps.terminalWidth,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,
     setPromptMetaRenderables: promptMetaRenderController.setRenderables,

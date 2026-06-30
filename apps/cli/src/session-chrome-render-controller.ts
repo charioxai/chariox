@@ -7,6 +7,7 @@ import {
   deriveAttachedFooterSummary,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
+import { compactFooterSummary } from "./footer-summary-compact.js"
 import {
   SESSION_NEW_FOOTER_HINT,
 } from "./sessions.js"
@@ -39,6 +40,7 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getFocusedHasPromptWork: () => boolean
   getWorkspaceLiveSyncStatus: () => WorkspaceLiveSyncStatus | null
   getHotkeyToggleLabel: () => string
+  getTerminalWidth?: () => number
   getFooterFlash: () => FooterFlash | null
   getPromptMetaParts: () => PromptMetaPart[]
   setPromptMetaRenderables: (parts: PromptMetaPart[]) => void
@@ -59,6 +61,23 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
   let footerSummaryBox: TBox | undefined
 
   const apply = () => {
+    const footerFlash = deps.getFooterFlash()
+    const footerSummary = deps.isAttached()
+      ? deriveAttachedFooterSummary({
+        session: deps.getSession(),
+        connectedClientCount: deps.getConnectedClientCount(),
+        multiAgentMode: deps.getMultiAgentMode(),
+        responseLayout: deps.getResponseLayout(),
+        sessionStatusMode: deps.getSessionStatusMode(),
+        hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
+        focusedHasPromptWork: deps.getFocusedHasPromptWork(),
+        workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
+      })
+      : SESSION_NEW_FOOTER_HINT
+    const footerFlashWidth = footerFlash ? ` • ${footerFlash.message}`.length : 0
+    const compactFooterWidth = deps.getTerminalWidth
+      ? Math.max(0, deps.getTerminalWidth() - footerFlashWidth)
+      : null
     deps.syncPromptPlaceholder()
     deps.renderSummary({
       renderer: deps.renderer,
@@ -75,19 +94,8 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         : deps.getSubmitting()
           ? "thinking"
           : "muted",
-      footerSummary: deps.isAttached()
-        ? deriveAttachedFooterSummary({
-          session: deps.getSession(),
-          connectedClientCount: deps.getConnectedClientCount(),
-          multiAgentMode: deps.getMultiAgentMode(),
-          responseLayout: deps.getResponseLayout(),
-          sessionStatusMode: deps.getSessionStatusMode(),
-          hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
-          focusedHasPromptWork: deps.getFocusedHasPromptWork(),
-          workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
-        })
-        : SESSION_NEW_FOOTER_HINT,
-      footerFlash: deps.getFooterFlash(),
+      footerSummary: compactFooterSummary(footerSummary, compactFooterWidth),
+      footerFlash,
     })
     deps.setPromptMetaRenderables(deps.isAttached() ? deps.getPromptMetaParts() : [])
     deps.renderStatusIndicator()

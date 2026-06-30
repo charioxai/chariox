@@ -325,6 +325,11 @@
           <td>Queue notice suppression</td>
           <td>Successful queued-prompt lifecycle notices are now filtered from both event-stream and polling runtime-notice paths, while failure notices still render in transcript history.</td>
         </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Compact screen footer summary</td>
+          <td>The attached-session and Waiting Room screen footer summaries now compact action labels and truncate as a last resort against the live terminal width, keeping 80-column footer text bounded.</td>
+        </tr>
       </tbody>
     </table>
 
@@ -426,14 +431,14 @@
         <tr>
           <td>Screen footer</td>
           <td>Status region reports connect/session/focus/action feedback and Waiting Room hints.</td>
-          <td>TUI derives active prompt, queue depth, status line, hotkeys, connection, and sync footer text.</td>
-          <td><span class="status gap">Gap</span>: semantics are present, but narrow PTY rendering clips queue and Waiting Room action text.</td>
+          <td>TUI derives active prompt, queue depth, status line, hotkeys, connection, sync footer text, and width-bounded attached/Waiting Room footer summaries.</td>
+          <td><span class="status gap">Gap</span>: pane-specific action strips still need broader live-drill assertions, but the screen footer summary now compacts at 80 columns.</td>
         </tr>
         <tr>
           <td>Waiting Room</td>
           <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
           <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme, with recent-activity sorting, work/done markers, prompt counts, and recovery next actions.</td>
-          <td><span class="status gap">Partial</span>: row semantics are present; footer/action layout still needs the same fixed-width treatment as the queue strip.</td>
+          <td><span class="status gap">Partial</span>: row semantics and screen footer compaction are present; row/action snapshot assertions still need to cover 80x24 and wider widths.</td>
         </tr>
       </tbody>
     </table>

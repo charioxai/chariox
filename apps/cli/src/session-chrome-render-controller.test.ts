@@ -7,7 +7,6 @@ import {
   createSessionChromeRenderController,
   type SessionChromeRenderControllerDeps,
 } from "./session-chrome-render-controller.js"
-import { SESSION_NEW_FOOTER_HINT } from "./sessions.js"
 
 test("session chrome render controller applies attached chrome in order", () => {
   const calls: string[] = []
@@ -25,7 +24,7 @@ test("session chrome render controller applies attached chrome in order", () => 
 
   assert.deepEqual(calls, [
     "placeholder",
-    "summary:prompt-box:footer-box:ready:muted:Session session-1 • 2 CLIs connected • 2 visible agents • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • ? hotkeys:none",
+    "summary:prompt-box:footer-box:ready:muted:Session session-1 • 2 CLIs • 2 agents • Ctrl+C stop • Tab focus • ? keys:none",
     "meta:1",
     "status",
     "footers",
@@ -45,7 +44,7 @@ test("session chrome render controller clears prompt meta while detached", () =>
 
   assert.deepEqual(calls, [
     "placeholder",
-    `summary:none:none:ready:muted:${SESSION_NEW_FOOTER_HINT}:none`,
+    "summary:none:none:ready:muted:Waiting room • arrows • Enter • A archive • D delete • Ctrl+T keys:none",
     "meta:0",
     "status",
     "footers",
@@ -71,6 +70,7 @@ function createDeps(overrides: {
   activeStatusLabel?: string | null
   providerActivityLabel?: string | null
   streamingAgentId?: string | null
+  terminalWidth?: number
 } = {}): SessionChromeRenderControllerDeps<Record<string, never>, string> {
   const calls = overrides.calls ?? []
   const attached = overrides.attached ?? true
@@ -92,6 +92,7 @@ function createDeps(overrides: {
     getFocusedHasPromptWork: () => false,
     getWorkspaceLiveSyncStatus: () => overrides.workspaceLiveSyncStatus ?? null,
     getHotkeyToggleLabel: () => "?",
+    getTerminalWidth: () => overrides.terminalWidth ?? 80,
     getFooterFlash: () => null,
     getPromptMetaParts: () => overrides.promptMetaParts ?? [],
     setPromptMetaRenderables: (parts) => {
