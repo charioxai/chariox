@@ -52,6 +52,9 @@ impl AgentRuntimeCommandExecutor {
             AgentCommand::CancelQueuedPrompt { request } => {
                 self.cancel_queued_prompt(request).await
             }
+            AgentCommand::UpdateQueuedPrompt { request } => {
+                self.update_queued_prompt(request).await
+            }
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id,
@@ -247,6 +250,36 @@ impl AgentRuntimeCommandExecutor {
             .agent_activity_for_session(&prepared.session);
 
         Ok(LocalDaemonResponse::QueuedPromptCancelled {
+            prompt: prepared.prompt,
+            session: prepared.session,
+            agent_activity,
+            agent_activity_revision: self.session_projection.change_sequence(),
+        })
+    }
+
+    async fn update_queued_prompt(
+        &self,
+        request: crate::local::UpdateQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let prepared = self
+            .prompt_commands
+            .update_queued_prompt(
+                &request.session_id,
+                &request.target_agent_id,
+                &request.attachment_id,
+                &request.prompt_id,
+                &request.prompt,
+            )
+            .await?;
+        self.session_projection.update(prepared.session.clone());
+        self.agent_runtime_projection
+            .update_session(&prepared.session);
+
+        let agent_activity = self
+            .prompt_commands
+            .agent_activity_for_session(&prepared.session);
+
+        Ok(LocalDaemonResponse::QueuedPromptUpdated {
             prompt: prepared.prompt,
             session: prepared.session,
             agent_activity,

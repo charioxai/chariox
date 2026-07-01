@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::BTreeSet;
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::session::{CreateSessionRequest, WorkflowHandoffValidationPolicy};
 use crate::workflow_code::{
@@ -11,6 +10,7 @@ use crate::workflow_code::{
     WorkflowCodeWatchdogDefinition, WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES,
     WORKFLOW_CODE_SCHEMA_VERSION,
 };
+use std::collections::BTreeSet;
 
 fn completion_with_message(message: impl Into<String>) -> WorkflowCompletionSnapshot {
     WorkflowCompletionSnapshot::new(
@@ -311,6 +311,60 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert!(layout
         .edges
         .contains_key(report.edge_ids.get("planner_to_worker").expect("edge id")));
+}
+
+#[test]
+fn workflow_code_definition_alias_base_allocates_template_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let definition = workflow_code_definition();
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+
+    let first = service
+        .apply_workflow_code_definition_with_alias_base(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            "workflow-code-owner".to_string(),
+            None,
+            Some("Prompt Chaining"),
+        )
+        .expect("first template workflow should apply");
+    let second = service
+        .apply_workflow_code_definition_with_alias_base(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            "workflow-code-owner".to_string(),
+            None,
+            Some("Prompt Chaining"),
+        )
+        .expect("second template workflow should apply");
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(
+        session
+            .workflow(&first.workflow_id)
+            .and_then(|workflow| workflow.alias()),
+        Some("prompt-chaining-1")
+    );
+    assert_eq!(
+        session
+            .workflow(&second.workflow_id)
+            .and_then(|workflow| workflow.alias()),
+        Some("prompt-chaining-2")
+    );
 }
 
 #[test]
@@ -1078,7 +1132,10 @@ fn planner_worker_reviewer_pattern_preserves_goal_workflow_contract() {
     assert_eq!(compiled.edges.len(), 4);
     assert_eq!(compiled.endpoints.len(), 1);
     assert_eq!(compiled.schemas.len(), 5);
-    assert_eq!(compiled.workflow.run_output_schema.as_deref(), Some("final_output"));
+    assert_eq!(
+        compiled.workflow.run_output_schema.as_deref(),
+        Some("final_output")
+    );
 
     let planner = compiled
         .nodes
@@ -1086,13 +1143,11 @@ fn planner_worker_reviewer_pattern_preserves_goal_workflow_contract() {
         .find(|node| node.handle == "planner")
         .expect("planner node should exist");
     assert_eq!(planner.can_complete_workflow_run, Some(true));
-    assert!(
-        planner
-            .instructions
-            .as_deref()
-            .unwrap_or_default()
-            .contains("only node allowed to finish")
-    );
+    assert!(planner
+        .instructions
+        .as_deref()
+        .unwrap_or_default()
+        .contains("only node allowed to finish"));
     for node in compiled
         .nodes
         .iter()

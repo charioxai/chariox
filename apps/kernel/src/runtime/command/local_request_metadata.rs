@@ -161,6 +161,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .attachment(&request.attachment_id)
                 .agent(&request.target_agent_id)
         }
+        LocalDaemonRequest::UpdateQueuedPrompt(request) => {
+            LocalRequestMetadata::new("prompt.queued.update", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
+        }
         LocalDaemonRequest::ResizeTerminal(request) => {
             LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
         }
@@ -661,6 +667,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
+        | LocalDaemonRequest::UpdateQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)
         | LocalDaemonRequest::SendTerminalInput(_)
         | LocalDaemonRequest::FocusAgent(_)

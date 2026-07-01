@@ -1,7 +1,7 @@
 use crate::app::{
     KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
     KernelPromptDispatch, KernelPromptSubmission, KernelQueuedPromptCancellation,
-    KernelQueuedPromptSteer, KernelRemotePromptDispatch,
+    KernelQueuedPromptSteer, KernelQueuedPromptUpdate, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
 use crate::provider::ProviderRunOperationLanes;
@@ -98,6 +98,25 @@ impl AgentPromptCommandService {
     ) -> Result<KernelQueuedPromptCancellation, DaemonError> {
         self.state
             .cancel_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
+            .await
+    }
+
+    pub(crate) async fn update_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+        prompt: &str,
+    ) -> Result<KernelQueuedPromptUpdate, DaemonError> {
+        self.state
+            .update_queued_prompt(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                prompt_id,
+                prompt,
+            )
             .await
     }
 

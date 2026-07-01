@@ -223,6 +223,24 @@ export function cancelQueuedPromptRequest(
   }
 }
 
+export function updateQueuedPromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+  prompt: string,
+) {
+  return {
+    UpdateQueuedPrompt: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      target_agent_id: targetAgentId,
+      prompt_id: promptId,
+      prompt,
+    },
+  }
+}
+
 export function pollRuntimeNoticesRequest(sessionId: string, attachmentId: string) {
   return {
     PollRuntimeNotices: {

@@ -10,7 +10,9 @@ impl SessionService {
     ) -> Result<WorkflowDefinition, DaemonError> {
         match op {
             crate::local::WorkflowDesignOp::WorkflowCreate { workflow } => {
-                let mut definition = WorkflowDefinition::new(workflow.id, workflow.alias);
+                let alias =
+                    self.workflow_alias_for_create(session_id, workflow.alias, "workflow")?;
+                let mut definition = WorkflowDefinition::new(workflow.id, alias);
                 if let Some(value) = workflow.flush_agent_context_before_run {
                     definition.set_flush_agent_context_before_run(value);
                 }
@@ -41,6 +43,20 @@ impl SessionService {
                     .resolve_workflow_ref(session_id, &workflow_id)?
                     .id()
                     .to_string();
+                let alias = match patch.alias {
+                    Some(alias) => {
+                        let alias = normalize_workflow_alias(alias)?;
+                        if let Some(alias) = alias.as_deref() {
+                            self.ensure_workflow_alias_available_for_update(
+                                session_id,
+                                &workflow_id,
+                                alias,
+                            )?;
+                        }
+                        Some(alias)
+                    }
+                    None => None,
+                };
                 let session =
                     self.store
                         .get_mut(session_id)
@@ -53,7 +69,7 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                if let Some(alias) = patch.alias {
+                if let Some(alias) = alias {
                     workflow.set_alias(alias);
                 }
                 if let Some(value) = patch.flush_agent_context_before_run {

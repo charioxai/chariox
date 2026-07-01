@@ -503,6 +503,11 @@ impl CommandRouter {
                     .dispatch_prompt_cancel_queued(&command, request)
                     .await
             }
+            LocalDaemonRequest::UpdateQueuedPrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_update_queued(&command, request)
+                    .await
+            }
             request => {
                 if is_workflow_command(&request) {
                     self.workflow_runtime

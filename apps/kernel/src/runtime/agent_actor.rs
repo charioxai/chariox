@@ -321,6 +321,27 @@ impl AgentRuntime {
         .await
     }
 
+    pub(crate) async fn dispatch_prompt_update_queued(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::UpdateQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
+        self.store
+            .ensure_agent_prompt_access(
+                &request.target_agent_id,
+                &caller_user_id,
+                "update queued prompt",
+            )
+            .await?;
+        self.dispatch_to_agent(
+            request.target_agent_id.clone(),
+            CommandTrace::from_command(command),
+            AgentCommand::UpdateQueuedPrompt { request },
+        )
+        .await
+    }
+
     pub(crate) async fn dispatch_prompt_complete(
         &self,
         command: &crate::runtime::command::KernelCommand,
@@ -646,6 +667,7 @@ mod tests {
     use crate::local::{
         CancelActivePromptRequest, CancelQueuedPromptRequest, CompletePromptRequest,
         LocalDaemonRequest, LocalDaemonResponse, SteerQueuedPromptRequest, SubmitPromptRequest,
+        UpdateQueuedPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::runtime::agent_actor::prompt_attachment_materialization::{

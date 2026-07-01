@@ -1550,13 +1550,15 @@ fn workflow_registry_apply_result(
         workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
     }
     workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
-    let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
-        session_id,
-        &definition,
-        &limits,
-        caller_user_id,
-        controlled_by_metaagent_id,
-    )?;
+    let apply = crate::app::KernelSessionService::new(app)
+        .apply_workflow_code_definition_with_alias_base(
+            session_id,
+            &definition,
+            &limits,
+            caller_user_id,
+            controlled_by_metaagent_id,
+            Some(name),
+        )?;
     Ok((
         entry.metadata,
         crate::workflow_code::WorkflowCodeCompileAndApplyResult {

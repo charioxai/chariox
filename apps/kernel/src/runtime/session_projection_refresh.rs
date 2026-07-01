@@ -237,6 +237,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::PromptSubmitted { session, .. }
         | LocalDaemonResponse::QueuedPromptSteered { session, .. }
         | LocalDaemonResponse::QueuedPromptCancelled { session, .. }
+        | LocalDaemonResponse::QueuedPromptUpdated { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::MetaagentTaskUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
@@ -427,13 +428,19 @@ mod tests {
             agent_activity_revision: 0,
         };
         let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
+            prompt: prompt.clone(),
+            session: session.clone(),
+            agent_activity: BTreeMap::new(),
+            agent_activity_revision: 0,
+        };
+        let updated = LocalDaemonResponse::QueuedPromptUpdated {
             prompt,
             session: session.clone(),
             agent_activity: BTreeMap::new(),
             agent_activity_revision: 0,
         };
 
-        for response in [submitted, steered, cancelled] {
+        for response in [submitted, steered, cancelled, updated] {
             assert_eq!(response_sessions(&response), vec![session.clone()]);
         }
     }

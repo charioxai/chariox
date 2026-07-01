@@ -32,6 +32,9 @@ pub(super) enum AgentCommand {
     CancelQueuedPrompt {
         request: crate::local::CancelQueuedPromptRequest,
     },
+    UpdateQueuedPrompt {
+        request: crate::local::UpdateQueuedPromptRequest,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

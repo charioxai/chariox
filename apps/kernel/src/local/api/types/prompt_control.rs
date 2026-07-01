@@ -93,6 +93,15 @@ pub struct CancelQueuedPromptRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateQueuedPromptRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub target_agent_id: String,
+    pub prompt_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSessionConfigRequest {
     pub session_id: String,
     pub attachment_id: String,

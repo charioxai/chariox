@@ -455,6 +455,26 @@ impl PromptStateOwner {
         state.queued_prompts.remove(index)
     }
 
+    pub(crate) fn update_queued_prompt(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        prompt: impl Into<String>,
+    ) -> Option<PromptQueueItem> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        let queued = state
+            .queued_prompts
+            .iter_mut()
+            .find(|queued| queued.id() == prompt_id)?;
+        queued.set_prompt(prompt);
+        Some(queued.clone())
+    }
+
     pub(crate) fn state_parts(
         &self,
         session: &RuntimeSession,

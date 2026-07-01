@@ -301,4 +301,48 @@ impl KernelRuntimeOwnedState {
         let session = self.session_snapshot(session_id)?;
         Ok(crate::app::KernelQueuedPromptCancellation { prompt, session })
     }
+
+    pub(super) fn update_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+        prompt_text: &str,
+    ) -> Result<crate::app::KernelQueuedPromptUpdate, DaemonError> {
+        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent = self.agent_store.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .update_queued_prompt(&session, agent_id, prompt_id, prompt_text)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "update queued prompt",
+                message: format!(
+                    "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
+                ),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        self.record_notice(
+            session_id,
+            None,
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{}` updated queued prompt `{}` for agent `{}`.",
+                attachment_id,
+                prompt.id(),
+                agent_id
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+        Ok(crate::app::KernelQueuedPromptUpdate { prompt, session })
+    }
 }

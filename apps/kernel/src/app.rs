@@ -65,7 +65,8 @@ pub(crate) use prompt_activity::{
 pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
     KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
-    KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelRemotePromptDispatch,
+    KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
+    KernelRemotePromptDispatch,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,

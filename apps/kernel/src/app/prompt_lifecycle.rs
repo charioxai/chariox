@@ -233,6 +233,11 @@ pub(crate) struct KernelQueuedPromptCancellation {
     pub(crate) session: crate::session::RuntimeSession,
 }
 
+pub(crate) struct KernelQueuedPromptUpdate {
+    pub(crate) prompt: PromptQueueItem,
+    pub(crate) session: crate::session::RuntimeSession,
+}
+
 #[derive(Clone)]
 pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) session_id: String,

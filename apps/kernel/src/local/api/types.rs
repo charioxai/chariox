@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 211;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 212;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOperationFailure {
@@ -371,6 +371,7 @@ pub enum LocalDaemonRequest {
     CancelActivePrompt(CancelActivePromptRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
     CancelQueuedPrompt(CancelQueuedPromptRequest),
+    UpdateQueuedPrompt(UpdateQueuedPromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
     UpdateAgentConfig(UpdateAgentConfigRequest),
     UpdateAgentProfile(UpdateAgentProfileRequest),
@@ -1073,6 +1074,13 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     QueuedPromptCancelled {
+        prompt: PromptQueueItem,
+        session: RuntimeSession,
+        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        #[serde(default)]
+        agent_activity_revision: u64,
+    },
+    QueuedPromptUpdated {
         prompt: PromptQueueItem,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,

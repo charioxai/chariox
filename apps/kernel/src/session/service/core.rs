@@ -499,10 +499,22 @@ impl SessionService {
         alias: Option<String>,
         controlled_by_metaagent_id: Option<String>,
     ) -> Result<WorkflowDefinition, DaemonError> {
-        let alias = normalize_workflow_alias(alias)?;
-        if let Some(alias) = alias.as_deref() {
-            self.ensure_workflow_alias_available(session_id, alias)?;
-        }
+        self.create_workflow_controlled_by_metaagent_with_alias_base(
+            session_id,
+            alias,
+            "workflow",
+            controlled_by_metaagent_id,
+        )
+    }
+
+    pub(super) fn create_workflow_controlled_by_metaagent_with_alias_base(
+        &mut self,
+        session_id: &str,
+        alias: Option<String>,
+        default_base: &str,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let alias = self.workflow_alias_for_create(session_id, alias, default_base)?;
         let workflow = match controlled_by_metaagent_id {
             Some(metaagent_id) => WorkflowDefinition::new_controlled_by_metaagent(
                 self.next_workflow_id(),
@@ -519,6 +531,53 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow(workflow))
+    }
+
+    pub(super) fn workflow_alias_for_create(
+        &self,
+        session_id: &str,
+        alias: Option<String>,
+        default_base: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let alias = match alias {
+            Some(alias) if !alias.trim().is_empty() => normalize_workflow_alias(Some(alias))?,
+            _ => Some(self.default_workflow_alias(session_id, default_base)?),
+        };
+        if let Some(alias) = alias.as_deref() {
+            self.ensure_workflow_alias_available(session_id, alias)?;
+        }
+        Ok(alias)
+    }
+
+    fn default_workflow_alias(&self, session_id: &str, base: &str) -> Result<String, DaemonError> {
+        let base = default_workflow_alias_base(base);
+        let session = self
+            .store
+            .get(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let mut number = session
+            .workflows()
+            .iter()
+            .filter(|workflow| {
+                workflow
+                    .alias()
+                    .is_some_and(|alias| workflow_alias_uses_base(alias, &base))
+            })
+            .count()
+            + 1;
+        loop {
+            let alias = format!("{base}-{number}");
+            if session
+                .workflows()
+                .iter()
+                .all(|workflow| workflow.alias() != Some(alias.as_str()))
+            {
+                return Ok(alias);
+            }
+            number += 1;
+        }
     }
 
     pub fn assign_workflow_alias(
@@ -998,9 +1057,17 @@ fn default_session_alias_base(workspace_id: &str) -> String {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(workspace_id);
+    default_alias_base(repo_name, "workspace")
+}
+
+fn default_workflow_alias_base(base: &str) -> String {
+    default_alias_base(base, "workflow")
+}
+
+fn default_alias_base(input: &str, fallback: &str) -> String {
     let mut base = String::new();
     let mut previous_separator = false;
-    for char in repo_name.trim().to_lowercase().chars() {
+    for char in input.trim().to_lowercase().chars() {
         if char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_' {
             base.push(char);
             previous_separator = false;
@@ -1018,10 +1085,19 @@ fn default_session_alias_base(workspace_id: &str) -> String {
         base.pop();
     }
     if base.is_empty() {
-        "workspace".to_string()
+        fallback.to_string()
     } else {
         base
     }
+}
+
+fn workflow_alias_uses_base(alias: &str, base: &str) -> bool {
+    let Some(suffix) = alias.strip_prefix(base) else {
+        return false;
+    };
+    suffix.strip_prefix('-').is_some_and(|number| {
+        !number.is_empty() && number.chars().all(|char| char.is_ascii_digit())
+    })
 }
 
 fn validate_workflow_publication_trace_exposure(

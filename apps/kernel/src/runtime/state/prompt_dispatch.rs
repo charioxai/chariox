@@ -185,6 +185,25 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn update_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+        prompt: &str,
+    ) -> Result<crate::app::KernelQueuedPromptUpdate, DaemonError> {
+        {
+            self.owned.update_queued_prompt(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                prompt_id,
+                prompt,
+            )
+        }
+    }
+
     pub(crate) async fn complete_agent_prompt(
         &self,
         session_id: &str,

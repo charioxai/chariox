@@ -196,6 +196,10 @@ impl PromptQueueItem {
     pub fn set_status(&mut self, status: PromptStatus) {
         self.status = status;
     }
+
+    pub fn set_prompt(&mut self, prompt: impl Into<String>) {
+        self.prompt = prompt.into();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

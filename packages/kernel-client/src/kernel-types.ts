@@ -1511,7 +1511,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 211
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 212
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1698,6 +1698,13 @@ export type QueuedPromptSteeredPayload = {
 }
 
 export type QueuedPromptCancelledPayload = {
+  prompt: PromptQueueItem
+  session: RuntimeSession
+  agent_activity: Record<string, AgentRuntimeActivity>
+  agent_activity_revision: number
+}
+
+export type QueuedPromptUpdatedPayload = {
   prompt: PromptQueueItem
   session: RuntimeSession
   agent_activity: Record<string, AgentRuntimeActivity>

@@ -44,6 +44,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::PromptSubmitted { session, .. }
         | LocalDaemonResponse::QueuedPromptSteered { session, .. }
         | LocalDaemonResponse::QueuedPromptCancelled { session, .. }
+        | LocalDaemonResponse::QueuedPromptUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
@@ -98,13 +99,19 @@ mod tests {
             agent_activity_revision: 0,
         };
         let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
+            prompt: prompt.clone(),
+            session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        };
+        let updated = LocalDaemonResponse::QueuedPromptUpdated {
             prompt,
             session: session.clone(),
             agent_activity: Default::default(),
             agent_activity_revision: 0,
         };
 
-        for response in [submitted, steered, cancelled] {
+        for response in [submitted, steered, cancelled, updated] {
             let Some(SessionProjectionAction::Update(projected)) =
                 session_response_projection_action(&response)
             else {

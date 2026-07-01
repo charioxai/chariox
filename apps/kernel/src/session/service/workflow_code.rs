@@ -19,6 +19,27 @@ impl SessionService {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        self.apply_workflow_code_definition_with_alias_base(
+            session_id,
+            definition,
+            node_agent_ids,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            None,
+        )
+    }
+
+    pub fn apply_workflow_code_definition_with_alias_base(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        node_agent_ids: &BTreeMap<String, String>,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        alias_base: Option<&str>,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         let mut effective_limits = limits.clone();
         effective_limits.max_queues = effective_limits
             .max_queues
@@ -39,11 +60,20 @@ impl SessionService {
             });
         }
         self.validate_workflow_code_agent_bindings(session_id, definition, node_agent_ids)?;
-        let workflow = self.create_workflow_code_workflow(
-            session_id,
-            definition.workflow.alias.as_deref(),
-            controlled_by_metaagent_id.clone(),
-        )?;
+        let workflow = if let Some(alias_base) = alias_base {
+            self.create_workflow_controlled_by_metaagent_with_alias_base(
+                session_id,
+                None,
+                alias_base,
+                controlled_by_metaagent_id.clone(),
+            )?
+        } else {
+            self.create_workflow_code_workflow(
+                session_id,
+                definition.workflow.alias.as_deref(),
+                controlled_by_metaagent_id.clone(),
+            )?
+        };
         let workflow_id = workflow.id().to_string();
         let schema_refs = self.apply_workflow_code_schemas(session_id, &workflow_id, definition)?;
         let mut report = WorkflowCodeApplyReport {

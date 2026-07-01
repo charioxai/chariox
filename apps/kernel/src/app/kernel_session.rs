@@ -1612,6 +1612,26 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
+    pub(crate) fn apply_workflow_code_definition_with_alias_base(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        alias_base: Option<&str>,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        self.apply_workflow_code_definition_with_rebindings_and_alias_base(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            &[],
+            alias_base,
+        )
+    }
+
     pub(crate) fn apply_workflow_code_definition_with_rebindings(
         &mut self,
         session_id: &str,
@@ -1620,6 +1640,27 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        self.apply_workflow_code_definition_with_rebindings_and_alias_base(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            provider_rebindings,
+            None,
+        )
+    }
+
+    fn apply_workflow_code_definition_with_rebindings_and_alias_base(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        alias_base: Option<&str>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         let validation = definition.validate_with_limits(limits);
         if !validation.ok {
@@ -1728,14 +1769,26 @@ impl<'a> KernelSessionService<'a> {
 
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let report = sessions.apply_workflow_code_definition(
-            session_id,
-            &definition,
-            &node_agent_ids,
-            limits,
-            created_by_user_id.clone(),
-            controlled_by_metaagent_id.clone(),
-        )?;
+        let report = if let Some(alias_base) = alias_base {
+            sessions.apply_workflow_code_definition_with_alias_base(
+                session_id,
+                &definition,
+                &node_agent_ids,
+                limits,
+                created_by_user_id.clone(),
+                controlled_by_metaagent_id.clone(),
+                Some(alias_base),
+            )?
+        } else {
+            sessions.apply_workflow_code_definition(
+                session_id,
+                &definition,
+                &node_agent_ids,
+                limits,
+                created_by_user_id.clone(),
+                controlled_by_metaagent_id.clone(),
+            )?
+        };
         drop(sessions);
 
         self.app.durable_state_store().append_event(

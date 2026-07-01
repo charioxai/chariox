@@ -66,6 +66,53 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
 }
 
 #[test]
+fn create_workflow_generates_default_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let first = service
+        .create_workflow(session.id(), None)
+        .expect("workflow should be created");
+    let second = service
+        .create_workflow(session.id(), Some(" ".to_string()))
+        .expect("blank alias should allocate a default workflow alias");
+
+    assert_eq!(first.alias(), Some("workflow-1"));
+    assert_eq!(second.alias(), Some("workflow-2"));
+}
+
+#[test]
+fn workflow_design_create_generates_default_alias() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowCreate {
+                workflow: crate::local::WorkflowDesignWorkflow {
+                    id: "workflow-design-1".to_string(),
+                    alias: None,
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                    intermediate_output_schema_ref: None,
+                    schemas: Vec::new(),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design create should apply");
+
+    assert_eq!(created.id(), "workflow-design-1");
+    assert_eq!(created.alias(), Some("workflow-1"));
+}
+
+#[test]
 fn creates_lists_resolves_and_disables_workflow_publications() {
     let mut service = SessionService::new(&test_config());
     let session = service
