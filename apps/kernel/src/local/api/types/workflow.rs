@@ -566,7 +566,27 @@ pub struct CreateWorkflowWatchdogRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowScheduleRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub trigger: WorkflowScheduleTrigger,
+    pub invocation_prompt: String,
+    pub overlap_policy: WorkflowScheduleOverlapPolicy,
+    pub max_runs_configured: bool,
+    pub max_runs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkflowWatchdogsRequest {
+    pub session_id: String,
+    pub workflow_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowSchedulesRequest {
     pub session_id: String,
     pub workflow_ref: Option<String>,
 }
@@ -579,9 +599,37 @@ pub struct SetWorkflowWatchdogEnabledRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowScheduleEnabledRequest {
+    pub session_id: String,
+    pub schedule_ref: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveWorkflowWatchdogRequest {
     pub session_id: String,
     pub watchdog_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowScheduleRequest {
+    pub session_id: String,
+    pub schedule_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewWorkflowScheduleRequest {
+    pub trigger: WorkflowScheduleTrigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_ms: Option<u64>,
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSchedulePreview {
+    pub trigger: WorkflowScheduleTrigger,
+    pub next_run_at_ms: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

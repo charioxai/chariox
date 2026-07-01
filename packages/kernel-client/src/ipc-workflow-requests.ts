@@ -10,6 +10,7 @@ import type {
   WorkflowPublicationSnapshot,
   WorkflowRegistrySourceInput,
   WorkflowRegistrySourceScope,
+  WorkflowScheduleTrigger,
 } from "./kernel-types.js"
 
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
@@ -1015,6 +1016,31 @@ export function createWorkflowWatchdogRequest(
   }
 }
 
+export function createWorkflowScheduleRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  trigger: WorkflowScheduleTrigger,
+  invocationPrompt: string,
+  overlapPolicy: "skip" | "queue",
+  maxRuns?: number | null,
+  queueRef?: string | null,
+) {
+  return {
+    CreateWorkflowSchedule: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      queue_ref: queueRef ?? null,
+      trigger,
+      invocation_prompt: invocationPrompt,
+      overlap_policy: overlapPolicy,
+      max_runs_configured: maxRuns !== undefined,
+      max_runs: maxRuns ?? null,
+    },
+  }
+}
+
 export function setWorkflowFlushContextRequest(
   sessionId: string,
   workflowRef: string,
@@ -1066,6 +1092,15 @@ export function listWorkflowWatchdogsRequest(sessionId: string, workflowRef?: st
   }
 }
 
+export function listWorkflowSchedulesRequest(sessionId: string, workflowRef?: string | null) {
+  return {
+    ListWorkflowSchedules: {
+      session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
+    },
+  }
+}
+
 export function setWorkflowWatchdogEnabledRequest(
   sessionId: string,
   watchdogRef: string,
@@ -1080,11 +1115,48 @@ export function setWorkflowWatchdogEnabledRequest(
   }
 }
 
+export function setWorkflowScheduleEnabledRequest(
+  sessionId: string,
+  scheduleRef: string,
+  enabled: boolean,
+) {
+  return {
+    SetWorkflowScheduleEnabled: {
+      session_id: sessionId,
+      schedule_ref: scheduleRef,
+      enabled,
+    },
+  }
+}
+
 export function removeWorkflowWatchdogRequest(sessionId: string, watchdogRef: string) {
   return {
     RemoveWorkflowWatchdog: {
       session_id: sessionId,
       watchdog_ref: watchdogRef,
+    },
+  }
+}
+
+export function removeWorkflowScheduleRequest(sessionId: string, scheduleRef: string) {
+  return {
+    RemoveWorkflowSchedule: {
+      session_id: sessionId,
+      schedule_ref: scheduleRef,
+    },
+  }
+}
+
+export function previewWorkflowScheduleRequest(
+  trigger: WorkflowScheduleTrigger,
+  afterMs?: number | null,
+  count?: number | null,
+) {
+  return {
+    PreviewWorkflowSchedule: {
+      trigger,
+      after_ms: afterMs ?? null,
+      count: count ?? null,
     },
   }
 }

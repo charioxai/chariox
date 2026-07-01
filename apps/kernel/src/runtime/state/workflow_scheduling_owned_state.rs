@@ -54,6 +54,92 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    pub(super) fn workflow_create_schedule(
+        &self,
+        request: crate::local::CreateWorkflowScheduleRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let schedule = self.session_store.write().create_workflow_schedule(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.queue_ref.as_deref(),
+            request.trigger,
+            request.invocation_prompt,
+            request.overlap_policy,
+            if request.max_runs_configured {
+                Some(request.max_runs)
+            } else {
+                None
+            },
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowScheduleCreated {
+            schedule,
+            workflow,
+            endpoint,
+            session,
+        })
+    }
+
+    pub(super) fn workflow_list_schedules(
+        &self,
+        request: crate::local::ListWorkflowSchedulesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowSchedulesListed {
+            schedules: self
+                .session_store
+                .read()
+                .list_workflow_schedules(&request.session_id, request.workflow_ref.as_deref())?,
+        })
+    }
+
+    pub(super) fn workflow_set_schedule_enabled(
+        &self,
+        request: crate::local::SetWorkflowScheduleEnabledRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let schedule = self.session_store.write().set_workflow_schedule_enabled(
+            &request.session_id,
+            &request.schedule_ref,
+            request.enabled,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowScheduleUpdated { schedule, session })
+    }
+
+    pub(super) fn workflow_remove_schedule(
+        &self,
+        request: crate::local::RemoveWorkflowScheduleRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let schedule = self
+            .session_store
+            .write()
+            .remove_workflow_schedule(&request.session_id, &request.schedule_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowScheduleRemoved { schedule, session })
+    }
+
+    pub(super) fn workflow_preview_schedule(
+        &self,
+        request: crate::local::PreviewWorkflowScheduleRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowSchedulePreviewed {
+            preview: self.session_store.read().preview_workflow_schedule(
+                request.trigger,
+                request.after_ms,
+                request.count.unwrap_or(3),
+            )?,
+        })
+    }
+
     pub(super) fn workflow_set_watchdog_enabled(
         &self,
         request: crate::local::SetWorkflowWatchdogEnabledRequest,

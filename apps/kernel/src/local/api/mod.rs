@@ -26,7 +26,8 @@ use crate::session::{
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowPromptQueueDefinition,
-    WorkflowPublicationDefinition, WorkflowQueuedPrompt, WorkflowRun, WorkflowWatchdogDefinition,
+    WorkflowPublicationDefinition, WorkflowQueuedPrompt, WorkflowRun, WorkflowScheduleDefinition,
+    WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger, WorkflowWatchdogDefinition,
     WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
 };
 use crate::session_history_page::SessionHistoryPageEntry;

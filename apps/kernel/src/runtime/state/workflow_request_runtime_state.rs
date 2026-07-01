@@ -335,6 +335,27 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::CreateWorkflowSchedule(request) => {
+                let result = owned.workflow_create_schedule(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflowSchedules(request) => {
+                (owned.workflow_list_schedules(request), None)
+            }
+            LocalDaemonRequest::SetWorkflowScheduleEnabled(request) => {
+                let result = owned.workflow_set_schedule_enabled(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveWorkflowSchedule(request) => {
+                let result = owned.workflow_remove_schedule(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::PreviewWorkflowSchedule(request) => {
+                (owned.workflow_preview_schedule(request), None)
+            }
             LocalDaemonRequest::ListWorkflowPromptQueues(request) => {
                 (owned.workflow_list_prompt_queues(request), None)
             }
@@ -1898,6 +1919,9 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleCreated { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }

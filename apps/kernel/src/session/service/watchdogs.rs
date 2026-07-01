@@ -14,6 +14,29 @@ impl SessionService {
         policy: WorkflowWatchdogPolicy,
         max_wakeups: Option<Option<u64>>,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        self.create_workflow_schedule(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            queue_ref,
+            WorkflowScheduleTrigger::interval(interval_seconds),
+            invocation_prompt,
+            policy,
+            max_wakeups,
+        )
+    }
+
+    pub fn create_workflow_schedule(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        queue_ref: Option<&str>,
+        trigger: WorkflowScheduleTrigger,
+        invocation_prompt: String,
+        overlap_policy: WorkflowScheduleOverlapPolicy,
+        max_runs: Option<Option<u64>>,
+    ) -> Result<WorkflowScheduleDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
@@ -27,23 +50,29 @@ impl SessionService {
                 self.resolve_workflow_prompt_queue_ref(session_id, &workflow_id, queue_ref)
             })
             .transpose()?;
-        let mut watchdog = WorkflowWatchdogDefinition::new(
+        trigger.validate().map_err(|message| DaemonError::WorkflowLaunchRejected {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.clone(),
+            endpoint_id: endpoint_id.clone(),
+            message,
+        })?;
+        let mut schedule = WorkflowScheduleDefinition::new_with_trigger(
             self.next_workflow_watchdog_id(),
             workflow_id,
             endpoint_id,
-            interval_seconds,
+            trigger,
             invocation_prompt,
-            policy,
-            max_wakeups.unwrap_or(Some(crate::session::DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS)),
+            overlap_policy,
+            max_runs.unwrap_or(Some(crate::session::DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS)),
         );
-        watchdog.set_queue_id(queue_id);
+        schedule.set_queue_id(queue_id);
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.add_workflow_watchdog(watchdog))
+        Ok(session.add_workflow_watchdog(schedule))
     }
 
     pub fn list_workflow_watchdogs(
@@ -66,6 +95,40 @@ impl SessionService {
             })
             .cloned()
             .collect())
+    }
+
+    pub fn list_workflow_schedules(
+        &self,
+        session_id: &str,
+        workflow_ref: Option<&str>,
+    ) -> Result<Vec<WorkflowScheduleDefinition>, DaemonError> {
+        self.list_workflow_watchdogs(session_id, workflow_ref)
+    }
+
+    pub fn preview_workflow_schedule(
+        &self,
+        trigger: WorkflowScheduleTrigger,
+        after_ms: Option<u64>,
+        count: usize,
+    ) -> Result<crate::local::WorkflowSchedulePreview, DaemonError> {
+        trigger.validate().map_err(|message| DaemonError::WorkflowLaunchRejected {
+            session_id: String::new(),
+            workflow_id: String::new(),
+            endpoint_id: String::new(),
+            message,
+        })?;
+        let next_run_at_ms = trigger
+            .preview_run_times_after_ms(after_ms.unwrap_or_else(unix_epoch_ms), count)
+            .map_err(|message| DaemonError::WorkflowLaunchRejected {
+                session_id: String::new(),
+                workflow_id: String::new(),
+                endpoint_id: String::new(),
+                message,
+            })?;
+        Ok(crate::local::WorkflowSchedulePreview {
+            trigger,
+            next_run_at_ms,
+        })
     }
 
     pub fn resolve_workflow_watchdog_ref(
@@ -132,9 +195,25 @@ impl SessionService {
             "disabled".to_string()
         }));
         if enabled {
-            watchdog.set_next_run_at_ms(now.saturating_add(watchdog.interval_seconds() * 1000));
+            watchdog
+                .schedule_next_run_after_ms(now)
+                .map_err(|message| DaemonError::WorkflowLaunchRejected {
+                    session_id: session_id.to_string(),
+                    workflow_id: watchdog.workflow_id().to_string(),
+                    endpoint_id: watchdog.endpoint_id().to_string(),
+                    message,
+                })?;
         }
         Ok(watchdog.clone())
+    }
+
+    pub fn set_workflow_schedule_enabled(
+        &mut self,
+        session_id: &str,
+        schedule_ref: &str,
+        enabled: bool,
+    ) -> Result<WorkflowScheduleDefinition, DaemonError> {
+        self.set_workflow_watchdog_enabled(session_id, schedule_ref, enabled)
     }
 
     pub fn remove_workflow_watchdog(
@@ -160,6 +239,14 @@ impl SessionService {
                 reference: watchdog_id.clone(),
                 message: "workflow watchdog was not found",
             })
+    }
+
+    pub fn remove_workflow_schedule(
+        &mut self,
+        session_id: &str,
+        schedule_ref: &str,
+    ) -> Result<WorkflowScheduleDefinition, DaemonError> {
+        self.remove_workflow_watchdog(session_id, schedule_ref)
     }
 
     pub fn collect_due_workflow_watchdog_invocations(
@@ -259,7 +346,16 @@ impl SessionService {
                         );
                         continue;
                     }
-                    let next_run = now_ms.saturating_add(watchdog.interval_seconds() * 1000);
+                    let next_run =
+                        watchdog
+                            .trigger()
+                            .next_run_after_ms(now_ms)
+                            .map_err(|message| DaemonError::WorkflowLaunchRejected {
+                                session_id: session_id.clone(),
+                                workflow_id: watchdog.workflow_id().to_string(),
+                                endpoint_id: watchdog.endpoint_id().to_string(),
+                                message,
+                            })?;
                     if active_run_exists {
                         match watchdog.policy() {
                             WorkflowWatchdogPolicy::Skip => {
@@ -305,7 +401,7 @@ impl SessionService {
                     &endpoint_id,
                     Some(invocation_prompt),
                     queue_id.as_deref(),
-                    WorkflowQueuedPromptSource::Watchdog,
+                    WorkflowQueuedPromptSource::Scheduled,
                     Some(watchdog_id),
                 );
             }

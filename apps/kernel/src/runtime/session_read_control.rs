@@ -336,6 +336,30 @@ pub(crate) fn projected_session_inspection_response(
                 ),
             )
         }
+        LocalDaemonRequest::ListWorkflowSchedules(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(
+                projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                    |workflow_id| {
+                        let schedules = session
+                            .workflow_watchdogs()
+                            .iter()
+                            .filter(|schedule| {
+                                workflow_id
+                                    .as_deref()
+                                    .is_none_or(|id| schedule.workflow_id() == id)
+                            })
+                            .cloned()
+                            .collect();
+                        LocalDaemonResponse::WorkflowSchedulesListed { schedules }
+                    },
+                ),
+            )
+        }
         LocalDaemonRequest::ListWorkflowPromptQueues(request) => {
             let session =
                 match projected_session_or_absence(session_projection, &request.session_id)? {

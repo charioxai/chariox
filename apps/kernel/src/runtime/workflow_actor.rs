@@ -402,6 +402,10 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::RemoveWorkflowWatchdog(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowWatchdogs(request) => request.session_id.clone(),
+        LocalDaemonRequest::CreateWorkflowSchedule(request) => request.session_id.clone(),
+        LocalDaemonRequest::RemoveWorkflowSchedule(request) => request.session_id.clone(),
+        LocalDaemonRequest::SetWorkflowScheduleEnabled(request) => request.session_id.clone(),
+        LocalDaemonRequest::ListWorkflowSchedules(request) => request.session_id.clone(),
         _ => return None,
     })
 }

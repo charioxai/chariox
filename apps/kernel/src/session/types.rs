@@ -42,8 +42,10 @@ pub use super::workflow_run_records::{
 pub use super::workflow_runs::WorkflowRun;
 pub use super::workflow_scheduling::{
     WorkflowPromptQueueDefinition, WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt,
-    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowScheduleDefinition,
+    WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub use super::workflow_turns::{
     WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,

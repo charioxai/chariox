@@ -1,21 +1,137 @@
+use chrono::{TimeZone, Utc};
+use chrono_tz::Tz;
+use croner::{
+    parser::{CronParser, Seconds, Year},
+    Cron,
+};
 use serde::{Deserialize, Serialize};
 
 use super::types::unix_epoch_ms;
 
-pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
+pub const DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS: u64 = 100;
+pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowWatchdogPolicy {
+pub enum WorkflowScheduleOverlapPolicy {
     Skip,
     Queue,
 }
+
+pub type WorkflowWatchdogPolicy = WorkflowScheduleOverlapPolicy;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowQueuedPromptSource {
     Manual,
-    Watchdog,
+    #[serde(alias = "watchdog")]
+    Scheduled,
+}
+
+pub type WorkflowWatchdogDefinition = WorkflowScheduleDefinition;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowScheduleTrigger {
+    Interval { every_seconds: u64 },
+    Cron { expression: String, timezone: String },
+}
+
+impl WorkflowScheduleTrigger {
+    pub fn interval(every_seconds: u64) -> Self {
+        Self::Interval { every_seconds }
+    }
+
+    pub fn cron(expression: impl Into<String>, timezone: impl Into<String>) -> Self {
+        Self::Cron {
+            expression: expression.into(),
+            timezone: timezone.into(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Interval { every_seconds } => {
+                if *every_seconds == 0 {
+                    Err("interval schedules require every_seconds greater than zero".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            Self::Cron {
+                expression,
+                timezone,
+            } => {
+                parse_workflow_schedule_timezone(timezone)?;
+                parse_workflow_schedule_cron(expression)?;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn next_run_after_ms(&self, after_ms: u64) -> Result<u64, String> {
+        match self {
+            Self::Interval { every_seconds } => {
+                if *every_seconds == 0 {
+                    return Err(
+                        "interval schedules require every_seconds greater than zero".to_string()
+                    );
+                }
+                Ok(after_ms.saturating_add(every_seconds.saturating_mul(1000)))
+            }
+            Self::Cron {
+                expression,
+                timezone,
+            } => {
+                let cron = parse_workflow_schedule_cron(expression)?;
+                let timezone = parse_workflow_schedule_timezone(timezone)?;
+                let start_utc = Utc
+                    .timestamp_millis_opt(after_ms as i64)
+                    .single()
+                    .ok_or_else(|| "schedule start timestamp is out of range".to_string())?;
+                let start_local = start_utc.with_timezone(&timezone);
+                let next = cron
+                    .find_next_occurrence(&start_local, false)
+                    .map_err(|err| format!("invalid cron schedule: {err}"))?;
+                Ok(next.with_timezone(&Utc).timestamp_millis().max(0) as u64)
+            }
+        }
+    }
+
+    pub fn preview_run_times_after_ms(
+        &self,
+        after_ms: u64,
+        count: usize,
+    ) -> Result<Vec<u64>, String> {
+        let mut cursor = after_ms;
+        let mut runs = Vec::with_capacity(count);
+        for _ in 0..count {
+            let next = self.next_run_after_ms(cursor)?;
+            runs.push(next);
+            cursor = next;
+        }
+        Ok(runs)
+    }
+}
+
+fn parse_workflow_schedule_timezone(timezone: &str) -> Result<Tz, String> {
+    timezone
+        .trim()
+        .parse::<Tz>()
+        .map_err(|_| format!("invalid IANA timezone `{}`", timezone.trim()))
+}
+
+fn parse_workflow_schedule_cron(expression: &str) -> Result<Cron, String> {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return Err("cron expression is required".to_string());
+    }
+    CronParser::builder()
+        .seconds(Seconds::Required)
+        .year(Year::Disallowed)
+        .build()
+        .parse(expression)
+        .map_err(|err| format!("invalid cron expression `{expression}`: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,7 +269,8 @@ pub struct WorkflowQueuedPrompt {
     publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     source: WorkflowQueuedPromptSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    watchdog_id: Option<String>,
+    #[serde(alias = "watchdog_id")]
+    schedule_id: Option<String>,
     status: WorkflowQueuedPromptStatus,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -172,7 +289,7 @@ impl WorkflowQueuedPrompt {
         prompt: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
         source: WorkflowQueuedPromptSource,
-        watchdog_id: Option<String>,
+        schedule_id: Option<String>,
     ) -> Self {
         let now = unix_epoch_ms();
         Self {
@@ -183,7 +300,7 @@ impl WorkflowQueuedPrompt {
             prompt,
             publication_invocation,
             source,
-            watchdog_id,
+            schedule_id,
             status: WorkflowQueuedPromptStatus::Queued,
             created_at_ms: now,
             updated_at_ms: now,
@@ -213,8 +330,11 @@ impl WorkflowQueuedPrompt {
     pub fn source(&self) -> WorkflowQueuedPromptSource {
         self.source
     }
+    pub fn schedule_id(&self) -> Option<&str> {
+        self.schedule_id.as_deref()
+    }
     pub fn watchdog_id(&self) -> Option<&str> {
-        self.watchdog_id.as_deref()
+        self.schedule_id()
     }
     pub fn status(&self) -> WorkflowQueuedPromptStatus {
         self.status
@@ -267,20 +387,26 @@ impl WorkflowQueuedPrompt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowWatchdogDefinition {
+pub struct WorkflowScheduleDefinition {
     id: String,
     workflow_id: String,
     endpoint_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     queue_id: Option<String>,
     enabled: bool,
-    interval_seconds: u64,
+    #[serde(default = "default_workflow_schedule_trigger")]
+    trigger: WorkflowScheduleTrigger,
     invocation_prompt: String,
-    policy: WorkflowWatchdogPolicy,
+    #[serde(alias = "policy")]
+    overlap_policy: WorkflowScheduleOverlapPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_wakeups: Option<u64>,
+    #[serde(alias = "max_wakeups")]
+    max_runs: Option<u64>,
     #[serde(default)]
-    wakeups_executed: u64,
+    #[serde(alias = "wakeups_executed")]
+    runs_started: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_scheduled_for_ms: Option<u64>,
     next_run_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_run_at_ms: Option<u64>,
@@ -296,7 +422,11 @@ pub struct WorkflowWatchdogDefinition {
     updated_at_ms: u64,
 }
 
-impl WorkflowWatchdogDefinition {
+fn default_workflow_schedule_trigger() -> WorkflowScheduleTrigger {
+    WorkflowScheduleTrigger::interval(60)
+}
+
+impl WorkflowScheduleDefinition {
     pub fn new(
         id: impl Into<String>,
         workflow_id: impl Into<String>,
@@ -306,19 +436,43 @@ impl WorkflowWatchdogDefinition {
         policy: WorkflowWatchdogPolicy,
         max_wakeups: Option<u64>,
     ) -> Self {
+        Self::new_with_trigger(
+            id,
+            workflow_id,
+            endpoint_id,
+            WorkflowScheduleTrigger::interval(interval_seconds),
+            invocation_prompt,
+            policy,
+            max_wakeups,
+        )
+    }
+
+    pub fn new_with_trigger(
+        id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        trigger: WorkflowScheduleTrigger,
+        invocation_prompt: impl Into<String>,
+        overlap_policy: WorkflowScheduleOverlapPolicy,
+        max_runs: Option<u64>,
+    ) -> Self {
         let now = unix_epoch_ms();
+        let next_run_at_ms = trigger
+            .next_run_after_ms(now)
+            .unwrap_or_else(|_| now.saturating_add(60_000));
         Self {
             id: id.into(),
             workflow_id: workflow_id.into(),
             endpoint_id: endpoint_id.into(),
             queue_id: None,
             enabled: true,
-            interval_seconds,
+            trigger,
             invocation_prompt: invocation_prompt.into(),
-            policy,
-            max_wakeups,
-            wakeups_executed: 0,
-            next_run_at_ms: now.saturating_add(interval_seconds.saturating_mul(1000)),
+            overlap_policy,
+            max_runs,
+            runs_started: 0,
+            last_scheduled_for_ms: None,
+            next_run_at_ms,
             last_run_at_ms: None,
             last_status: None,
             last_error: None,
@@ -345,19 +499,37 @@ impl WorkflowWatchdogDefinition {
         self.enabled
     }
     pub fn interval_seconds(&self) -> u64 {
-        self.interval_seconds
+        match &self.trigger {
+            WorkflowScheduleTrigger::Interval { every_seconds } => *every_seconds,
+            WorkflowScheduleTrigger::Cron { .. } => 60,
+        }
+    }
+    pub fn trigger(&self) -> &WorkflowScheduleTrigger {
+        &self.trigger
     }
     pub fn invocation_prompt(&self) -> &str {
         &self.invocation_prompt
     }
     pub fn policy(&self) -> WorkflowWatchdogPolicy {
-        self.policy
+        self.overlap_policy
+    }
+    pub fn overlap_policy(&self) -> WorkflowScheduleOverlapPolicy {
+        self.overlap_policy
     }
     pub fn max_wakeups(&self) -> Option<u64> {
-        self.max_wakeups
+        self.max_runs
+    }
+    pub fn max_runs(&self) -> Option<u64> {
+        self.max_runs
     }
     pub fn wakeups_executed(&self) -> u64 {
-        self.wakeups_executed
+        self.runs_started
+    }
+    pub fn runs_started(&self) -> u64 {
+        self.runs_started
+    }
+    pub fn last_scheduled_for_ms(&self) -> Option<u64> {
+        self.last_scheduled_for_ms
     }
     pub fn next_run_at_ms(&self) -> u64 {
         self.next_run_at_ms
@@ -394,6 +566,13 @@ impl WorkflowWatchdogDefinition {
         self.updated_at_ms = unix_epoch_ms();
     }
 
+    pub fn schedule_next_run_after_ms(&mut self, after_ms: u64) -> Result<u64, String> {
+        let next_run_at_ms = self.trigger.next_run_after_ms(after_ms)?;
+        self.last_scheduled_for_ms = Some(next_run_at_ms);
+        self.set_next_run_at_ms(next_run_at_ms);
+        Ok(next_run_at_ms)
+    }
+
     pub fn set_queue_id(&mut self, value: Option<String>) {
         self.queue_id = value;
         self.updated_at_ms = unix_epoch_ms();
@@ -425,12 +604,62 @@ impl WorkflowWatchdogDefinition {
     }
 
     pub fn set_max_wakeups(&mut self, value: Option<u64>) {
-        self.max_wakeups = value;
+        self.max_runs = value;
         self.updated_at_ms = unix_epoch_ms();
     }
 
     pub fn set_wakeups_executed(&mut self, value: u64) {
-        self.wakeups_executed = value;
+        self.runs_started = value;
         self.updated_at_ms = unix_epoch_ms();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, Timelike};
+
+    #[test]
+    fn cron_trigger_preview_preserves_seconds() {
+        let trigger = WorkflowScheduleTrigger::cron("15 30 14 * * *", "Europe/Berlin");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 1, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        let preview = trigger.preview_run_times_after_ms(start, 2).unwrap();
+
+        assert_eq!(preview.len(), 2);
+        let first = Utc
+            .timestamp_millis_opt(preview[0] as i64)
+            .single()
+            .unwrap()
+            .with_timezone(&"Europe/Berlin".parse::<Tz>().unwrap());
+        assert_eq!(first.hour(), 14);
+        assert_eq!(first.minute(), 30);
+        assert_eq!(first.second(), 15);
+        assert_eq!(first.day(), 1);
+        let second = Utc
+            .timestamp_millis_opt(preview[1] as i64)
+            .single()
+            .unwrap()
+            .with_timezone(&"Europe/Berlin".parse::<Tz>().unwrap());
+        assert_eq!(second.second(), 15);
+        assert_eq!(second.day(), 2);
+    }
+
+    #[test]
+    fn cron_trigger_rejects_missing_seconds() {
+        let trigger = WorkflowScheduleTrigger::cron("30 14 * * *", "Europe/Berlin");
+
+        assert!(trigger.validate().is_err());
+    }
+
+    #[test]
+    fn cron_trigger_rejects_invalid_timezone() {
+        let trigger = WorkflowScheduleTrigger::cron("0 30 14 * * *", "Berlin");
+
+        assert!(trigger.validate().is_err());
     }
 }

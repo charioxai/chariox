@@ -1511,7 +1511,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 212
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 213
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2548,6 +2548,7 @@ export type WorkflowPublicationSnapshot = {
   workflow: WorkflowDefinition
   endpoint?: WorkflowEndpointDefinition | null
   queues?: WorkflowPromptQueueDefinition[]
+  schedules?: WorkflowScheduleDefinition[]
   watchdogs?: WorkflowWatchdogDefinition[]
   agents?: AgentInstance[]
 }
@@ -2559,17 +2560,22 @@ export type WorkflowPublicationSourceSessionSnapshot = {
   worktree_id: string
 }
 
-export type WorkflowWatchdogDefinition = {
+export type WorkflowScheduleTrigger =
+  | { kind: "interval"; every_seconds: number }
+  | { kind: "cron"; expression: string; timezone: string }
+
+export type WorkflowScheduleDefinition = {
   id: string
   workflow_id: string
   endpoint_id: string
   queue_id?: string | null
   enabled: boolean
-  interval_seconds: number
+  trigger: WorkflowScheduleTrigger
   invocation_prompt: string
-  policy: "skip" | "queue"
-  max_wakeups?: number | null
-  wakeups_executed: number
+  overlap_policy: "skip" | "queue"
+  max_runs?: number | null
+  runs_started: number
+  last_scheduled_for_ms?: number | null
   next_run_at_ms: number
   last_run_at_ms?: number | null
   last_status?: string | null
@@ -2578,7 +2584,13 @@ export type WorkflowWatchdogDefinition = {
   pending_run?: boolean
   created_at_ms: number
   updated_at_ms: number
+  interval_seconds?: number
+  policy?: "skip" | "queue"
+  max_wakeups?: number | null
+  wakeups_executed?: number
 }
+
+export type WorkflowWatchdogDefinition = WorkflowScheduleDefinition
 
 export type WorkflowPromptQueueDefinition = {
   id: string
@@ -2597,7 +2609,8 @@ export type WorkflowQueuedPrompt = {
   endpoint_id: string
   prompt?: string | null
   publication_invocation?: WorkflowPublicationInvocationEnvelope | null
-  source: "manual" | "watchdog"
+  source: "manual" | "scheduled" | "watchdog"
+  schedule_id?: string | null
   watchdog_id?: string | null
   status: "queued" | "dispatching" | "running" | "completed" | "cancelled"
   created_at_ms: number

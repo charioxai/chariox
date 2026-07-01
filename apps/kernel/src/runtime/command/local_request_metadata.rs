@@ -660,6 +660,11 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveWorkflowWatchdog(_) => "workflow_watchdog.remove",
         LocalDaemonRequest::SetWorkflowWatchdogEnabled(_) => "workflow_watchdog.enabled.set",
         LocalDaemonRequest::ListWorkflowWatchdogs(_) => "workflow_watchdog.list",
+        LocalDaemonRequest::CreateWorkflowSchedule(_) => "workflow_schedule.create",
+        LocalDaemonRequest::RemoveWorkflowSchedule(_) => "workflow_schedule.remove",
+        LocalDaemonRequest::SetWorkflowScheduleEnabled(_) => "workflow_schedule.enabled.set",
+        LocalDaemonRequest::ListWorkflowSchedules(_) => "workflow_schedule.list",
+        LocalDaemonRequest::PreviewWorkflowSchedule(_) => "workflow_schedule.preview",
         LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)

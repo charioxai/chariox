@@ -56,7 +56,8 @@ pub use types::{
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
+    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
+    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
     WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
@@ -66,7 +67,8 @@ pub use types::{
     DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
     DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
     DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 

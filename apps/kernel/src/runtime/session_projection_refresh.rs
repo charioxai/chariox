@@ -275,6 +275,9 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleCreated { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }

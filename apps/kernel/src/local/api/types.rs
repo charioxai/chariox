@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 212;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 213;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOperationFailure {
@@ -465,6 +465,11 @@ pub enum LocalDaemonRequest {
     ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest),
     SetWorkflowWatchdogEnabled(SetWorkflowWatchdogEnabledRequest),
     RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
+    CreateWorkflowSchedule(CreateWorkflowScheduleRequest),
+    ListWorkflowSchedules(ListWorkflowSchedulesRequest),
+    SetWorkflowScheduleEnabled(SetWorkflowScheduleEnabledRequest),
+    RemoveWorkflowSchedule(RemoveWorkflowScheduleRequest),
+    PreviewWorkflowSchedule(PreviewWorkflowScheduleRequest),
     SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
     SetWorkflowRunOutputSchema(SetWorkflowRunOutputSchemaRequest),
     SetWorkflowIntermediateOutputSchema(SetWorkflowIntermediateOutputSchemaRequest),
@@ -1435,6 +1440,26 @@ pub enum LocalDaemonResponse {
     WorkflowWatchdogRemoved {
         watchdog: WorkflowWatchdogDefinition,
         session: RuntimeSession,
+    },
+    WorkflowScheduleCreated {
+        schedule: WorkflowScheduleDefinition,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowSchedulesListed {
+        schedules: Vec<WorkflowScheduleDefinition>,
+    },
+    WorkflowScheduleUpdated {
+        schedule: WorkflowScheduleDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowScheduleRemoved {
+        schedule: WorkflowScheduleDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowSchedulePreviewed {
+        preview: WorkflowSchedulePreview,
     },
     WorkflowFlushContextUpdated {
         workflow: WorkflowDefinition,

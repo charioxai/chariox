@@ -21,6 +21,7 @@ use super::{
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
     WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
     WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,

@@ -377,6 +377,19 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RemoveWorkflowWatchdog(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CreateWorkflowSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowSchedules(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowScheduleEnabled(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveWorkflowSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::PreviewWorkflowSchedule(_) => None,
         LocalDaemonRequest::SetWorkflowFlushContext(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
