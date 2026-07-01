@@ -46,7 +46,7 @@ pnpm run dev:browser-terminal:local
 Then open:
 http://127.0.0.1:4321/waiting-room
 To run multiple local kernels, start more kernel terminals with different ports:
-ARROBA_KERNEL_PORT=44121 \
+ARROBA_KERNEL_PORT=44120 \
 ARROBA_RELAY_URL=ws://127.0.0.1:47000 \
 ARROBA_RELAY_TOKEN=local-browser-terminal-relay-token \
 cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
