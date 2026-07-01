@@ -1108,40 +1108,46 @@
         ]
       },
       {
-        "id": "workflow-watchdog",
-        "label": "watchdog",
-        "description": "Manage scheduled endpoint triggers",
-        "value": "/workflow watchdog ",
+        "id": "workflow-schedule",
+        "label": "schedule",
+        "description": "Manage workflow schedules",
+        "value": "/workflow schedule ",
         "children": [
           {
-            "id": "workflow-watchdog-add",
+            "id": "workflow-schedule-add",
             "label": "add",
-            "description": "Create a scheduled endpoint trigger",
-            "value": "/workflow watchdog add "
+            "description": "Create a workflow schedule",
+            "value": "/workflow schedule add "
           },
           {
-            "id": "workflow-watchdog-list",
+            "id": "workflow-schedule-list",
             "label": "list",
-            "description": "List workflow watchdogs",
-            "value": "/workflow watchdog list "
+            "description": "List workflow schedules",
+            "value": "/workflow schedule list "
           },
           {
-            "id": "workflow-watchdog-enable",
+            "id": "workflow-schedule-enable",
             "label": "enable",
-            "description": "Enable a watchdog",
-            "value": "/workflow watchdog enable "
+            "description": "Enable a schedule",
+            "value": "/workflow schedule enable "
           },
           {
-            "id": "workflow-watchdog-disable",
+            "id": "workflow-schedule-disable",
             "label": "disable",
-            "description": "Disable a watchdog",
-            "value": "/workflow watchdog disable "
+            "description": "Disable a schedule",
+            "value": "/workflow schedule disable "
           },
           {
-            "id": "workflow-watchdog-remove",
+            "id": "workflow-schedule-remove",
             "label": "remove",
-            "description": "Remove a watchdog",
-            "value": "/workflow watchdog remove "
+            "description": "Remove a schedule",
+            "value": "/workflow schedule remove "
+          },
+          {
+            "id": "workflow-schedule-preview",
+            "label": "preview",
+            "description": "Preview schedule run times",
+            "value": "/workflow schedule preview "
           }
         ]
       },

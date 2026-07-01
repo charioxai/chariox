@@ -990,11 +990,11 @@ test("executeShellCommand configures workflow publication package bindings", asy
   }
 })
 
-test("executeShellCommand manages advanced workflow settings, watchdogs, and queue", async () => {
+test("executeShellCommand manages advanced workflow settings, schedules, and queue", async () => {
   const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final", intermediate_output_schema_ref: "progress" })
   const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
   const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
-  const watchdog = makeWorkflowWatchdog()
+  const schedule = makeWorkflowWatchdog({ id: "schedule-1" })
   const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
   const queued = { id: "prompt-1", queue_id: "default", workflow_id: "workflow-1", endpoint_id: "endpoint-1", source: "manual" as const, status: "queued" as const, created_at_ms: 0, updated_at_ms: 0 }
   const requests: Record<string, unknown>[] = []
@@ -1014,17 +1014,17 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
         if ("SetWorkflowNodeCanCompleteRun" in request) {
           return { WorkflowNodeCanCompleteRunUpdated: { node, workflow, session } }
         }
-        if ("CreateWorkflowWatchdog" in request) {
-          return { WorkflowWatchdogCreated: { watchdog, workflow, endpoint: workflow.endpoints![0], session } }
+        if ("CreateWorkflowSchedule" in request) {
+          return { WorkflowScheduleCreated: { schedule, workflow, endpoint: workflow.endpoints![0], session } }
         }
-        if ("ListWorkflowWatchdogs" in request) {
-          return { WorkflowWatchdogsListed: { watchdogs: [watchdog] } }
+        if ("ListWorkflowSchedules" in request) {
+          return { WorkflowSchedulesListed: { schedules: [schedule] } }
         }
-        if ("SetWorkflowWatchdogEnabled" in request) {
-          return { WorkflowWatchdogUpdated: { watchdog: { ...watchdog, enabled: false }, session } }
+        if ("SetWorkflowScheduleEnabled" in request) {
+          return { WorkflowScheduleUpdated: { schedule: { ...schedule, enabled: false }, session } }
         }
-        if ("RemoveWorkflowWatchdog" in request) {
-          return { WorkflowWatchdogRemoved: { watchdog, session } }
+        if ("RemoveWorkflowSchedule" in request) {
+          return { WorkflowScheduleRemoved: { schedule, session } }
         }
         if ("ListWorkflowPromptQueues" in request) {
           return { WorkflowPromptQueuesListed: { queues: [queue] } }
@@ -1047,10 +1047,10 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   const schema = await executeShellCommand(parseShellCommand("workflow run-output-schema final"), context, { client: fake.client })
   const maxTurns = await executeShellCommand(parseShellCommand("workflow max-turns 4"), context, { client: fake.client })
   const nodeConfig = await executeShellCommand(parseShellCommand("workflow node can-complete-run node-1 true"), context, { client: fake.client })
-  const watchdogAdd = await executeShellCommand(parseShellCommand("workflow watchdog add endpoint-1 every 1m queue Run it"), context, { client: fake.client })
-  const watchdogList = await executeShellCommand(parseShellCommand("workflow watchdog list workflow-1"), context, { client: fake.client })
-  const watchdogDisable = await executeShellCommand(parseShellCommand("workflow watchdog disable watchdog-1"), context, { client: fake.client })
-  const watchdogRemove = await executeShellCommand(parseShellCommand("workflow watchdog remove watchdog-1"), context, { client: fake.client })
+  const scheduleAdd = await executeShellCommand(parseShellCommand("workflow schedule add endpoint-1 --every 1m --overlap queue --prompt Run it"), context, { client: fake.client })
+  const scheduleList = await executeShellCommand(parseShellCommand("workflow schedule list workflow-1"), context, { client: fake.client })
+  const scheduleDisable = await executeShellCommand(parseShellCommand("workflow schedule disable schedule-1"), context, { client: fake.client })
+  const scheduleRemove = await executeShellCommand(parseShellCommand("workflow schedule remove schedule-1"), context, { client: fake.client })
   const queueList = await executeShellCommand(parseShellCommand("workflow queue list"), context, { client: fake.client })
   const queueRemove = await executeShellCommand(parseShellCommand("workflow queue remove prompt-1"), context, { client: fake.client })
   const queueFlush = await executeShellCommand(parseShellCommand("workflow queue flush"), context, { client: fake.client })
@@ -1058,12 +1058,12 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   assert.equal(schema.ok, true)
   assert.equal(maxTurns.ok, true)
   assert.equal(nodeConfig.ok, true)
-  assert.equal(watchdogAdd.ok, true)
-  assert.match(watchdogAdd.message ?? "", /created workflow watchdog watchdog-1/)
-  assert.equal(watchdogList.ok, true)
-  assert.match(watchdogList.message ?? "", /watchdog-1 workflow=workflow-1/)
-  assert.equal(watchdogDisable.ok, true)
-  assert.equal(watchdogRemove.ok, true)
+  assert.equal(scheduleAdd.ok, true)
+  assert.match(scheduleAdd.message ?? "", /created workflow schedule schedule-1/)
+  assert.equal(scheduleList.ok, true)
+  assert.match(scheduleList.message ?? "", /schedule-1 workflow=workflow-1/)
+  assert.equal(scheduleDisable.ok, true)
+  assert.equal(scheduleRemove.ok, true)
   assert.equal(queueList.ok, true)
   assert.match(queueList.message ?? "", /prompt-1 .*queue=default/)
   assert.equal(queueRemove.ok, true)
@@ -1074,10 +1074,10 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
     { GetSessionState: { session_id: "session-1" } },
     { UpdateSessionConfig: { session_id: "session-1", attachment_id: "attachment-1", values: { "workflow.max_turns": "4" }, requires_idle: false } },
     { SetWorkflowNodeCanCompleteRun: { session_id: "session-1", workflow_ref: "workflow-1", node_id: "node-1", can_complete_workflow_run: true } },
-    { CreateWorkflowWatchdog: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", interval_seconds: 60, invocation_prompt: "Run it", policy: "queue", max_wakeups_configured: false, max_wakeups: null } },
-    { ListWorkflowWatchdogs: { session_id: "session-1", workflow_ref: "workflow-1" } },
-    { SetWorkflowWatchdogEnabled: { session_id: "session-1", watchdog_ref: "watchdog-1", enabled: false } },
-    { RemoveWorkflowWatchdog: { session_id: "session-1", watchdog_ref: "watchdog-1" } },
+    { CreateWorkflowSchedule: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: null, trigger: { kind: "interval", every_seconds: 60 }, invocation_prompt: "Run it", overlap_policy: "queue", max_runs_configured: false, max_runs: null } },
+    { ListWorkflowSchedules: { session_id: "session-1", workflow_ref: "workflow-1" } },
+    { SetWorkflowScheduleEnabled: { session_id: "session-1", schedule_ref: "schedule-1", enabled: false } },
+    { RemoveWorkflowSchedule: { session_id: "session-1", schedule_ref: "schedule-1" } },
     { ListWorkflowPromptQueues: { session_id: "session-1", workflow_ref: "workflow-1" } },
     { ListQueuedWorkflowPrompts: { session_id: "session-1" } },
     { RemoveQueuedWorkflowPrompt: { session_id: "session-1", queue_item_ref: "prompt-1" } },
@@ -1085,23 +1085,23 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   ])
 })
 
-test("executeShellCommand creates workflow watchdogs with explicit workflow ref", async () => {
+test("executeShellCommand creates workflow schedules with explicit workflow ref", async () => {
   const workflow = makeWorkflow()
   const session = makeSession({ workflows: [workflow] })
-  const watchdog = makeWorkflowWatchdog()
+  const schedule = makeWorkflowWatchdog({ id: "schedule-1" })
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
-        return { WorkflowWatchdogCreated: { watchdog, workflow, endpoint: workflow.endpoints![0], session } }
+        return { WorkflowScheduleCreated: { schedule, workflow, endpoint: workflow.endpoints![0], session } }
       },
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const result = await executeShellCommand(parseShellCommand("workflow watchdog add workflow-1 endpoint-1 every 1m skip Run it"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("workflow schedule add workflow-1 endpoint-1 --cron \"15 30 14 * * *\" --tz Europe/Berlin --overlap skip --prompt Run it"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.deepEqual(requests, [
-    { CreateWorkflowWatchdog: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", interval_seconds: 60, invocation_prompt: "Run it", policy: "skip", max_wakeups_configured: false, max_wakeups: null } },
+    { CreateWorkflowSchedule: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: null, trigger: { kind: "cron", expression: "15 30 14 * * *", timezone: "Europe/Berlin" }, invocation_prompt: "Run it", overlap_policy: "skip", max_runs_configured: false, max_runs: null } },
   ])
 })

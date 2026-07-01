@@ -26,6 +26,7 @@ import { resolveShellAttachmentId } from "./shell-session-attachment.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
 import {
   executeWorkflowQueueCommand,
+  executeWorkflowScheduleCommand,
   executeWorkflowWatchdogCommand,
 } from "./shell-workflow-automation-command.js"
 import {
@@ -241,6 +242,8 @@ export async function executeWorkflowCommand(
       return executeWorkflowPublicationCommand(args, context, deps)
     case "watchdog":
       return executeWorkflowWatchdogCommand(args, context, deps)
+    case "schedule":
+      return executeWorkflowScheduleCommand(args, context, deps)
     case "queue":
       return executeWorkflowQueueCommand(args, context, deps)
     case "registry":
@@ -251,7 +254,7 @@ export async function executeWorkflowCommand(
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue|registry|code" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|schedule|queue|registry|code" }
   }
 }
 

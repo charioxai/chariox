@@ -4,6 +4,8 @@ import type {
   WorkflowPublicationDefinition,
   WorkflowQueuedPrompt,
   WorkflowRun,
+  WorkflowScheduleDefinition,
+  WorkflowScheduleTrigger,
   WorkflowWatchdogDefinition,
 } from "./kernel-types.js"
 
@@ -64,6 +66,26 @@ export function formatWorkflowPublications(publications: WorkflowPublicationDefi
 }
 
 export function formatWorkflowWatchdogs(watchdogs: WorkflowWatchdogDefinition[]): string {
+  return formatWorkflowSchedules(watchdogs)
+}
+
+export function formatWorkflowSchedules(schedules: WorkflowScheduleDefinition[]): string {
+  if (schedules.length === 0) {
+    return "no workflow schedules configured"
+  }
+  return schedules.map((schedule) => (
+    `${schedule.id} workflow=${schedule.workflow_id} endpoint=${schedule.endpoint_id} trigger=${formatWorkflowScheduleTrigger(schedule.trigger)} overlap=${schedule.overlap_policy} enabled=${String(schedule.enabled)} runs=${schedule.runs_started}/${schedule.max_runs ?? "unbounded"}`
+  )).join("\n")
+}
+
+function formatWorkflowScheduleTrigger(trigger: WorkflowScheduleTrigger): string {
+  if (trigger.kind === "interval") {
+    return `every:${trigger.every_seconds}s`
+  }
+  return `cron:${trigger.expression} tz=${trigger.timezone}`
+}
+
+export function formatLegacyWorkflowWatchdogs(watchdogs: WorkflowWatchdogDefinition[]): string {
   if (watchdogs.length === 0) {
     return "no workflow watchdogs configured"
   }

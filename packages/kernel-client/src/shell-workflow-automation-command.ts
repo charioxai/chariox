@@ -4,18 +4,20 @@ import type {
   WorkflowEndpointDefinition,
   WorkflowPromptQueueDefinition,
   WorkflowQueuedPrompt,
-  WorkflowWatchdogDefinition,
+  WorkflowScheduleDefinition,
+  WorkflowScheduleTrigger,
 } from "./kernel-types.js"
 import {
   clearWorkflowPromptQueueRequest,
   createWorkflowPromptQueueRequest,
-  createWorkflowWatchdogRequest,
+  createWorkflowScheduleRequest,
   listQueuedWorkflowPromptsRequest,
   listWorkflowPromptQueuesRequest,
-  listWorkflowWatchdogsRequest,
+  listWorkflowSchedulesRequest,
+  previewWorkflowScheduleRequest,
   removeQueuedWorkflowPromptRequest,
-  removeWorkflowWatchdogRequest,
-  setWorkflowWatchdogEnabledRequest,
+  removeWorkflowScheduleRequest,
+  setWorkflowScheduleEnabledRequest,
   updateQueuedWorkflowPromptRequest,
   updateWorkflowPromptQueueRequest,
 } from "./ipc-requests.js"
@@ -24,7 +26,7 @@ import { sessionContextAgentId } from "./shell-session-context.js"
 import {
   formatWorkflowPromptQueues,
   formatWorkflowQueuedPrompts,
-  formatWorkflowWatchdogs,
+  formatWorkflowSchedules,
 } from "./shell-workflow-format.js"
 
 type ShellKernelClient = {
@@ -40,54 +42,183 @@ export async function executeWorkflowWatchdogCommand(
   context: ShellContext,
   deps: ShellWorkflowAutomationCommandDeps,
 ): Promise<ShellCommandResult> {
+  return executeWorkflowScheduleCommand(args, context, deps)
+}
+
+export async function executeWorkflowScheduleCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellWorkflowAutomationCommandDeps,
+): Promise<ShellCommandResult> {
   const sessionId = context.sessionId!
   const [action] = args
   if (action === "list" || !action) {
     const workflowRef = args[1] ?? null
-    const response = await deps.client.send(listWorkflowWatchdogsRequest(sessionId, workflowRef))
-    const watchdogs = expectVariant<{ watchdogs: WorkflowWatchdogDefinition[] }>(response, "WorkflowWatchdogsListed").watchdogs
-    return { ok: true, message: formatWorkflowWatchdogs(watchdogs), data: { watchdogs } }
+    const response = await deps.client.send(listWorkflowSchedulesRequest(sessionId, workflowRef))
+    const schedules = expectVariant<{ schedules: WorkflowScheduleDefinition[] }>(response, "WorkflowSchedulesListed").schedules
+    return { ok: true, message: formatWorkflowSchedules(schedules), data: { schedules } }
   }
   if (action === "enable" || action === "disable") {
-    const watchdogRef = args[1]
-    if (!watchdogRef) {
-      return { ok: false, message: `usage: workflow watchdog ${action} <watchdog-ref>` }
+    const scheduleRef = args[1]
+    if (!scheduleRef) {
+      return { ok: false, message: `usage: workflow schedule ${action} <schedule-ref>` }
     }
-    const response = await deps.client.send(setWorkflowWatchdogEnabledRequest(sessionId, watchdogRef, action === "enable"))
-    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogUpdated")
-    return { ok: true, message: `${action === "enable" ? "enabled" : "disabled"} workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    const response = await deps.client.send(setWorkflowScheduleEnabledRequest(sessionId, scheduleRef, action === "enable"))
+    const payload = expectVariant<{ schedule: WorkflowScheduleDefinition; session: RuntimeSession }>(response, "WorkflowScheduleUpdated")
+    return { ok: true, message: `${action === "enable" ? "enabled" : "disabled"} workflow schedule ${payload.schedule.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "remove") {
-    const watchdogRef = args[1]
-    if (!watchdogRef) {
-      return { ok: false, message: "usage: workflow watchdog remove <watchdog-ref>" }
+    const scheduleRef = args[1]
+    if (!scheduleRef) {
+      return { ok: false, message: "usage: workflow schedule remove <schedule-ref>" }
     }
-    const response = await deps.client.send(removeWorkflowWatchdogRequest(sessionId, watchdogRef))
-    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogRemoved")
-    return { ok: true, message: `removed workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    const response = await deps.client.send(removeWorkflowScheduleRequest(sessionId, scheduleRef))
+    const payload = expectVariant<{ schedule: WorkflowScheduleDefinition; session: RuntimeSession }>(response, "WorkflowScheduleRemoved")
+    return { ok: true, message: `removed workflow schedule ${payload.schedule.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "preview") {
+    const parsed = parseWorkflowScheduleOptions(args.slice(1))
+    if (parsed.error || !parsed.trigger) {
+      return { ok: false, message: parsed.error ?? "usage: workflow schedule preview --cron \"15 30 14 * * *\" --tz UTC" }
+    }
+    const response = await deps.client.send(previewWorkflowScheduleRequest(parsed.trigger, null, 3))
+    const payload = expectVariant<{ preview: { trigger: WorkflowScheduleTrigger; next_run_at_ms: number[] } }>(response, "WorkflowSchedulePreviewed")
+    return {
+      ok: true,
+      message: payload.preview.next_run_at_ms.map((runAtMs) => new Date(runAtMs).toISOString()).join("\n"),
+      data: payload,
+    }
   }
   if (action === "add") {
-    const explicitWorkflowRef = args[3] === "every" ? args[1] : null
+    const positionalEnd = args.findIndex((arg, index) => index > 0 && arg.startsWith("--"))
+    const positional = positionalEnd === -1 ? args.slice(1) : args.slice(1, positionalEnd)
+    const options = positionalEnd === -1 ? [] : args.slice(positionalEnd)
+    const parsed = parseWorkflowScheduleOptions(options)
+    if (parsed.error || !parsed.trigger) {
+      return { ok: false, message: parsed.error ?? workflowScheduleUsage() }
+    }
+    const explicitWorkflowRef = positional.length >= 2 ? positional[0] : null
     const workflowRef = explicitWorkflowRef ?? context.workflowId
-    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
-    const everyLiteral = explicitWorkflowRef ? args[3] : args[2]
-    const intervalLiteral = explicitWorkflowRef ? args[4] : args[3]
-    const optionStart = explicitWorkflowRef ? 5 : 4
-    if (!workflowRef || !endpointRef || everyLiteral !== "every" || !intervalLiteral) {
-      return { ok: false, message: "usage: workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt]" }
+    const endpointRef = explicitWorkflowRef ? positional[1] : positional[0]
+    if (!workflowRef || !endpointRef) {
+      return { ok: false, message: workflowScheduleUsage() }
     }
-    const intervalSeconds = parseWatchdogIntervalSeconds(intervalLiteral)
-    if (!intervalSeconds) {
-      return { ok: false, message: "watchdog interval must be like 30s, 5m, 1h, or 1d" }
-    }
-    const hasPolicy = args[optionStart] === "skip" || args[optionStart] === "queue"
-    const policy = (hasPolicy ? args[optionStart] : "skip") as "skip" | "queue"
-    const prompt = args.slice(optionStart + (hasPolicy ? 1 : 0)).join(" ").trim() || "Run the workflow exactly as instructed."
-    const response = await deps.client.send(createWorkflowWatchdogRequest(sessionId, workflowRef, endpointRef, intervalSeconds, prompt, policy))
-    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; workflow: WorkflowDefinition; endpoint: WorkflowEndpointDefinition; session: RuntimeSession }>(response, "WorkflowWatchdogCreated")
-    return { ok: true, message: `created workflow watchdog ${payload.watchdog.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    const response = await deps.client.send(createWorkflowScheduleRequest(
+      sessionId,
+      workflowRef,
+      endpointRef,
+      parsed.trigger,
+      parsed.prompt ?? "Run the workflow exactly as instructed.",
+      parsed.overlapPolicy ?? "skip",
+      parsed.maxRuns,
+      parsed.queueRef,
+    ))
+    const payload = expectVariant<{ schedule: WorkflowScheduleDefinition; workflow: WorkflowDefinition; endpoint: WorkflowEndpointDefinition; session: RuntimeSession }>(response, "WorkflowScheduleCreated")
+    return { ok: true, message: `created workflow schedule ${payload.schedule.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
-  return { ok: false, message: "usage: workflow watchdog add|list|enable|disable|remove" }
+  return { ok: false, message: "usage: workflow schedule add|list|enable|disable|remove|preview" }
+}
+
+function workflowScheduleUsage(): string {
+  return "usage: workflow schedule add [workflow-ref] <endpoint-ref> (--every 5m | --cron \"15 30 14 * * *\" --tz UTC) [--queue <queue-ref>] [--overlap skip|queue] [--max-runs <n|null>] [--prompt <text>]"
+}
+
+function parseWorkflowScheduleOptions(args: string[]): {
+  trigger?: WorkflowScheduleTrigger
+  queueRef?: string | null
+  overlapPolicy?: "skip" | "queue"
+  maxRuns?: number | null
+  prompt?: string
+  error?: string
+} {
+  let trigger: WorkflowScheduleTrigger | undefined
+  let timezone = "UTC"
+  let queueRef: string | null | undefined
+  let overlapPolicy: "skip" | "queue" | undefined
+  let maxRuns: number | null | undefined
+  let prompt: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const next = args[index + 1]
+    if (arg === "--every") {
+      const seconds = parseScheduleIntervalSeconds(next)
+      if (!seconds) return { error: "schedule interval must be like 30s, 5m, 1h, or 1d" }
+      trigger = { kind: "interval", every_seconds: seconds }
+      index += 1
+      continue
+    }
+    if (arg === "--cron") {
+      if (!next) return { error: "schedule cron expression is required" }
+      trigger = { kind: "cron", expression: next, timezone }
+      index += 1
+      continue
+    }
+    if (arg === "--tz") {
+      if (!next) return { error: "schedule timezone is required" }
+      timezone = next
+      if (trigger?.kind === "cron") trigger = { ...trigger, timezone }
+      index += 1
+      continue
+    }
+    if (arg === "--queue") {
+      if (!next) return { error: "schedule queue is required" }
+      queueRef = next
+      index += 1
+      continue
+    }
+    if (arg === "--overlap") {
+      if (next !== "skip" && next !== "queue") return { error: "schedule overlap must be skip or queue" }
+      overlapPolicy = next
+      index += 1
+      continue
+    }
+    if (arg === "--max-runs") {
+      const parsed = parseScheduleMaxRuns(next)
+      if (parsed === undefined) return { error: "max-runs must be a positive integer or `null`" }
+      maxRuns = parsed
+      index += 1
+      continue
+    }
+    if (arg === "--prompt") {
+      prompt = args.slice(index + 1).join(" ").trim()
+      break
+    }
+    return { error: `unknown workflow schedule option ${arg}` }
+  }
+  const result: {
+    trigger?: WorkflowScheduleTrigger
+    queueRef?: string | null
+    overlapPolicy?: "skip" | "queue"
+    maxRuns?: number | null
+    prompt?: string
+  } = {}
+  if (trigger) result.trigger = trigger
+  if (queueRef !== undefined) result.queueRef = queueRef
+  if (overlapPolicy !== undefined) result.overlapPolicy = overlapPolicy
+  if (maxRuns !== undefined) result.maxRuns = maxRuns
+  if (prompt !== undefined) result.prompt = prompt
+  return result
+}
+
+function parseScheduleIntervalSeconds(value: string | undefined): number | null {
+  if (!value) return null
+  const match = value.trim().toLowerCase().match(/^(\d+)(s|m|h|d)$/)
+  if (!match) return null
+  const amount = Number(match[1])
+  const unit = match[2]
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
+  return amount * multiplier
+}
+
+function parseScheduleMaxRuns(value: string | undefined): number | null | undefined {
+  if (value == null) return undefined
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return undefined
+  if (normalized === "null" || normalized === "unbounded") return null
+  const numeric = Number(normalized)
+  if (!Number.isFinite(numeric) || numeric <= 0 || !Number.isInteger(numeric)) return undefined
+  return numeric
 }
 
 export async function executeWorkflowQueueCommand(
