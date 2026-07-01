@@ -168,21 +168,24 @@ function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowI
   const selectedNodeFailures = selectedNodeRun
     ? failureEvents.filter((entry) => entry.source_node_run_id === selectedNodeRun.id)
     : []
-  const workflowWatchdogs = (input.session.workflow_watchdogs ?? [])
+  const workflowSchedules = (input.session.workflow_schedules ?? input.session.workflow_watchdogs ?? [])
     .filter((entry) => entry.workflow_id === workflow.id)
     .sort((left, right) => left.next_run_at_ms - right.next_run_at_ms)
   const lines: string[] = []
-  lines.push(`Watchdogs: ${workflowWatchdogs.length}`)
-  if (workflowWatchdogs.length > 0) {
+  lines.push(`Schedules: ${workflowSchedules.length}`)
+  if (workflowSchedules.length > 0) {
     lines.push("")
-    lines.push("Watchdogs")
-    for (const watchdog of workflowWatchdogs.slice(0, 8)) {
-      lines.push(`- ${watchdog.id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)}`)
-      lines.push(`  next: ${new Date(watchdog.next_run_at_ms).toISOString()}`)
-      if (watchdog.last_status) {
-        lines.push(`  last: ${watchdog.last_status}`)
+    lines.push("Schedules")
+    for (const schedule of workflowSchedules.slice(0, 8)) {
+      const trigger = schedule.trigger.kind === "interval"
+        ? `every=${schedule.trigger.every_seconds}s`
+        : `cron=${schedule.trigger.expression} tz=${schedule.trigger.timezone}`
+      lines.push(`- ${schedule.id} endpoint=${schedule.endpoint_id} ${trigger} overlap=${schedule.overlap_policy} enabled=${String(schedule.enabled)}`)
+      lines.push(`  next: ${new Date(schedule.next_run_at_ms).toISOString()}`)
+      if (schedule.last_status) {
+        lines.push(`  last: ${schedule.last_status}`)
       }
-      if (watchdog.pending_run) {
+      if (schedule.pending_run) {
         lines.push("  pending: true")
       }
     }

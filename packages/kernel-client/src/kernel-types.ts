@@ -165,6 +165,7 @@ export type RuntimeSession = {
   workflow_runs?: WorkflowRun[]
   workflow_prompt_queues?: WorkflowPromptQueueDefinition[]
   workflow_queued_prompts?: WorkflowQueuedPrompt[]
+  workflow_schedules?: WorkflowScheduleDefinition[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]

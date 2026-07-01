@@ -4,7 +4,7 @@ use croner::{
     parser::{CronParser, Seconds, Year},
     Cron,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::types::unix_epoch_ms;
 
@@ -386,37 +386,31 @@ impl WorkflowQueuedPrompt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowScheduleDefinition {
     id: String,
     workflow_id: String,
     endpoint_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     queue_id: Option<String>,
     enabled: bool,
-    #[serde(default = "default_workflow_schedule_trigger")]
     trigger: WorkflowScheduleTrigger,
     invocation_prompt: String,
-    #[serde(alias = "policy")]
     overlap_policy: WorkflowScheduleOverlapPolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "max_wakeups")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_runs: Option<u64>,
-    #[serde(default)]
-    #[serde(alias = "wakeups_executed")]
     runs_started: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_scheduled_for_ms: Option<u64>,
     next_run_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_run_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_workflow_run_id: Option<String>,
-    #[serde(default)]
     pending_run: bool,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -424,6 +418,86 @@ pub struct WorkflowScheduleDefinition {
 
 fn default_workflow_schedule_trigger() -> WorkflowScheduleTrigger {
     WorkflowScheduleTrigger::interval(60)
+}
+
+#[derive(Deserialize)]
+struct WorkflowScheduleDefinitionWire {
+    id: String,
+    workflow_id: String,
+    endpoint_id: String,
+    #[serde(default)]
+    queue_id: Option<String>,
+    enabled: bool,
+    #[serde(default)]
+    trigger: Option<WorkflowScheduleTrigger>,
+    #[serde(default)]
+    interval_seconds: Option<u64>,
+    invocation_prompt: String,
+    #[serde(default)]
+    overlap_policy: Option<WorkflowScheduleOverlapPolicy>,
+    #[serde(default)]
+    policy: Option<WorkflowScheduleOverlapPolicy>,
+    #[serde(default)]
+    max_runs: Option<u64>,
+    #[serde(default)]
+    max_wakeups: Option<u64>,
+    #[serde(default)]
+    runs_started: Option<u64>,
+    #[serde(default)]
+    wakeups_executed: Option<u64>,
+    #[serde(default)]
+    last_scheduled_for_ms: Option<u64>,
+    next_run_at_ms: u64,
+    #[serde(default)]
+    last_run_at_ms: Option<u64>,
+    #[serde(default)]
+    last_status: Option<String>,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    last_workflow_run_id: Option<String>,
+    #[serde(default)]
+    pending_run: bool,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl<'de> Deserialize<'de> for WorkflowScheduleDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WorkflowScheduleDefinitionWire::deserialize(deserializer)?;
+        let trigger = wire
+            .trigger
+            .or_else(|| wire.interval_seconds.map(WorkflowScheduleTrigger::interval))
+            .unwrap_or_else(default_workflow_schedule_trigger);
+        let overlap_policy = wire
+            .overlap_policy
+            .or(wire.policy)
+            .ok_or_else(|| de::Error::missing_field("overlap_policy"))?;
+        Ok(Self {
+            id: wire.id,
+            workflow_id: wire.workflow_id,
+            endpoint_id: wire.endpoint_id,
+            queue_id: wire.queue_id,
+            enabled: wire.enabled,
+            trigger,
+            invocation_prompt: wire.invocation_prompt,
+            overlap_policy,
+            max_runs: wire.max_runs.or(wire.max_wakeups),
+            runs_started: wire.runs_started.or(wire.wakeups_executed).unwrap_or(0),
+            last_scheduled_for_ms: wire.last_scheduled_for_ms,
+            next_run_at_ms: wire.next_run_at_ms,
+            last_run_at_ms: wire.last_run_at_ms,
+            last_status: wire.last_status,
+            last_error: wire.last_error,
+            last_workflow_run_id: wire.last_workflow_run_id,
+            pending_run: wire.pending_run,
+            created_at_ms: wire.created_at_ms,
+            updated_at_ms: wire.updated_at_ms,
+        })
+    }
 }
 
 impl WorkflowScheduleDefinition {
@@ -661,5 +735,29 @@ mod tests {
         let trigger = WorkflowScheduleTrigger::cron("0 30 14 * * *", "Berlin");
 
         assert!(trigger.validate().is_err());
+    }
+
+    #[test]
+    fn schedule_definition_deserializes_legacy_watchdog_fields() {
+        let schedule: WorkflowScheduleDefinition = serde_json::from_value(serde_json::json!({
+            "id": "watchdog-1",
+            "workflow_id": "workflow-1",
+            "endpoint_id": "endpoint-1",
+            "enabled": true,
+            "interval_seconds": 300,
+            "invocation_prompt": "Run checks",
+            "policy": "queue",
+            "max_wakeups": 7,
+            "wakeups_executed": 3,
+            "next_run_at_ms": 10,
+            "created_at_ms": 1,
+            "updated_at_ms": 2
+        }))
+        .unwrap();
+
+        assert_eq!(schedule.trigger(), &WorkflowScheduleTrigger::interval(300));
+        assert_eq!(schedule.overlap_policy(), WorkflowScheduleOverlapPolicy::Queue);
+        assert_eq!(schedule.max_runs(), Some(7));
+        assert_eq!(schedule.runs_started(), 3);
     }
 }

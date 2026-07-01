@@ -29,7 +29,7 @@ use super::workflow_run_records::WorkflowNodeRun;
 use super::workflow_runs::WorkflowRun;
 use super::workflow_scheduling::{
     WorkflowPromptQueueDefinition, WorkflowQueuedPrompt, WorkflowQueuedPromptStatus,
-    WorkflowWatchdogDefinition,
+    WorkflowScheduleDefinition, WorkflowWatchdogDefinition,
 };
 use super::workflow_turns::{WorkflowNodeRunStatus, WorkflowRunStatus};
 use super::workspace_links::WorkspaceLinkDefinition;
@@ -98,8 +98,12 @@ pub struct RuntimeSession {
     workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     workflow_queued_prompts: VecDeque<WorkflowQueuedPrompt>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
+    #[serde(
+        default,
+        alias = "workflow_watchdogs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    workflow_schedules: Vec<WorkflowScheduleDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_consoles: Vec<WorkflowConsole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -163,7 +167,7 @@ impl RuntimeSession {
             workflow_runs: Vec::new(),
             workflow_prompt_queues: Vec::new(),
             workflow_queued_prompts: VecDeque::new(),
-            workflow_watchdogs: Vec::new(),
+            workflow_schedules: Vec::new(),
             workflow_consoles: Vec::new(),
             workflow_publications: Vec::new(),
             workspace_links: Vec::new(),
@@ -722,12 +726,20 @@ impl RuntimeSession {
         &self.workflow_queued_prompts
     }
 
+    pub fn workflow_schedules(&self) -> &[WorkflowScheduleDefinition] {
+        &self.workflow_schedules
+    }
+
+    pub fn workflow_schedules_mut(&mut self) -> &mut [WorkflowScheduleDefinition] {
+        &mut self.workflow_schedules
+    }
+
     pub fn workflow_watchdogs(&self) -> &[WorkflowWatchdogDefinition] {
-        &self.workflow_watchdogs
+        self.workflow_schedules()
     }
 
     pub fn workflow_watchdogs_mut(&mut self) -> &mut [WorkflowWatchdogDefinition] {
-        &mut self.workflow_watchdogs
+        self.workflow_schedules_mut()
     }
 
     pub fn workflow_consoles(&self) -> &[WorkflowConsole] {
@@ -864,11 +876,11 @@ impl RuntimeSession {
         &mut self,
         workflows: Vec<WorkflowDefinition>,
         workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
-        workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
+        workflow_schedules: Vec<WorkflowScheduleDefinition>,
     ) {
         self.workflows = workflows;
         self.workflow_prompt_queues = workflow_prompt_queues;
-        self.workflow_watchdogs = workflow_watchdogs;
+        self.workflow_schedules = workflow_schedules;
         let workflow_ids = self
             .workflows
             .iter()
@@ -1176,38 +1188,63 @@ impl RuntimeSession {
             .find(|workflow_run| workflow_run.id() == workflow_run_id)
     }
 
+    pub fn add_workflow_schedule(
+        &mut self,
+        schedule: WorkflowScheduleDefinition,
+    ) -> WorkflowScheduleDefinition {
+        self.workflow_schedules.push(schedule.clone());
+        schedule
+    }
+
+    pub fn workflow_schedule(&self, schedule_id: &str) -> Option<&WorkflowScheduleDefinition> {
+        self.workflow_schedules
+            .iter()
+            .find(|schedule| schedule.id() == schedule_id)
+    }
+
+    pub fn workflow_schedule_mut(
+        &mut self,
+        schedule_id: &str,
+    ) -> Option<&mut WorkflowScheduleDefinition> {
+        self.workflow_schedules
+            .iter_mut()
+            .find(|schedule| schedule.id() == schedule_id)
+    }
+
+    pub fn remove_workflow_schedule(
+        &mut self,
+        schedule_id: &str,
+    ) -> Option<WorkflowScheduleDefinition> {
+        let index = self
+            .workflow_schedules
+            .iter()
+            .position(|schedule| schedule.id() == schedule_id)?;
+        Some(self.workflow_schedules.remove(index))
+    }
+
     pub fn add_workflow_watchdog(
         &mut self,
         watchdog: WorkflowWatchdogDefinition,
     ) -> WorkflowWatchdogDefinition {
-        self.workflow_watchdogs.push(watchdog.clone());
-        watchdog
+        self.add_workflow_schedule(watchdog)
     }
 
     pub fn workflow_watchdog(&self, watchdog_id: &str) -> Option<&WorkflowWatchdogDefinition> {
-        self.workflow_watchdogs
-            .iter()
-            .find(|watchdog| watchdog.id() == watchdog_id)
+        self.workflow_schedule(watchdog_id)
     }
 
     pub fn workflow_watchdog_mut(
         &mut self,
         watchdog_id: &str,
     ) -> Option<&mut WorkflowWatchdogDefinition> {
-        self.workflow_watchdogs
-            .iter_mut()
-            .find(|watchdog| watchdog.id() == watchdog_id)
+        self.workflow_schedule_mut(watchdog_id)
     }
 
     pub fn remove_workflow_watchdog(
         &mut self,
         watchdog_id: &str,
     ) -> Option<WorkflowWatchdogDefinition> {
-        let index = self
-            .workflow_watchdogs
-            .iter()
-            .position(|watchdog| watchdog.id() == watchdog_id)?;
-        Some(self.workflow_watchdogs.remove(index))
+        self.remove_workflow_schedule(watchdog_id)
     }
 
     pub fn workflow_node_run_mut(

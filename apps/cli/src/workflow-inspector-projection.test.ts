@@ -78,7 +78,7 @@ test("workflow inspector projects runtime state for the selected workflow node",
           ],
         }),
       ],
-      workflow_watchdogs: [
+      workflow_schedules: [
         {
           id: "watchdog-1",
           workflow_id: "workflow-1",
@@ -115,7 +115,8 @@ test("workflow inspector projects runtime state for the selected workflow node",
     "Run: run-new",
     "Run status: failed",
   ])
-  assert.match(inspector?.body ?? "", /Watchdogs: 1/)
+  assert.match(inspector?.body ?? "", /Schedules: 1/)
+  assert.match(inspector?.body ?? "", /overlap=queue/)
   assert.match(inspector?.body ?? "", /pending: true/)
   assert.match(inspector?.body ?? "", /Selected node failure events/)
   assert.match(inspector?.body ?? "", /schema mismatch/)

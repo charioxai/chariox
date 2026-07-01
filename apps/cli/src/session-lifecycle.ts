@@ -445,7 +445,7 @@ function isCompleteSessionSnapshot(
     && Array.isArray(session.agents)
     && Array.isArray(session.workflows)
     && Array.isArray(session.workflow_runs)
-    && Array.isArray(session.workflow_watchdogs)
+    && (Array.isArray(session.workflow_schedules) || Array.isArray(session.workflow_watchdogs))
     && Array.isArray(session.workflow_consoles)
     && typeof session.max_agents === "number"
     && typeof session.config_state === "object"
