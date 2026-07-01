@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Schedule Rename and Cron Scheduler Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+        font-size: 22px;
+      }
+
+      h3 {
+        margin-top: 22px;
+        font-size: 17px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 14px 0 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #101827;
+        color: #edf2ff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero,
+      .callout,
+      .warning,
+      .panel {
+        border-radius: 8px;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 880px;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 10px;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 14px 16px;
+      }
+
+      .warning {
+        margin-top: 18px;
+        border: 1px solid #e5c08f;
+        border-left: 4px solid var(--warn);
+        background: var(--warn-soft);
+        padding: 14px 16px;
+      }
+
+      .panel {
+        margin-top: 16px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        padding: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Arroba workflow implementation plan</p>
+        <h1>Workflow Schedule Rename and Cron Scheduler</h1>
+        <p class="summary">
+          Rename the runtime feature from watchdogs to workflow schedules, make
+          <code>WorkflowSchedule</code> and <code>WorkflowScheduleDefinition</code> the canonical
+          types across <code>arroba</code> and <code>arroba-cloud</code>, and replace
+          interval-only scheduling with a production scheduler that supports interval triggers and
+          Unix cron triggers with seconds and explicit IANA timezone storage.
+        </p>
+        <div class="meta">
+          <span class="pill">Owner: kernel runtime plus Cloud web client</span>
+          <span class="pill">Primary surfaces: TUI, web terminal, workflow-code</span>
+          <span class="pill">Requires protocol version bump</span>
+          <span class="pill">Validation: unit, protocol, UI, live drills</span>
+        </div>
+        <div class="callout">
+          <strong>Decision:</strong> the shipped feature is workflow schedules only. Temporary
+          watchdog aliases or mappers may exist on the development branch to keep intermediate
+          builds working, but the landed state removes public watchdog commands, API variants,
+          TypeScript types, UI labels, and docs. Legacy watchdog payloads are accepted only through
+          explicit one-way migration readers.
+        </div>
+      </section>
+
+      <h2>1. Kernel and Runtime Model</h2>
+      <p>
+        Replace <code>WorkflowWatchdogDefinition</code> with
+        <code>WorkflowScheduleDefinition</code>. The kernel remains the runtime authority for
+        schedule identity, trigger validation, dispatch decisions, overlap handling, run
+        bookkeeping, and persistence.
+      </p>
+      <pre><code>type WorkflowScheduleTrigger =
+  | { kind: "interval"; every_seconds: number }
+  | { kind: "cron"; expression: string; timezone: string };</code></pre>
+      <ul>
+        <li>Rename <code>policy</code> to <code>overlap_policy</code>, with values <code>skip</code> and <code>queue</code>.</li>
+        <li>Rename <code>max_wakeups</code> and <code>wakeups_executed</code> to <code>max_runs</code> and <code>runs_started</code>.</li>
+        <li>Rename <code>watchdog_id</code> references in queued prompts and run bookkeeping to <code>schedule_id</code>.</li>
+        <li>Rename queued prompt source from <code>watchdog</code> to <code>scheduled</code>.</li>
+        <li>Store <code>last_scheduled_for_ms</code>, <code>last_run_at_ms</code>, <code>next_run_at_ms</code>, <code>last_status</code>, <code>last_error</code>, and <code>last_workflow_run_id</code>.</li>
+        <li>Use schedule identifiers in logs, terminal events, status payloads, workflow apply reports, and persisted run metadata.</li>
+      </ul>
+
+      <h2>2. Cron Behavior</h2>
+      <p>
+        Cron schedules support seconds. The accepted cron grammar must include a seconds field
+        before minute, hour, day-of-month, month, and day-of-week fields. The scheduler should also
+        support common macros such as <code>@hourly</code>, <code>@daily</code>,
+        <code>@weekly</code>, and <code>@monthly</code> where the selected Rust dependency can
+        normalize them deterministically.
+      </p>
+      <div class="panel">
+        <h3>Required Semantics</h3>
+        <ul>
+          <li>Store timezone separately as an IANA name such as <code>America/New_York</code>.</li>
+          <li>Web-created schedules default to the browser timezone from <code>Intl.DateTimeFormat().resolvedOptions().timeZone</code>.</li>
+          <li>CLI and TUI commands default to <code>UTC</code> unless <code>--tz</code> is provided.</li>
+          <li>DST policy: nonexistent local times are skipped; repeated local times run once per schedule occurrence.</li>
+          <li>No offline backfill. After kernel or cloud worker restart, recompute the next future occurrence from current time.</li>
+          <li>Use a Rust cron/timezone dependency instead of hand-rolling calendar math. Primary candidates are <code>cronexpr</code> for cron evaluation and <code>chrono-tz</code> for IANA timezone validation.</li>
+        </ul>
+      </div>
+      <div class="warning">
+        <strong>Seconds are part of the production contract:</strong> validation, preview,
+        persistence, command parsing, UI help text, tests, and drills must all treat seconds-capable
+        cron expressions as supported behavior, not as a later extension.
+      </div>
+
+      <h2>3. Public API and Protocol</h2>
+      <p>
+        Add canonical local daemon requests and responses for schedules, then remove the public
+        watchdog protocol variants before landing.
+      </p>
+      <ul>
+        <li><code>CreateWorkflowSchedule</code></li>
+        <li><code>ListWorkflowSchedules</code></li>
+        <li><code>SetWorkflowScheduleEnabled</code></li>
+        <li><code>RemoveWorkflowSchedule</code></li>
+        <li><code>PreviewWorkflowSchedule</code></li>
+      </ul>
+      <p>
+        <code>PreviewWorkflowSchedule</code> validates the trigger and timezone, returns normalized
+        trigger data, and returns the next three scheduled run times. It must accept and preview
+        seconds-capable cron expressions.
+      </p>
+      <ul>
+        <li>Bump <code>LOCAL_DAEMON_PROTOCOL_VERSION</code> and update protocol shape/hash tests.</li>
+        <li>Update <code>packages/kernel-client</code>, CLI types, terminal command catalog, shell executor, and iOS protocol fixtures to the new names.</li>
+        <li>Remove final public watchdog request/response variants and command catalog entries before landing.</li>
+      </ul>
+
+      <h2>4. Workflow-Code and Exports</h2>
+      <p>
+        Add <code>workflow.schedule(endpoint, options)</code> to workflow-code. Definitions, apply
+        reports, packages, and exported artifacts use <code>schedules</code> and
+        <code>schedule_ids</code>.
+      </p>
+      <ul>
+        <li>Accept old <code>watchdogs</code> only in a narrow legacy import and migration path.</li>
+        <li>Write and export only <code>schedules</code> after migration.</li>
+        <li>Update publication snapshots and status payloads from <code>watchdogs</code> and <code>watchdog_count</code> to <code>schedules</code> and <code>schedule_count</code>.</li>
+        <li>Ensure exported cron schedule definitions preserve seconds and explicit timezone data.</li>
+      </ul>
+
+      <h2>5. Web Terminal UX</h2>
+      <p>
+        Add a schedule icon button next to the existing Run and Deploy workflow controls in the
+        workflow route. It opens a Schedule workflow modal that follows existing workflow run and
+        deploy modal patterns while staying dense and operational.
+      </p>
+      <div class="panel">
+        <h3>Schedule Workflow Modal</h3>
+        <ul>
+          <li>Endpoint selector.</li>
+          <li>Trigger segmented control: Interval, Daily, Weekly, Monthly, Custom cron.</li>
+          <li>Interval fields for <code>Every &lt;number&gt; &lt;unit&gt;</code>.</li>
+          <li>Cron expression field for custom seconds-capable cron expressions.</li>
+          <li>Timezone select or input defaulting to the browser timezone.</li>
+          <li>Queue selector, overlap policy selector, max runs field, enabled toggle, and invocation prompt field.</li>
+          <li>Read-only Next runs preview driven by <code>PreviewWorkflowSchedule</code>.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Workflow Inspector and Console</h3>
+        <ul>
+          <li>Show schedule count, enabled state, next run, last status, and last error.</li>
+          <li>Provide enable, disable, and remove actions.</li>
+          <li>Keep management available in the workflow inspector and console context instead of creating a separate marketing-style page.</li>
+        </ul>
+      </div>
+
+      <h2>6. Terminal Commands</h2>
+      <p>
+        Add <code>/workflow schedule ...</code> command support with command-center suggestions and
+        dynamic completions for workflow, endpoint, and queue references. Remove
+        <code>/workflow watchdog ...</code> from the final UX.
+      </p>
+      <pre><code>/workflow schedule add [workflow-ref] &lt;endpoint-ref&gt; --every 5m --tz UTC --overlap skip --prompt "..."
+/workflow schedule add [workflow-ref] &lt;endpoint-ref&gt; --cron "30 0 9 * * 1-5" --tz America/New_York --queue urgent --overlap queue
+/workflow schedule list [workflow-ref]
+/workflow schedule enable &lt;schedule-ref&gt;
+/workflow schedule disable &lt;schedule-ref&gt;
+/workflow schedule remove &lt;schedule-ref&gt;
+/workflow schedule preview --cron "15 30 14 * * *" --tz Europe/Berlin</code></pre>
+
+      <h2>7. Test Plan</h2>
+      <h3>Kernel Unit Tests</h3>
+      <ul>
+        <li>Interval schedules preserve current skip, queue, and max-run behavior.</li>
+        <li>Cron schedules compute next runs in UTC from IANA timezone input.</li>
+        <li>Seconds-capable cron expressions validate, persist, preview, and dispatch at the expected second.</li>
+        <li>DST skip and dedup behavior.</li>
+        <li>Disabled, removed, exhausted, active-run skip, active-run queue, and hidden publication warmup paths.</li>
+        <li>Legacy watchdog snapshot and package migration into <code>WorkflowScheduleDefinition</code>.</li>
+      </ul>
+
+      <h3>Protocol and Client Tests</h3>
+      <ul>
+        <li>Protocol version and shape/hash tests updated.</li>
+        <li><code>packages/kernel-client</code> request builders and shell executor tests for all <code>/workflow schedule</code> commands.</li>
+        <li>CLI command handler tests for parsing interval, seconds-capable cron, timezone, queue, overlap, max-runs, preview, and validation failures.</li>
+        <li>Workflow-code compile, apply, export, and import tests for <code>workflow.schedule</code>.</li>
+      </ul>
+
+      <h3>Cloud Web Tests</h3>
+      <ul>
+        <li>React modal tests for schedule creation, timezone default, preview rendering, validation errors, and remove, enable, and disable actions.</li>
+        <li>Command-center tests for <code>/workflow schedule</code> suggestions and dynamic workflow, endpoint, and queue completions.</li>
+        <li>Published workflow and sidebar tests updated to schedule naming.</li>
+        <li>Preview tests proving seconds in cron expressions are preserved in normalized trigger data and rendered next-run times.</li>
+      </ul>
+
+      <h3>E2E Drills</h3>
+      <ul>
+        <li>Rename or replace <code>live-watchdog-drill.mjs</code> with <code>live-workflow-scheduler-drill.mjs</code>.</li>
+        <li>Add cron mode to the live scheduler drill using a near-future seconds-capable cron expression and explicit <code>UTC</code>.</li>
+        <li>Add TUI e2e drill: create workflow, add cron schedule, list, observe scheduled run, disable, remove.</li>
+        <li>Add web terminal e2e drill in <code>arroba-cloud</code>: open product frontend in the in-app browser, create a schedule through the modal, verify preview and scheduled run, then manage it through <code>/workflow schedule</code> commands.</li>
+        <li>Add TUI/web parity drill: create in one surface, verify schedule and run state appears in the other.</li>
+      </ul>
+
+      <h2>8. Assumptions and Landing Criteria</h2>
+      <ul>
+        <li>Final shipped naming has no public watchdog aliases.</li>
+        <li>A narrow legacy migration reader is acceptable only for old persisted or exported data and tests.</li>
+        <li>Cron support includes seconds-capable expressions in the runtime, protocol, CLI, web UI, previews, tests, and drills.</li>
+        <li>Cloud deployments always store explicit timezone; web UX must not rely on cloud host local time.</li>
+        <li>Temporary migration code is isolated, named as legacy migration code, and does not leak into new public APIs.</li>
+      </ul>
+    </main>
+  </body>
+</html>
