@@ -33,8 +33,13 @@ pub type WorkflowWatchdogDefinition = WorkflowScheduleDefinition;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowScheduleTrigger {
-    Interval { every_seconds: u64 },
-    Cron { expression: String, timezone: String },
+    Interval {
+        every_seconds: u64,
+    },
+    Cron {
+        expression: String,
+        timezone: String,
+    },
 }
 
 impl WorkflowScheduleTrigger {
@@ -756,7 +761,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(schedule.trigger(), &WorkflowScheduleTrigger::interval(300));
-        assert_eq!(schedule.overlap_policy(), WorkflowScheduleOverlapPolicy::Queue);
+        assert_eq!(
+            schedule.overlap_policy(),
+            WorkflowScheduleOverlapPolicy::Queue
+        );
         assert_eq!(schedule.max_runs(), Some(7));
         assert_eq!(schedule.runs_started(), 3);
     }

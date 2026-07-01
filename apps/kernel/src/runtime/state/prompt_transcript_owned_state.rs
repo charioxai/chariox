@@ -302,63 +302,12 @@ impl KernelRuntimeOwnedState {
         workflow_run_id_override: Option<&str>,
         workflow_node_run_id_override: Option<&str>,
     ) {
-        let provider_run = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
-        let agent_id = entry.agent_id.clone().or_else(|| {
-            provider_run
-                .as_ref()
-                .and_then(|run| run.agent_instance_id().map(str::to_string))
-        });
-        let session = self.session_store.get_session(&entry.session_id).ok();
-        let active_prompt = session.as_ref().and_then(|session| {
-            agent_id.as_deref().and_then(|agent_id| {
-                self.prompt_state_owner
-                    .active_prompt_for_agent(session, agent_id)
-            })
-        });
-        let active_turn = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
-        let prompt_id = prompt_id_override
-            .map(str::to_string)
-            .or_else(|| active_turn.as_ref().map(|turn| turn.prompt_id.clone()))
-            .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
-        let turn_id = active_turn
-            .as_ref()
-            .map(|turn| turn.trace_id.clone())
-            .or_else(|| prompt_id.clone());
-        let context = crate::history::HistoryEventTurnContext {
-            session_id: Some(entry.session_id.clone()),
-            agent_id,
-            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
-            model: provider_run.as_ref().map(|run| run.model().to_string()),
-            turn_id,
-            prompt_id,
-            provider_run_id: entry.provider_run_id.clone(),
-            provider_session_id: provider_run
-                .as_ref()
-                .and_then(|run| run.provider_session_id().map(str::to_string)),
-            workflow_run_id: workflow_run_id_override.map(str::to_string).or_else(|| {
-                active_prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
-            }),
-            workflow_node_id: workflow_node_run_id_override
-                .map(str::to_string)
-                .or_else(|| {
-                    active_prompt
-                        .as_ref()
-                        .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string))
-                }),
-            worktree_path: provider_run.as_ref().and_then(|run| {
-                run.working_directory()
-                    .map(|path| path.display().to_string())
-            }),
-            ..crate::history::HistoryEventTurnContext::default()
-        };
+        let context = self.operational_history_context(
+            entry,
+            prompt_id_override,
+            workflow_run_id_override,
+            workflow_node_run_id_override,
+        );
         match self
             .operational_history_store
             .append_transcript(entry, context)
@@ -387,6 +336,72 @@ impl KernelRuntimeOwnedState {
                     }),
                 );
             }
+        }
+    }
+
+    fn operational_history_context(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        prompt_id_override: Option<&str>,
+        workflow_run_id_override: Option<&str>,
+        workflow_node_run_id_override: Option<&str>,
+    ) -> crate::history::HistoryEventTurnContext {
+        let provider_run = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+        let agent_id = entry.agent_id.clone().or_else(|| {
+            provider_run
+                .as_ref()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        let session = self.session_store.get_session(&entry.session_id).ok();
+        let active_prompt = session.as_ref().and_then(|session| {
+            agent_id.as_deref().and_then(|agent_id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, agent_id)
+            })
+        });
+        let active_turn = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
+        let prompt_id = prompt_id_override
+            .map(str::to_string)
+            .or_else(|| active_turn.as_ref().map(|turn| turn.prompt_id.clone()))
+            .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
+        let turn_id = active_turn
+            .as_ref()
+            .map(|turn| turn.trace_id.clone())
+            .or_else(|| prompt_id.clone());
+        crate::history::HistoryEventTurnContext {
+            session_id: Some(entry.session_id.clone()),
+            agent_id,
+            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
+            model: provider_run.as_ref().map(|run| run.model().to_string()),
+            turn_id,
+            prompt_id,
+            provider_run_id: entry.provider_run_id.clone(),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id().map(str::to_string)),
+            workflow_run_id: workflow_run_id_override.map(str::to_string).or_else(|| {
+                active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+            }),
+            workflow_node_id: workflow_node_run_id_override
+                .map(str::to_string)
+                .or_else(|| {
+                    active_prompt
+                        .as_ref()
+                        .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string))
+                }),
+            worktree_path: provider_run.as_ref().and_then(|run| {
+                run.working_directory()
+                    .map(|path| path.display().to_string())
+            }),
+            ..crate::history::HistoryEventTurnContext::default()
         }
     }
 
@@ -532,13 +547,16 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot(session_id)?;
-        let entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+        let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
             agent_id,
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
             attachments,
         );
+        if let Some(prompt_id) = prompt_id {
+            entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
+        }
         if let Err(error) = self.history_store.append(&session, &entry) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -556,6 +574,111 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
         );
         Ok(())
+    }
+
+    pub(super) fn replace_user_prompt_history_by_prompt_id(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) {
+        let merge_key = user_prompt_history_merge_key(prompt.id());
+        let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+            session_id,
+            prompt.source_attachment_id(),
+            prompt.target_agent_id(),
+            crate::prompt_transcript::render_prompt_transcript(
+                prompt.prompt(),
+                prompt.attachments(),
+            ),
+            prompt.attachments(),
+        );
+        entry.merge_key = Some(merge_key.clone());
+        let session = match self.session_store.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping queued prompt history replacement because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "prompt_id": prompt.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        match self
+            .history_store
+            .replace_by_merge_key(&session, &merge_key, &entry)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = self.history_store.append(&session, &entry) {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to append queued prompt history after replacement miss",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "prompt_id": prompt.id(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace queued prompt legacy history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "prompt_id": prompt.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+
+        let context = self.operational_history_context(
+            &entry,
+            Some(prompt.id()),
+            prompt.workflow_run_id(),
+            prompt.workflow_node_run_id(),
+        );
+        match self
+            .operational_history_store
+            .replace_transcript_by_merge_key(
+                session_id,
+                entry.agent_id.as_deref(),
+                &merge_key,
+                &entry,
+                context,
+            ) {
+            Ok(Some(event)) => {
+                if self.history_archive_enabled() {
+                    self.enqueue_history_archive_event(&event);
+                }
+            }
+            Ok(None) => {
+                self.append_operational_history_entry(
+                    &entry,
+                    Some(prompt.id()),
+                    prompt.workflow_run_id(),
+                    prompt.workflow_node_run_id(),
+                );
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace queued prompt operational history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "prompt_id": prompt.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     pub(super) fn echo_prompt_to_other_attachments(
@@ -649,6 +772,10 @@ impl KernelRuntimeOwnedState {
                 .record_target_activity(session_id, agent_id);
         }
     }
+}
+
+fn user_prompt_history_merge_key(prompt_id: &str) -> String {
+    format!("prompt:{prompt_id}")
 }
 
 fn is_unread_output_history_entry(entry: &crate::history::SessionHistoryEntry) -> bool {

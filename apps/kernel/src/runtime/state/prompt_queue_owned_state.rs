@@ -328,6 +328,7 @@ impl KernelRuntimeOwnedState {
                     "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
                 ),
             })?;
+        self.replace_user_prompt_history_by_prompt_id(session_id, &prompt);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;

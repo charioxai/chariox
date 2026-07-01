@@ -50,12 +50,14 @@ impl SessionService {
                 self.resolve_workflow_prompt_queue_ref(session_id, &workflow_id, queue_ref)
             })
             .transpose()?;
-        trigger.validate().map_err(|message| DaemonError::WorkflowLaunchRejected {
-            session_id: session_id.to_string(),
-            workflow_id: workflow_id.clone(),
-            endpoint_id: endpoint_id.clone(),
-            message,
-        })?;
+        trigger
+            .validate()
+            .map_err(|message| DaemonError::WorkflowLaunchRejected {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+                message,
+            })?;
         let mut schedule = WorkflowScheduleDefinition::new_with_trigger(
             self.next_workflow_watchdog_id(),
             workflow_id,
@@ -111,12 +113,14 @@ impl SessionService {
         after_ms: Option<u64>,
         count: usize,
     ) -> Result<crate::local::WorkflowSchedulePreview, DaemonError> {
-        trigger.validate().map_err(|message| DaemonError::WorkflowLaunchRejected {
-            session_id: String::new(),
-            workflow_id: String::new(),
-            endpoint_id: String::new(),
-            message,
-        })?;
+        trigger
+            .validate()
+            .map_err(|message| DaemonError::WorkflowLaunchRejected {
+                session_id: String::new(),
+                workflow_id: String::new(),
+                endpoint_id: String::new(),
+                message,
+            })?;
         let next_run_at_ms = trigger
             .preview_run_times_after_ms(after_ms.unwrap_or_else(unix_epoch_ms), count)
             .map_err(|message| DaemonError::WorkflowLaunchRejected {

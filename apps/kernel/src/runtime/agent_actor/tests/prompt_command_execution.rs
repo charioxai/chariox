@@ -1594,6 +1594,26 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
     else {
         panic!("second prompt should queue");
     };
+    let mut queued_history_entry = crate::history::SessionHistoryEntry::user_prompt(
+        session.id(),
+        attachment.id(),
+        agent.id(),
+        "queued prompt",
+    );
+    queued_history_entry.merge_key = Some(format!("prompt:{}", queued_prompt.id()));
+    app.operational_history_store()
+        .append_transcript(
+            &queued_history_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(agent.id().to_string()),
+                turn_id: Some(queued_prompt.id().to_string()),
+                prompt_id: Some(queued_prompt.id().to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("queued prompt history should seed");
+    let operational_history = app.operational_history_store();
     let session_snapshot = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(session.id())
         .expect("session snapshot should be available");
@@ -1664,6 +1684,17 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
             .and_then(|queued| queued.front())
             .map(|prompt| prompt.prompt()),
         Some("updated queued prompt")
+    );
+    let history_events = operational_history
+        .load_session_events(&session_id, Some(&agent_id))
+        .expect("operational history should load");
+    assert_eq!(
+        history_events
+            .iter()
+            .filter(|event| event.prompt_id.as_deref() == Some(queued_prompt.id()))
+            .map(|event| event.content.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("updated queued prompt\n")]
     );
 }
 

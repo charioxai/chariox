@@ -2487,8 +2487,7 @@ impl<'a> WorkflowCodeValidator<'a> {
                     Some(schedule.handle.clone()),
                 );
             }
-            if schedule.max_runs.is_some_and(|max_runs| max_runs == 0)
-            {
+            if schedule.max_runs.is_some_and(|max_runs| max_runs == 0) {
                 self.error(
                     "invalid_schedule_max_runs",
                     "schedule max_runs must not be zero",
