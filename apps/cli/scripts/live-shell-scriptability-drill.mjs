@@ -246,9 +246,9 @@ async function main() {
       'workflow run-output-schema $workflow none',
       'workflow intermediate-output-schema $workflow none',
       'workflow max-turns off',
-      'workflow watchdog list',
-      'workflow watchdog add $workflow shell-entry-2 every 30s skip shell-drill-watchdog',
-      'workflow watchdog list',
+      'workflow schedule list',
+      'workflow schedule add $workflow shell-entry-2 --every 30s --overlap skip --prompt shell-drill-schedule',
+      'workflow schedule list',
       'workflow queue list',
       'workflow queue flush',
       'workflow runs',
@@ -283,7 +283,7 @@ async function main() {
     requireOutput(success.stdout, /installed MCP shell_echo/, 'MCP install')
     requireOutput(success.stdout, /installed skill shell-drill-skill/, 'skill install')
     requireOutput(success.stdout, /created workflow/, 'workflow create')
-    requireOutput(success.stdout, /created workflow watchdog/, 'watchdog create')
+    requireOutput(success.stdout, /created workflow schedule/, 'schedule create')
     sessionId = success.stdout.match(/bound \$session = (\S+)/)?.[1] ?? null
     if (!sessionId) {
       throw new Error(`success script did not expose a session id\n${success.stdout}`)

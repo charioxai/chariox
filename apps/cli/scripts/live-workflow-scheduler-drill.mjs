@@ -20,9 +20,8 @@ const {
   createSessionRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
-  createWorkflowWatchdogRequest,
+  createWorkflowScheduleRequest,
   getSessionStateRequest,
-  invokeWorkflowEndpointRequest,
   launchProviderRunRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
@@ -32,6 +31,8 @@ const {
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_INTERVAL_SECONDS = 1
+const DEFAULT_CRON = '*/1 * * * * *'
+const DEFAULT_TIMEZONE = 'UTC'
 const DEFAULT_PROVIDERS = [
   'opencode',
   'codex',
@@ -52,8 +53,11 @@ function parseArgs(argv) {
     worktree: repoRoot,
     model: DEFAULT_MODEL,
     providerModels: {},
+    trigger: 'interval',
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
-    policy: 'skip',
+    cron: DEFAULT_CRON,
+    timezone: DEFAULT_TIMEZONE,
+    overlap: 'skip',
     providers: DEFAULT_PROVIDERS,
     pollLimit: 90,
     pollIntervalMs: 1000,
@@ -71,8 +75,11 @@ function parseArgs(argv) {
       if (!provider || !model) throw new Error('--provider-model must use provider=model')
       options.providerModels[provider] = model
     }
+    else if (arg === '--trigger') options.trigger = argv[++index]
     else if (arg === '--interval-seconds') options.intervalSeconds = Number(argv[++index])
-    else if (arg === '--policy') options.policy = argv[++index]
+    else if (arg === '--cron') options.cron = argv[++index]
+    else if (arg === '--timezone') options.timezone = argv[++index]
+    else if (arg === '--overlap') options.overlap = argv[++index]
     else if (arg === '--providers') options.providers = argv[++index].split(',').map((v) => v.trim()).filter(Boolean)
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++index])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++index])
@@ -81,15 +88,27 @@ function parseArgs(argv) {
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
-  if (!['skip', 'queue'].includes(options.policy)) {
-    throw new Error(`unsupported watchdog policy: ${options.policy}`)
+  if (!['skip', 'queue'].includes(options.overlap)) {
+    throw new Error(`unsupported schedule overlap: ${options.overlap}`)
+  }
+  if (!['interval', 'cron'].includes(options.trigger)) {
+    throw new Error(`unsupported schedule trigger: ${options.trigger}`)
+  }
+  if (!Number.isFinite(options.intervalSeconds) || options.intervalSeconds < 1) {
+    throw new Error('--interval-seconds must be a positive number')
+  }
+  if (!options.cron || !options.cron.trim()) {
+    throw new Error('--cron must not be empty')
+  }
+  if (!options.timezone || !options.timezone.trim()) {
+    throw new Error('--timezone must not be empty')
   }
   return options
 }
 
 function printHelp() {
   console.log([
-    'Usage: node apps/cli/scripts/live-watchdog-drill.mjs [options]',
+    'Usage: node apps/cli/scripts/live-workflow-scheduler-drill.mjs [options]',
     '',
     'Options:',
     `  --kernel ${DEFAULT_KERNEL}`,
@@ -97,14 +116,31 @@ function printHelp() {
     `  --worktree ${repoRoot}`,
     `  --model ${DEFAULT_MODEL}`,
     '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
+    '  --trigger interval|cron',
     `  --interval-seconds ${DEFAULT_INTERVAL_SECONDS}`,
-    '  --policy skip|queue',
+    `  --cron "${DEFAULT_CRON}"`,
+    `  --timezone ${DEFAULT_TIMEZONE}`,
+    '  --overlap skip|queue',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     '  --poll-limit 90',
     '  --poll-interval-ms 1000',
     '  --dry-run',
     '  --spawn-daemon',
   ].join('\n'))
+}
+
+function scheduleTrigger(options) {
+  if (options.trigger === 'cron') {
+    return {
+      kind: 'cron',
+      expression: options.cron,
+      timezone: options.timezone,
+    }
+  }
+  return {
+    kind: 'interval',
+    every_seconds: options.intervalSeconds,
+  }
 }
 
 function nowStamp() {
@@ -136,7 +172,7 @@ function deriveSpawnedKernelUrl(rootDir) {
       ARROBA_KERNEL_PORT: String(kernelPort),
       ARROBA_MCP_PORT: String(mcpPort),
       ARROBA_DAEMON_SOCKET: socketPath,
-      ARROBA_DAEMON_ID: `watchdog-drill-${process.pid}-${Date.now()}`,
+      ARROBA_DAEMON_ID: `workflow-scheduler-drill-${process.pid}-${Date.now()}`,
     },
   }
 }
@@ -212,7 +248,7 @@ async function main() {
     return
   }
 
-  const artifactRoot = path.join(repoRoot, '.artifacts', 'watchdog', nowStamp())
+  const artifactRoot = path.join(repoRoot, '.artifacts', 'workflow-scheduler', nowStamp())
   await rm(artifactRoot, { recursive: true, force: true }).catch(() => {})
   await mkdir(artifactRoot, { recursive: true })
   let daemonChild = null
@@ -247,13 +283,13 @@ async function main() {
           await sleep(250)
         }
       }
-      if (!daemonReady) throw new Error(`spawned watchdog drill daemon did not become ready at ${kernelUrl}`)
+      if (!daemonReady) throw new Error(`spawned workflow scheduler drill daemon did not become ready at ${kernelUrl}`)
     }
     session = unwrap(
       await client.send(createSessionRequest(options.workspace, options.worktree)),
       'SessionCreated',
     ).session
-    await client.send(attachToSessionRequest(session.id, `watchdog-drill-${Date.now()}`))
+    await client.send(attachToSessionRequest(session.id, `workflow-scheduler-drill-${Date.now()}`))
 
     const agentIds = []
     const nodeIds = []
@@ -265,7 +301,7 @@ async function main() {
           spawnAgentRequest(
             session.id,
             provider,
-            `watchdog-${provider}-${index + 1}`,
+            `schedule-${provider}-${index + 1}`,
             providerModel,
             options.worktree,
             'low',
@@ -280,7 +316,7 @@ async function main() {
     }
 
     const workflow = unwrap(
-      await client.send(createWorkflowRequest(session.id, `watchdog-${options.policy}`)),
+      await client.send(createWorkflowRequest(session.id, `schedule-${options.trigger}-${options.overlap}`)),
       'WorkflowCreated',
     ).workflow
 
@@ -300,32 +336,23 @@ async function main() {
     }
 
     const endpoint = unwrap(
-      await client.send(createWorkflowEndpointRequest(session.id, workflow.id, nodeIds[0], `entry-${options.policy}`)),
+      await client.send(createWorkflowEndpointRequest(session.id, workflow.id, nodeIds[0], `entry-${options.overlap}`)),
       'WorkflowEndpointCreated',
     ).endpoint
 
-    const watchdog = unwrap(
+    const schedule = unwrap(
       await client.send(
-        createWorkflowWatchdogRequest(
+        createWorkflowScheduleRequest(
           session.id,
           workflow.id,
           endpoint.id,
-          options.intervalSeconds,
+          scheduleTrigger(options),
           'Run the workflow exactly as instructed.',
-          options.policy,
+          options.overlap,
         ),
       ),
-      'WorkflowWatchdogCreated',
-    ).watchdog
-
-    await client.send(
-      invokeWorkflowEndpointRequest(
-        session.id,
-        workflow.id,
-        endpoint.id,
-        'Run the workflow exactly as instructed.',
-      ),
-    )
+      'WorkflowScheduleCreated',
+    ).schedule
 
     let finalSession = null
     for (let attempt = 0; attempt < options.pollLimit; attempt += 1) {
@@ -338,18 +365,17 @@ async function main() {
       if (!sessionState) {
         throw new Error(`session state response did not include a session snapshot: ${JSON.stringify(sessionResponse)}`)
       }
-      const currentWatchdog = (sessionState.workflow_watchdogs ?? []).find((entry) => entry.id === watchdog.id)
+      const currentSchedule = (sessionState.workflow_schedules ?? sessionState.workflow_watchdogs ?? []).find((entry) => entry.id === schedule.id)
       const runs = summarizeWorkflowRuns(sessionState, workflow.id, endpoint.id)
-      if (!currentWatchdog) {
-        throw new Error(`watchdog ${watchdog.id} disappeared from session state`)
+      if (!currentSchedule) {
+        throw new Error(`schedule ${schedule.id} disappeared from session state`)
       }
 
-      const queueSatisfied =
-        options.policy === 'queue'
-          ? currentWatchdog.pending_run === true
-            || (runs.length >= 2 && runs.some((run) => run.id === currentWatchdog.last_workflow_run_id))
-          : currentWatchdog.last_status === 'skipped_running' && runs.length === 1
-      if (queueSatisfied) {
+      const scheduleStarted =
+        (currentSchedule.runs_started ?? currentSchedule.wakeups_executed ?? 0) >= 1
+        || typeof currentSchedule.last_workflow_run_id === 'string'
+        || runs.length >= 1
+      if (scheduleStarted) {
         finalSession = sessionState
         break
       }
@@ -357,17 +383,17 @@ async function main() {
     }
 
     if (!finalSession) {
-      throw new Error(`watchdog drill timed out for policy ${options.policy}`)
+      throw new Error(`workflow scheduler drill timed out before ${options.trigger} schedule started a run`)
     }
 
-    const finalWatchdog = (finalSession.workflow_watchdogs ?? []).find((entry) => entry.id === watchdog.id)
+    const finalSchedule = (finalSession.workflow_schedules ?? finalSession.workflow_watchdogs ?? []).find((entry) => entry.id === schedule.id)
     const workflowRuns = summarizeWorkflowRuns(finalSession, workflow.id, endpoint.id)
     console.log(JSON.stringify({
       kernel: kernelUrl,
       session: session.id,
       workflow: workflow.id,
       endpoint: endpoint.id,
-      watchdog: finalWatchdog,
+      schedule: finalSchedule,
       workflowRuns,
     }, null, 2))
     succeeded = true
@@ -388,11 +414,14 @@ async function main() {
       preserveOnFailure: true,
       failure,
       metadata: {
-        drill: 'watchdog',
+        drill: 'workflow-scheduler',
         kernelUrl,
         workspace: options.workspace,
         worktree: options.worktree,
-        policy: options.policy,
+        trigger: options.trigger,
+        cron: options.trigger === 'cron' ? options.cron : null,
+        timezone: options.trigger === 'cron' ? options.timezone : null,
+        overlap: options.overlap,
         providers: options.providers,
         intervalSeconds: options.intervalSeconds,
         sessionId: session?.id ?? null,
@@ -400,8 +429,8 @@ async function main() {
         daemonStderrTail: daemonChild?.logs?.stderr?.slice(-4000) ?? '',
       },
       log: (name, details) => {
-        if (details === undefined) console.log(`[watchdog-drill] ${name}`)
-        else console.log(`[watchdog-drill] ${name}`, JSON.stringify(details))
+        if (details === undefined) console.log(`[workflow-scheduler-drill] ${name}`)
+        else console.log(`[workflow-scheduler-drill] ${name}`, JSON.stringify(details))
       },
     })
   }

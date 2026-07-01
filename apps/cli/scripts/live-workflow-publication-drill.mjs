@@ -23,7 +23,7 @@ const {
   createWorkflowEndpointRequest,
   createWorkflowPublicationRequest,
   createWorkflowRequest,
-  createWorkflowWatchdogRequest,
+  createWorkflowScheduleRequest,
   endSessionRequest,
   getDaemonHealthRequest,
   getSessionStateRequest,
@@ -1576,7 +1576,7 @@ async function createRealProviderDashboardPublicationSession(client, sessionIds,
   }
 }
 
-async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
+async function waitForScheduledWorkflowRun(client, sessionId, workflowId, options = {}) {
   const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
   let lastRuns = []
   let lastRun = null
@@ -1606,7 +1606,7 @@ async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options
   } catch {
     activeClaims = []
   }
-  throw new Error(`watchdog publication did not reach expected run state; active claims: ${JSON.stringify(activeClaims)}, last run: ${JSON.stringify(lastRun)}, last runs: ${JSON.stringify(lastRuns)}`)
+  throw new Error(`scheduled publication did not reach expected run state; active claims: ${JSON.stringify(activeClaims)}, last run: ${JSON.stringify(lastRun)}, last runs: ${JSON.stringify(lastRuns)}`)
 }
 
 async function waitForPublicationStatusLatestOutput(gatewayUrl, expectedMessage) {
@@ -1785,7 +1785,7 @@ async function main() {
   const browserHtmlWorkspace = path.join(root, 'browser-html-workspace')
   const browserRealHtmlWorkspace = path.join(root, 'browser-real-html-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
-  const watchdogWorkspace = path.join(root, 'watchdog-workspace')
+  const scheduleWorkspace = path.join(root, 'schedule-workspace')
   const realDashboard = realDashboardOptionsFromEnv()
   const hostHome = process.env.HOME
   const home = path.join(root, 'home')
@@ -1845,7 +1845,7 @@ async function main() {
     await mkdir(browserHtmlWorkspace, { recursive: true })
     await mkdir(browserRealHtmlWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
-    await mkdir(watchdogWorkspace, { recursive: true })
+    await mkdir(scheduleWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
@@ -2238,40 +2238,40 @@ async function main() {
       'WorkflowPublicationCreated',
     ).publication
 
-    logStep('create_watchdog_session')
-    const watchdogSession = variant(
-      await client.send(createSessionRequest(watchdogWorkspace, watchdogWorkspace, 'publication-drill-watchdog')),
+    logStep('create_schedule_session')
+    const scheduleSession = variant(
+      await client.send(createSessionRequest(scheduleWorkspace, scheduleWorkspace, 'publication-drill-schedule')),
       'SessionCreated',
     ).session
-    sessionIds.push(watchdogSession.id)
-    await client.send(attachToSessionRequest(watchdogSession.id, `publication-drill-watchdog-${process.pid}`))
-    const watchdogAgent = variant(
-      await client.send(spawnAgentRequest(watchdogSession.id, 'dev-stub', 'watchdog-final', 'workflow-intermediate-node', watchdogWorkspace, 'low')),
+    sessionIds.push(scheduleSession.id)
+    await client.send(attachToSessionRequest(scheduleSession.id, `publication-drill-schedule-${process.pid}`))
+    const scheduleAgent = variant(
+      await client.send(spawnAgentRequest(scheduleSession.id, 'dev-stub', 'schedule-final', 'workflow-intermediate-node', scheduleWorkspace, 'low')),
       'AgentSpawned',
     ).agent
-    const watchdogProviderRun = variant(
-      await client.send(launchProviderRunRequest(watchdogSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', watchdogAgent.id)),
+    const scheduleProviderRun = variant(
+      await client.send(launchProviderRunRequest(scheduleSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', scheduleAgent.id)),
       'ProviderRunLaunchAccepted',
     ).provider_run
-    await waitForProviderRunReady(client, watchdogProviderRun.id)
-    const watchdogWorkflow = variant(await client.send(createWorkflowRequest(watchdogSession.id, 'published-watchdog')), 'WorkflowCreated').workflow
-    const watchdogNode = variant(await client.send(addWorkflowNodeRequest(watchdogSession.id, watchdogWorkflow.id, watchdogAgent.id)), 'WorkflowNodeAdded').node
+    await waitForProviderRunReady(client, scheduleProviderRun.id)
+    const scheduleWorkflow = variant(await client.send(createWorkflowRequest(scheduleSession.id, 'published-schedule')), 'WorkflowCreated').workflow
+    const scheduleNode = variant(await client.send(addWorkflowNodeRequest(scheduleSession.id, scheduleWorkflow.id, scheduleAgent.id)), 'WorkflowNodeAdded').node
     await client.send(updateWorkflowNodeInstructionsRequest(
-      watchdogSession.id,
-      watchdogWorkflow.id,
-      watchdogNode.id,
+      scheduleSession.id,
+      scheduleWorkflow.id,
+      scheduleNode.id,
       'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
     ))
-    await client.send(setWorkflowNodeCanCompleteRunRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, true))
-    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, true))
-    const watchdogEndpoint = variant(
-      await client.send(createWorkflowEndpointRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, 'watchdog')),
+    await client.send(setWorkflowNodeCanCompleteRunRequest(scheduleSession.id, scheduleWorkflow.id, scheduleNode.id, true))
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(scheduleSession.id, scheduleWorkflow.id, scheduleNode.id, true))
+    const scheduleEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(scheduleSession.id, scheduleWorkflow.id, scheduleNode.id, 'schedule')),
       'WorkflowEndpointCreated',
     ).endpoint
-    const watchdogPublication = variant(
-      await client.send(createWorkflowPublicationRequest(watchdogSession.id, watchdogWorkflow.id, watchdogEndpoint.id, {
-        alias: 'public_watchdog',
-        route: '/watchdog',
+    const schedulePublication = variant(
+      await client.send(createWorkflowPublicationRequest(scheduleSession.id, scheduleWorkflow.id, scheduleEndpoint.id, {
+        alias: 'public_schedule',
+        route: '/schedule',
         methods: ['POST'],
         transport: { kind: 'api_sse_json' },
         parser: { kind: 'json' },
@@ -2323,10 +2323,10 @@ async function main() {
           sessionId: mcpSession.id,
           publication: mcpPublication,
         }, {
-          key: 'watchdog',
-          transport: 'watchdog',
-          sessionId: watchdogSession.id,
-          publication: watchdogPublication,
+          key: 'schedule',
+          transport: 'schedule',
+          sessionId: scheduleSession.id,
+          publication: schedulePublication,
         }],
       })
       succeeded = true
@@ -3015,47 +3015,47 @@ async function main() {
     logStep('serve_provider_override_prompt_ok', { agentId: overridePackage.agentId })
     await client.send(endSessionRequest(session.id)).catch(() => {})
 
-    logStep('watchdog_publication_export')
-    const watchdog = variant(
-      await client.send(createWorkflowWatchdogRequest(
-        watchdogSession.id,
-        watchdogWorkflow.id,
-        watchdogEndpoint.id,
-        60,
-        'watchdog-publication',
+    logStep('schedule_publication_export')
+    const schedule = variant(
+      await client.send(createWorkflowScheduleRequest(
+        scheduleSession.id,
+        scheduleWorkflow.id,
+        scheduleEndpoint.id,
+        { kind: 'interval', every_seconds: 60 },
+        'schedule-publication',
         'queue',
         1,
       )),
-      'WorkflowWatchdogCreated',
-    ).watchdog
-    const watchdogExportDir = path.join(root, 'exported-watchdog-publication')
-    const watchdogExportResult = await executeShellCommand(
-      parseShellCommand(`workflow publication export ${watchdogPublication.id} ${watchdogExportDir} --kernel-url ${kernelUrl}`),
+      'WorkflowScheduleCreated',
+    ).schedule
+    const scheduleExportDir = path.join(root, 'exported-schedule-publication')
+    const scheduleExportResult = await executeShellCommand(
+      parseShellCommand(`workflow publication export ${schedulePublication.id} ${scheduleExportDir} --kernel-url ${kernelUrl}`),
       createDefaultShellContext({
-        workspace: watchdogWorkspace,
-        worktree: watchdogWorkspace,
-        sessionId: watchdogSession.id,
-        workflowId: watchdogWorkflow.id,
+        workspace: scheduleWorkspace,
+        worktree: scheduleWorkspace,
+        sessionId: scheduleSession.id,
+        workflowId: scheduleWorkflow.id,
       }),
       { client },
     )
-    if (!watchdogExportResult.ok) {
-      throw new Error(`watchdog publication export failed: ${watchdogExportResult.message}`)
+    if (!scheduleExportResult.ok) {
+      throw new Error(`schedule publication export failed: ${scheduleExportResult.message}`)
     }
-    const watchdogSnapshot = JSON.parse(await readFile(path.join(watchdogExportDir, 'workflow.snapshot.json'), 'utf8'))
-    if (watchdogSnapshot.watchdogs?.[0]?.id !== watchdog.id) {
-      throw new Error(`expected exported watchdog ${watchdog.id}, got ${JSON.stringify(watchdogSnapshot.watchdogs)}`)
+    const scheduleSnapshot = JSON.parse(await readFile(path.join(scheduleExportDir, 'workflow.snapshot.json'), 'utf8'))
+    if (scheduleSnapshot.schedules?.[0]?.id !== schedule.id) {
+      throw new Error(`expected exported schedule ${schedule.id}, got ${JSON.stringify(scheduleSnapshot.schedules)}`)
     }
-    watchdogSnapshot.watchdogs[0].next_run_at_ms = 0
-    await writeFile(path.join(watchdogExportDir, 'workflow.snapshot.json'), `${JSON.stringify(watchdogSnapshot, null, 2)}\n`)
+    scheduleSnapshot.schedules[0].next_run_at_ms = 0
+    await writeFile(path.join(scheduleExportDir, 'workflow.snapshot.json'), `${JSON.stringify(scheduleSnapshot, null, 2)}\n`)
     gateway = startProcess(
       cliBinary,
-      ['serve', watchdogExportDir, String(gatewayPort), '--kernel-url', kernelUrl],
+      ['serve', scheduleExportDir, String(gatewayPort), '--kernel-url', kernelUrl],
       {
         ...env,
         HOST: '127.0.0.1',
       },
-      'arroba-serve-watchdog',
+      'arroba-serve-schedule',
     )
     await waitForGateway(gatewayUrl)
     const statusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
@@ -3064,27 +3064,27 @@ async function main() {
     if (statusResponse.status !== 200 || typeof runtimeSessionId !== 'string') {
       throw new Error(`expected publication status with runtime session id, got ${statusResponse.status}: ${JSON.stringify(statusBody)}`)
     }
-    if (statusBody.watchdog_count !== 1 || statusBody.watchdogs?.[0]?.id !== watchdog.id) {
-      throw new Error(`expected publication status to expose watchdog ${watchdog.id}, got ${JSON.stringify(statusBody)}`)
+    if (statusBody.schedule_count !== 1 || statusBody.schedules?.[0]?.id !== schedule.id) {
+      throw new Error(`expected publication status to expose schedule ${schedule.id}, got ${JSON.stringify(statusBody)}`)
     }
     sessionIds.push(runtimeSessionId)
     await assertPublicationRuntimeSessionHidden(client, runtimeSessionId)
-    const watchdogRuntimeSession = variant(
+    const scheduleRuntimeSession = variant(
       await client.send(getSessionStateRequest(runtimeSessionId)),
       'SessionState',
     ).session
-    if (watchdogRuntimeSession.workspace_id !== watchdogWorkspace || watchdogRuntimeSession.worktree_id !== watchdogWorkspace) {
-      throw new Error(`expected watchdog runtime workspace ${watchdogWorkspace}, got ${JSON.stringify({
-        workspace_id: watchdogRuntimeSession.workspace_id,
-        worktree_id: watchdogRuntimeSession.worktree_id,
+    if (scheduleRuntimeSession.workspace_id !== scheduleWorkspace || scheduleRuntimeSession.worktree_id !== scheduleWorkspace) {
+      throw new Error(`expected schedule runtime workspace ${scheduleWorkspace}, got ${JSON.stringify({
+        workspace_id: scheduleRuntimeSession.workspace_id,
+        worktree_id: scheduleRuntimeSession.worktree_id,
       })}`)
     }
-    const watchdogRun = await waitForWatchdogWorkflowRun(client, runtimeSessionId, watchdogWorkflow.id, { requireOutput: true })
-    const statusAfterRun = await waitForPublicationStatusLatestOutput(gatewayUrl, watchdogRun.final_output?.message)
-    logStep('watchdog_publication_ok', {
+    const scheduleRun = await waitForScheduledWorkflowRun(client, runtimeSessionId, scheduleWorkflow.id, { requireOutput: true })
+    const statusAfterRun = await waitForPublicationStatusLatestOutput(gatewayUrl, scheduleRun.final_output?.message)
+    logStep('schedule_publication_ok', {
       runtimeSessionId,
-      workflowRunId: watchdogRun.id,
-      status: watchdogRun.status,
+      workflowRunId: scheduleRun.id,
+      status: scheduleRun.status,
       latestOutput: statusAfterRun.latest_output?.message,
     })
     await stopProcess(gateway)
@@ -3380,43 +3380,43 @@ async function main() {
         containerProcess = null
       }
 
-      logStep('container_watchdog_export')
-      const watchdogContainerPackageDir = path.join(root, 'container-watchdog-portable')
-      await createContainerPortablePackage(watchdogExportDir, watchdogContainerPackageDir)
-      const containerWatchdogPort = await freePort()
-      const containerWatchdogUrl = `http://127.0.0.1:${containerWatchdogPort}`
-      const containerWatchdogName = `arroba-publication-watchdog-${process.pid}`
-      dockerContainers.push(containerWatchdogName)
+      logStep('container_schedule_export')
+      const scheduleContainerPackageDir = path.join(root, 'container-schedule-portable')
+      await createContainerPortablePackage(scheduleExportDir, scheduleContainerPackageDir)
+      const containerSchedulePort = await freePort()
+      const containerScheduleUrl = `http://127.0.0.1:${containerSchedulePort}`
+      const containerScheduleName = `arroba-publication-schedule-${process.pid}`
+      dockerContainers.push(containerScheduleName)
       containerProcess = startPublicationContainer({
         image: publicationContainerImage,
-        name: containerWatchdogName,
-        packageDir: watchdogContainerPackageDir,
-        workspaceDir: watchdogWorkspace,
-        port: containerWatchdogPort,
+        name: containerScheduleName,
+        packageDir: scheduleContainerPackageDir,
+        workspaceDir: scheduleWorkspace,
+        port: containerSchedulePort,
       })
       try {
-        await waitForContainerGateway(containerWatchdogUrl, containerProcess, 60_000)
-        const containerWatchdogStatusResponse = await fetch(`${containerWatchdogUrl}/.well-known/arroba/publication/status`)
-        const containerWatchdogStatusBody = await containerWatchdogStatusResponse.json()
+        await waitForContainerGateway(containerScheduleUrl, containerProcess, 60_000)
+        const containerScheduleStatusResponse = await fetch(`${containerScheduleUrl}/.well-known/arroba/publication/status`)
+        const containerScheduleStatusBody = await containerScheduleStatusResponse.json()
         if (
-          containerWatchdogStatusResponse.status !== 200
-          || typeof containerWatchdogStatusBody.runtime_session_id !== 'string'
-          || containerWatchdogStatusBody.watchdog_count !== 1
-          || containerWatchdogStatusBody.watchdogs?.[0]?.id !== watchdog.id
+          containerScheduleStatusResponse.status !== 200
+          || typeof containerScheduleStatusBody.runtime_session_id !== 'string'
+          || containerScheduleStatusBody.schedule_count !== 1
+          || containerScheduleStatusBody.schedules?.[0]?.id !== schedule.id
         ) {
-          throw new Error(`expected container watchdog status with runtime session and watchdog, got ${containerWatchdogStatusResponse.status}: ${JSON.stringify(containerWatchdogStatusBody)}`)
+          throw new Error(`expected container schedule status with runtime session and schedule, got ${containerScheduleStatusResponse.status}: ${JSON.stringify(containerScheduleStatusBody)}`)
         }
-        const containerWatchdogOutput = await waitForPublicationStatusLatestOutput(
-          containerWatchdogUrl,
-          watchdogRun.final_output?.message,
+        const containerScheduleOutput = await waitForPublicationStatusLatestOutput(
+          containerScheduleUrl,
+          scheduleRun.final_output?.message,
         )
-        logStep('container_watchdog_ok', {
-          runtimeSessionId: containerWatchdogStatusBody.runtime_session_id,
-          latestOutput: containerWatchdogOutput.latest_output?.message,
+        logStep('container_schedule_ok', {
+          runtimeSessionId: containerScheduleStatusBody.runtime_session_id,
+          latestOutput: containerScheduleOutput.latest_output?.message,
         })
       } finally {
         await stopProcess(containerProcess)
-        await removeDockerContainer(containerWatchdogName).catch(() => {})
+        await removeDockerContainer(containerScheduleName).catch(() => {})
         containerProcess = null
       }
 

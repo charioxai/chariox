@@ -28,7 +28,7 @@ const {
   addWorkflowNodeRequest,
   attachToSessionRequest,
   createSessionRequest,
-  createWorkflowWatchdogRequest,
+  createWorkflowScheduleRequest,
   createWorkflowEndpointRequest,
   createWorkflowPublicationRequest,
   createWorkflowRequest,
@@ -76,7 +76,7 @@ function usage() {
     'Usage: node apps/cli/scripts/live-cloud-publication-deployment-drill.mjs --mode hosted-container|local-runtime [options]',
     '',
     'Options:',
-    '  --transport human_http|api_sse_json|websocket_json|mcp|watchdog',
+    '  --transport human_http|api_sse_json|websocket_json|mcp|schedule',
     '  --slug SLUG',
     '  --provider dev-stub|codex|opencode|claude',
     '  --model MODEL',
@@ -147,14 +147,15 @@ function normalizeMode(value) {
 }
 
 function normalizeTransport(value) {
-  if (['human_http', 'api_sse_json', 'websocket_json', 'mcp', 'watchdog'].includes(value)) return value
-  throw new Error('--transport must be human_http, api_sse_json, websocket_json, mcp, or watchdog')
+  if (value === 'watchdog') return 'schedule'
+  if (['human_http', 'api_sse_json', 'websocket_json', 'mcp', 'schedule'].includes(value)) return value
+  throw new Error('--transport must be human_http, api_sse_json, websocket_json, mcp, or schedule')
 }
 
 function defaultModel(provider, transport, realDashboard) {
   if (provider === 'dev-stub') {
     if (realDashboard) return 'workflow-html-final-node'
-    if (transport === 'mcp' || transport === 'watchdog') return 'workflow-single-turn-node'
+    if (transport === 'mcp' || transport === 'schedule') return 'workflow-single-turn-node'
     return 'workflow-intermediate-node'
   }
   if (provider === 'codex') return 'gpt-5.4'
@@ -449,20 +450,20 @@ async function createPublicationPackage(input) {
   ))
   await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, node.id, true))
   await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, node.id, true))
-  const endpointKind = transport === 'watchdog' ? 'watchdog' : transport
+  const endpointKind = transport === 'schedule' ? 'schedule' : transport
   const endpoint = (await client.send(createWorkflowEndpointRequest(session.id, workflow.id, node.id, endpointKind))).WorkflowEndpointCreated.endpoint
   const publication = (await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, publicationOptions(transport, node.id)))).WorkflowPublicationCreated.publication
-  let watchdog = null
-  if (transport === 'watchdog') {
-    watchdog = (await client.send(createWorkflowWatchdogRequest(
+  let schedule = null
+  if (transport === 'schedule') {
+    schedule = (await client.send(createWorkflowScheduleRequest(
       session.id,
       workflow.id,
       endpoint.id,
-      60,
-      realDashboard ? REAL_DASHBOARD_PROMPT : 'cloud deployment watchdog drill',
+      { kind: 'interval', every_seconds: 60 },
+      realDashboard ? REAL_DASHBOARD_PROMPT : 'cloud deployment schedule drill',
       'queue',
       1,
-    ))).WorkflowWatchdogCreated.watchdog
+    ))).WorkflowScheduleCreated.schedule
   }
   if (agentAppShopping) {
     const assetsDir = await writeShoppingAgentAppAssets(workspace)
@@ -484,13 +485,13 @@ async function createPublicationPackage(input) {
     )
     if (!exportResult.ok) throw new Error(`publication export failed: ${exportResult.message}`)
   }
-  if (watchdog) {
+  if (schedule) {
     const snapshotPath = path.join(exportDir, 'workflow.snapshot.json')
     const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'))
-    if (snapshot.watchdogs?.[0]?.id !== watchdog.id) {
-      throw new Error(`expected exported watchdog ${watchdog.id}, got ${JSON.stringify(snapshot.watchdogs)}`)
+    if (snapshot.schedules?.[0]?.id !== schedule.id) {
+      throw new Error(`expected exported schedule ${schedule.id}, got ${JSON.stringify(snapshot.schedules)}`)
     }
-    snapshot.watchdogs[0].next_run_at_ms = 0
+    snapshot.schedules[0].next_run_at_ms = 0
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
   }
   await makePortablePackage(exportDir, packageDir)
@@ -499,7 +500,7 @@ async function createPublicationPackage(input) {
     workflowId: workflow.id,
     endpointId: endpoint.id,
     publicationId: publication.id,
-    watchdogId: watchdog?.id ?? null,
+    scheduleId: schedule?.id ?? null,
     nodeId: node.id,
     agentId: agent.id,
     agentAlias: agent.alias ?? null,
@@ -515,13 +516,13 @@ function publicationOptions(transport, nodeId) {
       ? { kind: 'path_template', template: '/final/:prompt' }
       : { kind: 'json' },
     traceExposure: { nodes: { [nodeId]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } },
-    mode: transport === 'human_http' || transport === 'watchdog' ? 'async' : 'sync',
+    mode: transport === 'human_http' || transport === 'schedule' ? 'async' : 'sync',
   }
   if (transport === 'human_http') return { ...base, transport: { kind: 'human_http' } }
   if (transport === 'api_sse_json') return { ...base, transport: { kind: 'api_sse_json' }, parser: { kind: 'json' } }
   if (transport === 'websocket_json') return { ...base, transport: { kind: 'websocket_json' }, parser: { kind: 'json' } }
   if (transport === 'mcp') return { ...base, transport: { kind: 'mcp' }, parser: { kind: 'json' } }
-  if (transport === 'watchdog') return { ...base, route: '/watchdog', methods: ['POST'], transport: { kind: 'api_sse_json' }, parser: { kind: 'json' } }
+  if (transport === 'schedule') return { ...base, route: '/schedule', methods: ['POST'], transport: { kind: 'api_sse_json' }, parser: { kind: 'json' } }
   throw new Error(`unsupported transport ${transport}`)
 }
 
@@ -767,47 +768,47 @@ async function validateTransport(input) {
     }
     return { transcriptPath, callTranscriptPath }
   }
-  if (input.transport === 'watchdog') {
-    const status = await waitForWatchdogPublicationStatus(base, {
+  if (input.transport === 'schedule') {
+    const status = await waitForSchedulePublicationStatus(base, {
       expectHtmlDashboard: input.expectHtmlDashboard,
     })
-    const statusPath = path.join(input.artifactsDir, `${input.slug}-watchdog-status.json`)
+    const statusPath = path.join(input.artifactsDir, `${input.slug}-schedule-status.json`)
     await writeFile(statusPath, `${JSON.stringify(status, null, 2)}\n`)
     return { statusPath, latestOutput: status.latest_output?.message ?? null }
   }
   throw new Error(`unsupported transport ${input.transport}`)
 }
 
-async function waitForWatchdogPublicationStatus(base, options = {}) {
+async function waitForSchedulePublicationStatus(base, options = {}) {
   const statusUrl = `${base}/.well-known/arroba/publication/status`
   const deadline = Date.now() + 900_000
   let last = null
   while (Date.now() < deadline) {
     const response = await fetch(statusUrl, { headers: { accept: 'application/json' } })
     const body = await response.text()
-    if (!response.ok) throw new Error(`watchdog status failed: ${response.status} ${body}`)
+    if (!response.ok) throw new Error(`schedule status failed: ${response.status} ${body}`)
     last = JSON.parse(body)
-    if (last.watchdog_count !== 1 || !Array.isArray(last.watchdogs) || last.watchdogs.length !== 1) {
-      throw new Error(`watchdog status did not expose exactly one watchdog: ${body}`)
+    if (last.schedule_count !== 1 || !Array.isArray(last.schedules) || last.schedules.length !== 1) {
+      throw new Error(`schedule status did not expose exactly one schedule: ${body}`)
     }
     const latest = last.latest_output?.message
-    const watchdog = last.watchdogs[0]
-    const status = String(watchdog.last_status ?? '').toLowerCase()
+    const schedule = last.schedules[0]
+    const status = String(schedule.last_status ?? '').toLowerCase()
     if (latest && ['started', 'completed_budget'].includes(status)) {
       if (options.expectHtmlDashboard) {
         const serialized = JSON.stringify(last)
         for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
-          if (!serialized.includes(snippet)) throw new Error(`watchdog latest output missing dashboard snippet ${snippet}:\n${serialized}`)
+          if (!serialized.includes(snippet)) throw new Error(`schedule latest output missing dashboard snippet ${snippet}:\n${serialized}`)
         }
       }
       return last
     }
-    if (watchdog.last_error) {
-      throw new Error(`watchdog failed: ${watchdog.last_error}\n${body}`)
+    if (schedule.last_error) {
+      throw new Error(`schedule failed: ${schedule.last_error}\n${body}`)
     }
     await delay(2_000)
   }
-  throw new Error(`watchdog publication did not produce latest output: ${JSON.stringify(last, null, 2)}`)
+  throw new Error(`schedule publication did not produce latest output: ${JSON.stringify(last, null, 2)}`)
 }
 
 function assertSuccessfulSseTranscript(transcript, label) {
