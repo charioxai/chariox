@@ -235,34 +235,34 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
-        if let Some(watchdog) = request
+        if let Some(schedule) = request
             .snapshot
-            .watchdogs
+            .schedules
             .iter()
-            .find(|watchdog| watchdog.workflow_id() != workflow_id)
+            .find(|schedule| schedule.workflow_id() != workflow_id)
         {
             return Err(DaemonError::LocalTransport {
                 operation: "materialize workflow publication",
                 message: format!(
-                    "snapshot watchdog `{}` belongs to workflow `{}` instead of `{workflow_id}`",
-                    watchdog.id(),
-                    watchdog.workflow_id()
+                    "snapshot schedule `{}` belongs to workflow `{}` instead of `{workflow_id}`",
+                    schedule.id(),
+                    schedule.workflow_id()
                 ),
             });
         }
-        if let Some(watchdog) = request.snapshot.watchdogs.iter().find(|watchdog| {
+        if let Some(schedule) = request.snapshot.schedules.iter().find(|schedule| {
             request
                 .snapshot
                 .workflow
-                .endpoint(watchdog.endpoint_id())
+                .endpoint(schedule.endpoint_id())
                 .is_none()
         }) {
             return Err(DaemonError::LocalTransport {
                 operation: "materialize workflow publication",
                 message: format!(
-                    "snapshot watchdog `{}` references missing endpoint `{}`",
-                    watchdog.id(),
-                    watchdog.endpoint_id()
+                    "snapshot schedule `{}` references missing endpoint `{}`",
+                    schedule.id(),
+                    schedule.endpoint_id()
                 ),
             });
         }
@@ -356,7 +356,7 @@ impl KernelRuntimeOwnedState {
             &session_id,
             vec![workflow],
             request.snapshot.queues,
-            request.snapshot.watchdogs,
+            request.snapshot.schedules,
         )?;
         let publication = crate::session::WorkflowPublicationDefinition::new(
             request.publication_id.clone(),
@@ -468,10 +468,10 @@ fn workflow_publication_package_files(
             .filter(|queue| queue.workflow_id() == workflow.id())
             .cloned()
             .collect(),
-        watchdogs: session
-            .workflow_watchdogs()
+        schedules: session
+            .workflow_schedules()
             .iter()
-            .filter(|watchdog| watchdog.workflow_id() == workflow.id())
+            .filter(|schedule| schedule.workflow_id() == workflow.id())
             .cloned()
             .collect(),
         agents,
@@ -872,7 +872,7 @@ fn workflow_publication_readme(
         "## Files",
         "",
         "- `publication.json`: published workflow package metadata",
-        "- `workflow.snapshot.json`: captured workflow, endpoint, queues, watchdogs, and agents",
+        "- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents",
         "- `requirements.json`: required extensions and credential handles",
         "- `bindings.example.json`: provider/model override template",
         "- `publication.config.json`: gateway config for existing scripts",

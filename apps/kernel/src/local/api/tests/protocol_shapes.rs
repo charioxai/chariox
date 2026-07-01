@@ -559,15 +559,15 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             canvas: None,
         }],
         queues: Vec::new(),
-        watchdogs: vec![crate::workflow_code::WorkflowCodeWatchdogDefinition {
+        schedules: vec![crate::workflow_code::WorkflowCodeScheduleDefinition {
             handle: "watchdog-1".to_string(),
             endpoint: "entry".to_string(),
             queue: None,
             enabled: Some(false),
-            interval_seconds: 60,
+            trigger: crate::session::WorkflowScheduleTrigger::interval(60),
             invocation_prompt: "Check for scripted work.".to_string(),
-            policy: crate::session::WorkflowWatchdogPolicy::Queue,
-            max_wakeups: Some(3),
+            overlap_policy: crate::session::WorkflowScheduleOverlapPolicy::Queue,
+            max_runs: Some(3),
         }],
     };
     let compile = crate::workflow_code::WorkflowCodeCompileResult {
@@ -606,7 +606,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 "default".to_string(),
                 "workflow-1:default".to_string(),
             )]),
-            watchdog_ids: BTreeMap::from([(
+            schedule_ids: BTreeMap::from([(
                 "watchdog-1".to_string(),
                 "watchdog-1".to_string(),
             )]),
@@ -1474,7 +1474,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             "default",
             0,
         )],
-        watchdogs: vec![crate::session::WorkflowWatchdogDefinition::new(
+        schedules: vec![crate::session::WorkflowScheduleDefinition::new(
             "watchdog-1",
             "workflow-1",
             "endpoint-1",
@@ -1602,9 +1602,9 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         "/5/MaterializeWorkflowPublication/snapshot/workflow/created_at_ms",
         "/5/MaterializeWorkflowPublication/snapshot/queues/0/created_at_ms",
         "/5/MaterializeWorkflowPublication/snapshot/queues/0/updated_at_ms",
-        "/5/MaterializeWorkflowPublication/snapshot/watchdogs/0/created_at_ms",
-        "/5/MaterializeWorkflowPublication/snapshot/watchdogs/0/next_run_at_ms",
-        "/5/MaterializeWorkflowPublication/snapshot/watchdogs/0/updated_at_ms",
+        "/5/MaterializeWorkflowPublication/snapshot/schedules/0/created_at_ms",
+        "/5/MaterializeWorkflowPublication/snapshot/schedules/0/next_run_at_ms",
+        "/5/MaterializeWorkflowPublication/snapshot/schedules/0/updated_at_ms",
         "/5/MaterializeWorkflowPublication/snapshot/agents/0/created_at_ms",
         "/5/MaterializeWorkflowPublication/snapshot/agents/0/last_activity_at_ms",
         "/6/WorkflowPublicationCreated/publication/created_at_ms",
@@ -1707,7 +1707,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "4ef6f9cdfee6b99867ed7a870ed7bc065131b45c154d02685853905341de8570"
+        "00a16ec10dfefc9a396ffc6305435855f77880e5a38b1706c2185e957d0f69e0"
     );
 }
 

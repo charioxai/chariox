@@ -17,7 +17,7 @@ use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::mcp::validate_registry_name;
 use crate::session::{
     RuntimeSession, WorkflowEdgeEndpointSide, WorkflowHandoffValidationPolicy,
-    WorkflowWatchdogPolicy,
+    WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
 };
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
@@ -181,7 +181,7 @@ function createBuilder() {
   let nextEdge = 1
   let nextEndpoint = 1
   let nextQueue = 1
-  let nextWatchdog = 1
+  let nextSchedule = 1
   const sourceSpans = {}
   const state = {
     schema_version: 1,
@@ -192,10 +192,10 @@ function createBuilder() {
     edges: [],
     endpoints: [],
     queues: [],
-    watchdogs: []
+    schedules: []
   }
   function handle(kind, explicit) {
-    return explicit || `${kind}:${kind === "schema" ? nextSchema++ : kind === "node" ? nextNode++ : kind === "edge" ? nextEdge++ : kind === "endpoint" ? nextEndpoint++ : kind === "queue" ? nextQueue++ : nextWatchdog++}`
+    return explicit || `${kind}:${kind === "schema" ? nextSchema++ : kind === "node" ? nextNode++ : kind === "edge" ? nextEdge++ : kind === "endpoint" ? nextEndpoint++ : kind === "queue" ? nextQueue++ : nextSchedule++}`
   }
   function sourceSpan() {
     const stack = String(new Error().stack || "")
@@ -487,19 +487,35 @@ function createBuilder() {
       state.queues.push(item)
       return { __workflowCodeHandle: "queue", handle: item.handle }
     },
-    watchdog(endpoint, options = {}) {
+    schedule(endpoint, options = {}) {
+      const trigger = options.trigger !== undefined
+        ? options.trigger
+        : options.cron !== undefined
+          ? { kind: "cron", expression: options.cron, timezone: options.timezone || options.tz || "UTC" }
+          : { kind: "interval", every_seconds: options.everySeconds ?? options.intervalSeconds }
       const item = {
-        handle: handle("watchdog", options.handle),
+        handle: handle("schedule", options.handle),
         endpoint: ref(endpoint, "endpoint"),
         ...(options.queue !== undefined ? { queue: ref(options.queue, "queue") } : {}),
         ...(options.enabled !== undefined ? { enabled: options.enabled } : {}),
-        interval_seconds: options.intervalSeconds,
+        trigger,
         invocation_prompt: options.invocationPrompt,
-        policy: options.policy,
-        ...(options.maxWakeups !== undefined ? { max_wakeups: options.maxWakeups } : {})
+        overlap_policy: options.overlapPolicy ?? options.overlap ?? options.policy,
+        ...(options.maxRuns !== undefined || options.maxWakeups !== undefined ? { max_runs: options.maxRuns ?? options.maxWakeups } : {})
       }
       recordSourceSpan(item.handle)
-      state.watchdogs.push(item)
+      state.schedules.push(item)
+      return { __workflowCodeHandle: "schedule", handle: item.handle }
+    },
+    watchdog(endpoint, options = {}) {
+      const item = this.schedule(endpoint, {
+        ...options,
+        handle: options.handle || handle("watchdog", undefined),
+        intervalSeconds: options.intervalSeconds,
+        invocationPrompt: options.invocationPrompt,
+        policy: options.policy,
+        maxRuns: options.maxWakeups
+      })
       return { __workflowCodeHandle: "watchdog", handle: item.handle }
     },
     export() {
@@ -570,7 +586,8 @@ pub struct WorkflowCodeApplyReport {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub queue_ids: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub watchdog_ids: BTreeMap<String, String>,
+    #[serde(alias = "watchdog_ids")]
+    pub schedule_ids: BTreeMap<String, String>,
     pub canvas_layout_applied: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<WorkflowCodeApplyWarning>,
@@ -1722,8 +1739,8 @@ pub struct WorkflowCodeDefinition {
     pub endpoints: Vec<WorkflowCodeEndpointDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queues: Vec<WorkflowCodeQueueDefinition>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub watchdogs: Vec<WorkflowCodeWatchdogDefinition>,
+    #[serde(default, alias = "watchdogs", skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<WorkflowCodeScheduleDefinition>,
 }
 
 impl WorkflowCodeDefinition {
@@ -2073,20 +2090,72 @@ pub struct WorkflowCodeQueueDefinition {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkflowCodeWatchdogDefinition {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowCodeScheduleDefinition {
     pub handle: String,
     pub endpoint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    pub interval_seconds: u64,
+    pub trigger: WorkflowScheduleTrigger,
     pub invocation_prompt: String,
-    pub policy: WorkflowWatchdogPolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_wakeups: Option<u64>,
+    pub overlap_policy: WorkflowScheduleOverlapPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_runs: Option<u64>,
+}
+
+pub type WorkflowCodeWatchdogDefinition = WorkflowCodeScheduleDefinition;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowCodeScheduleDefinitionWire {
+    handle: String,
+    endpoint: String,
+    #[serde(default)]
+    queue: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    trigger: Option<WorkflowScheduleTrigger>,
+    #[serde(default)]
+    interval_seconds: Option<u64>,
+    invocation_prompt: String,
+    #[serde(default)]
+    overlap_policy: Option<WorkflowScheduleOverlapPolicy>,
+    #[serde(default)]
+    policy: Option<WorkflowScheduleOverlapPolicy>,
+    #[serde(default)]
+    max_runs: Option<u64>,
+    #[serde(default)]
+    max_wakeups: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for WorkflowCodeScheduleDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = WorkflowCodeScheduleDefinitionWire::deserialize(deserializer)?;
+        let trigger = wire
+            .trigger
+            .or_else(|| wire.interval_seconds.map(WorkflowScheduleTrigger::interval))
+            .ok_or_else(|| serde::de::Error::missing_field("trigger"))?;
+        let overlap_policy = wire
+            .overlap_policy
+            .or(wire.policy)
+            .ok_or_else(|| serde::de::Error::missing_field("overlap_policy"))?;
+        Ok(Self {
+            handle: wire.handle,
+            endpoint: wire.endpoint,
+            queue: wire.queue,
+            enabled: wire.enabled,
+            trigger,
+            invocation_prompt: wire.invocation_prompt,
+            overlap_policy,
+            max_runs: wire.max_runs.or(wire.max_wakeups),
+        })
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2230,8 +2299,8 @@ impl<'a> WorkflowCodeValidator<'a> {
             self.limits.max_queues,
         );
         self.validate_count(
-            "watchdogs",
-            definition.watchdogs.len(),
+            "schedules",
+            definition.schedules.len(),
             self.limits.max_watchdogs,
         );
         let generated_prompt_bytes = workflow_code_generated_prompt_bytes(definition);
@@ -2308,11 +2377,11 @@ impl<'a> WorkflowCodeValidator<'a> {
         self.validate_queues(definition);
         collect_unique_handles(
             self,
-            "watchdog",
+            "schedule",
             definition
-                .watchdogs
+                .schedules
                 .iter()
-                .map(|watchdog| watchdog.handle.as_str()),
+                .map(|schedule| schedule.handle.as_str()),
         );
 
         self.validate_schema_ref(
@@ -2389,43 +2458,41 @@ impl<'a> WorkflowCodeValidator<'a> {
         let reachable_nodes = self.validate_reachable_nodes(definition, &node_handles);
         self.validate_reachable_edges(definition, &node_handles, &reachable_nodes);
 
-        for watchdog in &definition.watchdogs {
+        for schedule in &definition.schedules {
             self.validate_ref(
                 &endpoint_handles,
-                &watchdog.endpoint,
-                "watchdog.endpoint",
-                Some(watchdog.handle.clone()),
+                &schedule.endpoint,
+                "schedule.endpoint",
+                Some(schedule.handle.clone()),
             );
-            if let Some(queue) = watchdog.queue.as_deref() {
+            if let Some(queue) = schedule.queue.as_deref() {
                 self.validate_ref(
                     &queue_handles,
                     queue,
-                    "watchdog.queue",
-                    Some(watchdog.handle.clone()),
+                    "schedule.queue",
+                    Some(schedule.handle.clone()),
                 );
             }
-            if watchdog.interval_seconds == 0 {
+            if let Err(message) = schedule.trigger.validate() {
                 self.error(
-                    "invalid_watchdog_interval",
-                    "watchdog interval_seconds must not be zero",
-                    Some(watchdog.handle.clone()),
+                    "invalid_schedule_trigger",
+                    format!("schedule trigger is invalid: {message}"),
+                    Some(schedule.handle.clone()),
                 );
             }
-            if watchdog.invocation_prompt.trim().is_empty() {
+            if schedule.invocation_prompt.trim().is_empty() {
                 self.error(
-                    "invalid_watchdog_prompt",
-                    "watchdog invocation_prompt must not be empty",
-                    Some(watchdog.handle.clone()),
+                    "invalid_schedule_prompt",
+                    "schedule invocation_prompt must not be empty",
+                    Some(schedule.handle.clone()),
                 );
             }
-            if watchdog
-                .max_wakeups
-                .is_some_and(|max_wakeups| max_wakeups == 0)
+            if schedule.max_runs.is_some_and(|max_runs| max_runs == 0)
             {
                 self.error(
-                    "invalid_watchdog_max_wakeups",
-                    "watchdog max_wakeups must not be zero",
-                    Some(watchdog.handle.clone()),
+                    "invalid_schedule_max_runs",
+                    "schedule max_runs must not be zero",
+                    Some(schedule.handle.clone()),
                 );
             }
         }
@@ -3792,27 +3859,27 @@ fn workflow_code_definition_from_session_workflow(
                 enabled: queue.enabled(),
             })
             .collect(),
-        watchdogs: session
-            .workflow_watchdogs()
+        schedules: session
+            .workflow_schedules()
             .iter()
-            .filter(|watchdog| watchdog.workflow_id() == workflow.id())
-            .map(|watchdog| WorkflowCodeWatchdogDefinition {
-                handle: watchdog.id().to_string(),
+            .filter(|schedule| schedule.workflow_id() == workflow.id())
+            .map(|schedule| WorkflowCodeScheduleDefinition {
+                handle: schedule.id().to_string(),
                 endpoint: endpoint_handles
-                    .get(watchdog.endpoint_id())
+                    .get(schedule.endpoint_id())
                     .cloned()
-                    .unwrap_or_else(|| watchdog.endpoint_id().to_string()),
-                queue: watchdog.queue_id().map(|queue_id| {
+                    .unwrap_or_else(|| schedule.endpoint_id().to_string()),
+                queue: schedule.queue_id().map(|queue_id| {
                     queue_handles
                         .get(queue_id)
                         .cloned()
                         .unwrap_or_else(|| queue_id.to_string())
                 }),
-                enabled: Some(watchdog.enabled()),
-                interval_seconds: watchdog.interval_seconds(),
-                invocation_prompt: watchdog.invocation_prompt().to_string(),
-                policy: watchdog.policy(),
-                max_wakeups: watchdog.max_wakeups(),
+                enabled: Some(schedule.enabled()),
+                trigger: schedule.trigger().clone(),
+                invocation_prompt: schedule.invocation_prompt().to_string(),
+                overlap_policy: schedule.overlap_policy(),
+                max_runs: schedule.max_runs(),
             })
             .collect(),
     })
@@ -3896,8 +3963,8 @@ fn workflow_code_definition_to_javascript(
     for queue in &definition.queues {
         writer.write_queue(queue)?;
     }
-    for watchdog in &definition.watchdogs {
-        writer.write_watchdog(watchdog)?;
+    for schedule in &definition.schedules {
+        writer.write_schedule(schedule)?;
     }
     writer.indent -= 1;
     writer.line("}");
@@ -4105,30 +4172,26 @@ impl WorkflowCodeJavascriptWriter {
         Ok(())
     }
 
-    fn write_watchdog(
+    fn write_schedule(
         &mut self,
-        watchdog: &WorkflowCodeWatchdogDefinition,
+        schedule: &WorkflowCodeScheduleDefinition,
     ) -> Result<(), crate::DaemonError> {
-        let var = self.var_for("watchdog", &watchdog.handle);
-        let endpoint = self.existing_var(&watchdog.endpoint, "endpoint")?;
+        let var = self.var_for("schedule", &schedule.handle);
+        let endpoint = self.existing_var(&schedule.endpoint, "endpoint")?;
         let mut fields = Vec::new();
-        push_json_field(&mut fields, "handle", &Some(watchdog.handle.clone()))?;
-        push_ref_field(&mut fields, "queue", &watchdog.queue, "queue", &self.vars)?;
-        push_json_field(&mut fields, "enabled", &watchdog.enabled)?;
-        push_json_field(
-            &mut fields,
-            "intervalSeconds",
-            &Some(watchdog.interval_seconds),
-        )?;
+        push_json_field(&mut fields, "handle", &Some(schedule.handle.clone()))?;
+        push_ref_field(&mut fields, "queue", &schedule.queue, "queue", &self.vars)?;
+        push_json_field(&mut fields, "enabled", &schedule.enabled)?;
+        push_json_field(&mut fields, "trigger", &Some(schedule.trigger.clone()))?;
         push_json_field(
             &mut fields,
             "invocationPrompt",
-            &Some(watchdog.invocation_prompt.clone()),
+            &Some(schedule.invocation_prompt.clone()),
         )?;
-        push_json_field(&mut fields, "policy", &Some(watchdog.policy))?;
-        push_json_field(&mut fields, "maxWakeups", &watchdog.max_wakeups)?;
+        push_json_field(&mut fields, "overlapPolicy", &Some(schedule.overlap_policy))?;
+        push_json_field(&mut fields, "maxRuns", &schedule.max_runs)?;
         self.line(format!(
-            "const {var} = workflow.watchdog({endpoint}, {{ {} }})",
+            "const {var} = workflow.schedule({endpoint}, {{ {} }})",
             fields.join(", ")
         ));
         Ok(())
@@ -4320,7 +4383,7 @@ fn workflow_code_generated_prompt_bytes(definition: &WorkflowCodeDefinition) -> 
     for queue in &definition.queues {
         add_string(&mut total, Some(&queue.alias));
     }
-    for watchdog in &definition.watchdogs {
+    for watchdog in &definition.schedules {
         add_string(&mut total, Some(&watchdog.invocation_prompt));
     }
     total
@@ -4401,7 +4464,7 @@ mod tests {
                 priority: 0,
                 enabled: true,
             }],
-            watchdogs: Vec::new(),
+            schedules: Vec::new(),
         }
     }
 
@@ -5228,7 +5291,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
     }
 
     #[test]
-    fn compiles_javascript_queues_and_watchdogs() {
+    fn compiles_javascript_queues_and_schedules() {
         let Some(node) = find_node() else {
             eprintln!("skipping workflow-code JS compiler test because node is not available");
             return;
@@ -5244,7 +5307,7 @@ const finalSchema = workflow.schema({
     additionalProperties: false
   }
 })
-workflow.define({ alias: "queued_watchdog_flow", runOutputSchema: finalSchema })
+workflow.define({ alias: "queued_schedule_flow", runOutputSchema: finalSchema })
 const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
@@ -5252,14 +5315,15 @@ const worker = workflow.node({
 })
 const entry = workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 const urgent = workflow.queue({ handle: "urgent", alias: "urgent", priority: 5, enabled: false })
-workflow.watchdog(entry, {
-  handle: "wake_entry",
+workflow.schedule(entry, {
+  handle: "schedule_entry",
   queue: urgent,
   enabled: false,
-  intervalSeconds: 60,
+  cron: "15 30 14 * * *",
+  timezone: "UTC",
   invocationPrompt: "Check for queued work.",
-  policy: "skip",
-  maxWakeups: 2
+  overlap: "skip",
+  maxRuns: 2
 })
 "#;
 
@@ -5272,18 +5336,22 @@ workflow.watchdog(entry, {
         assert_eq!(result.definition.queues[0].handle, "urgent");
         assert_eq!(result.definition.queues[0].priority, 5);
         assert!(!result.definition.queues[0].enabled);
-        assert_eq!(result.definition.watchdogs.len(), 1);
-        assert_eq!(result.definition.watchdogs[0].endpoint, "entry");
+        assert_eq!(result.definition.schedules.len(), 1);
+        assert_eq!(result.definition.schedules[0].endpoint, "entry");
         assert_eq!(
-            result.definition.watchdogs[0].queue.as_deref(),
+            result.definition.schedules[0].trigger,
+            WorkflowScheduleTrigger::cron("15 30 14 * * *", "UTC")
+        );
+        assert_eq!(
+            result.definition.schedules[0].queue.as_deref(),
             Some("urgent")
         );
         assert_eq!(
-            result.definition.watchdogs[0].policy,
-            WorkflowWatchdogPolicy::Skip
+            result.definition.schedules[0].overlap_policy,
+            WorkflowScheduleOverlapPolicy::Skip
         );
-        assert_eq!(result.definition.watchdogs[0].enabled, Some(false));
-        assert_eq!(result.definition.watchdogs[0].max_wakeups, Some(2));
+        assert_eq!(result.definition.schedules[0].enabled, Some(false));
+        assert_eq!(result.definition.schedules[0].max_runs, Some(2));
     }
 
     #[test]

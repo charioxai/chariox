@@ -84,7 +84,7 @@ impl SessionService {
             edge_ids: BTreeMap::new(),
             endpoint_ids: BTreeMap::new(),
             queue_ids: BTreeMap::new(),
-            watchdog_ids: BTreeMap::new(),
+            schedule_ids: BTreeMap::new(),
             canvas_layout_applied: false,
             warnings: Vec::new(),
         };
@@ -194,37 +194,37 @@ impl SessionService {
 
         self.apply_workflow_code_queues(session_id, &workflow_id, definition, &mut report)?;
 
-        for watchdog in &definition.watchdogs {
-            let endpoint_id = report.endpoint_ids.get(&watchdog.endpoint).ok_or_else(|| {
+        for schedule in &definition.schedules {
+            let endpoint_id = report.endpoint_ids.get(&schedule.endpoint).ok_or_else(|| {
                 DaemonError::LocalTransport {
                     operation: "workflow_code.apply",
                     message: format!(
-                        "watchdog `{}` references unapplied endpoint",
-                        watchdog.handle
+                        "schedule `{}` references unapplied endpoint",
+                        schedule.handle
                     ),
                 }
             })?;
-            let created = self.create_workflow_watchdog(
+            let created = self.create_workflow_schedule(
                 session_id,
                 &workflow_id,
                 endpoint_id,
-                watchdog
+                schedule
                     .queue
                     .as_deref()
                     .and_then(|queue| report.queue_ids.get(queue).map(String::as_str)),
-                watchdog.interval_seconds,
-                watchdog.invocation_prompt.clone(),
-                watchdog.policy,
-                Some(watchdog.max_wakeups),
+                schedule.trigger.clone(),
+                schedule.invocation_prompt.clone(),
+                schedule.overlap_policy,
+                Some(schedule.max_runs),
             )?;
-            let created = if let Some(enabled) = watchdog.enabled {
-                self.set_workflow_watchdog_enabled(session_id, created.id(), enabled)?
+            let created = if let Some(enabled) = schedule.enabled {
+                self.set_workflow_schedule_enabled(session_id, created.id(), enabled)?
             } else {
                 created
             };
             report
-                .watchdog_ids
-                .insert(watchdog.handle.clone(), created.id().to_string());
+                .schedule_ids
+                .insert(schedule.handle.clone(), created.id().to_string());
         }
 
         let canvas_auto_layout_needed = workflow_code_canvas_auto_layout_needed(definition);
@@ -509,9 +509,9 @@ impl SessionService {
             report.queue_ids.insert(queue.handle.clone(), queue_id);
         }
         if definition
-            .watchdogs
+            .schedules
             .iter()
-            .any(|watchdog| watchdog.queue.as_deref() == Some("default"))
+            .any(|schedule| schedule.queue.as_deref() == Some("default"))
             && !report.queue_ids.contains_key("default")
         {
             let session = self.get_session(session_id)?;

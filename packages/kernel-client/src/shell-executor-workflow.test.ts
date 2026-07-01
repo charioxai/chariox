@@ -902,8 +902,8 @@ test("executeShellCommand exports a workflow publication package", async () => {
     assert.equal(snapshot.workflow.id, "workflow-1")
     assert.equal(snapshot.endpoint.id, "endpoint-1")
     assert.equal(snapshot.queues[0].id, "default")
-    assert.equal(snapshot.watchdogs[0].id, "watchdog-1")
-    assert.equal(snapshot.watchdogs[0].invocation_prompt, "published schedule")
+    assert.equal(snapshot.schedules[0].id, "watchdog-1")
+    assert.equal(snapshot.schedules[0].invocation_prompt, "published schedule")
     assert.equal(snapshot.agents[0].id, "agent-1")
     const requirements = JSON.parse(await readFile(join(root, "exported", "requirements.json"), "utf8"))
     assert.deepEqual(requirements.mcps, [])
@@ -949,7 +949,7 @@ test("executeShellCommand configures workflow publication package bindings", asy
       workflow,
       endpoint: workflow.endpoints![0],
       queues: [],
-      watchdogs: [],
+      schedules: [],
       agents: [
         makeAgent({ id: "agent-1", provider: "opencode", model: "gpt-5.2", effort: "high" }),
         makeAgent({ id: "agent-2", agent_ref: "agent-2", provider: "codex", model: "gpt-5", effort: null }),

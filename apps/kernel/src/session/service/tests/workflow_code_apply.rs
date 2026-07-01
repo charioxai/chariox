@@ -1,13 +1,16 @@
 use super::*;
 use crate::config::WorkflowCodeLimitsConfig;
-use crate::session::{CreateSessionRequest, WorkflowHandoffValidationPolicy};
+use crate::session::{
+    CreateSessionRequest, WorkflowHandoffValidationPolicy, WorkflowScheduleOverlapPolicy,
+    WorkflowScheduleTrigger,
+};
 use crate::workflow_code::{
     apply_workflow_code_provider_rebindings, compile_workflow_code_javascript,
     discover_workflow_code_node_path, WorkflowCodeAgentBinding, WorkflowCodeAgentCreate,
     WorkflowCodeCanvasEdge, WorkflowCodeCanvasPoint, WorkflowCodeDefinition,
     WorkflowCodeEdgeDefinition, WorkflowCodeEndpointDefinition, WorkflowCodeNodeDefinition,
     WorkflowCodeProviderRebinding, WorkflowCodeQueueDefinition, WorkflowCodeSchemaDefinition,
-    WorkflowCodeWatchdogDefinition, WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES,
+    WorkflowCodeScheduleDefinition, WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES,
     WORKFLOW_CODE_SCHEMA_VERSION,
 };
 use std::collections::BTreeSet;
@@ -139,15 +142,15 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             priority: 10,
             enabled: false,
         }],
-        watchdogs: vec![WorkflowCodeWatchdogDefinition {
+        schedules: vec![WorkflowCodeScheduleDefinition {
             handle: "entry_watchdog".to_string(),
             endpoint: "entry".to_string(),
             queue: Some("urgent".to_string()),
             enabled: Some(false),
-            interval_seconds: 60,
+            trigger: WorkflowScheduleTrigger::interval(60),
             invocation_prompt: "Check for stale work.".to_string(),
-            policy: WorkflowWatchdogPolicy::Skip,
-            max_wakeups: Some(2),
+            overlap_policy: WorkflowScheduleOverlapPolicy::Skip,
+            max_runs: Some(2),
         }],
     }
 }
@@ -186,7 +189,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(report.edge_ids.len(), 1);
     assert_eq!(report.endpoint_ids.len(), 1);
     assert_eq!(report.queue_ids.len(), 1);
-    assert_eq!(report.watchdog_ids.len(), 1);
+    assert_eq!(report.schedule_ids.len(), 1);
     assert_ne!(
         report.node_ids.get("planner").map(String::as_str),
         Some("planner"),
@@ -214,7 +217,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     );
     assert_ne!(
         report
-            .watchdog_ids
+            .schedule_ids
             .get("entry_watchdog")
             .map(String::as_str),
         Some("entry_watchdog"),
@@ -292,7 +295,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     let watchdog = session
         .workflow_watchdog(
             report
-                .watchdog_ids
+                .schedule_ids
                 .get("entry_watchdog")
                 .expect("watchdog id"),
         )
@@ -583,7 +586,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             canvas: None,
         }],
         queues: Vec::new(),
-        watchdogs: Vec::new(),
+        schedules: Vec::new(),
     };
     let agent_ids = BTreeMap::from([
         ("router".to_string(), "router-agent".to_string()),
@@ -793,7 +796,7 @@ fn workflow_code_apply_maps_omitted_queues_to_kernel_default_queue() {
 
     let mut definition = workflow_code_definition();
     definition.queues.clear();
-    definition.watchdogs.clear();
+    definition.schedules.clear();
 
     let agent_ids = BTreeMap::from([
         ("planner".to_string(), "agent-1".to_string()),
@@ -847,7 +850,7 @@ fn workflow_code_apply_normalizes_explicit_default_queue_alias() {
         priority: 7,
         enabled: false,
     });
-    definition.watchdogs.clear();
+    definition.schedules.clear();
 
     let agent_ids = BTreeMap::from([
         ("planner".to_string(), "agent-1".to_string()),
@@ -895,7 +898,7 @@ fn workflow_code_apply_maps_watchdogs_to_implicit_default_queue_when_other_queue
     seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
 
     let mut definition = workflow_code_definition();
-    definition.watchdogs[0].queue = Some("default".to_string());
+    definition.schedules[0].queue = Some("default".to_string());
 
     let agent_ids = BTreeMap::from([
         ("planner".to_string(), "agent-1".to_string()),
@@ -927,7 +930,7 @@ fn workflow_code_apply_maps_watchdogs_to_implicit_default_queue_when_other_queue
     let watchdog = session
         .workflow_watchdog(
             report
-                .watchdog_ids
+                .schedule_ids
                 .get("entry_watchdog")
                 .expect("watchdog id"),
         )

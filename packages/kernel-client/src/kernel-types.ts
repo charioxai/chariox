@@ -1965,6 +1965,8 @@ export type WorkflowCodeDefinition = {
   edges?: WorkflowCodeEdgeDefinition[]
   endpoints?: WorkflowCodeEndpointDefinition[]
   queues?: WorkflowCodeQueueDefinition[]
+  schedules?: WorkflowCodeScheduleDefinition[]
+  /** Legacy workflow-code import shape. New definitions should use schedules. */
   watchdogs?: WorkflowCodeWatchdogDefinition[]
 }
 
@@ -2039,6 +2041,17 @@ export type WorkflowCodeQueueDefinition = {
   enabled?: boolean
 }
 
+export type WorkflowCodeScheduleDefinition = {
+  handle: string
+  endpoint: string
+  queue?: string | null
+  enabled?: boolean | null
+  trigger: WorkflowScheduleTrigger
+  invocation_prompt: string
+  overlap_policy: "skip" | "queue"
+  max_runs?: number | null
+}
+
 export type WorkflowCodeWatchdogDefinition = {
   handle: string
   endpoint: string
@@ -2093,6 +2106,8 @@ export type WorkflowCodeApplyReport = {
   edge_ids?: Record<string, string>
   endpoint_ids?: Record<string, string>
   queue_ids?: Record<string, string>
+  schedule_ids?: Record<string, string>
+  /** Legacy apply report field. New reports use schedule_ids. */
   watchdog_ids?: Record<string, string>
   canvas_layout_applied: boolean
   warnings?: WorkflowCodeApplyWarning[]

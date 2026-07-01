@@ -115,7 +115,7 @@ mod tests {
                 canvas: None,
             }],
             queues: Vec::new(),
-            watchdogs: Vec::new(),
+            schedules: Vec::new(),
         }
     }
 

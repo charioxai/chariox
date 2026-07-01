@@ -1642,7 +1642,7 @@ workflow.watchdog(entry, {
         .expect("entry endpoint id should be reported");
     let watchdog_id = result
         .apply
-        .watchdog_ids
+        .schedule_ids
         .get("entry_watchdog")
         .expect("watchdog id should be reported");
 
@@ -2525,7 +2525,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
         edges: Vec::new(),
         endpoints: Vec::new(),
         queues: Vec::new(),
-        watchdogs: Vec::new(),
+        schedules: Vec::new(),
     };
     let source = "workflow.define({ alias: \"invalid_import\" })";
     let package = crate::workflow_code::WorkflowCodeArtifactPackage {
@@ -2633,7 +2633,7 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
             canvas: None,
         }],
         queues: Vec::new(),
-        watchdogs: Vec::new(),
+        schedules: Vec::new(),
     };
     let source = "workflow.define({ alias: \"mismatch_import\" })";
     let package = crate::workflow_code::WorkflowCodeArtifactPackage {
@@ -3500,7 +3500,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
                         workflow: workflow.clone(),
                         endpoint: Some(endpoint.clone()),
                         queues: vec![source_queue],
-                        watchdogs: vec![source_watchdog.clone()],
+                        schedules: vec![source_watchdog.clone()],
                         agents: vec![source_agent.clone()],
                     },
                 },
