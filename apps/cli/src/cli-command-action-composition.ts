@@ -249,6 +249,10 @@ export type CliCommandActionCompositionDeps = {
   listWorkflowWatchdogs: AnyFn
   setWorkflowWatchdogEnabled: AnyFn
   removeWorkflowWatchdog: AnyFn
+  createWorkflowSchedule: AnyFn
+  listWorkflowSchedules: AnyFn
+  setWorkflowScheduleEnabled: AnyFn
+  removeWorkflowSchedule: AnyFn
   setWorkflowFlushContext: AnyFn
   setWorkflowRunOutputSchema: AnyFn
   setWorkflowIntermediateOutputSchema: AnyFn
@@ -342,6 +346,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
     removeWorkflowWatchdog,
+    createWorkflowSchedule,
+    listWorkflowSchedules,
+    setWorkflowScheduleEnabled,
+    removeWorkflowSchedule,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     setWorkflowIntermediateOutputSchema,
@@ -779,6 +787,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
     removeWorkflowWatchdog,
+    createWorkflowSchedule,
+    listWorkflowSchedules,
+    setWorkflowScheduleEnabled,
+    removeWorkflowSchedule,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     setWorkflowIntermediateOutputSchema,

@@ -4,9 +4,12 @@ import type {
   RuntimeSession,
   SessionConfigState,
   WorkflowDefinition,
+  WorkflowEndpointDefinition,
   WorkflowPromptQueueDefinition,
   WorkflowQueuedPrompt,
   WorkflowRun,
+  WorkflowScheduleDefinition,
+  WorkflowScheduleTrigger,
   WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -130,6 +133,18 @@ export type WorkflowCommandHandlerDeps = {
   listWorkflowWatchdogs?: (workflowRef?: string | null) => Promise<{ watchdogs: WorkflowWatchdogDefinition[] }>
   setWorkflowWatchdogEnabled?: (watchdogRef: string, enabled: boolean) => Promise<WorkflowWatchdogPayload>
   removeWorkflowWatchdog?: (watchdogRef: string) => Promise<WorkflowWatchdogPayload>
+  createWorkflowSchedule?: (
+    workflowRef: string,
+    endpointRef: string,
+    trigger: WorkflowScheduleTrigger,
+    invocationPrompt: string,
+    overlapPolicy: "skip" | "queue",
+    maxRuns?: number | null,
+    queueRef?: string | null,
+  ) => Promise<{ schedule: WorkflowScheduleDefinition; workflow?: WorkflowDefinition; endpoint?: WorkflowEndpointDefinition; session: RuntimeSession }>
+  listWorkflowSchedules?: (workflowRef?: string | null) => Promise<{ schedules: WorkflowScheduleDefinition[] }>
+  setWorkflowScheduleEnabled?: (scheduleRef: string, enabled: boolean) => Promise<{ schedule: WorkflowScheduleDefinition; session: RuntimeSession }>
+  removeWorkflowSchedule?: (scheduleRef: string) => Promise<{ schedule: WorkflowScheduleDefinition; session: RuntimeSession }>
   setWorkflowFlushContext?: (
     workflowRef: string,
     flushAgentContextBeforeRun: boolean,
@@ -308,7 +323,7 @@ export async function handleWorkflowSlashCommand(
     return
   }
 
-  if (subcommand === "watchdog") {
+  if (subcommand === "schedule" || subcommand === "watchdog") {
     await handleWorkflowWatchdogCommand(deps, context, args)
     return
   }

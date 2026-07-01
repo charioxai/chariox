@@ -115,6 +115,74 @@ test("workflow watchdog command validates add options and unavailable runtime su
   ])
 })
 
+test("workflow schedule add parses cron seconds options and prompt", async () => {
+  const harness = createHarness()
+
+  await handleWorkflowWatchdogCommand(harness.deps, harness.context, [
+    "schedule",
+    "add",
+    "workflow-1",
+    "entry",
+    "--cron",
+    "15 30 14 * * *",
+    "--tz",
+    "America/New_York",
+    "--queue",
+    "queue-1",
+    "--overlap",
+    "queue",
+    "--max-runs",
+    "2",
+    "--prompt",
+    "run",
+    "summary",
+  ])
+
+  assert.deepEqual(harness.calls, [
+    "schedule-create:workflow-1:entry:cron:15 30 14 * * *:America/New_York:queue:2:queue-1:run summary",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:created workflow schedule watchdog-1",
+  ])
+})
+
+test("workflow schedule list toggle and remove use schedule labels", async () => {
+  const harness = createHarness({
+    listWorkflowSchedules: async (workflowRef) => {
+      harness.calls.push(`schedule-list:${workflowRef ?? "all"}`)
+      return {
+        schedules: [
+          watchdog({
+            id: "schedule-1",
+            trigger: { kind: "cron", expression: "15 30 14 * * *", timezone: "UTC" },
+            overlap_policy: "queue",
+            max_runs: null,
+            runs_started: 2,
+            next_run_at_ms: 0,
+            pending_run: true,
+          }),
+        ],
+      }
+    },
+  })
+
+  await handleWorkflowWatchdogCommand(harness.deps, harness.context, ["schedule", "list", "workflow-1"])
+  await handleWorkflowWatchdogCommand(harness.deps, harness.context, ["schedule", "disable", "schedule-1"])
+  await handleWorkflowWatchdogCommand(harness.deps, harness.context, ["schedule", "remove", "schedule-1"])
+
+  assert.deepEqual(harness.calls, [
+    "schedule-list:workflow-1",
+    "notice:schedule-1 workflow=workflow-1 endpoint=entry trigger=cron:15 30 14 * * * tz=UTC overlap=queue enabled=true runs=2/unbounded next=1970-01-01T00:00:00.000Z pending=true",
+    "footer:info:listed 1 workflow schedule(s)",
+    "schedule-toggle:schedule-1:false",
+    "apply:session-1",
+    "footer:info:disabled workflow schedule schedule-1",
+    "schedule-remove:schedule-1",
+    "apply:session-1",
+    "footer:info:removed workflow schedule schedule-1",
+  ])
+})
+
 type HarnessOptions = Omit<Partial<WorkflowWatchdogCommandDeps>, "createWorkflowWatchdog"> & {
   createWorkflowWatchdog?: WorkflowWatchdogCommandDeps["createWorkflowWatchdog"] | undefined
   context?: Partial<WorkflowWatchdogCommandContext>
@@ -132,6 +200,35 @@ function createHarness(options: HarnessOptions = {}) {
   const deps: WorkflowWatchdogCommandDeps = {
     appendNotice: (message) => {
       calls.push(`notice:${message}`)
+    },
+    createWorkflowSchedule: async (workflowRef, endpointRef, trigger, prompt, overlapPolicy, maxRuns, queueRef) => {
+      const triggerLabel = trigger.kind === "interval"
+        ? `interval:${trigger.every_seconds}`
+        : `cron:${trigger.expression}:${trigger.timezone}`
+      calls.push(`schedule-create:${workflowRef}:${endpointRef}:${triggerLabel}:${overlapPolicy}:${maxRuns ?? "null"}:${queueRef ?? "null"}:${prompt}`)
+      return {
+        schedule: watchdog({
+          workflow_id: workflowRef,
+          endpoint_id: endpointRef,
+          trigger,
+          overlap_policy: overlapPolicy,
+          max_runs: maxRuns ?? null,
+        }),
+        workflow: workflow({ id: workflowRef }),
+        session: session(),
+      }
+    },
+    listWorkflowSchedules: async (workflowRef) => {
+      calls.push(`schedule-list:${workflowRef ?? "all"}`)
+      return { schedules: [] }
+    },
+    setWorkflowScheduleEnabled: async (scheduleRef, enabled) => {
+      calls.push(`schedule-toggle:${scheduleRef}:${String(enabled)}`)
+      return { schedule: watchdog({ id: scheduleRef, enabled }), session: session() }
+    },
+    removeWorkflowSchedule: async (scheduleRef) => {
+      calls.push(`schedule-remove:${scheduleRef}`)
+      return { schedule: watchdog({ id: scheduleRef }), session: session() }
     },
     listWorkflowWatchdogs: async (workflowRef) => {
       calls.push(`list:${workflowRef ?? "all"}`)
@@ -182,6 +279,8 @@ function watchdogCreateOverrides(
   return {
     workflow_id: workflowRef,
     endpoint_id: endpointRef,
+    trigger: { kind: "interval", every_seconds: 60 },
+    overlap_policy: policy,
     policy,
     ...(maxWakeups !== undefined ? { max_wakeups: maxWakeups } : {}),
   }
@@ -193,9 +292,12 @@ function watchdog(overrides: Partial<WorkflowWatchdogDefinition> = {}): Workflow
     workflow_id: "workflow-1",
     endpoint_id: "entry",
     enabled: true,
+    trigger: { kind: "interval", every_seconds: 60 },
     interval_seconds: 60,
     invocation_prompt: "prompt",
+    overlap_policy: "skip",
     policy: "skip",
+    runs_started: 0,
     max_wakeups: 1,
     wakeups_executed: 0,
     next_run_at_ms: 1,
