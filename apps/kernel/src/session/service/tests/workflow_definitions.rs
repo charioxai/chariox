@@ -343,6 +343,174 @@ fn workflow_design_edge_update_applies_handoff_schema_patch() {
 }
 
 #[test]
+fn workflow_design_schema_ops_add_update_and_remove_embedded_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+
+    let added = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    Some("Draft".to_string()),
+                    Some("Draft payload".to_string()),
+                    serde_json::json!({
+                        "type": "object",
+                        "required": ["summary"],
+                        "properties": {
+                            "summary": { "type": "string" }
+                        }
+                    }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid schema should be added");
+    assert_eq!(added.schemas().len(), 1);
+    assert_eq!(
+        added.schema("schema-1").and_then(|schema| schema.alias()),
+        Some("Draft")
+    );
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaUpdate {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+                patch: crate::local::WorkflowDesignSchemaPatch {
+                    alias: Some(Some("Review".to_string())),
+                    description: Some(None),
+                    schema: Some(serde_json::json!({
+                        "type": "object",
+                        "required": ["verdict"],
+                        "properties": {
+                            "verdict": { "enum": ["approve", "reject"] }
+                        }
+                    })),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid schema update should apply");
+    let schema = updated.schema("schema-1").expect("schema should remain");
+    assert_eq!(schema.alias(), Some("Review"));
+    assert_eq!(schema.description(), None);
+    assert_eq!(
+        schema.schema().pointer("/properties/verdict/enum/0"),
+        Some(&serde_json::json!("approve"))
+    );
+
+    let removed = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaRemove {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("unreferenced schema should be removed");
+    assert!(removed.schema("schema-1").is_none());
+}
+
+#[test]
+fn workflow_design_schema_ops_reject_invalid_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+
+    let error = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    None,
+                    None,
+                    serde_json::json!({ "type": 42 }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("invalid schema should be rejected");
+
+    assert!(matches!(error, DaemonError::LocalTransport { .. }));
+}
+
+#[test]
+fn workflow_design_schema_remove_rejects_referenced_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let planner = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("planner node should be added");
+    let reviewer = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
+        .expect("reviewer node should be added");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    None,
+                    None,
+                    serde_json::json!({ "type": "object" }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("schema should be added");
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            Some("schema-1".to_string()),
+            Some(WorkflowHandoffValidationPolicy::Halt),
+        )
+        .expect("edge should be added");
+
+    let error = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaRemove {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("referenced schema should not be removed");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(message.contains(&format!("edge.{}.handoff_schema_ref", edge.id())));
+        }
+        other => panic!("expected LocalTransport, got {other:?}"),
+    }
+}
+
+#[test]
 fn manages_workflow_nodes_edges_and_endpoints() {
     let mut service = SessionService::new(&test_config());
     let session = service

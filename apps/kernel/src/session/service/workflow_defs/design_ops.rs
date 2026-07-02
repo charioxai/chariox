@@ -27,7 +27,15 @@ impl SessionService {
                         workflow.intermediate_output_schema_ref,
                     );
                 }
+                let mut schema_ids = std::collections::BTreeSet::new();
                 for schema in workflow.schemas {
+                    validate_workflow_design_schema(&schema)?;
+                    if !schema_ids.insert(schema.id().to_string()) {
+                        return Err(workflow_design_schema_error(format!(
+                            "schema id `{}` is duplicated",
+                            schema.id()
+                        )));
+                    }
                     definition.add_schema(schema);
                 }
                 let session =
@@ -103,6 +111,109 @@ impl SessionService {
                         session_id: session_id.to_string(),
                         workflow_id,
                     })
+            }
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id,
+                schema,
+            } => {
+                validate_workflow_design_schema(&schema)?;
+                let workflow_id = self
+                    .resolve_workflow_ref(session_id, &workflow_id)?
+                    .id()
+                    .to_string();
+                let session =
+                    self.store
+                        .get_mut(session_id)
+                        .ok_or_else(|| DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        })?;
+                let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+                    DaemonError::WorkflowNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                    }
+                })?;
+                if workflow.schema(schema.id()).is_some() {
+                    return Err(workflow_design_schema_error(format!(
+                        "schema id `{}` already exists",
+                        schema.id()
+                    )));
+                }
+                workflow.add_schema(schema);
+                Ok(workflow.clone())
+            }
+            crate::local::WorkflowDesignOp::SchemaUpdate {
+                workflow_id,
+                schema_id,
+                patch,
+            } => {
+                let workflow_id = self
+                    .resolve_workflow_ref(session_id, &workflow_id)?
+                    .id()
+                    .to_string();
+                let session =
+                    self.store
+                        .get_mut(session_id)
+                        .ok_or_else(|| DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        })?;
+                let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+                    DaemonError::WorkflowNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                    }
+                })?;
+                let mut next_schema = workflow.schema(&schema_id).cloned().ok_or_else(|| {
+                    workflow_design_schema_error(format!("schema id `{schema_id}` was not found"))
+                })?;
+                if let Some(alias) = patch.alias {
+                    next_schema.set_alias(alias);
+                }
+                if let Some(description) = patch.description {
+                    next_schema.set_description(description);
+                }
+                if let Some(schema) = patch.schema {
+                    next_schema.set_schema(schema);
+                }
+                validate_workflow_design_schema(&next_schema)?;
+                let schema = workflow.schema_mut(&schema_id).ok_or_else(|| {
+                    workflow_design_schema_error(format!("schema id `{schema_id}` was not found"))
+                })?;
+                *schema = next_schema;
+                workflow.bump_revision();
+                Ok(workflow.clone())
+            }
+            crate::local::WorkflowDesignOp::SchemaRemove {
+                workflow_id,
+                schema_id,
+            } => {
+                let workflow_id = self
+                    .resolve_workflow_ref(session_id, &workflow_id)?
+                    .id()
+                    .to_string();
+                let session =
+                    self.store
+                        .get_mut(session_id)
+                        .ok_or_else(|| DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        })?;
+                let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+                    DaemonError::WorkflowNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                    }
+                })?;
+                let usages = workflow.schema_ref_usages(&schema_id);
+                if !usages.is_empty() {
+                    return Err(workflow_design_schema_error(format!(
+                        "schema id `{schema_id}` is still referenced by {}",
+                        usages.join(", ")
+                    )));
+                }
+                workflow.remove_schema(&schema_id).ok_or_else(|| {
+                    workflow_design_schema_error(format!("schema id `{schema_id}` was not found"))
+                })?;
+                Ok(workflow.clone())
             }
             crate::local::WorkflowDesignOp::NodeAdd {
                 workflow_id,
@@ -487,5 +598,30 @@ impl SessionService {
                 Ok(workflow.clone())
             }
         }
+    }
+}
+
+fn validate_workflow_design_schema(schema: &WorkflowSchemaDefinition) -> Result<(), DaemonError> {
+    if schema.id().trim().is_empty() {
+        return Err(workflow_design_schema_error(
+            "schema id must not be blank".to_string(),
+        ));
+    }
+    jsonschema::JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(schema.schema())
+        .map_err(|error| {
+            workflow_design_schema_error(format!(
+                "schema id `{}` failed to compile: {error}",
+                schema.id()
+            ))
+        })?;
+    Ok(())
+}
+
+fn workflow_design_schema_error(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "apply_workflow_design_op",
+        message,
     }
 }

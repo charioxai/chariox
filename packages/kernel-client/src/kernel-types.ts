@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 216
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 217
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2429,18 +2429,31 @@ export type WorkflowCanvasLayout = {
 export type WorkflowDesignWorkflow = {
   id: string
   alias?: string | null
+  flush_agent_context_before_run?: boolean | null
+  max_concurrent?: number | null
+  run_output_schema_ref?: string | null
+  intermediate_output_schema_ref?: string | null
+  schemas?: WorkflowSchemaDefinition[]
 }
 
 export type WorkflowDesignWorkflowPatch = {
   alias?: string | null
   flush_agent_context_before_run?: boolean | null
+  max_concurrent?: number | null
   run_output_schema_ref?: string | null
   intermediate_output_schema_ref?: string | null
+}
+
+export type WorkflowDesignSchemaPatch = {
+  alias?: string | null
+  description?: string | null
+  schema?: unknown
 }
 
 export type WorkflowDesignNode = {
   id: string
   agent_id: string
+  label?: string | null
   instructions?: string | null
   can_complete_workflow_run?: boolean | null
   can_emit_intermediate_run_output?: boolean | null
@@ -2488,6 +2501,9 @@ export type WorkflowDesignOp =
   | { kind: "workflow_create"; workflow: WorkflowDesignWorkflow }
   | { kind: "workflow_update"; workflow_id: string; patch: WorkflowDesignWorkflowPatch }
   | { kind: "workflow_remove"; workflow_id: string }
+  | { kind: "schema_add"; workflow_id: string; schema: WorkflowSchemaDefinition }
+  | { kind: "schema_update"; workflow_id: string; schema_id: string; patch: WorkflowDesignSchemaPatch }
+  | { kind: "schema_remove"; workflow_id: string; schema_id: string }
   | { kind: "node_add"; workflow_id: string; node: WorkflowDesignNode; position?: WorkflowCanvasPoint | null }
   | { kind: "node_update"; workflow_id: string; node_id: string; patch: WorkflowDesignNodePatch }
   | { kind: "node_move"; workflow_id: string; node_id: string; position: WorkflowCanvasPoint }

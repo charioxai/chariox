@@ -61,6 +61,18 @@ impl WorkflowSchemaDefinition {
     pub fn schema(&self) -> &Value {
         &self.schema
     }
+
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+    }
+
+    pub fn set_description(&mut self, description: Option<String>) {
+        self.description = description;
+    }
+
+    pub fn set_schema(&mut self, schema: Value) {
+        self.schema = schema;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +193,12 @@ impl WorkflowDefinition {
         self.schemas.iter().find(|schema| schema.id() == schema_id)
     }
 
+    pub fn schema_mut(&mut self, schema_id: &str) -> Option<&mut WorkflowSchemaDefinition> {
+        self.schemas
+            .iter_mut()
+            .find(|schema| schema.id() == schema_id)
+    }
+
     pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
         &self.edges
     }
@@ -223,6 +241,37 @@ impl WorkflowDefinition {
         self.schemas.push(schema.clone());
         self.bump_revision();
         schema
+    }
+
+    pub fn remove_schema(&mut self, schema_id: &str) -> Option<WorkflowSchemaDefinition> {
+        let index = self
+            .schemas
+            .iter()
+            .position(|schema| schema.id() == schema_id)?;
+        let schema = self.schemas.remove(index);
+        self.bump_revision();
+        Some(schema)
+    }
+
+    pub fn schema_ref_usages(&self, schema_id: &str) -> Vec<String> {
+        let mut usages = Vec::new();
+        if self.run_output_schema_ref.as_deref() == Some(schema_id) {
+            usages.push("workflow.run_output_schema_ref".to_string());
+        }
+        if self.intermediate_output_schema_ref.as_deref() == Some(schema_id) {
+            usages.push("workflow.intermediate_output_schema_ref".to_string());
+        }
+        for node in &self.nodes {
+            if node.intermediate_output_schema_ref() == Some(schema_id) {
+                usages.push(format!("node.{}.intermediate_output_schema_ref", node.id()));
+            }
+        }
+        for edge in &self.edges {
+            if edge.handoff_schema_ref() == Some(schema_id) {
+                usages.push(format!("edge.{}.handoff_schema_ref", edge.id()));
+            }
+        }
+        usages
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {

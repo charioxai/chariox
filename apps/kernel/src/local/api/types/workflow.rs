@@ -788,6 +788,16 @@ pub struct WorkflowDesignWorkflowPatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignSchemaPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignNode {
     pub id: String,
     pub agent_id: String,
@@ -876,6 +886,19 @@ pub enum WorkflowDesignOp {
     },
     WorkflowRemove {
         workflow_id: String,
+    },
+    SchemaAdd {
+        workflow_id: String,
+        schema: crate::session::WorkflowSchemaDefinition,
+    },
+    SchemaUpdate {
+        workflow_id: String,
+        schema_id: String,
+        patch: WorkflowDesignSchemaPatch,
+    },
+    SchemaRemove {
+        workflow_id: String,
+        schema_id: String,
     },
     NodeAdd {
         workflow_id: String,
