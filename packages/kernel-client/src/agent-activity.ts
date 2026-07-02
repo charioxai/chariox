@@ -11,7 +11,13 @@ export type AgentRuntimeActivityBusyInput = {
 }
 
 export type AgentRuntimeActivityStatus = "idle" | "working" | "error"
-export type AgentRuntimePromptStatus = "none" | "queued" | "running" | "cancelling" | "settling"
+export type AgentRuntimePromptStatus =
+  | "none"
+  | "queued"
+  | "dispatching"
+  | "running"
+  | "cancelling"
+  | "settling"
 
 export type AgentRuntimeActivityProjection = {
   readonly status: AgentRuntimeActivityStatus | null
@@ -181,6 +187,8 @@ export function normalizeAgentRuntimePromptProjectionStatus(
   switch (normalizeAgentRuntimePromptStatus(value)) {
     case "queued":
       return "queued"
+    case "dispatching":
+      return "dispatching"
     case "running":
       return "running"
     case "cancelling":
@@ -198,6 +206,7 @@ export function normalizeAgentRuntimePromptProjectionStatus(
 
 export function agentRuntimePromptStatusIsActive(value: string | null): boolean {
   return value === "queued"
+    || value === "dispatching"
     || value === "running"
     || value === "cancelling"
     || value === "settling"
@@ -209,6 +218,7 @@ export function agentRuntimePromptStatusIsQueued(value: string | null): boolean 
 
 export function agentRuntimePromptStatusIsActivePrompt(value: string | null): boolean {
   return value === "running"
+    || value === "dispatching"
     || value === "cancelling"
     || value === "settling"
 }

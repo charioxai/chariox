@@ -259,6 +259,23 @@ impl PromptStateOwner {
         Some(active.clone())
     }
 
+    pub(crate) fn mark_active_prompt_running(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()?;
+        active.set_status(PromptStatus::Running);
+        Some(active.clone())
+    }
+
     pub(crate) fn finalize_active_prompt_cancellation(
         &self,
         session: &RuntimeSession,
@@ -378,7 +395,7 @@ impl PromptStateOwner {
             .pop_front()
             .expect("queue front checked above")
             .with_id(prompt_id);
-        active.set_status(PromptStatus::Running);
+        active.set_status(PromptStatus::Dispatching);
         state.active_prompt = Some(active.clone());
         Ok(Some(active))
     }
@@ -794,8 +811,14 @@ mod tests {
         assert_eq!(started.id(), "prompt-real-2");
         assert_eq!(started.pending_prompt_id(), None);
         assert_eq!(started.prompt(), "queued");
-        assert_eq!(started.status(), PromptStatus::Running);
+        assert_eq!(started.status(), PromptStatus::Dispatching);
         assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
+
+        let running = owner
+            .mark_active_prompt_running(&session, "agent-1")
+            .expect("dispatching prompt should become running");
+        assert_eq!(running.id(), "prompt-real-2");
+        assert_eq!(running.status(), PromptStatus::Running);
     }
 
     #[test]

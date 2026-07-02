@@ -45,6 +45,11 @@ test("agent activity busy helper follows kernel projected activity semantics", (
   }), true)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
+    prompt_status: "dispatching",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
     prompt_status: " Cancelling ",
     busy: false,
   }), true)
@@ -103,10 +108,13 @@ test("agent activity helpers normalize status vocabulary", () => {
   assert.equal(normalizeAgentRuntimePromptStatus(""), null)
   assert.equal(normalizeAgentRuntimeActivityProjectionStatus(" focused "), "idle")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" completed "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" Dispatching "), "dispatching")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" cancelled "), "none")
   assert.equal(agentRuntimePromptStatusIsActive("queued"), true)
+  assert.equal(agentRuntimePromptStatusIsActive("dispatching"), true)
   assert.equal(agentRuntimePromptStatusIsActive("completed"), false)
   assert.equal(agentRuntimePromptStatusIsActivePrompt("queued"), false)
+  assert.equal(agentRuntimePromptStatusIsActivePrompt("dispatching"), true)
   assert.equal(agentRuntimePromptStatusIsActivePrompt("running"), true)
   assert.equal(agentRuntimePromptStatusIsActivePrompt("cancelled"), false)
 })

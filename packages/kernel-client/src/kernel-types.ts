@@ -746,7 +746,7 @@ export type AgentPromptState = {
 
 export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
-  prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
+  prompt_status: "none" | "queued" | "dispatching" | "running" | "cancelling" | "settling"
   busy: boolean
   active_prompt_count?: number
   queued_prompt_count?: number
@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 215
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 216
 
 export type TerminalCommandCatalogNodeKind =
   | "group"

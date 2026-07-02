@@ -65,6 +65,7 @@ pub(crate) fn queued_prompt_controls_projection(
 fn queued_prompt_status_label(status: PromptStatus) -> &'static str {
     match status {
         PromptStatus::Queued => "queued",
+        PromptStatus::Dispatching => "dispatching",
         PromptStatus::Running => "running",
         PromptStatus::Cancelling => "cancelling",
         PromptStatus::Completed => "completed",

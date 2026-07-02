@@ -73,88 +73,29 @@ impl<'a> KernelAgentService<'a> {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             };
-            self.app.spawn_user_prompt_history_append_with_prompt_id(
-                session_id,
-                next.source_attachment_id(),
-                next.target_agent_id(),
-                next.prompt(),
-                next.attachments(),
-                next.id(),
-                next.workflow_run_id(),
-                next.workflow_node_run_id(),
-            )?;
-            self.app.echo_promoted_queued_prompt_to_attachments(
-                session_id,
-                &provider_run_id,
-                next.id(),
-                next.source_attachment_id(),
-                next.prompt(),
-                next.attachments(),
-            );
-            let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-            self.app
-                .agents
-                .note_prompt_sent_at(&target_agent_id, prompt_sent_at_ms)?;
-            self.app
-                .sessions
-                .note_prompt_sent(session_id, &target_agent_id, prompt_sent_at_ms)?;
-
             if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
                 if is_workflow_prompt {
-                    let active = next;
-                    if let Err(dispatch_error) = crate::app::ProviderPromptDispatcher::new(self.app)
-                        .dispatch_prompt_to_provider(
-                            session_id,
-                            &provider_run_id,
-                            active.source_attachment_id(),
-                            active.prompt(),
-                            active.hidden_system_context(),
-                            active.attachments(),
-                        )
-                    {
-                        let cancelled = self
-                            .app
-                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id)?;
-                        crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
-                            self.app, session_id, &cancelled,
-                        )?;
-                        flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                        return Err(dispatch_error);
-                    }
-                    if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-                        (active.workflow_run_id(), active.workflow_node_run_id())
-                    {
-                        self.app.sessions_mut().mark_workflow_turn_dispatched(
-                            session_id,
-                            workflow_run_id,
-                            workflow_node_run_id,
-                        )?;
-                    }
-                    crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                        self.app, session_id, &active,
-                    )?;
-                    flow_control::note_prompt_started(self.app, &provider_run_id);
-                    crate::app::KernelSessionReadService::new(self.app)
-                        .session_snapshot(session_id)?;
-                    return Ok(Some(active));
+                    // Workflow prompt sources are synthetic; they intentionally have no live
+                    // attachment record, so provider delivery remains the source of truth.
+                } else {
+                    self.app.record_notice(
+                        session_id,
+                        Some(&provider_run_id),
+                        self.app.attachments.list_session_attachment_ids(session_id),
+                        format!(
+                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                            next.id(),
+                            error
+                        ),
+                    );
+                    let _ = self
+                        .app
+                        .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
+                    flow_control::clear_prompt_activity(self.app, &provider_run_id);
+                    continue;
                 }
-                self.app.record_notice(
-                    session_id,
-                    Some(&provider_run_id),
-                    self.app.attachments.list_session_attachment_ids(session_id),
-                    format!(
-                        "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                        next.id(),
-                        error
-                    ),
-                );
-                let _ = self
-                    .app
-                    .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
-                flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                continue;
             }
 
             if let Err(error) = crate::app::ProviderPromptDispatcher::new(self.app)
@@ -177,14 +118,50 @@ impl<'a> KernelAgentService<'a> {
                         error
                     ),
                 );
-                let _ = self
+                let cancelled = self
                     .app
                     .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
+                if is_workflow_prompt {
+                    if let Ok(cancelled) = cancelled {
+                        crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+                            self.app, session_id, &cancelled,
+                        )?;
+                    }
+                    flow_control::clear_prompt_activity(self.app, &provider_run_id);
+                    return Err(error);
+                }
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             }
 
-            let active = next;
+            let active = self
+                .app
+                .prompt_owner_mark_active_prompt_running(session_id, &target_agent_id)?;
+            self.app.spawn_user_prompt_history_append_with_prompt_id(
+                session_id,
+                active.source_attachment_id(),
+                active.target_agent_id(),
+                active.prompt(),
+                active.attachments(),
+                active.id(),
+                active.workflow_run_id(),
+                active.workflow_node_run_id(),
+            )?;
+            self.app.echo_promoted_queued_prompt_to_attachments(
+                session_id,
+                &provider_run_id,
+                active.id(),
+                active.source_attachment_id(),
+                active.prompt(),
+                active.attachments(),
+            );
+            let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+            self.app
+                .agents
+                .note_prompt_sent_at(&target_agent_id, prompt_sent_at_ms)?;
+            self.app
+                .sessions
+                .note_prompt_sent(session_id, &target_agent_id, prompt_sent_at_ms)?;
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
                 (active.workflow_run_id(), active.workflow_node_run_id())
             {

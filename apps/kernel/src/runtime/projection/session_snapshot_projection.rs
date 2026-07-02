@@ -32,6 +32,7 @@ pub enum AgentRuntimeStatus {
 pub enum AgentPromptRuntimeStatus {
     None,
     Queued,
+    Dispatching,
     Running,
     Cancelling,
     Settling,
@@ -159,6 +160,7 @@ pub(crate) fn agent_activity_for_session_projection(
         });
         let prompt_status = match active_prompt.map(PromptQueueItem::status) {
             Some(PromptStatus::Cancelling) => AgentPromptRuntimeStatus::Cancelling,
+            Some(PromptStatus::Dispatching) => AgentPromptRuntimeStatus::Dispatching,
             Some(PromptStatus::Running) => {
                 let settlement_requested = provider_turn_activity
                     .map(|state| state.settlement_requested)
@@ -269,6 +271,7 @@ fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatu
     matches!(
         status,
         AgentPromptRuntimeStatus::Running
+            | AgentPromptRuntimeStatus::Dispatching
             | AgentPromptRuntimeStatus::Cancelling
             | AgentPromptRuntimeStatus::Settling
     )
@@ -577,6 +580,62 @@ mod tests {
         assert!(control.can_cancel);
         assert!(control.steer_disabled_reason.is_none());
         assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn session_snapshot_projection_marks_dispatching_prompt_as_active_work() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-dispatching");
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "active prompt",
+        );
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "queued prompt",
+        );
+        let pending = app
+            .prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+            .expect("queue peek should succeed")
+            .expect("queued prompt should exist");
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("active prompt should complete");
+        app.prompt_owner_activate_next_queued_prompt_with_prompt_id(
+            session.id(),
+            agent.id(),
+            Some(pending.id()),
+            "prompt-dispatching".to_string(),
+        )
+        .expect("queued prompt should activate");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(
+            activity.prompt_status,
+            AgentPromptRuntimeStatus::Dispatching
+        );
+        assert!(activity.busy);
+        assert_eq!(activity.active_prompt_count, 1);
+        assert_eq!(
+            activity.active_turn.as_ref().map(|turn| &turn.status),
+            Some(&AgentPromptRuntimeStatus::Dispatching)
+        );
     }
 
     #[test]

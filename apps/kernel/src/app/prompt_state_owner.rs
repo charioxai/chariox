@@ -146,6 +146,22 @@ impl DaemonApp {
         Ok(prompt)
     }
 
+    pub(crate) fn prompt_owner_mark_active_prompt_running(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .mark_active_prompt_running(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        Ok(prompt)
+    }
+
     pub(crate) fn prompt_owner_finalize_active_prompt_cancellation(
         &mut self,
         session_id: &str,
