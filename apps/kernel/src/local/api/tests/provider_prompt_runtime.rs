@@ -602,6 +602,8 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
     {
         LocalDaemonResponse::PromptCompleted { completion } => {
             assert_eq!(completion.completed.id(), prompt.id());
+            assert_eq!(completion.completed.prompt(), prompt.prompt());
+            assert_eq!(completion.completed.pending_prompt_id(), None);
         }
         other => panic!("unexpected completion response: {other:?}"),
     }
@@ -719,15 +721,24 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
         other => panic!("unexpected prompt submit response: {other:?}"),
     };
 
-    harness.wait_for_session_where(
+    let active_session = harness.wait_for_session_where(
         session.id(),
         "queued native TUI prompt should become active after provider launch",
         |session| {
             session
                 .active_prompt_for_agent(agent.id())
-                .is_some_and(|active| active.id() == prompt.id())
+                .is_some_and(|active| {
+                    active.prompt() == prompt.prompt()
+                        && active.pending_prompt_id().is_none()
+                        && active.id() != prompt.id()
+                })
         },
     );
+    let promoted_prompt_id = active_session
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should be active")
+        .id()
+        .to_string();
     fs::write(&proof_path, "created by queued native tui turn\n")
         .expect("proof file should be written");
     match harness
@@ -737,7 +748,9 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
         .expect("queued prompt completion should succeed")
     {
         LocalDaemonResponse::PromptCompleted { completion } => {
-            assert_eq!(completion.completed.id(), prompt.id());
+            assert_eq!(completion.completed.id(), promoted_prompt_id);
+            assert_eq!(completion.completed.prompt(), prompt.prompt());
+            assert_eq!(completion.completed.pending_prompt_id(), None);
         }
         other => panic!("unexpected completion response: {other:?}"),
     }
@@ -758,7 +771,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
         .and_then(|activity| activity.last_completed_turn.as_ref())
         .expect("completed queued tracked turn should project a turn action");
     assert_eq!(completed_turn.agent_id, agent.id());
-    assert_eq!(completed_turn.prompt_id, prompt.id());
+    assert_eq!(completed_turn.prompt_id, promoted_prompt_id);
     assert_eq!(completed_turn.provider_run_id, provider_run.id());
     assert!(completed_turn.undo_available);
     assert_eq!(
@@ -1593,13 +1606,13 @@ fn local_request_api_rejects_invalid_provider_adapter_inner() {
 #[test]
 fn local_request_api_exposes_queue_config_and_notices() {
     let harness = LocalRouterTestHarness::new();
-    let session = match harness
+    let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let a = match harness
@@ -1678,16 +1691,19 @@ fn local_request_api_exposes_queue_config_and_notices() {
         }
         _ => panic!("unexpected first prompt response"),
     }
-    match second {
+    let queued_prompt = match second {
         LocalDaemonResponse::PromptSubmitted {
-            outcome: PromptSubmissionOutcome::Queued { .. },
+            outcome: PromptSubmissionOutcome::Queued { prompt },
             session,
             ..
         } => {
             assert_eq!(session.queued_prompts().len(), 1);
+            assert!(prompt.id().starts_with("pending-prompt-"));
+            assert_eq!(prompt.pending_prompt_id(), Some(prompt.id()));
+            prompt
         }
         _ => panic!("unexpected second prompt response"),
-    }
+    };
     match config {
         LocalDaemonResponse::SessionConfigUpdated { config, session } => {
             assert_eq!(config.version(), 1);
@@ -1719,22 +1735,87 @@ fn local_request_api_exposes_queue_config_and_notices() {
     match state {
         LocalDaemonResponse::SessionState { session, .. } => {
             assert_eq!(session.queued_prompts().len(), 1);
+            assert_eq!(session.queued_prompts()[0].id(), queued_prompt.id());
+            assert_eq!(
+                session.queued_prompts()[0].pending_prompt_id(),
+                Some(queued_prompt.id())
+            );
             assert_eq!(session.config_state().version(), 1);
         }
         _ => panic!("unexpected state response"),
     }
+    let mut history_before_promotion = Vec::new();
+    for _ in 0..100 {
+        history_before_promotion = harness
+            .with_app(|app| app.load_session_history_entries(&session, Some(agent.id())))
+            .expect("history should load before queued prompt promotion");
+        if history_before_promotion.iter().any(|entry| {
+            entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                && entry.text.contains("first")
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        history_before_promotion.iter().any(|entry| {
+            entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                && entry.text.contains("first")
+        }),
+        "started prompt should be in history"
+    );
+    assert!(
+        history_before_promotion.iter().all(|entry| {
+            !(entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                && entry.text.contains("second"))
+        }),
+        "queued prompt must not enter history before promotion"
+    );
 
     let completed = harness
         .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: session.id().to_string(),
         }))
         .expect("complete prompt should succeed");
-    match completed {
+    let promoted_prompt_id = match completed {
         LocalDaemonResponse::PromptCompleted { completion } => {
-            assert!(completion.started_next.is_some())
+            let started_next = completion
+                .started_next
+                .expect("queued prompt should start after completion");
+            assert_eq!(started_next.prompt(), "second");
+            assert_ne!(started_next.id(), queued_prompt.id());
+            assert_eq!(started_next.pending_prompt_id(), None);
+            started_next.id().to_string()
         }
         _ => panic!("unexpected completion response"),
+    };
+    let expected_merge_key = format!("prompt:{promoted_prompt_id}");
+    let mut history_after_promotion = Vec::new();
+    for _ in 0..100 {
+        history_after_promotion = harness
+            .with_app(|app| app.load_session_history_entries(&session, Some(agent.id())))
+            .expect("history should load after queued prompt promotion");
+        if history_after_promotion.iter().any(|entry| {
+            entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                && entry.text.contains("second")
+                && entry.merge_key.as_deref() == Some(expected_merge_key.as_str())
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    assert_eq!(
+        history_after_promotion
+            .iter()
+            .filter(|entry| {
+                entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                    && entry.text.contains("second")
+                    && entry.merge_key.as_deref() == Some(expected_merge_key.as_str())
+            })
+            .count(),
+        1,
+        "promoted queued prompt should enter history exactly once under its real prompt id"
+    );
 }
 
 #[test]

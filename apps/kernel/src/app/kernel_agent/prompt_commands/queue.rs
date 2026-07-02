@@ -73,6 +73,31 @@ impl<'a> KernelAgentService<'a> {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             };
+            self.app.spawn_user_prompt_history_append_with_prompt_id(
+                session_id,
+                next.source_attachment_id(),
+                next.target_agent_id(),
+                next.prompt(),
+                next.attachments(),
+                next.id(),
+                next.workflow_run_id(),
+                next.workflow_node_run_id(),
+            )?;
+            self.app.echo_prompt_to_other_attachments(
+                session_id,
+                &provider_run_id,
+                next.id(),
+                next.source_attachment_id(),
+                next.prompt(),
+                next.attachments(),
+            );
+            let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+            self.app
+                .agents
+                .note_prompt_sent_at(&target_agent_id, prompt_sent_at_ms)?;
+            self.app
+                .sessions
+                .note_prompt_sent(session_id, &target_agent_id, prompt_sent_at_ms)?;
 
             if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, next.source_attachment_id())
@@ -225,11 +250,15 @@ impl<'a> KernelAgentService<'a> {
         DaemonError,
     > {
         let expected_prompt_id = expected_next.map(PromptQueueItem::id);
-        let next = self.app.prompt_owner_activate_next_queued_prompt(
-            session_id,
-            agent_id,
-            expected_prompt_id,
-        )?;
+        let prompt_id = self.app.sessions_mut().reserve_prompt_id();
+        let next = self
+            .app
+            .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                session_id,
+                agent_id,
+                expected_prompt_id,
+                prompt_id,
+            )?;
         let session =
             crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok((session, next))

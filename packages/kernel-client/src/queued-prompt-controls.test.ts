@@ -172,6 +172,7 @@ test("queued prompt projection returns display prompts with actionability", () =
     action: "replace",
     prompts: [{
       id: "queued-1",
+      pendingPromptId: null,
       sourceAttachmentId: "attachment-1",
       targetAgentId: "agent-1",
       prompt: "queued-1",
@@ -212,10 +213,36 @@ test("project queued prompt records attachment count and fallback target", () =>
     fallbackTargetAgentId: "agent-fallback",
   }), {
     id: "queued-1",
+    pendingPromptId: null,
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-fallback",
     prompt: "queued",
     attachmentCount: 1,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
+})
+
+test("project queued prompt uses pending prompt id as action identity", () => {
+  assert.deepEqual(projectQueuedPrompt({
+    id: "draft-queued",
+    pending_prompt_id: "pending-prompt-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "queued",
+    attachments: [],
+    status: "queued",
+  }), {
+    id: "pending-prompt-1",
+    pendingPromptId: "pending-prompt-1",
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "queued",
+    attachmentCount: 0,
     status: "queued",
     steerDisabled: false,
     canSteer: true,

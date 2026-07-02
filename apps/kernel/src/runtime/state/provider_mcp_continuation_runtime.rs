@@ -122,7 +122,10 @@ impl KernelRuntimeState {
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
         let prompt = crate::session::PromptQueueItem::new(
-            self.owned.session_store.reserve_prompt_id(),
+            format!(
+                "pending-draft:mcp-continuation:{}:{}",
+                continuation.session_id, continuation.agent_id
+            ),
             &continuation.source_attachment_id,
             &continuation.agent_id,
             continuation.previous_prompt,

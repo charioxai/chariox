@@ -23,6 +23,7 @@ export type QueuedPromptActionability = {
 
 export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly id: string
+  readonly pendingPromptId: string | null
   readonly sourceAttachmentId: string
   readonly targetAgentId: string | null
   readonly prompt: string
@@ -115,11 +116,12 @@ export function queuedPromptProjectionForAgent(
   return {
     action: "replace",
     prompts: prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
+      const promptId = prompt.pending_prompt_id ?? prompt.id
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
         control: queuedPromptControlForPrompt(
           session.agent_activity?.[agentId]?.queued_prompt_controls,
-          prompt.id,
+          promptId,
         ),
       })
       return projected ? [projected] : []
@@ -137,8 +139,10 @@ export function projectQueuedPrompt(
   if (!prompt.id || !prompt.prompt) {
     return null
   }
+  const pendingPromptId = prompt.pending_prompt_id ?? null
   return {
-    id: prompt.id,
+    id: pendingPromptId ?? prompt.id,
+    pendingPromptId,
     sourceAttachmentId: prompt.source_attachment_id ?? "",
     targetAgentId: prompt.target_agent_id ?? options.fallbackTargetAgentId ?? null,
     prompt: prompt.prompt,

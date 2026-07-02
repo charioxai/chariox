@@ -2585,6 +2585,8 @@ mod tests {
             panic!("Arroba prompt should not start while external active prompt is running");
         };
         let queued_prompt_id = prompt.id().to_string();
+        assert!(queued_prompt_id.starts_with("pending-prompt-"));
+        assert_eq!(prompt.pending_prompt_id(), Some(queued_prompt_id.as_str()));
 
         let outcome = append_observed_external_turns_for_attached_target(
             &mut app,
@@ -2629,12 +2631,13 @@ mod tests {
             .session_snapshot(session.id())
             .await
             .expect("session should snapshot");
-        assert_eq!(
-            session
-                .active_prompt_for_agent(agent.id())
-                .map(|prompt| prompt.id()),
-            Some(queued_prompt_id.as_str())
-        );
+        let active_prompt = session
+            .active_prompt_for_agent(agent.id())
+            .expect("promoted queued prompt should become active");
+        assert_ne!(active_prompt.id(), queued_prompt_id);
+        assert!(active_prompt.id().starts_with("prompt-"));
+        assert_eq!(active_prompt.pending_prompt_id(), None);
+        assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
         assert!(session
             .queued_prompts_for_agent(agent.id())
             .map(|queued| queued.is_empty())

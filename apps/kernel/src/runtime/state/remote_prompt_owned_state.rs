@@ -27,20 +27,23 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         let session = self.session_store.get_session(&session_id)?;
+        let queued_while_active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &target_agent_id)
+            .is_some();
+        let will_queue = prepared.force_queue || queued_while_active;
+        let prompt = if will_queue {
+            prepared.prompt.clone()
+        } else {
+            prepared
+                .prompt
+                .clone()
+                .with_id(self.session_store.reserve_prompt_id())
+        };
         let outcome = self.prompt_state_owner.submit_prepared_prompt(
             &session,
-            prepared.prompt.clone(),
+            prompt,
             prepared.force_queue,
-        )?;
-        self.append_user_prompt_history(
-            &session_id,
-            &attachment_id,
-            &target_agent_id,
-            prepared.prompt.prompt(),
-            prepared.prompt.attachments(),
-            Some(prepared.prompt.id()),
-            prepared.prompt.workflow_run_id(),
-            prepared.prompt.workflow_node_run_id(),
         )?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
@@ -58,12 +61,25 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-        self.agent_store
-            .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
-        self.session_store
-            .note_prompt_sent(&session_id, &outcome_agent_id, prompt_sent_at_ms)?;
         let remote_dispatch =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+                self.append_user_prompt_history(
+                    &session_id,
+                    prompt.source_attachment_id(),
+                    prompt.target_agent_id(),
+                    prompt.prompt(),
+                    prompt.attachments(),
+                    Some(prompt.id()),
+                    prompt.workflow_run_id(),
+                    prompt.workflow_node_run_id(),
+                )?;
+                self.agent_store
+                    .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
+                self.session_store.note_prompt_sent(
+                    &session_id,
+                    &outcome_agent_id,
+                    prompt_sent_at_ms,
+                )?;
                 Some(crate::app::KernelRemotePromptDispatch {
                     session_id: session_id.clone(),
                     agent_id: target_agent_id,
@@ -144,11 +160,31 @@ impl KernelRuntimeOwnedState {
         {
             if let Some(expected_next) = next_queued_prompt {
                 let session = self.session_store.get_session(session_id)?;
-                let active = self.prompt_state_owner.activate_next_queued_prompt(
-                    &session,
-                    agent_id,
-                    Some(expected_next.id()),
-                )?;
+                let active = self
+                    .prompt_state_owner
+                    .activate_next_queued_prompt_with_prompt_id(
+                        &session,
+                        agent_id,
+                        Some(expected_next.id()),
+                        self.session_store.reserve_prompt_id(),
+                    )?;
+                if let Some(active_prompt) = active.as_ref() {
+                    let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+                    self.append_user_prompt_history(
+                        session_id,
+                        active_prompt.source_attachment_id(),
+                        active_prompt.target_agent_id(),
+                        active_prompt.prompt(),
+                        active_prompt.attachments(),
+                        Some(active_prompt.id()),
+                        active_prompt.workflow_run_id(),
+                        active_prompt.workflow_node_run_id(),
+                    )?;
+                    self.agent_store
+                        .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+                    self.session_store
+                        .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
+                }
                 let (active_prompt, queued_prompts) =
                     self.prompt_state_owner.state_parts(&session, agent_id);
                 self.mirror_prompt_owner_agent_state(

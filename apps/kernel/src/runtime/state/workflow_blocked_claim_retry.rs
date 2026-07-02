@@ -91,7 +91,10 @@ impl KernelRuntimeOwnedState {
             }
         }
         let prompt = crate::session::PromptQueueItem::new(
-            self.session_store.reserve_prompt_id(),
+            format!(
+                "pending-draft:workflow-retry:{}:{}",
+                retry.workflow_run_id, retry.workflow_node_run_id
+            ),
             crate::scheduler::runtime::workflow_prompt_source_attachment_id(&retry.workflow_run_id),
             retry.agent_id.clone(),
             retry.prompt_text.clone(),

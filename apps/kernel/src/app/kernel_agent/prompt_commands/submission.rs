@@ -31,7 +31,14 @@ impl<'a> KernelAgentService<'a> {
     ) -> Result<KernelPromptSubmission, DaemonError> {
         let admission = self.prepare_prompt_admission(prepared)?;
         let submitted = self.submit_admitted_prompt_to_owner(admission)?;
-        self.spawn_prompt_history_append(&submitted.admission)?;
+        if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
+            self.spawn_prompt_history_append(
+                &submitted.admission,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )?;
+        }
         let (dispatch, remote_dispatch) = self.prepare_prompt_submission_effects(&submitted)?;
         let session = crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&submitted.admission.session_id)?;
@@ -66,7 +73,7 @@ impl<'a> KernelAgentService<'a> {
                 .to_string(),
         };
         let prepared_prompt = PromptQueueItem::new(
-            self.app.sessions_mut().reserve_prompt_id(),
+            "pending-draft:compat-submit",
             attachment_id,
             &target_agent_id,
             prompt,
@@ -97,7 +104,7 @@ impl<'a> KernelAgentService<'a> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let prepared_prompt = PromptQueueItem::new(
-            self.app.sessions_mut().reserve_prompt_id(),
+            "pending-draft:native-record",
             attachment_id,
             target_agent_id,
             prompt,
@@ -118,7 +125,14 @@ impl<'a> KernelAgentService<'a> {
             });
         }
         let submitted = self.submit_admitted_prompt_to_owner(admission)?;
-        self.spawn_prompt_history_append(&submitted.admission)?;
+        if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
+            self.spawn_prompt_history_append(
+                &submitted.admission,
+                prompt.id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )?;
+        }
         let provider_run_id = submitted.admission.provider_run_id.clone();
         let (dispatch, _) = self.prepare_local_prompt_submission_effects(&submitted)?;
         if matches!(submitted.outcome, PromptSubmissionOutcome::Started { .. }) {
@@ -231,13 +245,19 @@ impl<'a> KernelAgentService<'a> {
     fn spawn_prompt_history_append(
         &self,
         admission: &KernelPromptAdmission,
+        prompt_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
-        self.app.spawn_user_prompt_history_append(
+        self.app.spawn_user_prompt_history_append_with_prompt_id(
             &admission.session_id,
             &admission.attachment_id,
             &admission.target_agent_id,
-            admission.prompt.prompt(),
-            admission.prompt.attachments(),
+            prompt,
+            attachments,
+            prompt_id,
+            admission.prompt.workflow_run_id(),
+            admission.prompt.workflow_node_run_id(),
         )
     }
 
@@ -347,41 +367,7 @@ impl<'a> KernelAgentService<'a> {
                     steering: false,
                 });
             }
-            PromptSubmissionOutcome::Queued { prompt } => {
-                let queue_depth = self
-                    .app
-                    .prompt_owner_queued_prompt_count_for_agent(
-                        &submitted.admission.session_id,
-                        &submitted.admission.target_agent_id,
-                    )
-                    .unwrap_or(0);
-                if let Some(provider_run_id) = submitted.admission.provider_run_id.as_deref() {
-                    self.app.echo_prompt_to_other_attachments(
-                        &submitted.admission.session_id,
-                        provider_run_id,
-                        prompt.id(),
-                        prompt.source_attachment_id(),
-                        prompt.prompt(),
-                        prompt.attachments(),
-                    );
-                }
-                self.app.record_notice(
-                    &submitted.admission.session_id,
-                    submitted.admission.provider_run_id.as_deref(),
-                    self.app.other_attachment_ids(
-                        &submitted.admission.session_id,
-                        &submitted.admission.attachment_id,
-                    ),
-                    format!(
-                        "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
-                        submitted.admission.attachment_id,
-                        submitted.admission.target_agent_id,
-                        submitted.admission.session_id,
-                        prompt.id(),
-                        queue_depth
-                    ),
-                );
-            }
+            PromptSubmissionOutcome::Queued { .. } => {}
         }
         Ok((dispatch, None))
     }

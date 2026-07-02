@@ -27,7 +27,11 @@ impl KernelRuntimeOwnedState {
         let mut dispatches = WorkflowPromptDispatches::default();
         for (workflow_node_run_id, agent_id, prompt_text) in resumable {
             let prompt = crate::session::PromptQueueItem::new(
-                self.session_store.reserve_prompt_id(),
+                format!(
+                    "pending-draft:workflow-resume:{}:{}",
+                    workflow_run.id(),
+                    workflow_node_run_id
+                ),
                 crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
                 agent_id,
                 prompt_text,

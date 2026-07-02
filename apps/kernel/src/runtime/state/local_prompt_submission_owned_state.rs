@@ -53,21 +53,18 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting);
 
         let force_queue = prepared.force_queue || provider_run_is_starting;
-        let outcome = self.prompt_state_owner.submit_prepared_prompt(
-            &session,
-            prepared.prompt.clone(),
-            force_queue,
-        )?;
-        self.append_user_prompt_history(
-            &session_id,
-            &attachment_id,
-            &target_agent_id,
-            prepared.prompt.prompt(),
-            prepared.prompt.attachments(),
-            Some(prepared.prompt.id()),
-            prepared.prompt.workflow_run_id(),
-            prepared.prompt.workflow_node_run_id(),
-        )?;
+        let will_queue = force_queue || queued_while_active;
+        let prompt = if will_queue {
+            prepared.prompt.clone()
+        } else {
+            prepared
+                .prompt
+                .clone()
+                .with_id(self.session_store.reserve_prompt_id())
+        };
+        let outcome =
+            self.prompt_state_owner
+                .submit_prepared_prompt(&session, prompt, force_queue)?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
@@ -76,6 +73,16 @@ impl KernelRuntimeOwnedState {
         };
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+            self.append_user_prompt_history(
+                &session_id,
+                prompt.source_attachment_id(),
+                prompt.target_agent_id(),
+                prompt.prompt(),
+                prompt.attachments(),
+                Some(prompt.id()),
+                prompt.workflow_run_id(),
+                prompt.workflow_node_run_id(),
+            )?;
             let provider_run_id =
                 provider_run_id
                     .as_deref()
@@ -101,10 +108,6 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
-        self.agent_store
-            .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
-        self.session_store
-            .note_prompt_sent(&session_id, &outcome_agent_id, prompt_sent_at_ms)?;
 
         let mut dispatch = None;
         match &outcome {
@@ -134,35 +137,15 @@ impl KernelRuntimeOwnedState {
                     attachments: prompt.attachments().to_vec(),
                     steering: false,
                 });
-            }
-            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
-                let queue_depth = self
-                    .prompt_state_owner
-                    .queued_prompt_count_for_agent(&session, &target_agent_id);
-                if let Some(provider_run_id) = provider_run_id.as_deref() {
-                    self.echo_prompt_to_other_attachments(
-                        &session_id,
-                        provider_run_id,
-                        prompt.id(),
-                        prompt.source_attachment_id(),
-                        prompt.prompt(),
-                        prompt.attachments(),
-                    );
-                }
-                self.record_notice(
+                self.agent_store
+                    .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
+                self.session_store.note_prompt_sent(
                     &session_id,
-                    provider_run_id.as_deref(),
-                    self.other_attachment_ids(&session_id, &attachment_id),
-                    format!(
-                        "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
-                        attachment_id,
-                        target_agent_id,
-                        session_id,
-                        prompt.id(),
-                        queue_depth
-                    ),
-                );
+                    &outcome_agent_id,
+                    prompt_sent_at_ms,
+                )?;
             }
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {}
         }
         let session = if prepared.refresh_projection {
             self.session_snapshot(&session_id)?

@@ -63,10 +63,16 @@ impl PromptAttachment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptQueueItem {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_prompt_id: Option<String>,
     source_attachment_id: String,
     target_agent_id: String,
     prompt: String,
     attachments: Vec<PromptAttachment>,
+    #[serde(default = "crate::session::unix_epoch_ms")]
+    created_at_ms: u64,
+    #[serde(default = "crate::session::unix_epoch_ms")]
+    updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
     hidden_system_context: String,
     status: PromptStatus,
@@ -74,6 +80,61 @@ pub struct PromptQueueItem {
     prompt_origin: PromptOrigin,
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPromptSubmission {
+    pending_prompt_id: String,
+    source_attachment_id: String,
+    target_agent_id: String,
+    prompt: String,
+    attachments: Vec<PromptAttachment>,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    hidden_system_context: String,
+    prompt_origin: PromptOrigin,
+    workflow_run_id: Option<String>,
+    workflow_node_run_id: Option<String>,
+}
+
+impl PendingPromptSubmission {
+    fn from_prompt_queue_item(
+        pending_prompt_id: impl Into<String>,
+        prompt: PromptQueueItem,
+    ) -> Self {
+        let now = crate::session::unix_epoch_ms();
+        Self {
+            pending_prompt_id: pending_prompt_id.into(),
+            source_attachment_id: prompt.source_attachment_id,
+            target_agent_id: prompt.target_agent_id,
+            prompt: prompt.prompt,
+            attachments: prompt.attachments,
+            created_at_ms: now,
+            updated_at_ms: now,
+            hidden_system_context: prompt.hidden_system_context,
+            prompt_origin: prompt.prompt_origin,
+            workflow_run_id: prompt.workflow_run_id,
+            workflow_node_run_id: prompt.workflow_node_run_id,
+        }
+    }
+
+    fn into_queue_item(self) -> PromptQueueItem {
+        PromptQueueItem {
+            id: self.pending_prompt_id.clone(),
+            pending_prompt_id: Some(self.pending_prompt_id),
+            source_attachment_id: self.source_attachment_id,
+            target_agent_id: self.target_agent_id,
+            prompt: self.prompt,
+            attachments: self.attachments,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            hidden_system_context: self.hidden_system_context,
+            status: PromptStatus::Queued,
+            prompt_origin: self.prompt_origin,
+            workflow_run_id: self.workflow_run_id,
+            workflow_node_run_id: self.workflow_node_run_id,
+        }
+    }
 }
 
 impl PromptQueueItem {
@@ -84,12 +145,16 @@ impl PromptQueueItem {
         prompt: impl Into<String>,
         status: PromptStatus,
     ) -> Self {
+        let now = crate::session::unix_epoch_ms();
         Self {
             id: id.into(),
+            pending_prompt_id: None,
             source_attachment_id: source_attachment_id.into(),
             target_agent_id: target_agent_id.into(),
             prompt: prompt.into(),
             attachments: Vec::new(),
+            created_at_ms: now,
+            updated_at_ms: now,
             hidden_system_context: String::new(),
             status,
             prompt_origin: PromptOrigin::Arroba,
@@ -139,8 +204,30 @@ impl PromptQueueItem {
         self
     }
 
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self.pending_prompt_id = None;
+        self
+    }
+
+    pub fn with_pending_prompt_id(mut self, pending_prompt_id: impl Into<String>) -> Self {
+        let pending_prompt_id = pending_prompt_id.into();
+        self.id = pending_prompt_id.clone();
+        self.pending_prompt_id = Some(pending_prompt_id);
+        self.status = PromptStatus::Queued;
+        self
+    }
+
+    pub fn into_pending_queue_item(self, pending_prompt_id: impl Into<String>) -> Self {
+        PendingPromptSubmission::from_prompt_queue_item(pending_prompt_id, self).into_queue_item()
+    }
+
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn pending_prompt_id(&self) -> Option<&str> {
+        self.pending_prompt_id.as_deref()
     }
 
     pub fn source_attachment_id(&self) -> &str {
@@ -157,6 +244,14 @@ impl PromptQueueItem {
 
     pub fn attachments(&self) -> &[PromptAttachment] {
         &self.attachments
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn updated_at_ms(&self) -> u64 {
+        self.updated_at_ms
     }
 
     pub fn hidden_system_context(&self) -> &str {
@@ -199,6 +294,7 @@ impl PromptQueueItem {
 
     pub fn set_prompt(&mut self, prompt: impl Into<String>) {
         self.prompt = prompt.into();
+        self.updated_at_ms = crate::session::unix_epoch_ms();
     }
 }
 

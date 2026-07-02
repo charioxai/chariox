@@ -796,10 +796,13 @@ export type AgentSubstitutionRecord = {
 
 export type PromptQueueItem = {
   id: string
+  pending_prompt_id?: string | null
   source_attachment_id: string
   target_agent_id?: string | null
   prompt: string
   attachments?: PromptAttachmentPart[]
+  created_at_ms?: number
+  updated_at_ms?: number
   status: string
   prompt_origin?: "arroba" | "external" | string
 }

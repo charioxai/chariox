@@ -148,10 +148,13 @@ export interface SessionAttachment {
 
 export interface PromptQueueItem {
   id: EntityId;
+  pendingPromptId?: EntityId | null;
   sessionId: EntityId;
   sourceAttachmentId: EntityId;
   targetAgentId: EntityId;
   prompt: string;
+  createdAtMs?: number;
+  updatedAtMs?: number;
   status: PromptStatus;
 }
 

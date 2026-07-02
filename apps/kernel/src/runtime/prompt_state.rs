@@ -48,6 +48,7 @@ pub(crate) struct PromptStateOwner {
 #[derive(Debug, Default)]
 struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
+    next_pending_prompt_number: u64,
 }
 
 impl PromptStateOwner {
@@ -174,12 +175,18 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        let state = owner.ensure_agent_state(session, &agent_id);
-        if !force_queue && state.active_prompt.is_none() {
+        let should_start = {
+            let state = owner.ensure_agent_state(session, &agent_id);
+            !force_queue && state.active_prompt.is_none()
+        };
+        if should_start {
+            let state = owner.ensure_agent_state(session, &agent_id);
             prompt.set_status(PromptStatus::Running);
             state.active_prompt = Some(prompt.clone());
             Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
+            let pending_prompt_id = owner.next_pending_prompt_id();
+            let state = owner.ensure_agent_state(session, &agent_id);
             if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
                 crate::logging::warn_with_fields(
                     "daemon.prompt_queue",
@@ -199,7 +206,7 @@ impl PromptStateOwner {
                     ),
                 });
             }
-            prompt.set_status(PromptStatus::Queued);
+            prompt = prompt.into_pending_queue_item(pending_prompt_id);
             state.queued_prompts.push_back(prompt.clone());
             Ok(PromptSubmissionOutcome::Queued { prompt })
         }
@@ -285,6 +292,7 @@ impl PromptStateOwner {
             .cloned()
     }
 
+    #[cfg(test)]
     pub(crate) fn activate_next_queued_prompt(
         &self,
         session: &RuntimeSession,
@@ -324,6 +332,52 @@ impl PromptStateOwner {
             .queued_prompts
             .pop_front()
             .expect("queue front checked above");
+        active.set_status(PromptStatus::Running);
+        state.active_prompt = Some(active.clone());
+        Ok(Some(active))
+    }
+
+    pub(crate) fn activate_next_queued_prompt_with_prompt_id(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+        prompt_id: String,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        if let Some(active_prompt) = state.active_prompt.as_ref() {
+            return Err(DaemonError::LocalTransport {
+                operation: "activate queued prompt",
+                message: format!(
+                    "cannot activate queued prompt for agent `{agent_id}` while active prompt `{}` is still running",
+                    active_prompt.id()
+                ),
+            });
+        }
+        let Some(front) = state.queued_prompts.front() else {
+            return Ok(None);
+        };
+        if let Some(expected_prompt_id) = expected_prompt_id {
+            if front.id() != expected_prompt_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "activate expected queued prompt",
+                    message: format!(
+                        "expected queued prompt `{}` but prompt owner queue front was `{}`",
+                        expected_prompt_id,
+                        front.id()
+                    ),
+                });
+            }
+        }
+        let mut active = state
+            .queued_prompts
+            .pop_front()
+            .expect("queue front checked above")
+            .with_id(prompt_id);
         active.set_status(PromptStatus::Running);
         state.active_prompt = Some(active.clone());
         Ok(Some(active))
@@ -534,6 +588,14 @@ impl PromptStateOwner {
 }
 
 impl PromptStateOwnerState {
+    fn next_pending_prompt_id(&mut self) -> String {
+        self.next_pending_prompt_number = self.next_pending_prompt_number.wrapping_add(1);
+        format!(
+            "pending-prompt-{:016x}",
+            crate::session::unix_epoch_ms() ^ self.next_pending_prompt_number.rotate_left(17)
+        )
+    }
+
     fn ensure_agent_state(
         &mut self,
         session: &RuntimeSession,
@@ -638,10 +700,17 @@ mod tests {
                 false,
             )
             .expect("second prompt should queue");
-        assert!(matches!(queued, PromptSubmissionOutcome::Queued { .. }));
+        let queued_prompt_id = match queued {
+            PromptSubmissionOutcome::Queued { prompt } => {
+                assert!(prompt.id().starts_with("pending-prompt-"));
+                assert_eq!(prompt.pending_prompt_id(), Some(prompt.id()));
+                prompt.id().to_string()
+            }
+            PromptSubmissionOutcome::Started { .. } => panic!("second prompt should queue"),
+        };
 
         let error = owner
-            .activate_next_queued_prompt(&session, "agent-1", Some("prompt-queued"))
+            .activate_next_queued_prompt(&session, "agent-1", Some(&queued_prompt_id))
             .expect_err("queued prompt must not activate while active prompt is running");
 
         assert!(error.to_string().contains("cannot activate queued prompt"));
@@ -657,8 +726,76 @@ mod tests {
                 .peek_next_queued_prompt(&session, "agent-1")
                 .as_ref()
                 .map(|prompt| prompt.id()),
-            Some("prompt-queued")
+            Some(queued_prompt_id.as_str())
         );
+    }
+
+    #[test]
+    fn queued_prompt_promotes_with_new_real_prompt_id() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "draft-active",
+                    "attachment-1",
+                    "agent-1",
+                    "active",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("first prompt should start");
+        let pending_prompt_id = match owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "draft-queued",
+                    "attachment-1",
+                    "agent-1",
+                    "queued",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("second prompt should queue")
+        {
+            PromptSubmissionOutcome::Queued { prompt } => {
+                assert!(prompt.id().starts_with("pending-prompt-"));
+                assert_eq!(prompt.pending_prompt_id(), Some(prompt.id()));
+                prompt.id().to_string()
+            }
+            PromptSubmissionOutcome::Started { .. } => panic!("second prompt should queue"),
+        };
+
+        let completed = owner
+            .complete_active_prompt_only(&session, "agent-1")
+            .expect("active prompt should complete");
+        assert_eq!(completed.id(), "draft-active");
+
+        let started = owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                Some(&pending_prompt_id),
+                "prompt-real-2".to_string(),
+            )
+            .expect("queued prompt should activate")
+            .expect("queued prompt should exist");
+
+        assert_eq!(started.id(), "prompt-real-2");
+        assert_eq!(started.pending_prompt_id(), None);
+        assert_eq!(started.prompt(), "queued");
+        assert_eq!(started.status(), PromptStatus::Running);
+        assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
     }
 
     #[test]

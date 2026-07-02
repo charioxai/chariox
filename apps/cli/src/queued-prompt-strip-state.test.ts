@@ -101,7 +101,10 @@ test("queuedPromptStripItemsForAgent uses projected queue controls", () => {
           source_attachment_id: "attachment-1",
           target_agent_id: "agent-1",
           prompt: "queued prompt\n",
-          attachments: [{ kind: "file" }, { kind: "image" }],
+          attachments: [
+            { url: "file:///tmp/file.txt", mime: "text/plain", filename: "file.txt" },
+            { url: "file:///tmp/image.png", mime: "image/png", filename: "image.png" },
+          ],
           status: "queued",
         }],
       },
@@ -139,6 +142,54 @@ test("queuedPromptStripItemsForAgent uses projected queue controls", () => {
     canCancel: false,
     steerDisabledReason: "This prompt is no longer waiting in the queue.",
     cancelDisabledReason: "This prompt is no longer waiting in the queue.",
+  })
+})
+
+test("queuedPromptStripItemsForAgent uses pending prompt id as action identity", () => {
+  const [item] = queuedPromptStripItemsForAgent(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "draft-queued",
+          pending_prompt_id: "pending-prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued prompt\n",
+          attachments: [],
+          status: "queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        queued_prompt_controls: {
+          "pending-prompt-1": {
+            prompt_id: "pending-prompt-1",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: false,
+            steer_disabled_reason: "This prompt is no longer waiting in the queue.",
+            cancel_disabled_reason: "This prompt is no longer waiting in the queue.",
+          },
+        },
+      },
+    },
+  }), [], "agent-1")
+
+  assert.deepEqual({
+    promptId: item?.promptId,
+    status: item?.status,
+    canSteer: item?.canSteer,
+    canCancel: item?.canCancel,
+  }, {
+    promptId: "pending-prompt-1",
+    status: "dispatching",
+    canSteer: false,
+    canCancel: false,
   })
 })
 

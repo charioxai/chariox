@@ -125,11 +125,14 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let Some(started_next) = self.prompt_state_owner.activate_next_queued_prompt(
-            &session,
-            agent_id,
-            Some(next_queued_prompt.id()),
-        )?
+        let Some(started_next) = self
+            .prompt_state_owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                agent_id,
+                Some(next_queued_prompt.id()),
+                self.session_store.reserve_prompt_id(),
+            )?
         else {
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, agent_id);
@@ -150,12 +153,35 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.append_user_prompt_history(
+            session_id,
+            started_next.source_attachment_id(),
+            started_next.target_agent_id(),
+            started_next.prompt(),
+            started_next.attachments(),
+            Some(started_next.id()),
+            started_next.workflow_run_id(),
+            started_next.workflow_node_run_id(),
+        )?;
+        self.echo_prompt_to_other_attachments(
+            session_id,
+            &provider_run_id,
+            started_next.id(),
+            started_next.source_attachment_id(),
+            started_next.prompt(),
+            started_next.attachments(),
+        );
+        self.agent_store
+            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+        self.session_store
+            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
         self.capture_git_turn_snapshot_for_started_prompt(
             &session,
             agent_id,
             &provider_run,
             &started_next,
-            Some(crate::session::unix_epoch_ms()),
+            Some(prompt_sent_at_ms),
         );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);

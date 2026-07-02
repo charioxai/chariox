@@ -48,6 +48,31 @@ impl DaemonApp {
         Ok(())
     }
 
+    pub(crate) fn spawn_user_prompt_history_append_with_prompt_id(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+        prompt_id: &str,
+        _workflow_run_id: Option<&str>,
+        _workflow_node_run_id: Option<&str>,
+    ) -> Result<(), crate::error::DaemonError> {
+        let session =
+            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
+        let mut entry = SessionHistoryEntry::user_prompt_with_attachments(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            render_prompt_transcript(prompt, attachments),
+            attachments,
+        );
+        entry.merge_key = Some(format!("prompt:{prompt_id}"));
+        self.spawn_history_append(session, entry);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn fan_out_output(
         &mut self,

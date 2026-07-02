@@ -69,6 +69,17 @@ impl DaemonApp {
                 attachment_id: source_attachment_id,
             });
         }
+        let agent_id = prompt.target_agent_id().to_string();
+        let will_queue = force_queue
+            || self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_some();
+        let prompt = if will_queue {
+            prompt
+        } else {
+            prompt.with_id(self.sessions.reserve_prompt_id())
+        };
         let outcome =
             self.prompt_state_owner
                 .submit_prepared_prompt(&session, prompt, force_queue)?;
@@ -76,11 +87,13 @@ impl DaemonApp {
             PromptSubmissionOutcome::Started { prompt }
             | PromptSubmissionOutcome::Queued { prompt } => prompt.target_agent_id().to_string(),
         };
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-        self.agents
-            .note_prompt_sent_at(&agent_id, prompt_sent_at_ms)?;
-        self.sessions
-            .note_prompt_sent(session_id, &agent_id, prompt_sent_at_ms)?;
+        if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
+            let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+            self.agents
+                .note_prompt_sent_at(&agent_id, prompt_sent_at_ms)?;
+            self.sessions
+                .note_prompt_sent(session_id, &agent_id, prompt_sent_at_ms)?;
+        }
         self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         Ok(outcome)
     }
@@ -160,18 +173,22 @@ impl DaemonApp {
             .peek_next_queued_prompt(&session, agent_id))
     }
 
-    pub(crate) fn prompt_owner_activate_next_queued_prompt(
+    pub(crate) fn prompt_owner_activate_next_queued_prompt_with_prompt_id(
         &mut self,
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
+        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
-        let next = self.prompt_state_owner.activate_next_queued_prompt(
-            &session,
-            agent_id,
-            expected_prompt_id,
-        )?;
+        let next = self
+            .prompt_state_owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                agent_id,
+                expected_prompt_id,
+                prompt_id,
+            )?;
         self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
         Ok(next)
     }

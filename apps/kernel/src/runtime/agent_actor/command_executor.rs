@@ -97,7 +97,7 @@ impl AgentRuntimeCommandExecutor {
             (request.prompt.clone(), String::new())
         };
         let prompt = PromptQueueItem::new(
-            self.prompt_id_allocator.next_prompt_id(),
+            format!("pending-draft:{trace_id}"),
             &request.attachment_id,
             &target_agent_id,
             provider_prompt,
@@ -334,7 +334,13 @@ fn completion_started_next_is_compatible(
     completion: &PromptCompletion,
 ) -> bool {
     match (next_queued_prompt, completion.started_next.as_ref()) {
-        (Some(expected), Some(started)) => expected.id() == started.id(),
+        (Some(expected), Some(started)) => {
+            expected.prompt() == started.prompt()
+                && expected.source_attachment_id() == started.source_attachment_id()
+                && expected.target_agent_id() == started.target_agent_id()
+                && expected.attachments() == started.attachments()
+                && started.pending_prompt_id().is_none()
+        }
         _ => true,
     }
 }

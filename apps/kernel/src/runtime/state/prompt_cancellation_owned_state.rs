@@ -75,11 +75,50 @@ impl KernelRuntimeOwnedState {
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
-                    self.prompt_state_owner.activate_next_queued_prompt(
-                        &self.session_store.get_session(session_id)?,
-                        agent_id,
-                        Some(next_prompt.id()),
-                    )?
+                    let started_next = self
+                        .prompt_state_owner
+                        .activate_next_queued_prompt_with_prompt_id(
+                            &self.session_store.get_session(session_id)?,
+                            agent_id,
+                            Some(next_prompt.id()),
+                            self.session_store.reserve_prompt_id(),
+                        )?;
+                    if let Some(started_next) = started_next.as_ref() {
+                        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+                        self.append_user_prompt_history(
+                            session_id,
+                            started_next.source_attachment_id(),
+                            started_next.target_agent_id(),
+                            started_next.prompt(),
+                            started_next.attachments(),
+                            Some(started_next.id()),
+                            started_next.workflow_run_id(),
+                            started_next.workflow_node_run_id(),
+                        )?;
+                        self.echo_prompt_to_other_attachments(
+                            session_id,
+                            provider_run_id,
+                            started_next.id(),
+                            started_next.source_attachment_id(),
+                            started_next.prompt(),
+                            started_next.attachments(),
+                        );
+                        self.agent_store
+                            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+                        self.session_store.note_prompt_sent(
+                            session_id,
+                            agent_id,
+                            prompt_sent_at_ms,
+                        )?;
+                        self.capture_git_turn_snapshot_for_started_prompt(
+                            &session,
+                            agent_id,
+                            &provider_run,
+                            started_next,
+                            Some(prompt_sent_at_ms),
+                        );
+                    }
+                    started_next
                 } else {
                     None
                 }

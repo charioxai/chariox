@@ -136,7 +136,11 @@ impl KernelRuntimeOwnedState {
                 }
             }
             let prompt = crate::session::PromptQueueItem::new(
-                self.session_store.reserve_prompt_id(),
+                format!(
+                    "pending-draft:workflow-dispatch:{}:{}",
+                    workflow_run_id,
+                    dispatch.node_run.id()
+                ),
                 crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run_id),
                 dispatch.node_run.agent_id(),
                 prompt_text,

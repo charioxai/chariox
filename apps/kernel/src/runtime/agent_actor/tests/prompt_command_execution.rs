@@ -300,17 +300,19 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         panic!("unexpected response");
     };
     assert_eq!(completion.completed.id(), first.id());
-    assert_eq!(
-        completion.started_next.as_ref().map(|prompt| prompt.id()),
-        Some(second.id())
-    );
-    assert_eq!(
-        session_projection
-            .get(&session_id)
-            .and_then(|session| session.active_prompt_for_agent(&agent_id).cloned())
-            .map(|prompt| prompt.id().to_string()),
-        Some(second.id().to_string())
-    );
+    let started_next = completion
+        .started_next
+        .as_ref()
+        .expect("queued prompt should promote");
+    assert_ne!(started_next.id(), second.id());
+    assert!(started_next.pending_prompt_id().is_none());
+    assert_eq!(started_next.prompt(), second.prompt());
+    let projected_active = session_projection
+        .get(&session_id)
+        .and_then(|session| session.active_prompt_for_agent(&agent_id).cloned())
+        .expect("projected active prompt should be updated");
+    assert_eq!(projected_active.id(), started_next.id());
+    assert_eq!(projected_active.prompt(), second.prompt());
 }
 
 #[tokio::test]
@@ -1594,25 +1596,6 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
     else {
         panic!("second prompt should queue");
     };
-    let mut queued_history_entry = crate::history::SessionHistoryEntry::user_prompt(
-        session.id(),
-        attachment.id(),
-        agent.id(),
-        "queued prompt",
-    );
-    queued_history_entry.merge_key = Some(format!("prompt:{}", queued_prompt.id()));
-    app.operational_history_store()
-        .append_transcript(
-            &queued_history_entry,
-            crate::history::HistoryEventTurnContext {
-                session_id: Some(session.id().to_string()),
-                agent_id: Some(agent.id().to_string()),
-                turn_id: Some(queued_prompt.id().to_string()),
-                prompt_id: Some(queued_prompt.id().to_string()),
-                ..crate::history::HistoryEventTurnContext::default()
-            },
-        )
-        .expect("queued prompt history should seed");
     let operational_history = app.operational_history_store();
     let session_snapshot = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(session.id())
@@ -1688,13 +1671,11 @@ async fn prompt_update_queued_changes_queue_entry_without_settling_active_prompt
     let history_events = operational_history
         .load_session_events(&session_id, Some(&agent_id))
         .expect("operational history should load");
-    assert_eq!(
+    assert!(
         history_events
             .iter()
-            .filter(|event| event.prompt_id.as_deref() == Some(queued_prompt.id()))
-            .map(|event| event.content.as_deref())
-            .collect::<Vec<_>>(),
-        vec![Some("updated queued prompt\n")]
+            .all(|event| event.prompt_id.as_deref() != Some(queued_prompt.id())),
+        "editing a pending queued prompt must not replace history because no history exists yet"
     );
 }
 

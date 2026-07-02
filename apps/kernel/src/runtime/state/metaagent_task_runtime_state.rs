@@ -142,7 +142,7 @@ impl KernelRuntimeState {
             &self.owned.agent_store.get_agent(agent_id)?,
         )?;
         let prompt = crate::session::PromptQueueItem::new(
-            self.owned.session_store.reserve_prompt_id(),
+            format!("pending-draft:metaagent-task:{session_id}:{agent_id}"),
             attachment_id,
             agent_id,
             exit_context.clone(),

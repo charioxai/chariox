@@ -73,11 +73,14 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
-        let prompt = self.prompt_state_owner.activate_next_queued_prompt(
-            &session,
-            agent_id,
-            expected_prompt_id,
-        )?;
+        let prompt = self
+            .prompt_state_owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                agent_id,
+                expected_prompt_id,
+                self.session_store.reserve_prompt_id(),
+            )?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
@@ -114,7 +117,12 @@ impl KernelRuntimeOwnedState {
         }
         let started_next = self
             .prompt_state_owner
-            .activate_next_queued_prompt(&session, agent_id, Some(next_prompt.id()))?
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                agent_id,
+                Some(next_prompt.id()),
+                self.session_store.reserve_prompt_id(),
+            )?
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "advance queued prompt",
                 message: format!(
@@ -122,12 +130,35 @@ impl KernelRuntimeOwnedState {
                     next_prompt.id()
                 ),
             })?;
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.append_user_prompt_history(
+            session_id,
+            started_next.source_attachment_id(),
+            started_next.target_agent_id(),
+            started_next.prompt(),
+            started_next.attachments(),
+            Some(started_next.id()),
+            started_next.workflow_run_id(),
+            started_next.workflow_node_run_id(),
+        )?;
+        self.echo_prompt_to_other_attachments(
+            session_id,
+            provider_run_id,
+            started_next.id(),
+            started_next.source_attachment_id(),
+            started_next.prompt(),
+            started_next.attachments(),
+        );
+        self.agent_store
+            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+        self.session_store
+            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
         self.capture_git_turn_snapshot_for_started_prompt(
             &session,
             agent_id,
             &provider_run,
             &started_next,
-            Some(crate::session::unix_epoch_ms()),
+            Some(prompt_sent_at_ms),
         );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
@@ -328,7 +359,6 @@ impl KernelRuntimeOwnedState {
                     "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
                 ),
             })?;
-        self.replace_user_prompt_history_by_prompt_id(session_id, &prompt);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
