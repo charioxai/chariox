@@ -1313,14 +1313,6 @@ impl RuntimeSession {
             .cancel_active_prompt_only(agent_id, self.focused_agent_id.as_deref())
     }
 
-    pub(in crate::session) fn remove_queued_prompts_by_attachment(
-        &mut self,
-        attachment_id: &str,
-    ) -> usize {
-        self.prompt_runtime
-            .remove_queued_prompts_by_attachment(attachment_id, self.focused_agent_id.as_deref())
-    }
-
     pub(in crate::session) fn remove_queued_prompts_by_workflow_run(
         &mut self,
         workflow_run_id: &str,

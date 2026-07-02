@@ -6,6 +6,7 @@ use crate::error::DaemonError;
 use crate::session::prompt_id_number;
 
 use super::session_log::external_provider_observed_merge_key_with_prefix_is_state_signal;
+use super::STEERING_PROMPT_MERGE_KEY_PREFIX;
 use super::{
     HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource,
@@ -132,6 +133,7 @@ impl OperationalHistoryStore {
         &self,
         session_id: &str,
         agent_id: &str,
+        before_sequence: Option<u64>,
         limit: usize,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
@@ -148,8 +150,10 @@ impl OperationalHistoryStore {
                 "SELECT event_json
                  FROM history_events
                  WHERE session_id = ?1 AND agent_id = ?2 AND kind = 'user_prompt'
+                   AND (?3 IS NULL OR sequence < ?3)
+                   AND (metadata_text IS NULL OR metadata_text NOT LIKE ?4)
                  ORDER BY sequence DESC
-                 LIMIT ?3",
+                 LIMIT ?5",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
@@ -157,7 +161,13 @@ impl OperationalHistoryStore {
                 message: error.to_string(),
             })?;
         let mut rows = statement
-            .query(params![session_id, agent_id, limit.max(1) as i64])
+            .query(params![
+                session_id,
+                agent_id,
+                before_sequence.map(|sequence| sequence as i64),
+                format!("%{STEERING_PROMPT_MERGE_KEY_PREFIX}%"),
+                limit.max(1) as i64,
+            ])
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
                 operation: "load latest user prompt history events",

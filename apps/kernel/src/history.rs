@@ -31,7 +31,12 @@ pub use session_log::{
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
 pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
+pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
+
+pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
+    format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

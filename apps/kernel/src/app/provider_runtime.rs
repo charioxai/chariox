@@ -1156,6 +1156,150 @@ mod tests {
     }
 
     #[test]
+    fn detaching_attachment_with_queued_prompts_preserves_queue() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed");
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "active prompt\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+        let queued = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "queued prompt\n",
+                Vec::new(),
+            )
+            .expect("second prompt should queue");
+        let queued_prompt_id = match queued {
+            PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+            other => panic!("expected queued prompt, got {other:?}"),
+        };
+
+        crate::app::KernelSessionService::new(&mut app)
+            .detach(attachment.id())
+            .expect("detaching should preserve queued prompt state");
+
+        let session_after_detach = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available");
+        assert_eq!(session_after_detach.queued_prompts().len(), 1);
+        assert_eq!(
+            session_after_detach.queued_prompts()[0].id(),
+            queued_prompt_id
+        );
+        assert_eq!(
+            app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+                .expect("prompt owner should remain available"),
+            1,
+        );
+    }
+
+    #[test]
+    fn queued_prompt_promotes_after_source_attachment_reconnects() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let original_attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider launch should succeed");
+        app.submit_prompt(
+            session.id(),
+            original_attachment.id(),
+            Some(agent.id()),
+            "active prompt\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+        let queued = app
+            .submit_prompt(
+                session.id(),
+                original_attachment.id(),
+                Some(agent.id()),
+                "queued prompt\n",
+                Vec::new(),
+            )
+            .expect("second prompt should queue");
+        assert!(
+            matches!(queued, PromptSubmissionOutcome::Queued { .. }),
+            "second prompt should queue: {queued:?}"
+        );
+
+        crate::app::KernelSessionService::new(&mut app)
+            .detach(original_attachment.id())
+            .expect("detaching should preserve queued prompt state");
+        let replacement_attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-2",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("replacement client should attach");
+
+        let completion = app
+            .complete_active_prompt(session.id(), agent.id(), Some(run.id()))
+            .expect("queued prompt should promote through the replacement attachment");
+        let started_next = completion
+            .started_next
+            .expect("queued prompt should become active");
+        assert_eq!(started_next.prompt(), "queued prompt\n");
+
+        let input_records = app.terminal().input_records();
+        assert!(
+            input_records.iter().any(|record| {
+                record.source_attachment_id == replacement_attachment.id()
+                    && String::from_utf8_lossy(&record.bytes).contains("queued prompt")
+            }),
+            "promoted queued prompt should be delivered through the replacement attachment: {input_records:?}"
+        );
+    }
+
+    #[test]
     fn detaching_last_attachment_keeps_background_active_prompt_run_running() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

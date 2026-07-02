@@ -158,16 +158,13 @@ impl SessionService {
             });
         }
 
-        let removed_queued_prompt_count =
-            session.remove_queued_prompts_by_attachment(attachment_id);
-
         session.touch();
 
         Ok((
             session.clone(),
             PromptDetachEffect {
                 removed_active_prompt: false,
-                removed_queued_prompt_count,
+                removed_queued_prompt_count: 0,
             },
         ))
     }

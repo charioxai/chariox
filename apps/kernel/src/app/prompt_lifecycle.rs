@@ -194,6 +194,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
     pub(crate) prompt_id: String,
+    pub(crate) target_active_prompt_id: Option<String>,
     pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
     pub(crate) hidden_system_context: String,

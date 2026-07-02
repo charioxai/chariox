@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use crate::error::DaemonError;
 use crate::history::{
-    HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventTurnContext,
-    OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
+    HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
+    SessionHistoryEntry, SessionHistoryEntryKind, STEERING_PROMPT_MERGE_KEY_PREFIX,
 };
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
@@ -102,22 +102,12 @@ fn load_agent_outline(
     latest_prompt_count: usize,
     before_sequence: Option<u64>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let mut prompts = if before_sequence.is_some() {
-        operational_history.query_events(HistoryEventQuery {
-            session_id: Some(session_id.to_string()),
-            agent_id: Some(agent_id.to_string()),
-            kind: Some("user_prompt".to_string()),
-            before_sequence,
-            limit: Some(latest_prompt_count.saturating_add(1)),
-            ..HistoryEventQuery::default()
-        })?
-    } else {
-        operational_history.load_latest_user_prompt_events(
-            session_id,
-            agent_id,
-            latest_prompt_count.saturating_add(1),
-        )?
-    };
+    let mut prompts = operational_history.load_latest_user_prompt_events(
+        session_id,
+        agent_id,
+        before_sequence,
+        latest_prompt_count.saturating_add(1),
+    )?;
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
         prompts.remove(0);
@@ -398,15 +388,28 @@ fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
         HistoryEventKind::ProviderStatus => event
             .to_session_history_entry()
             .is_some_and(|entry| entry.is_external_provider_observed()),
+        HistoryEventKind::UserPrompt => is_steering_prompt_event(event),
         _ => false,
     }
 }
 
 fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
+    if is_steering_prompt_event(event) {
+        return false;
+    }
     match event.kind {
         HistoryEventKind::ProviderOutput | HistoryEventKind::ProviderStatus => false,
         _ => true,
     }
+}
+
+fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
+    event.kind == HistoryEventKind::UserPrompt
+        && event
+            .metadata
+            .get("merge_key")
+            .and_then(|value| value.as_str())
+            .is_some_and(|merge_key| merge_key.starts_with(STEERING_PROMPT_MERGE_KEY_PREFIX))
 }
 
 fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
@@ -931,6 +934,100 @@ mod tests {
         assert_eq!(outline.turns[1].turn_id, "prompt-2:seq-20");
         assert_eq!(outline.turns[1].prompt_id.as_deref(), Some("prompt-2"));
         assert_eq!(outline.turns[1].user_prompt.entry.text, "second prompt");
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn agent_outline_keeps_steering_prompts_inside_turns() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-steering-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let first_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let second_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-2".to_string()),
+            prompt_id: Some("prompt-2".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        store
+            .append(&HistoryEvent::transcript(
+                10,
+                &SessionHistoryEntry::user_prompt(
+                    "session-1",
+                    "attachment-1",
+                    "agent-1",
+                    "first prompt",
+                ),
+                first_context.clone(),
+            ))
+            .expect("first prompt should append");
+        store
+            .append(&HistoryEvent::operational(
+                20,
+                HistoryEventKind::UserPrompt,
+                Some(crate::history::HistoryEventRole::User),
+                Some("steer this turn".to_string()),
+                std::collections::BTreeMap::from([
+                    (
+                        "merge_key".to_string(),
+                        serde_json::Value::String(crate::history::steering_prompt_merge_key(
+                            "queued-1",
+                        )),
+                    ),
+                    (
+                        "source_attachment_id".to_string(),
+                        serde_json::Value::String("attachment-1".to_string()),
+                    ),
+                ]),
+                first_context,
+            ))
+            .expect("steering prompt should append");
+        store
+            .append(&HistoryEvent::transcript(
+                30,
+                &SessionHistoryEntry::user_prompt(
+                    "session-1",
+                    "attachment-1",
+                    "agent-1",
+                    "second prompt",
+                ),
+                second_context,
+            ))
+            .expect("second prompt should append");
+
+        let outline = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+            .expect("outline should load");
+
+        assert_eq!(outline.turns.len(), 2);
+        assert_eq!(outline.turns[0].user_prompt.entry.text, "first prompt");
+        assert_eq!(outline.turns[0].entries.len(), 1);
+        assert_eq!(outline.turns[0].entries[0].entry.text, "steer this turn");
+        assert_eq!(
+            outline.turns[0].entries[0].entry.merge_key.as_deref(),
+            Some("steering-prompt:queued-1")
+        );
+        assert_eq!(outline.turns[1].user_prompt.entry.text, "second prompt");
+        assert_eq!(outline.turns[1].entries.len(), 0);
 
         drop(store);
         let _ = std::fs::remove_file(&path);

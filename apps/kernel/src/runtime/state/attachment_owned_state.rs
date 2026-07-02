@@ -84,14 +84,8 @@ impl KernelRuntimeOwnedState {
         self.terminal_stream
             .remove_attachment(attachment.session_id(), attachment_id);
 
-        let session = self.session_store.get_session(attachment.session_id())?;
-        let owner_removed_queued_prompt_count = self
-            .prompt_state_owner
-            .remove_queued_prompts_by_attachment(&session, attachment_id);
         self.mirror_prompt_owner_session_state(attachment.session_id())?;
-        let removed_queued_prompt_count = effect
-            .removed_queued_prompt_count
-            .max(owner_removed_queued_prompt_count);
+        let removed_queued_prompt_count = effect.removed_queued_prompt_count;
         let session_after_detach = self.session_store.get_session(attachment.session_id())?;
 
         if removed_queued_prompt_count > 0 {

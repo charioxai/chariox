@@ -2405,14 +2405,7 @@ impl<'a> KernelSessionService<'a> {
             .attachments
             .detach_with_effect(&mut sessions, attachment_id)?;
         drop(sessions);
-        let owner_removed_queued_prompt_count =
-            self.app.prompt_owner_remove_queued_prompts_by_attachment(
-                attachment.session_id(),
-                attachment_id,
-            )?;
-        let removed_queued_prompt_count = effect
-            .removed_queued_prompt_count
-            .max(owner_removed_queued_prompt_count);
+        let removed_queued_prompt_count = effect.removed_queued_prompt_count;
         let session_after_detach = SessionStateReader::new(self.app.session_state_store())
             .get_session(attachment.session_id())?;
 

@@ -360,6 +360,7 @@ impl<'a> KernelAgentService<'a> {
                     provider_run_id: provider_run_id.to_string(),
                     agent_id: submitted.admission.target_agent_id.clone(),
                     prompt_id: prompt.id().to_string(),
+                    target_active_prompt_id: None,
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
                     hidden_system_context: prompt.hidden_system_context().to_string(),

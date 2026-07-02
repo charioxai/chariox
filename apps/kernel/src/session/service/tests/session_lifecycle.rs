@@ -643,3 +643,47 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
     );
     assert_eq!(session.scheduler_state(), SchedulerState::Running);
 }
+
+#[test]
+fn detaching_an_attachment_keeps_its_queued_prompts() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    service
+        .add_attachment_to_session(created.id(), "attachment-1")
+        .expect("attachment should be added");
+
+    let (_, active) = service
+        .submit_prompt(
+            created.id(),
+            "attachment-1",
+            "agent-1",
+            "active prompt",
+            Vec::new(),
+        )
+        .expect("active prompt should start");
+    assert!(matches!(active, PromptSubmissionOutcome::Started { .. }));
+    let (_, queued) = service
+        .submit_prompt(
+            created.id(),
+            "attachment-1",
+            "agent-1",
+            "queued prompt",
+            Vec::new(),
+        )
+        .expect("second prompt should queue");
+    let queued_prompt_id = match queued {
+        PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+        other => panic!("expected queued prompt, got {other:?}"),
+    };
+
+    let (session, effect) = service
+        .remove_attachment_from_session(created.id(), "attachment-1")
+        .expect("detach should succeed");
+
+    assert_eq!(effect.removed_queued_prompt_count, 0);
+    assert_eq!(session.queued_prompts().len(), 1);
+    assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
+    assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");
+}

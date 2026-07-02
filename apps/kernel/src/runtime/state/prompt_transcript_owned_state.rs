@@ -576,6 +576,73 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    pub(super) fn append_steering_prompt_history(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        active_prompt_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        prompt: &str,
+        attachments: &[crate::session::PromptAttachment],
+    ) -> Result<(), DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            "merge_key".to_string(),
+            serde_json::Value::String(crate::history::steering_prompt_merge_key(prompt_id)),
+        );
+        metadata.insert(
+            "source_attachment_id".to_string(),
+            serde_json::Value::String(source_attachment_id.to_string()),
+        );
+        if !attachments.is_empty() {
+            metadata.insert(
+                "attachments".to_string(),
+                serde_json::to_value(
+                    attachments
+                        .iter()
+                        .map(crate::history::SessionHistoryPromptAttachment::from_prompt_attachment)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or(serde_json::Value::Null),
+            );
+        }
+        let active_turn = self.active_turns.get(provider_run_id);
+        let context = crate::history::HistoryEventTurnContext {
+            session_id: Some(session_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            provider: Some(provider_run.provider().to_string()),
+            model: Some(provider_run.model().to_string()),
+            turn_id: active_turn
+                .as_ref()
+                .map(|turn| turn.trace_id.clone())
+                .or_else(|| Some(active_prompt_id.to_string())),
+            prompt_id: Some(active_prompt_id.to_string()),
+            provider_run_id: Some(provider_run_id.to_string()),
+            provider_session_id: provider_run.provider_session_id().map(str::to_string),
+            worktree_path: provider_run
+                .working_directory()
+                .map(|path| path.display().to_string()),
+            ..crate::history::HistoryEventTurnContext::default()
+        };
+        let event = self.operational_history_store.append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            Some(crate::history::HistoryEventRole::User),
+            Some(crate::prompt_transcript::render_prompt_transcript(
+                prompt,
+                attachments,
+            )),
+            metadata,
+            context,
+        )?;
+        if self.history_archive_enabled() {
+            self.enqueue_history_archive_event(&event);
+        }
+        Ok(())
+    }
+
     pub(super) fn echo_prompt_to_other_attachments(
         &self,
         session_id: &str,

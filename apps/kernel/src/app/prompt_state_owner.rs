@@ -3,6 +3,28 @@ use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
 impl DaemonApp {
+    pub(crate) fn promoted_prompt_source_attachment_id(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+    ) -> Result<String, DaemonError> {
+        if crate::scheduler::runtime::is_workflow_prompt_attachment(source_attachment_id) {
+            return Ok(source_attachment_id.to_string());
+        }
+        let session = self.sessions.get_session(session_id)?;
+        if session.has_attachment(source_attachment_id) {
+            return Ok(source_attachment_id.to_string());
+        }
+        self.attachments
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .next()
+            .ok_or_else(|| DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: source_attachment_id.to_string(),
+            })
+    }
+
     pub(crate) fn prompt_owner_active_prompt_for_agent(
         &mut self,
         session_id: &str,
@@ -42,6 +64,7 @@ impl DaemonApp {
         Ok(self.prompt_state_owner.has_any_active_prompt(&session))
     }
 
+    #[cfg(test)]
     pub(crate) fn prompt_owner_queued_prompt_count_for_agent(
         &mut self,
         session_id: &str,
@@ -265,19 +288,6 @@ impl DaemonApp {
         self.prompt_state_owner.remove_session(session_id);
     }
 
-    pub(crate) fn prompt_owner_remove_queued_prompts_by_attachment(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<usize, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let removed = self
-            .prompt_state_owner
-            .remove_queued_prompts_by_attachment(&session, attachment_id);
-        self.mirror_prompt_owner_session_state(session_id)?;
-        Ok(removed)
-    }
-
     fn mirror_prompt_owner_agent_state(
         &mut self,
         session_id: &str,
@@ -295,26 +305,6 @@ impl DaemonApp {
         self.provider_process_projection.invalidate();
         self.refresh_prompt_owner_session_projection(session_id)?;
         Ok(session)
-    }
-
-    fn mirror_prompt_owner_session_state(
-        &mut self,
-        session_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let mut agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        let mut mirrored_session = session;
-        for agent_id in agent_ids {
-            mirrored_session = self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
-        }
-        Ok(mirrored_session)
     }
 
     fn refresh_prompt_owner_session_projection(&self, session_id: &str) -> Result<(), DaemonError> {

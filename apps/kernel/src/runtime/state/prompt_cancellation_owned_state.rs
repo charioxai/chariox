@@ -84,10 +84,14 @@ impl KernelRuntimeOwnedState {
                             self.session_store.reserve_prompt_id(),
                         )?;
                     if let Some(started_next) = started_next.as_ref() {
+                        let source_attachment_id = self.promoted_prompt_source_attachment_id(
+                            session_id,
+                            started_next.source_attachment_id(),
+                        )?;
                         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
                         self.append_user_prompt_history(
                             session_id,
-                            started_next.source_attachment_id(),
+                            &source_attachment_id,
                             started_next.target_agent_id(),
                             started_next.prompt(),
                             started_next.attachments(),
@@ -99,7 +103,7 @@ impl KernelRuntimeOwnedState {
                             session_id,
                             provider_run_id,
                             started_next.id(),
-                            started_next.source_attachment_id(),
+                            &source_attachment_id,
                             started_next.prompt(),
                             started_next.attachments(),
                         );
@@ -139,6 +143,10 @@ impl KernelRuntimeOwnedState {
             (provider_run_id.as_deref(), started_next.as_ref())
         {
             let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+            let source_attachment_id = self.promoted_prompt_source_attachment_id(
+                session_id,
+                started_next.source_attachment_id(),
+            )?;
             if self
                 .provider_store
                 .run_uses_structured_prompt_io(&provider_run)
@@ -146,7 +154,7 @@ impl KernelRuntimeOwnedState {
                 let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                     session_id,
                     agent_id,
-                    started_next.source_attachment_id(),
+                    &source_attachment_id,
                     &provider_run,
                     started_next.prompt(),
                 );
@@ -181,7 +189,8 @@ impl KernelRuntimeOwnedState {
                     provider_run_id: provider_run_id.to_string(),
                     agent_id: agent_id.to_string(),
                     prompt_id: started_next.id().to_string(),
-                    source_attachment_id: started_next.source_attachment_id().to_string(),
+                    target_active_prompt_id: None,
+                    source_attachment_id,
                     prompt: started_next.prompt().to_string(),
                     hidden_system_context: started_next.hidden_system_context().to_string(),
                     attachments: started_next.attachments().to_vec(),

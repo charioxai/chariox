@@ -142,27 +142,6 @@ impl PromptRuntimeState {
         Some(cancelled)
     }
 
-    pub(in crate::session) fn remove_queued_prompts_by_attachment(
-        &mut self,
-        attachment_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> usize {
-        let mut removed = 0;
-        let agent_ids: Vec<String> = self.prompt_states.keys().cloned().collect();
-        for agent_id in agent_ids {
-            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
-                let original_len = prompt_state.queued_prompts.len();
-                prompt_state
-                    .queued_prompts
-                    .retain(|prompt| prompt.source_attachment_id() != attachment_id);
-                removed += original_len - prompt_state.queued_prompts.len();
-            }
-            self.drop_empty_prompt_state(&agent_id);
-        }
-        self.refresh_after_mutation(focused_agent_id);
-        removed
-    }
-
     pub(in crate::session) fn remove_queued_prompts_by_workflow_run(
         &mut self,
         workflow_run_id: &str,

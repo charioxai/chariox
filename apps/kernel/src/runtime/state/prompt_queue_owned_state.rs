@@ -6,6 +6,28 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn promoted_prompt_source_attachment_id(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+    ) -> Result<String, DaemonError> {
+        if crate::scheduler::runtime::is_workflow_prompt_attachment(source_attachment_id) {
+            return Ok(source_attachment_id.to_string());
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if session.has_attachment(source_attachment_id) {
+            return Ok(source_attachment_id.to_string());
+        }
+        self.attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .next()
+            .ok_or_else(|| DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: source_attachment_id.to_string(),
+            })
+    }
+
     pub(super) fn mirror_prompt_owner_agent_state(
         &self,
         session_id: &str,
@@ -130,10 +152,14 @@ impl KernelRuntimeOwnedState {
                     next_prompt.id()
                 ),
             })?;
+        let source_attachment_id = self.promoted_prompt_source_attachment_id(
+            session_id,
+            started_next.source_attachment_id(),
+        )?;
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         self.append_user_prompt_history(
             session_id,
-            started_next.source_attachment_id(),
+            &source_attachment_id,
             started_next.target_agent_id(),
             started_next.prompt(),
             started_next.attachments(),
@@ -145,7 +171,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             provider_run_id,
             started_next.id(),
-            started_next.source_attachment_id(),
+            &source_attachment_id,
             started_next.prompt(),
             started_next.attachments(),
         );
@@ -180,7 +206,8 @@ impl KernelRuntimeOwnedState {
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.to_string(),
             prompt_id: started_next.id().to_string(),
-            source_attachment_id: started_next.source_attachment_id().to_string(),
+            target_active_prompt_id: None,
+            source_attachment_id,
             prompt: started_next.prompt().to_string(),
             hidden_system_context: started_next.hidden_system_context().to_string(),
             attachments: started_next.attachments().to_vec(),
@@ -222,6 +249,7 @@ impl KernelRuntimeOwnedState {
                     .to_string(),
             });
         }
+        let target_active_prompt_id = active_prompt.id().to_string();
         let provider_run = self
             .provider_run_projection
             .get_for_agent(session_id, agent_id)
@@ -257,9 +285,21 @@ impl KernelRuntimeOwnedState {
                     "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
                 ),
             })?;
+        let source_attachment_id =
+            self.promoted_prompt_source_attachment_id(session_id, prompt.source_attachment_id())?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        self.append_steering_prompt_history(
+            session_id,
+            provider_run.id(),
+            &target_active_prompt_id,
+            &source_attachment_id,
+            agent_id,
+            prompt.id(),
+            prompt.prompt(),
+            prompt.attachments(),
+        )?;
         self.record_notice(
             session_id,
             Some(provider_run.id()),
@@ -278,7 +318,8 @@ impl KernelRuntimeOwnedState {
                 provider_run_id: provider_run.id().to_string(),
                 agent_id: agent_id.to_string(),
                 prompt_id: prompt.id().to_string(),
-                source_attachment_id: prompt.source_attachment_id().to_string(),
+                target_active_prompt_id: Some(target_active_prompt_id),
+                source_attachment_id,
                 prompt: prompt.prompt().to_string(),
                 hidden_system_context: prompt.hidden_system_context().to_string(),
                 attachments: prompt.attachments().to_vec(),

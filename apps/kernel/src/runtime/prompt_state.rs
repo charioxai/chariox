@@ -473,16 +473,6 @@ impl PromptStateOwner {
         }
     }
 
-    pub(crate) fn remove_queued_prompts_by_attachment(
-        &self,
-        session: &RuntimeSession,
-        attachment_id: &str,
-    ) -> usize {
-        self.remove_queued_prompts_matching(session, |prompt| {
-            prompt.source_attachment_id() == attachment_id
-        })
-    }
-
     pub(crate) fn remove_queued_prompts_by_workflow_run(
         &self,
         session: &RuntimeSession,

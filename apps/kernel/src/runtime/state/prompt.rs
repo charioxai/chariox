@@ -97,14 +97,6 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(
-            next_queued_prompt.source_attachment_id(),
-        ) {
-            let _ = self.ensure_attachment_in_session(
-                session_id,
-                next_queued_prompt.source_attachment_id(),
-            )?;
-        }
         let provider_run_id = provider_run_id
             .map(str::to_string)
             .or_else(|| {
@@ -153,10 +145,14 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let source_attachment_id = self.promoted_prompt_source_attachment_id(
+            session_id,
+            started_next.source_attachment_id(),
+        )?;
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         self.append_user_prompt_history(
             session_id,
-            started_next.source_attachment_id(),
+            &source_attachment_id,
             started_next.target_agent_id(),
             started_next.prompt(),
             started_next.attachments(),
@@ -168,7 +164,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &provider_run_id,
             started_next.id(),
-            started_next.source_attachment_id(),
+            &source_attachment_id,
             started_next.prompt(),
             started_next.attachments(),
         );
@@ -193,7 +189,7 @@ impl KernelRuntimeOwnedState {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
                 agent_id,
-                started_next.source_attachment_id(),
+                &source_attachment_id,
                 &provider_run,
                 started_next.prompt(),
             );
@@ -245,7 +241,8 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 agent_id: agent_id.to_string(),
                 prompt_id: started_next.id().to_string(),
-                source_attachment_id: started_next.source_attachment_id().to_string(),
+                target_active_prompt_id: None,
+                source_attachment_id,
                 prompt: started_next.prompt().to_string(),
                 hidden_system_context: started_next.hidden_system_context().to_string(),
                 attachments: started_next.attachments().to_vec(),

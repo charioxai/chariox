@@ -73,36 +73,15 @@ impl<'a> KernelAgentService<'a> {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             };
-            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
-                .ensure_attachment_in_session(session_id, next.source_attachment_id())
-            {
-                if is_workflow_prompt {
-                    // Workflow prompt sources are synthetic; they intentionally have no live
-                    // attachment record, so provider delivery remains the source of truth.
-                } else {
-                    self.app.record_notice(
-                        session_id,
-                        Some(&provider_run_id),
-                        self.app.attachments.list_session_attachment_ids(session_id),
-                        format!(
-                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                            next.id(),
-                            error
-                        ),
-                    );
-                    let _ = self
-                        .app
-                        .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
-                    flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                    continue;
-                }
-            }
+            let source_attachment_id = self
+                .app
+                .promoted_prompt_source_attachment_id(session_id, next.source_attachment_id())?;
 
             if let Err(error) = crate::app::ProviderPromptDispatcher::new(self.app)
                 .dispatch_prompt_to_provider(
                     session_id,
                     &provider_run_id,
-                    next.source_attachment_id(),
+                    &source_attachment_id,
                     next.prompt(),
                     next.hidden_system_context(),
                     next.attachments(),
@@ -139,7 +118,7 @@ impl<'a> KernelAgentService<'a> {
                 .prompt_owner_mark_active_prompt_running(session_id, &target_agent_id)?;
             self.app.spawn_user_prompt_history_append_with_prompt_id(
                 session_id,
-                active.source_attachment_id(),
+                &source_attachment_id,
                 active.target_agent_id(),
                 active.prompt(),
                 active.attachments(),
@@ -151,7 +130,7 @@ impl<'a> KernelAgentService<'a> {
                 session_id,
                 &provider_run_id,
                 active.id(),
-                active.source_attachment_id(),
+                &source_attachment_id,
                 active.prompt(),
                 active.attachments(),
             );
