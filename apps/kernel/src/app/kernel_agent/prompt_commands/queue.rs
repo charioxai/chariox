@@ -83,7 +83,7 @@ impl<'a> KernelAgentService<'a> {
                 next.workflow_run_id(),
                 next.workflow_node_run_id(),
             )?;
-            self.app.echo_prompt_to_other_attachments(
+            self.app.echo_promoted_queued_prompt_to_attachments(
                 session_id,
                 &provider_run_id,
                 next.id(),

@@ -282,7 +282,7 @@ impl KernelRuntimeState {
                 provider_run_id, ..
             } = submit_result
             {
-                owned.echo_prompt_to_other_attachments(
+                owned.echo_promoted_queued_prompt_to_attachments(
                     session_id,
                     &provider_run_id,
                     started_next.id(),

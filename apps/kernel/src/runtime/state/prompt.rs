@@ -164,7 +164,7 @@ impl KernelRuntimeOwnedState {
             started_next.workflow_run_id(),
             started_next.workflow_node_run_id(),
         )?;
-        self.echo_prompt_to_other_attachments(
+        self.echo_promoted_queued_prompt_to_attachments(
             session_id,
             &provider_run_id,
             started_next.id(),

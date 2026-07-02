@@ -451,6 +451,48 @@ impl DaemonApp {
         attachments: &[PromptAttachment],
     ) {
         let recipient_attachment_ids = self.other_attachment_ids(session_id, source_attachment_id);
+        self.echo_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            prompt_id,
+            source_attachment_id,
+            prompt,
+            attachments,
+            recipient_attachment_ids,
+        );
+    }
+
+    pub(crate) fn echo_promoted_queued_prompt_to_attachments(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+        source_attachment_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) {
+        let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+        self.echo_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            prompt_id,
+            source_attachment_id,
+            prompt,
+            attachments,
+            recipient_attachment_ids,
+        );
+    }
+
+    fn echo_prompt_to_attachments(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+        source_attachment_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+        recipient_attachment_ids: Vec<String>,
+    ) {
         if recipient_attachment_ids.is_empty() {
             return;
         }

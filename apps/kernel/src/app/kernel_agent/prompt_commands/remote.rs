@@ -460,7 +460,7 @@ impl<'a> KernelAgentService<'a> {
             let Some(active) = next_candidate else {
                 continue;
             };
-            self.app.echo_prompt_to_other_attachments(
+            self.app.echo_promoted_queued_prompt_to_attachments(
                 session_id,
                 &remote_provider_run_id,
                 active.id(),

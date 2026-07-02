@@ -287,14 +287,16 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         None,
         &local_request,
     );
-    let _locked_app = app.lock().await;
-    let response = timeout(
-        Duration::from_millis(100),
-        runtime.dispatch_prompt_complete(&command, request),
-    )
-    .await
-    .expect("owned queued advancement should not wait for the app lock")
-    .expect("prompt completion should succeed");
+    let response = {
+        let _locked_app = app.lock().await;
+        timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_complete(&command, request),
+        )
+        .await
+        .expect("owned queued advancement should not wait for the app lock")
+        .expect("prompt completion should succeed")
+    };
 
     let LocalDaemonResponse::PromptCompleted { completion } = response else {
         panic!("unexpected response");
@@ -313,6 +315,19 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         .expect("projected active prompt should be updated");
     assert_eq!(projected_active.id(), started_next.id());
     assert_eq!(projected_active.prompt(), second.prompt());
+    let source_records = app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .drain_output_records(&session_id, attachment.id());
+    assert!(
+        source_records.iter().any(|record| {
+            record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                && record.prompt_id.as_deref() == Some(started_next.id())
+                && String::from_utf8_lossy(&record.bytes).contains(second.prompt())
+        }),
+        "promoted queued prompt should be echoed to the source attachment"
+    );
 }
 
 #[tokio::test]
