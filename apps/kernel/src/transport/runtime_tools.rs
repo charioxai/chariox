@@ -580,6 +580,8 @@ pub struct MetaWorkflowCodeValidateArgs {
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -594,6 +596,8 @@ pub struct MetaWorkflowCodeApplyArgs {
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -614,6 +618,8 @@ pub struct MetaWorkflowCodeRunArgs {
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -693,6 +699,8 @@ pub struct MetaWorkflowRegistryLoadArgs {
     pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -708,6 +716,8 @@ pub struct MetaWorkflowRegistryRunArgs {
     pub queue: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1561,6 +1571,18 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             },
                             "additionalProperties": false
                         }
+                    },
+                    "agent_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "agent_ref"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "agent_ref": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "additionalProperties": false
@@ -1587,6 +1609,18 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                 "model": {"type": "string"},
                                 "effort": {"type": "string"},
                                 "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "agent_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "agent_ref"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "agent_ref": {"type": "string"}
                             },
                             "additionalProperties": false
                         }
@@ -1619,6 +1653,18 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                 "model": {"type": "string"},
                                 "effort": {"type": "string"},
                                 "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "agent_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "agent_ref"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "agent_ref": {"type": "string"}
                             },
                             "additionalProperties": false
                         }
@@ -1837,6 +1883,18 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             },
                             "additionalProperties": false
                         }
+                    },
+                    "agent_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "agent_ref"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "agent_ref": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "additionalProperties": false
@@ -1868,6 +1926,18 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                 "model": {"type": "string"},
                                 "effort": {"type": "string"},
                                 "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "agent_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "agent_ref"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "agent_ref": {"type": "string"}
                             },
                             "additionalProperties": false
                         }

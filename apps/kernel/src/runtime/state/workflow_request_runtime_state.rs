@@ -450,6 +450,7 @@ impl KernelRuntimeState {
                         .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
                     &limits,
                     &request.provider_rebindings,
+                    &request.agent_rebindings,
                     caller_metaagent_id.as_deref(),
                 )?;
             Ok(LocalDaemonResponse::WorkflowCodeValidated { result })
@@ -483,6 +484,7 @@ impl KernelRuntimeState {
                     caller_user_id,
                     controlled_by_metaagent_id,
                     &request.provider_rebindings,
+                    &request.agent_rebindings,
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -512,6 +514,7 @@ impl KernelRuntimeState {
                     &request.session_id,
                     &request.name,
                     &request.provider_rebindings,
+                    &request.agent_rebindings,
                     caller_user_id,
                     controlled_by_metaagent_id,
                     crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
@@ -551,6 +554,7 @@ impl KernelRuntimeState {
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
                 let provider_rebindings = request.provider_rebindings.clone();
+                let agent_rebindings = request.agent_rebindings.clone();
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     let limits = app.config().workflow_code_limits();
@@ -562,6 +566,7 @@ impl KernelRuntimeState {
                             language,
                             &limits,
                             &provider_rebindings,
+                            &agent_rebindings,
                             controlled_by_metaagent_id.as_deref(),
                         )?;
                     reject_invalid_workflow_code_run_compile(
@@ -688,6 +693,7 @@ impl KernelRuntimeState {
                 let session_id = session_id.clone();
                 let name = request.name.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
+                let agent_rebindings = request.agent_rebindings.clone();
                 let endpoint = request.endpoint.clone();
                 let queue_ref = request.queue_ref.clone();
                 let caller_user_id = caller_user_id.clone();
@@ -697,6 +703,7 @@ impl KernelRuntimeState {
                         &session_id,
                         &name,
                         &provider_rebindings,
+                        &agent_rebindings,
                         caller_user_id,
                         controlled_by_metaagent_id,
                         crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
@@ -942,6 +949,7 @@ impl KernelRuntimeState {
                     &request.name,
                     &request.parameters,
                     &request.provider_rebindings,
+                    &request.agent_rebindings,
                     caller_user_id,
                     controlled_by_metaagent_id,
                     "workflow_registry.load",
@@ -979,6 +987,7 @@ impl KernelRuntimeState {
                 let name = request.name.clone();
                 let parameters = request.parameters.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
+                let agent_rebindings = request.agent_rebindings.clone();
                 let endpoint = request.endpoint.clone();
                 let queue_ref = request.queue_ref.clone();
                 let caller_user_id = caller_user_id.clone();
@@ -989,6 +998,7 @@ impl KernelRuntimeState {
                         &name,
                         &parameters,
                         &provider_rebindings,
+                        &agent_rebindings,
                         caller_user_id,
                         controlled_by_metaagent_id,
                         "workflow_registry.run",
@@ -1532,6 +1542,7 @@ fn workflow_registry_apply_result(
     name: &str,
     parameters: &std::collections::BTreeMap<String, serde_json::Value>,
     provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     caller_user_id: String,
     controlled_by_metaagent_id: Option<String>,
     operation: &'static str,
@@ -1564,6 +1575,7 @@ fn workflow_registry_apply_result(
             &compile.definition,
             &limits,
             provider_rebindings,
+            agent_rebindings,
             metaagent_id,
         )?;
     reject_invalid_workflow_code_run_compile(operation, &validation)?;
@@ -1599,6 +1611,7 @@ fn workflow_code_artifact_apply_result(
     session_id: &str,
     artifact_name: &str,
     provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     caller_user_id: String,
     controlled_by_metaagent_id: Option<String>,
     history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
@@ -1623,6 +1636,7 @@ fn workflow_code_artifact_apply_result(
             &artifact.definition,
             &limits,
             provider_rebindings,
+            agent_rebindings,
             metaagent_id,
         )?;
     if !validation.ok {

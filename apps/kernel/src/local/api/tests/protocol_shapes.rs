@@ -441,6 +441,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 effort: None,
                 account_profile: Some("profile-a".to_string()),
             }],
+            agent_rebindings: vec![crate::workflow_code::WorkflowCodeAgentRebinding {
+                node: "worker".to_string(),
+                agent_ref: "agent-entry".to_string(),
+            }],
         });
     let apply_request =
         LocalDaemonRequest::ApplyWorkflowCode(crate::local::ApplyWorkflowCodeRequest {
@@ -455,6 +459,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 effort: None,
                 account_profile: None,
             }],
+            agent_rebindings: Vec::new(),
         });
     let run_request = LocalDaemonRequest::RunWorkflowCode(crate::local::RunWorkflowCodeRequest {
         session_id: "session-1".to_string(),
@@ -467,6 +472,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             model: Some("gpt-5".to_string()),
             effort: Some("medium".to_string()),
             account_profile: Some("work".to_string()),
+        }],
+        agent_rebindings: vec![crate::workflow_code::WorkflowCodeAgentRebinding {
+            node: "worker".to_string(),
+            agent_ref: "agent-entry".to_string(),
         }],
         endpoint: Some("entry".to_string()),
         queue_ref: Some("default".to_string()),
@@ -744,6 +753,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 effort: None,
                 account_profile: None,
             }],
+            agent_rebindings: vec![crate::workflow_code::WorkflowCodeAgentRebinding {
+                node: "worker".to_string(),
+                agent_ref: "agent-entry".to_string(),
+            }],
         },
     );
     let run_artifact_request =
@@ -751,6 +764,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             session_id: "session-1".to_string(),
             name: "imported-toy-flow".to_string(),
             provider_rebindings: Vec::new(),
+            agent_rebindings: Vec::new(),
             endpoint: Some("entry".to_string()),
             queue_ref: Some("default".to_string()),
             prompt: "Run this saved workflow-code artifact.".to_string(),
@@ -880,6 +894,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 effort: None,
                 account_profile: None,
             }],
+            agent_rebindings: vec![crate::workflow_code::WorkflowCodeAgentRebinding {
+                node: "worker".to_string(),
+                agent_ref: "agent-entry".to_string(),
+            }],
         },
     );
     let registry_run_request = LocalDaemonRequest::RunWorkflowRegistryEntry(
@@ -891,6 +909,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 serde_json::json!(3),
             )]),
             provider_rebindings: Vec::new(),
+            agent_rebindings: vec![crate::workflow_code::WorkflowCodeAgentRebinding {
+                node: "worker".to_string(),
+                agent_ref: "agent-entry".to_string(),
+            }],
             endpoint: Some("entry".to_string()),
             queue_ref: Some("default".to_string()),
             prompt: "Run this registered workflow.".to_string(),

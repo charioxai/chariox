@@ -35,10 +35,10 @@ mod tests {
         WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
     };
     use crate::workflow_code::{
-        WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeDefinition,
-        WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent, WorkflowCodeNodeDefinition,
-        WorkflowCodeProviderRebinding, WorkflowCodeQueueDefinition, WorkflowCodeWorkflow,
-        WORKFLOW_CODE_PATTERN_EXAMPLES, WORKFLOW_CODE_SCHEMA_VERSION,
+        WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeAgentRebinding,
+        WorkflowCodeDefinition, WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent,
+        WorkflowCodeNodeDefinition, WorkflowCodeProviderRebinding, WorkflowCodeQueueDefinition,
+        WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES, WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
     use std::collections::BTreeMap;
@@ -342,6 +342,7 @@ mod tests {
                     effort: Some("medium".to_string()),
                     account_profile: Some("profile-a".to_string()),
                 }],
+                &[],
             )
             .expect("workflow-code should apply with provider rebinding");
 
@@ -354,6 +355,63 @@ mod tests {
         assert_eq!(planner.model(), Some("qwen3-coder"));
         assert_eq!(planner.effort(), Some("medium"));
         assert_eq!(planner.account_profile(), Some("profile-a"));
+    }
+
+    #[test]
+    fn workflow_code_apply_agent_rebinding_reuses_existing_entry_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let definition = generated_workflow_code_definition();
+        let report = app
+            .apply_workflow_code_definition_with_rebindings(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+                &[],
+                &[WorkflowCodeAgentRebinding {
+                    node: "planner".to_string(),
+                    agent_ref: default_agent.id().to_string(),
+                }],
+            )
+            .expect("workflow-code should apply with agent rebinding");
+
+        assert_eq!(
+            report.agent_ids.get("planner").map(String::as_str),
+            Some(default_agent.id())
+        );
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 2);
+
+        let endpoint_id = report.endpoint_ids.get("entry").expect("entry endpoint id");
+        let workflow_run = app
+            .session_state_store()
+            .write()
+            .invoke_workflow_endpoint(
+                session.id(),
+                &report.workflow_id,
+                endpoint_id,
+                Some("Use the current agent as planner.".to_string()),
+            )
+            .expect("workflow run should create");
+        assert_eq!(workflow_run.node_runs().len(), 1);
+        assert_eq!(workflow_run.node_runs()[0].agent_id(), default_agent.id());
+
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        let workflow = session
+            .workflow(&report.workflow_id)
+            .expect("workflow should exist");
+        let planner_node_id = report.node_ids.get("planner").expect("planner node id");
+        let planner_node = workflow
+            .node(planner_node_id)
+            .expect("planner node should exist");
+        assert_eq!(planner_node.agent_id(), default_agent.id());
     }
 
     #[test]
@@ -412,6 +470,7 @@ mod tests {
                     effort: None,
                     account_profile: None,
                 }],
+                &[],
             )
             .expect("workflow-code should apply after rebinding unavailable provider");
 
@@ -484,6 +543,7 @@ mod tests {
                     effort: None,
                     account_profile: None,
                 }],
+                &[],
             )
             .expect("workflow-code should apply after rebinding unavailable model");
 
@@ -939,6 +999,7 @@ workflow.node({
                     "local-user".to_string(),
                     None,
                     &provider_rebindings,
+                    &[],
                 )
                 .unwrap_or_else(|error| {
                     panic!(
@@ -1609,6 +1670,7 @@ impl<'a> KernelSessionService<'a> {
             created_by_user_id,
             controlled_by_metaagent_id,
             &[],
+            &[],
         )
     }
 
@@ -1628,6 +1690,7 @@ impl<'a> KernelSessionService<'a> {
             created_by_user_id,
             controlled_by_metaagent_id,
             &[],
+            &[],
             alias_base,
         )
     }
@@ -1640,6 +1703,7 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         self.apply_workflow_code_definition_with_rebindings_and_alias_base(
             session_id,
@@ -1648,6 +1712,7 @@ impl<'a> KernelSessionService<'a> {
             created_by_user_id,
             controlled_by_metaagent_id,
             provider_rebindings,
+            agent_rebindings,
             None,
         )
     }
@@ -1660,6 +1725,7 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
         alias_base: Option<&str>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         let validation = definition.validate_with_limits(limits);
@@ -1678,6 +1744,10 @@ impl<'a> KernelSessionService<'a> {
             });
         }
         let mut definition = definition.clone();
+        crate::workflow_code::apply_workflow_code_agent_rebindings(
+            &mut definition,
+            agent_rebindings,
+        )?;
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut definition,
             provider_rebindings,
@@ -1930,6 +2000,7 @@ impl<'a> KernelSessionService<'a> {
             created_by_user_id,
             controlled_by_metaagent_id,
             &[],
+            &[],
         )
     }
 
@@ -1941,6 +2012,7 @@ impl<'a> KernelSessionService<'a> {
         language: WorkflowCodeLanguage,
         limits: &WorkflowCodeLimitsConfig,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
         caller_metaagent_id: Option<&str>,
     ) -> Result<WorkflowCodeCompileResult, DaemonError> {
         let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
@@ -1952,6 +2024,10 @@ impl<'a> KernelSessionService<'a> {
             schema_import_root.as_deref(),
         )?;
         let mut definition = compile.definition.clone();
+        crate::workflow_code::apply_workflow_code_agent_rebindings(
+            &mut definition,
+            agent_rebindings,
+        )?;
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut definition,
             provider_rebindings,
@@ -1978,9 +2054,14 @@ impl<'a> KernelSessionService<'a> {
         definition: &WorkflowCodeDefinition,
         limits: &WorkflowCodeLimitsConfig,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
         caller_metaagent_id: Option<&str>,
     ) -> Result<(WorkflowCodeDefinition, WorkflowCodeValidationReport), DaemonError> {
         let mut definition = definition.clone();
+        crate::workflow_code::apply_workflow_code_agent_rebindings(
+            &mut definition,
+            agent_rebindings,
+        )?;
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut definition,
             provider_rebindings,
@@ -2006,6 +2087,7 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
         self.compile_and_apply_workflow_code_source_with_rebindings(
             session_id,
@@ -2016,6 +2098,7 @@ impl<'a> KernelSessionService<'a> {
             created_by_user_id,
             controlled_by_metaagent_id,
             provider_rebindings,
+            agent_rebindings,
         )
     }
 
@@ -2029,6 +2112,7 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
         let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
         let compile = compile_workflow_code_source_with_schema_import_root(
@@ -2039,6 +2123,10 @@ impl<'a> KernelSessionService<'a> {
             schema_import_root.as_deref(),
         )?;
         let mut rebound_definition = compile.definition.clone();
+        crate::workflow_code::apply_workflow_code_agent_rebindings(
+            &mut rebound_definition,
+            agent_rebindings,
+        )?;
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut rebound_definition,
             provider_rebindings,
@@ -2062,6 +2150,7 @@ impl<'a> KernelSessionService<'a> {
             limits,
             created_by_user_id,
             controlled_by_metaagent_id,
+            &[],
             &[],
         )?;
         Ok(WorkflowCodeCompileAndApplyResult {

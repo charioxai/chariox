@@ -1130,6 +1130,7 @@ impl KernelRuntimeState {
                         name: args.name,
                         parameters: args.parameters,
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                     },
                 ),
                 agent,
@@ -1165,6 +1166,7 @@ impl KernelRuntimeState {
                         name: args.name,
                         parameters: args.parameters,
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                         endpoint: args.endpoint,
                         queue_ref: args.queue,
                         prompt: args.prompt.unwrap_or_default(),
@@ -1199,6 +1201,7 @@ impl KernelRuntimeState {
         if let (Some(name), None) = (&args.name, &args.source) {
             let artifact = meta_workflow_code_artifact(session, name)?;
             let provider_rebindings = args.provider_rebindings;
+            let agent_rebindings = args.agent_rebindings;
             let session_id = session.id().to_string();
             let metaagent_id = agent.id().to_string();
             let response = self
@@ -1210,6 +1213,7 @@ impl KernelRuntimeState {
                             &artifact.definition,
                             &limits,
                             &provider_rebindings,
+                            &agent_rebindings,
                             Some(&metaagent_id),
                         )?;
                     Ok::<_, DaemonError>(crate::local::LocalDaemonResponse::WorkflowCodeValidated {
@@ -1236,6 +1240,7 @@ impl KernelRuntimeState {
                         source,
                         language: args.language,
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                     },
                 ),
                 agent,
@@ -1259,6 +1264,7 @@ impl KernelRuntimeState {
                         session_id: session.id().to_string(),
                         name: name.clone(),
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                     },
                 ),
                 agent,
@@ -1272,6 +1278,7 @@ impl KernelRuntimeState {
                 source,
                 args.node_path,
                 args.provider_rebindings,
+                args.agent_rebindings,
                 args.language,
             )
             .await?
@@ -1311,6 +1318,7 @@ impl KernelRuntimeState {
                         session_id: session.id().to_string(),
                         name: name.clone(),
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                         endpoint: args.endpoint,
                         queue_ref: args.queue,
                         prompt: args.prompt.unwrap_or_default(),
@@ -1331,6 +1339,7 @@ impl KernelRuntimeState {
                         source,
                         language: args.language,
                         provider_rebindings: args.provider_rebindings,
+                        agent_rebindings: args.agent_rebindings,
                         endpoint: args.endpoint,
                         queue_ref: args.queue,
                         prompt: args.prompt.unwrap_or_default(),
@@ -1374,6 +1383,7 @@ impl KernelRuntimeState {
         source: String,
         node_path: Option<String>,
         provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+        agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
         language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
         self.meta_execute_workflow_request(
@@ -1386,6 +1396,7 @@ impl KernelRuntimeState {
                     source,
                     language,
                     provider_rebindings,
+                    agent_rebindings,
                 },
             ),
             agent,

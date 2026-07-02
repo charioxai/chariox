@@ -2130,6 +2130,11 @@ export type WorkflowCodeProviderRebinding = {
   account_profile?: string | null
 }
 
+export type WorkflowCodeAgentRebinding = {
+  node: string
+  agent_ref: string
+}
+
 export type WorkflowCodeCompileAndApplyResult = {
   compile: WorkflowCodeCompileResult
   apply: WorkflowCodeApplyReport

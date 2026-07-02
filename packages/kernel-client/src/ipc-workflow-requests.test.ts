@@ -14,6 +14,7 @@ import {
   listWorkflowCodeArtifactsRequest,
   runWorkflowCodeArtifactRequest,
   runWorkflowCodeRequest,
+  runWorkflowRegistryEntryRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
 
@@ -48,6 +49,24 @@ test("set workflow node wait-for-all-inputs request matches kernel shape", () =>
         workflow_ref: "workflow-1",
         node_id: "node-1",
         wait_for_all_inputs: true,
+      },
+    },
+  )
+})
+
+test("workflow registry run request includes agent rebindings", () => {
+  assert.deepEqual(
+    runWorkflowRegistryEntryRequest("session-1", "loop-until-done", "Fix the app.", {
+      endpoint: "entry",
+      agentRebindings: [{ node: "worker", agent_ref: "agent-1" }],
+    }),
+    {
+      RunWorkflowRegistryEntry: {
+        session_id: "session-1",
+        name: "loop-until-done",
+        agent_rebindings: [{ node: "worker", agent_ref: "agent-1" }],
+        endpoint: "entry",
+        prompt: "Fix the app.",
       },
     },
   )
@@ -106,6 +125,7 @@ test("workflow-code artifact requests match kernel shape", () => {
       {
         endpoint: "entry",
         queueRef: "default",
+        agentRebindings: [{ node: "worker", agent_ref: "agent-1" }],
         providerRebindings: [
           {
             node: "planner",
@@ -127,6 +147,12 @@ test("workflow-code artifact requests match kernel shape", () => {
             provider: "opencode",
             model: "qwen3-coder",
             account_profile: "work",
+          },
+        ],
+        agent_rebindings: [
+          {
+            node: "worker",
+            agent_ref: "agent-1",
           },
         ],
         endpoint: "entry",

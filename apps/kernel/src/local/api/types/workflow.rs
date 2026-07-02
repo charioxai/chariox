@@ -16,6 +16,8 @@ pub struct ValidateWorkflowCodeRequest {
     pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +29,8 @@ pub struct ApplyWorkflowCodeRequest {
     pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +39,8 @@ pub struct ApplyWorkflowCodeArtifactRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +52,8 @@ pub struct RunWorkflowCodeRequest {
     pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +67,8 @@ pub struct RunWorkflowCodeArtifactRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,6 +124,8 @@ pub struct LoadWorkflowRegistryEntryRequest {
     pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +136,8 @@ pub struct RunWorkflowRegistryEntryRequest {
     pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

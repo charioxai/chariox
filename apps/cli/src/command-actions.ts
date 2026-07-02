@@ -7,6 +7,12 @@ import type {
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
+  ROOT_WORKFLOW_SHORTCUTS,
+  focusedSessionAgent,
+  formatRootWorkflowRunSummary,
+  type RootWorkflowShortcutDescriptor,
+} from "./root-workflow-shortcuts.js"
+import {
   handleCollabSlashCommand,
   handleCloudSlashCommand,
   handleRelaySlashCommand,
@@ -119,7 +125,10 @@ type CommandActionDeps =
     endpointRef: string,
     prompt: string,
     queueRef?: string | null,
-  ) => Promise<{ entry: { name: string }; result: { apply?: { apply?: { workflow_id?: string } }; invocation?: { kind?: string } }; session: RuntimeSession }>
+    options?: {
+      agentRebindings?: Array<{ node: string; agent_ref: string }>
+    },
+  ) => Promise<{ entry: { name: string }; result: { apply?: { apply?: { workflow_id?: string; agent_ids?: Record<string, string> } }; invocation?: { kind?: string } }; session: RuntimeSession }>
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
@@ -321,13 +330,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleLoopCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "loop" }>,
   ): Promise<void> => {
-    await handleRootWorkflowShortcut(deps, "loop-until-done", "/loop", command.prompt)
+    await handleRootWorkflowShortcut(deps, ROOT_WORKFLOW_SHORTCUTS.loop, command.prompt)
   }
 
   const handleGoalCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "goal" }>,
   ): Promise<void> => {
-    await handleRootWorkflowShortcut(deps, "planner-worker-reviewer", "/goal", command.prompt)
+    await handleRootWorkflowShortcut(deps, ROOT_WORKFLOW_SHORTCUTS.goal, command.prompt)
   }
 
   return {
@@ -364,12 +373,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
 async function handleRootWorkflowShortcut(
   deps: CommandActionDeps,
-  templateName: string,
-  commandName: string,
+  descriptor: RootWorkflowShortcutDescriptor,
   prompt: string,
 ): Promise<void> {
   if (!prompt.trim()) {
-    deps.flashFooter(`usage: ${commandName} <prompt>`, "error")
+    deps.flashFooter(`usage: ${descriptor.commandName} <prompt>`, "error")
     return
   }
   if (!deps.isAttached()) {
@@ -377,10 +385,18 @@ async function handleRootWorkflowShortcut(
     return
   }
   if (!deps.runWorkflowRegistryEntry) {
-    deps.flashFooter(`${commandName} is unavailable in this daemon`, "error")
+    deps.flashFooter(`${descriptor.commandName} is unavailable in this daemon`, "error")
     return
   }
-  const payload = await deps.runWorkflowRegistryEntry(templateName, "entry", prompt.trim(), null)
+  const focusedAgentId = deps.focusedAgentId()
+  const focusedAgent = focusedSessionAgent(deps.sessionState(), focusedAgentId)
+  if (!focusedAgentId || !focusedAgent) {
+    deps.flashFooter(`${descriptor.commandName} requires a focused agent in this session`, "error")
+    return
+  }
+  const payload = await deps.runWorkflowRegistryEntry(descriptor.registryEntryName, descriptor.endpointRef, prompt.trim(), null, {
+    agentRebindings: [{ node: descriptor.entryNode, agent_ref: focusedAgent.id }],
+  })
   deps.applySessionState(payload.session)
   const workflowId = payload.result.apply?.apply?.workflow_id ?? null
   if (workflowId) {
@@ -388,7 +404,13 @@ async function handleRootWorkflowShortcut(
     deps.showWorkflowScreen()
   }
   deps.flashFooter(
-    `ran workflow ${payload.entry.name}${workflowId ? ` as ${workflowId}` : ""} [${payload.result.invocation?.kind ?? "invoked"}]`,
+    formatRootWorkflowRunSummary({
+      descriptor,
+      focusedAgentId: focusedAgent.id,
+      workflowId,
+      invocationKind: payload.result.invocation?.kind ?? "invoked",
+      agentIdsByNode: payload.result.apply?.apply?.agent_ids,
+    }),
     "info",
   )
 }

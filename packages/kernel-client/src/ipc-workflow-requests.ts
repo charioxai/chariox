@@ -1,5 +1,6 @@
 import type {
   WorkflowCodeArtifactPackage,
+  WorkflowCodeAgentRebinding,
   WorkflowCodeLanguage,
   WorkflowCodePackageExportTarget,
   WorkflowCodeProviderRebinding,
@@ -28,6 +29,7 @@ export type ValidateWorkflowCodeRequest = {
     node_path: string
     source: string
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
   }
 }
 
@@ -36,6 +38,7 @@ export function validateWorkflowCodeRequest(
   nodePath: string,
   source: string,
   providerRebindings: WorkflowCodeProviderRebinding[] = [],
+  agentRebindings: WorkflowCodeAgentRebinding[] = [],
 ): ValidateWorkflowCodeRequest {
   return {
     ValidateWorkflowCode: {
@@ -43,6 +46,7 @@ export function validateWorkflowCodeRequest(
       node_path: nodePath,
       source,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
     },
   }
 }
@@ -53,6 +57,7 @@ export type ApplyWorkflowCodeRequest = {
     node_path: string
     source: string
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
   }
 }
 
@@ -61,6 +66,7 @@ export function applyWorkflowCodeRequest(
   nodePath: string,
   source: string,
   providerRebindings: WorkflowCodeProviderRebinding[] = [],
+  agentRebindings: WorkflowCodeAgentRebinding[] = [],
 ): ApplyWorkflowCodeRequest {
   return {
     ApplyWorkflowCode: {
@@ -68,6 +74,7 @@ export function applyWorkflowCodeRequest(
       node_path: nodePath,
       source,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
     },
   }
 }
@@ -78,6 +85,7 @@ export type RunWorkflowCodeRequest = {
     node_path: string
     source: string
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queue_ref?: string | null
     prompt: string
@@ -91,17 +99,20 @@ export function runWorkflowCodeRequest(
   prompt: string,
   options: {
     providerRebindings?: WorkflowCodeProviderRebinding[]
+    agentRebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queueRef?: string | null
   } = {},
 ): RunWorkflowCodeRequest {
   const providerRebindings = options.providerRebindings ?? []
+  const agentRebindings = options.agentRebindings ?? []
   return {
     RunWorkflowCode: {
       session_id: sessionId,
       node_path: nodePath,
       source,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
       ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
       ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
       prompt,
@@ -114,6 +125,7 @@ export type ApplyWorkflowCodeArtifactRequest = {
     session_id: string
     name: string
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
   }
 }
 
@@ -121,12 +133,14 @@ export function applyWorkflowCodeArtifactRequest(
   sessionId: string,
   name: string,
   providerRebindings: WorkflowCodeProviderRebinding[] = [],
+  agentRebindings: WorkflowCodeAgentRebinding[] = [],
 ): ApplyWorkflowCodeArtifactRequest {
   return {
     ApplyWorkflowCodeArtifact: {
       session_id: sessionId,
       name,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
     },
   }
 }
@@ -136,6 +150,7 @@ export type RunWorkflowCodeArtifactRequest = {
     session_id: string
     name: string
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queue_ref?: string | null
     prompt: string
@@ -148,16 +163,19 @@ export function runWorkflowCodeArtifactRequest(
   prompt: string,
   options: {
     providerRebindings?: WorkflowCodeProviderRebinding[]
+    agentRebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queueRef?: string | null
   } = {},
 ): RunWorkflowCodeArtifactRequest {
   const providerRebindings = options.providerRebindings ?? []
+  const agentRebindings = options.agentRebindings ?? []
   return {
     RunWorkflowCodeArtifact: {
       session_id: sessionId,
       name,
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
       ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
       ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
       prompt,
@@ -284,6 +302,7 @@ export type LoadWorkflowRegistryEntryRequest = {
     name: string
     parameters?: Record<string, unknown>
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
   }
 }
 
@@ -295,12 +314,14 @@ export function loadWorkflowRegistryEntryRequest(
     | {
         parameters?: Record<string, unknown>
         providerRebindings?: WorkflowCodeProviderRebinding[]
+        agentRebindings?: WorkflowCodeAgentRebinding[]
       } = {},
 ): LoadWorkflowRegistryEntryRequest {
   const options = Array.isArray(optionsOrProviderRebindings)
     ? { providerRebindings: optionsOrProviderRebindings }
     : optionsOrProviderRebindings
   const providerRebindings = options.providerRebindings ?? []
+  const agentRebindings = options.agentRebindings ?? []
   return {
     LoadWorkflowRegistryEntry: {
       session_id: sessionId,
@@ -309,6 +330,7 @@ export function loadWorkflowRegistryEntryRequest(
         ? { parameters: options.parameters }
         : {}),
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
     },
   }
 }
@@ -319,6 +341,7 @@ export type RunWorkflowRegistryEntryRequest = {
     name: string
     parameters?: Record<string, unknown>
     provider_rebindings?: WorkflowCodeProviderRebinding[]
+    agent_rebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queue_ref?: string | null
     prompt: string
@@ -332,11 +355,13 @@ export function runWorkflowRegistryEntryRequest(
   options: {
     parameters?: Record<string, unknown>
     providerRebindings?: WorkflowCodeProviderRebinding[]
+    agentRebindings?: WorkflowCodeAgentRebinding[]
     endpoint?: string | null
     queueRef?: string | null
   } = {},
 ): RunWorkflowRegistryEntryRequest {
   const providerRebindings = options.providerRebindings ?? []
+  const agentRebindings = options.agentRebindings ?? []
   return {
     RunWorkflowRegistryEntry: {
       session_id: sessionId,
@@ -345,6 +370,7 @@ export function runWorkflowRegistryEntryRequest(
         ? { parameters: options.parameters }
         : {}),
       ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(agentRebindings.length > 0 ? { agent_rebindings: agentRebindings } : {}),
       ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
       ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
       prompt,

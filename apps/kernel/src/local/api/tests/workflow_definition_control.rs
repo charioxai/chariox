@@ -103,6 +103,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code should validate");
@@ -134,6 +135,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code should apply");
@@ -236,6 +238,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: Some("fast_lane".to_string()),
                 prompt: String::new(),
@@ -621,6 +624,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: None,
                 queue_ref: None,
                 prompt: "Run without selecting an endpoint.".to_string(),
@@ -654,6 +658,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: Some("missing_entry".to_string()),
                 queue_ref: None,
                 prompt: "Run with a missing endpoint handle.".to_string(),
@@ -705,6 +710,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
                 session_id: session.id().to_string(),
                 name: artifact_name,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: None,
                 queue_ref: None,
                 prompt: "Run artifact without selecting an endpoint.".to_string(),
@@ -780,6 +786,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: Some("missing_queue".to_string()),
                 prompt: "Run with a missing queue handle.".to_string(),
@@ -840,6 +847,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 name: artifact_name,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: Some("missing_queue".to_string()),
                 prompt: "Run artifact with a missing queue handle.".to_string(),
@@ -931,6 +939,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("duplicate edge workflow-code validate should return diagnostics");
@@ -955,6 +964,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect_err("duplicate edge workflow-code apply should fail before applying");
@@ -1037,6 +1047,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "ENTRY" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("duplicate endpoint workflow-code validate should return diagnostics");
@@ -1061,6 +1072,7 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "ENTRY" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect_err("duplicate endpoint alias workflow-code apply should fail before applying");
@@ -1149,6 +1161,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("over-limit workflow-code validate should return diagnostics");
@@ -1173,6 +1186,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect_err("over-limit workflow-code apply should fail before applying");
@@ -1261,6 +1275,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("over-agent-limit workflow-code validate should return diagnostics");
@@ -1284,6 +1299,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect_err("over-agent-limit workflow-code apply should fail before spawning");
@@ -1383,6 +1399,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code with satisfied extension requirement should apply");
@@ -1514,6 +1531,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code with registered script extension should apply");
@@ -1609,6 +1627,7 @@ workflow.watchdog(entry, {
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code should apply");
@@ -1715,6 +1734,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 source: source.to_string(),
                 language: None,
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code validate should return diagnostics");
@@ -1746,6 +1766,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     effort: None,
                     account_profile: None,
                 }],
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code validate should accept provider rebinding");
@@ -2123,6 +2144,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 name: imported_name.clone(),
                 provider_rebindings: provider_rebindings.clone(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("imported workflow-code artifact should apply with provider rebinding");
@@ -2281,6 +2303,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 name: imported_name.clone(),
                 provider_rebindings,
+                agent_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: Some("fast_lane".to_string()),
                 prompt: "Run the portable imported artifact.".to_string(),
@@ -2806,6 +2829,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" });
                 source: source.to_string(),
                 language: Some(crate::workflow_code::WorkflowCodeLanguage::TypeScript),
                 provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
             },
         ))
         .expect("inline TypeScript workflow-code should apply");

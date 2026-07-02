@@ -641,6 +641,13 @@ pub struct WorkflowCodeProviderRebinding {
     pub account_profile: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCodeAgentRebinding {
+    pub node: String,
+    pub agent_ref: String,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,
@@ -3088,6 +3095,62 @@ pub fn apply_workflow_code_provider_rebindings(
     Ok(())
 }
 
+pub fn apply_workflow_code_agent_rebindings(
+    definition: &mut WorkflowCodeDefinition,
+    rebindings: &[WorkflowCodeAgentRebinding],
+) -> Result<(), crate::DaemonError> {
+    if rebindings.is_empty() {
+        return Ok(());
+    }
+    let mut seen = BTreeSet::new();
+    for rebinding in rebindings {
+        let node_handle = rebinding.node.trim();
+        if node_handle.is_empty() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: "agent rebinding node handle must not be empty".to_string(),
+            });
+        }
+        if !seen.insert(node_handle.to_string()) {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!("duplicate agent rebinding for node `{node_handle}`"),
+            });
+        }
+        let agent_ref = rebinding.agent_ref.trim();
+        if agent_ref.is_empty() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!("agent rebinding for node `{node_handle}` must include agent_ref"),
+            });
+        }
+        let node = definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.handle == node_handle)
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!("agent rebinding references unknown node `{node_handle}`"),
+            })?;
+        match &node.agent {
+            WorkflowCodeAgentBinding::Create(_) => {
+                node.agent = WorkflowCodeAgentBinding::Existing(WorkflowCodeExistingAgent {
+                    agent_ref: agent_ref.to_string(),
+                });
+            }
+            WorkflowCodeAgentBinding::Existing(_) => {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_code.rebind",
+                    message: format!(
+                        "agent rebinding for node `{node_handle}` targets an existing-agent binding"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 impl StoredWorkflowCodeArtifact {
     fn into_artifact(self, path: PathBuf) -> WorkflowCodeArtifact {
         let source_bytes = self.source.len() as u64;
@@ -5042,6 +5105,86 @@ mod tests {
             }
             WorkflowCodeAgentBinding::Existing(_) => panic!("planner should use generated agent"),
         }
+    }
+
+    #[test]
+    fn agent_rebindings_rewrite_generated_agents_to_existing_agents() {
+        let mut definition = minimal_definition();
+
+        apply_workflow_code_agent_rebindings(
+            &mut definition,
+            &[WorkflowCodeAgentRebinding {
+                node: " planner ".to_string(),
+                agent_ref: " agent-1 ".to_string(),
+            }],
+        )
+        .expect("agent rebinding should apply");
+
+        match &definition.nodes[0].agent {
+            WorkflowCodeAgentBinding::Existing(agent) => {
+                assert_eq!(agent.agent_ref, "agent-1");
+            }
+            WorkflowCodeAgentBinding::Create(_) => panic!("planner should use existing agent"),
+        }
+    }
+
+    #[test]
+    fn agent_rebindings_reject_invalid_inputs() {
+        assert_agent_rebinding_error(
+            &[WorkflowCodeAgentRebinding {
+                node: " ".to_string(),
+                agent_ref: "agent-1".to_string(),
+            }],
+            "node handle must not be empty",
+        );
+        assert_agent_rebinding_error(
+            &[WorkflowCodeAgentRebinding {
+                node: "planner".to_string(),
+                agent_ref: " ".to_string(),
+            }],
+            "must include agent_ref",
+        );
+        assert_agent_rebinding_error(
+            &[
+                WorkflowCodeAgentRebinding {
+                    node: "planner".to_string(),
+                    agent_ref: "agent-1".to_string(),
+                },
+                WorkflowCodeAgentRebinding {
+                    node: "planner".to_string(),
+                    agent_ref: "agent-2".to_string(),
+                },
+            ],
+            "duplicate agent rebinding",
+        );
+        assert_agent_rebinding_error(
+            &[WorkflowCodeAgentRebinding {
+                node: "missing".to_string(),
+                agent_ref: "agent-1".to_string(),
+            }],
+            "unknown node",
+        );
+
+        let mut definition = minimal_definition();
+        definition.nodes[0].agent = WorkflowCodeAgentBinding::Existing(WorkflowCodeExistingAgent {
+            agent_ref: "agent-1".to_string(),
+        });
+        let error = apply_workflow_code_agent_rebindings(
+            &mut definition,
+            &[WorkflowCodeAgentRebinding {
+                node: "planner".to_string(),
+                agent_ref: "agent-2".to_string(),
+            }],
+        )
+        .expect_err("rebinding existing agent node should fail");
+        assert!(format!("{error}").contains("existing-agent binding"));
+    }
+
+    fn assert_agent_rebinding_error(rebindings: &[WorkflowCodeAgentRebinding], expected: &str) {
+        let mut definition = minimal_definition();
+        let error = apply_workflow_code_agent_rebindings(&mut definition, rebindings)
+            .expect_err("agent rebinding should fail");
+        assert!(format!("{error}").contains(expected), "{error}");
     }
 
     #[test]

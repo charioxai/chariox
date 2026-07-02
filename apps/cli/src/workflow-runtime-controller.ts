@@ -65,11 +65,15 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     endpointRef: string,
     prompt: string,
     queueRef?: string | null,
+    options: {
+      agentRebindings?: Array<{ node: string; agent_ref: string }>
+    } = {},
   ) => {
     const response = await deps.sendRequest(
       runWorkflowRegistryEntryRequest(deps.sessionId(), name, prompt, {
         endpoint: endpointRef,
         ...(queueRef ? { queueRef } : {}),
+        ...(options.agentRebindings?.length ? { agentRebindings: options.agentRebindings } : {}),
       }),
     )
     const payload = expectVariant<{

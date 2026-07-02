@@ -6,8 +6,8 @@ use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
 use crate::session::{CreateSessionRequest, RuntimeSession};
 use crate::workflow_code::{
-    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeDefinition,
-    WorkflowCodeLanguage, WorkflowCodeProviderRebinding,
+    WorkflowCodeAgentRebinding, WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult,
+    WorkflowCodeDefinition, WorkflowCodeLanguage, WorkflowCodeProviderRebinding,
 };
 
 impl DaemonApp {
@@ -75,6 +75,7 @@ impl DaemonApp {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         KernelSessionService::new(self).apply_workflow_code_definition_with_rebindings(
             session_id,
@@ -83,6 +84,7 @@ impl DaemonApp {
             created_by_user_id,
             controlled_by_metaagent_id,
             provider_rebindings,
+            agent_rebindings,
         )
     }
 
@@ -116,6 +118,7 @@ impl DaemonApp {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
         KernelSessionService::new(self).compile_and_apply_workflow_code_javascript_with_rebindings(
             session_id,
@@ -125,6 +128,7 @@ impl DaemonApp {
             created_by_user_id,
             controlled_by_metaagent_id,
             provider_rebindings,
+            agent_rebindings,
         )
     }
 
@@ -139,6 +143,7 @@ impl DaemonApp {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
         KernelSessionService::new(self).compile_and_apply_workflow_code_source_with_rebindings(
             session_id,
@@ -149,6 +154,7 @@ impl DaemonApp {
             created_by_user_id,
             controlled_by_metaagent_id,
             provider_rebindings,
+            agent_rebindings,
         )
     }
 
