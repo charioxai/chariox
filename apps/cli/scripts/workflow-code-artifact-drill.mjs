@@ -455,6 +455,20 @@ const valueOutput = workflow.schema({
   },
 });
 
+const progressOutput = workflow.schema({
+  handle: "progress_output",
+  alias: "Progress output",
+  description: "User-visible intermediate progress event for this node.",
+  schema: {
+    type: "object",
+    required: ["value"],
+    properties: {
+      value: { type: "number" },
+    },
+    additionalProperties: false,
+  },
+});
+
 workflow.define({
   runOutputSchema: valueOutput,
 });
@@ -470,7 +484,7 @@ const worker = workflow.node({
   instructions: "Acknowledge the workflow turn, submit one intermediate output, then submit the final output.",
   canCompleteWorkflowRun: true,
   canEmitIntermediateRunOutput: true,
-  intermediateOutputSchema: valueOutput,
+  intermediateOutputSchema: progressOutput,
   canvas: { x: 0, y: 120 },
 });
 
@@ -2720,7 +2734,7 @@ async function applyOutputSchemaArtifact(client, session, nodePath, timeoutMs) {
     agents: 1,
     edges: 0,
     endpoints: 1,
-    requiredSchemas: ['value_output'],
+    requiredSchemas: ['value_output', 'progress_output'],
   }
   const appliedResponse = unwrap(
     await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName)),
@@ -2737,7 +2751,7 @@ async function applyOutputSchemaArtifact(client, session, nodePath, timeoutMs) {
   const nodeId = apply.node_ids?.worker
   const agentId = apply.agent_ids?.worker
   const node = (workflow.nodes ?? []).find((entry) => entry.id === nodeId)
-  assert(node?.intermediate_output_schema_ref === apply.schema_refs.value_output, 'output-schema artifact should assign node intermediate schema', {
+  assert(node?.intermediate_output_schema_ref === apply.schema_refs.progress_output, 'output-schema artifact should assign node intermediate schema', {
     node,
     schemaRefs: apply.schema_refs,
   })

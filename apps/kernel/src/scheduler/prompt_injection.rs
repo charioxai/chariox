@@ -823,6 +823,44 @@ mod tests {
     }
 
     #[test]
+    fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
+        let _guard = env_lock::lock();
+        let home = temp_arroba_home("intermediate-output-contract");
+        let previous_home = set_arroba_home(&home);
+        let mut context = test_context();
+        context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json, validation_policy: halt\n\n".to_string();
+        context.node_turn = Some(WorkflowNodeTurnPromptContext {
+            turn_index: 1,
+            max_turns: None,
+            can_complete_workflow_run: false,
+            can_emit_intermediate_output: true,
+            wait_for_all_inputs: false,
+        });
+
+        let assembly = build_workflow_turn_prompt_assembly(context);
+        restore_arroba_home(previous_home);
+
+        assert!(assembly
+            .hidden_system_context
+            .contains("Intermediate outputs are user-visible progress, event, or status updates"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("They do not send data downstream"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("multiple times in the same workflow node turn"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("same node-level intermediate output schema"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("validate the routed message for each selected edge"));
+    }
+
+    #[test]
     fn workflow_outgoing_edge_contract_line_includes_target_label_and_policy() {
         let mut workflow = WorkflowDefinition::new("workflow-1", Some("routing".to_string()));
         workflow.add_node(crate::session::WorkflowNodeDefinition::new(

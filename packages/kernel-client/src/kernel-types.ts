@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 218
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 219
 
 export type TerminalCommandCatalogNodeKind =
   | "group"

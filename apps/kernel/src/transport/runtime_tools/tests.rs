@@ -81,6 +81,25 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn intermediate_workflow_output_tool_spec_describes_user_visible_multi_emit_channel() {
+        let specs = workflow_runtime_tool_specs();
+        let spec = specs
+            .iter()
+            .find(|spec| spec.name == VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL)
+            .expect("intermediate workflow output tool spec should exist");
+
+        assert!(spec
+            .description
+            .contains("one user-visible intermediate workflow output event"));
+        assert!(spec
+            .description
+            .contains("may be called multiple times in one workflow node turn"));
+        assert!(spec
+            .description
+            .contains("does not send data to downstream nodes"));
+    }
+
+    #[test]
     fn meta_event_specs_describe_visible_event_prompts() {
         let specs = meta_runtime_tool_specs();
         let list_events = specs

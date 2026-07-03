@@ -98,8 +98,6 @@ pub struct WorkflowTurnEnvelope {
     handoff_payloads_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_output_submissions: Option<WorkflowTurnOutputSubmissions>,
-    #[serde(default, skip_serializing_if = "crate::session::is_false")]
-    intermediate_released_downstream: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtime_tool_calls: Vec<WorkflowRuntimeToolCallEvent>,
     prepared_at_ms: u64,
@@ -125,7 +123,6 @@ impl WorkflowTurnEnvelope {
             mailbox_content,
             handoff_payloads_json,
             pending_output_submissions: None,
-            intermediate_released_downstream: false,
             runtime_tool_calls: Vec::new(),
             prepared_at_ms: unix_epoch_ms(),
             dispatched_at_ms: None,
@@ -172,14 +169,6 @@ impl WorkflowTurnEnvelope {
                 WorkflowTurnSubmissionKind::Intermediate => submissions.intermediate(),
                 WorkflowTurnSubmissionKind::Final => submissions.final_output(),
             })
-    }
-
-    pub fn intermediate_released_downstream(&self) -> bool {
-        self.intermediate_released_downstream
-    }
-
-    pub fn mark_intermediate_released_downstream(&mut self) {
-        self.intermediate_released_downstream = true;
     }
 
     pub fn set_pending_output_submission(

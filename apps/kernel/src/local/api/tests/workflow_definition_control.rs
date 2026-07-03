@@ -196,9 +196,10 @@ const progressOutput = workflow.schema({
   alias: "Progress",
   schema: {
     type: "object",
-    required: ["value"],
+    required: ["event", "status"],
     properties: {
-      value: { type: "number" }
+      event: { type: "string" },
+      status: { type: "string" }
     },
     additionalProperties: false
   }
@@ -437,7 +438,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
             serde_json::json!({
                 "delivery_token": delivery_token.clone(),
-                "workflow_output_json": "{\"value\":\"not-a-number\"}"
+                "workflow_output_json": "{\"value\":1841}"
             }),
         )
         .expect("invalid intermediate workflow output should return a validation result");
@@ -457,12 +458,25 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
             serde_json::json!({
                 "delivery_token": delivery_token.clone(),
-                "workflow_output_json": "{\"value\":1841}"
+                "workflow_output_json": "{\"event\":\"started\",\"status\":\"working\"}"
             }),
         )
         .expect("intermediate workflow output should validate");
     assert!(intermediate.ok, "{:?}", intermediate.payload);
     assert_eq!(intermediate.payload["valid"], true);
+
+    let second_intermediate = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token.clone(),
+                "workflow_output_json": "{\"event\":\"checked\",\"status\":\"still-working\"}"
+            }),
+        )
+        .expect("second intermediate workflow output should validate in the same turn");
+    assert!(second_intermediate.ok, "{:?}", second_intermediate.payload);
+    assert_eq!(second_intermediate.payload["valid"], true);
 
     let invalid_final = harness
         .dispatch_runtime_tool(
@@ -547,14 +561,21 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         completed_run.failure_events(),
         recent_history
     );
-    assert_eq!(completed_run.intermediate_outputs().len(), 1);
-    let intermediate = &completed_run.intermediate_outputs()[0];
-    assert!(intermediate.valid());
-    assert_eq!(intermediate.warning(), None);
-    let intermediate_json: serde_json::Value =
-        serde_json::from_str(intermediate.output().message())
-            .expect("intermediate output message should be JSON");
-    assert_eq!(intermediate_json["value"], 1841);
+    assert_eq!(completed_run.intermediate_outputs().len(), 2);
+    let intermediate_events = completed_run
+        .intermediate_outputs()
+        .iter()
+        .map(|intermediate| {
+            assert!(intermediate.valid());
+            assert_eq!(intermediate.warning(), None);
+            serde_json::from_str::<serde_json::Value>(intermediate.output().message())
+                .expect("intermediate output message should be JSON")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(intermediate_events[0]["event"], "started");
+    assert_eq!(intermediate_events[0]["status"], "working");
+    assert_eq!(intermediate_events[1]["event"], "checked");
+    assert_eq!(intermediate_events[1]["status"], "still-working");
     assert_eq!(completed_run.final_output_valid(), Some(true));
     assert_eq!(completed_run.final_output_warning(), None);
     let final_output = completed_run

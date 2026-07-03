@@ -2368,7 +2368,6 @@ fn summarize_meta_workflow_turn(turn: &crate::session::WorkflowTurnEnvelope) -> 
         "pending_output_submissions": turn
             .pending_output_submissions()
             .map(summarize_meta_workflow_pending_outputs),
-        "intermediate_released_downstream": turn.intermediate_released_downstream(),
     })
 }
 

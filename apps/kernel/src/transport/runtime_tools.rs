@@ -2617,7 +2617,7 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
-            description: "Validate and submit intermediate output for the current workflow run.".to_string(),
+            description: "Validate and submit one user-visible intermediate workflow output event for the current workflow run. This tool may be called multiple times in one workflow node turn and does not send data to downstream nodes.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["workflow_output_json"],

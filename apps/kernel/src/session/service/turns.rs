@@ -419,12 +419,12 @@ impl SessionService {
         )
     }
 
-    pub fn release_workflow_intermediate_output_downstream(
+    pub fn record_workflow_intermediate_output_event(
         &mut self,
         session_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
-    ) -> Result<WorkflowCompletionUpdate, DaemonError> {
+    ) -> Result<WorkflowRun, DaemonError> {
         let context = self.load_workflow_completion_context(
             session_id,
             workflow_run_id,
@@ -438,37 +438,11 @@ impl SessionService {
             })
             .cloned()
         else {
-            return Ok(WorkflowCompletionUpdate {
-                workflow_run: context.workflow_run,
-                dispatches: Vec::new(),
-                validation_warnings: Vec::new(),
-            });
+            return Ok(context.workflow_run);
         };
-        if context
-            .source_node_run
-            .turn_envelope()
-            .is_some_and(|envelope| envelope.intermediate_released_downstream())
-        {
-            return Ok(WorkflowCompletionUpdate {
-                workflow_run: context.workflow_run,
-                dispatches: Vec::new(),
-                validation_warnings: Vec::new(),
-            });
-        }
         if !submission.valid() || submission.warning().is_some() {
-            return Ok(WorkflowCompletionUpdate {
-                workflow_run: context.workflow_run,
-                dispatches: Vec::new(),
-                validation_warnings: Vec::new(),
-            });
+            return Ok(context.workflow_run);
         }
-
-        let completion = WorkflowCompletionSnapshot::new(
-            "intermediate workflow output",
-            Some(submission.output().clone()),
-        );
-        let (emitted_messages, validation_warnings) =
-            self.build_workflow_completion_messages(session_id, &context, Some(&completion))?;
 
         let session =
             self.store
@@ -501,7 +475,6 @@ impl SessionService {
                 message: "workflow turn envelope was not prepared",
             }
         })?;
-        envelope.mark_intermediate_released_downstream();
         envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Intermediate, None);
         workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new(
             format!(
@@ -514,23 +487,7 @@ impl SessionService {
             submission.valid(),
             submission.warning().map(str::to_string),
         ));
-        for message in emitted_messages {
-            workflow_run.add_message(message);
-        }
-        let workflow_id = workflow_run.workflow_id().to_string();
-        let dispatches = collect_ready_workflow_dispatches(
-            &mut self.next_workflow_node_run_number,
-            session_id,
-            &workflow_id,
-            &context.workflow,
-            workflow_run,
-        )?;
-        workflow_run.set_status(WorkflowRunStatus::Waiting);
-        Ok(WorkflowCompletionUpdate {
-            workflow_run: workflow_run.clone(),
-            dispatches,
-            validation_warnings,
-        })
+        Ok(workflow_run.clone())
     }
 
     fn submit_workflow_run_output_submission(

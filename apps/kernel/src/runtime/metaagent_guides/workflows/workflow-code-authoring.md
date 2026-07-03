@@ -94,8 +94,10 @@ Workflow-code scripts only define workflow structure. They do not call `run` or 
 Define workflow schemas directly in the script so the artifact is portable. Use `workflow.schema` handles for:
 
 - `workflow.define({ runOutputSchema })` for final output.
-- `workflow.node({ intermediateOutputSchema })` for a node-specific intermediate output.
-- `workflow.edge(..., { handoffSchema })` for edge handoff validation.
+- `workflow.node({ intermediateOutputSchema })` only for user-visible progress, event, or status outputs emitted by that node while the workflow run continues. A node can submit zero or more intermediate outputs in one turn; every submission uses the same node-level schema.
+- `workflow.edge(..., { handoffSchema })` only for upstream-to-downstream node payloads on that edge. Each selected outgoing edge validates its own handoff payload against its edge schema.
+
+Do not reuse one schema for final output, intermediate output, and handoff payloads by default. Reuse a schema only when that identical contract is intentionally correct for both audiences. For long-running nodes, prefer a compact intermediate event schema such as `{ stage, status, detail }`. For handoffs, prefer task or result schemas specific to the downstream node contract.
 
 Use `workflow.schemaFromFile({ handle, path, alias, description })` only when the JSON file is part of the workspace or imported package context available to the compiler. The file path must be relative, stay inside the approved import root, end in `.json`, and obey the configured schema byte limit.
 
