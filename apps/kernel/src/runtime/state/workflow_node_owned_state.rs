@@ -136,19 +136,12 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_can_complete_run(
         &self,
         request: crate::local::SetWorkflowNodeCanCompleteRunRequest,
-        caller_user_id: &str,
+        _caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_workflow_revision(
             &request.session_id,
             &request.workflow_ref,
             request.expected_workflow_revision,
-        )?;
-        self.ensure_workflow_node_editor(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.node_id,
-            caller_user_id,
-            "set workflow node completion policy",
         )?;
         let node = self
             .session_store
@@ -174,19 +167,12 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_can_emit_intermediate_output(
         &self,
         request: crate::local::SetWorkflowNodeCanEmitIntermediateOutputRequest,
-        caller_user_id: &str,
+        _caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_workflow_revision(
             &request.session_id,
             &request.workflow_ref,
             request.expected_workflow_revision,
-        )?;
-        self.ensure_workflow_node_editor(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.node_id,
-            caller_user_id,
-            "set workflow node intermediate output policy",
         )?;
         let node = self
             .session_store
@@ -252,19 +238,12 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_set_node_intermediate_output_schema(
         &self,
         request: crate::local::SetWorkflowNodeIntermediateOutputSchemaRequest,
-        caller_user_id: &str,
+        _caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_workflow_revision(
             &request.session_id,
             &request.workflow_ref,
             request.expected_workflow_revision,
-        )?;
-        self.ensure_workflow_node_editor(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.node_id,
-            caller_user_id,
-            "set workflow node intermediate output schema",
         )?;
         let node = self
             .session_store

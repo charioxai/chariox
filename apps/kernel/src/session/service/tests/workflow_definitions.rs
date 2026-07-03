@@ -247,6 +247,7 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
         .expect("node completion setting should update");
     assert!(updated_node.can_complete_workflow_run());
+    assert!(!updated_node.can_emit_intermediate_run_output());
     let updated_node = service
         .set_workflow_node_can_emit_intermediate_output(
             session.id(),
@@ -256,6 +257,12 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         )
         .expect("node intermediate output capability should update");
     assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(!updated_node.can_complete_workflow_run());
+    let updated_node = service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node completion setting should update");
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(!updated_node.can_emit_intermediate_run_output());
     let updated_node = service
         .set_workflow_node_intermediate_output_schema_ref(
             session.id(),
