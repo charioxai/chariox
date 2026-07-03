@@ -1101,7 +1101,6 @@ export type WorkflowDefinition = {
   alias: string | null
   flush_agent_context_before_run?: boolean
   run_output_schema_ref?: string | null
-  intermediate_output_schema_ref?: string | null
   schemas?: WorkflowSchemaDefinition[]
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]

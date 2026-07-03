@@ -383,8 +383,7 @@ function createBuilder() {
         ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
         ...(options.flushAgentContextBeforeRun !== undefined ? { flush_agent_context_before_run: options.flushAgentContextBeforeRun } : {}),
         ...(options.maxConcurrent !== undefined ? { max_concurrent: options.maxConcurrent } : {}),
-        ...(options.runOutputSchema !== undefined ? { run_output_schema: ref(options.runOutputSchema, "schema") } : {}),
-        ...(options.intermediateOutputSchema !== undefined ? { intermediate_output_schema: ref(options.intermediateOutputSchema, "schema") } : {})
+        ...(options.runOutputSchema !== undefined ? { run_output_schema: ref(options.runOutputSchema, "schema") } : {})
       }
       return api
     },
@@ -1990,8 +1989,6 @@ pub struct WorkflowCodeWorkflow {
     pub max_concurrent: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_output_schema: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intermediate_output_schema: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2397,13 +2394,6 @@ impl<'a> WorkflowCodeValidator<'a> {
             "workflow.run_output_schema",
             None,
         );
-        self.validate_schema_ref(
-            &schema_handles,
-            definition.workflow.intermediate_output_schema.as_deref(),
-            "workflow.intermediate_output_schema",
-            None,
-        );
-
         let mut existing_agent_refs = BTreeMap::<&str, &str>::new();
         for node in &definition.nodes {
             self.validate_agent_binding(node, &mut existing_agent_refs);
@@ -3846,9 +3836,6 @@ fn workflow_code_definition_from_session_workflow(
             flush_agent_context_before_run: Some(workflow.flush_agent_context_before_run()),
             max_concurrent: Some(workflow.max_concurrent()),
             run_output_schema: workflow.run_output_schema_ref().map(str::to_string),
-            intermediate_output_schema: workflow
-                .intermediate_output_schema_ref()
-                .map(str::to_string),
         },
         schemas: workflow
             .schemas()
@@ -4094,13 +4081,6 @@ impl WorkflowCodeJavascriptWriter {
             &mut fields,
             "runOutputSchema",
             &workflow.run_output_schema,
-            "schema",
-            &self.vars,
-        )?;
-        push_ref_field(
-            &mut fields,
-            "intermediateOutputSchema",
-            &workflow.intermediate_output_schema,
             "schema",
             &self.vars,
         )?;
@@ -4481,7 +4461,6 @@ mod tests {
                 flush_agent_context_before_run: Some(true),
                 max_concurrent: Some(32),
                 run_output_schema: Some("final".to_string()),
-                intermediate_output_schema: None,
             },
             schemas: vec![WorkflowCodeSchemaDefinition {
                 handle: "final".to_string(),

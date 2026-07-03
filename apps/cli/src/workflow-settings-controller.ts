@@ -1,7 +1,6 @@
 import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 import {
   setWorkflowFlushContextRequest,
-  setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowRunOutputSchemaRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -47,28 +46,8 @@ export function createWorkflowSettingsController(deps: WorkflowSettingsControlle
     return payload
   }
 
-  const setWorkflowIntermediateOutputSchema = async (
-    workflowRef: string,
-    intermediateOutputSchemaRef: string | null,
-  ) => {
-    const response = await deps.sendRequest(
-      setWorkflowIntermediateOutputSchemaRequest(
-        deps.sessionId(),
-        workflowRef,
-        intermediateOutputSchemaRef,
-      ),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowIntermediateOutputSchemaUpdated",
-    )
-    deps.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
   return {
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
   }
 }

@@ -991,7 +991,7 @@ test("executeShellCommand configures workflow publication package bindings", asy
 })
 
 test("executeShellCommand manages advanced workflow settings, schedules, and queue", async () => {
-  const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final", intermediate_output_schema_ref: "progress" })
+  const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final" })
   const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
   const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
   const schedule = makeWorkflowWatchdog({ id: "schedule-1" })

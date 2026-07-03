@@ -12,7 +12,6 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
   - `flushAgentContextBeforeRun`
   - `maxConcurrent`
   - `runOutputSchema`
-  - `intermediateOutputSchema`
 
 - `workflow.schema(options)` defines an inline JSON Schema and returns a schema handle:
   - `handle`
@@ -95,7 +94,6 @@ Workflow-code scripts only define workflow structure. They do not call `run` or 
 Define workflow schemas directly in the script so the artifact is portable. Use `workflow.schema` handles for:
 
 - `workflow.define({ runOutputSchema })` for final output.
-- `workflow.define({ intermediateOutputSchema })` for workflow-level intermediate output.
 - `workflow.node({ intermediateOutputSchema })` for a node-specific intermediate output.
 - `workflow.edge(..., { handoffSchema })` for edge handoff validation.
 

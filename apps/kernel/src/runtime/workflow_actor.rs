@@ -379,9 +379,6 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::RemoveWorkflowEdge(request) => request.session_id.clone(),
         LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => request.session_id.clone(),
-        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
-            request.session_id.clone()
-        }
         LocalDaemonRequest::SetWorkflowFlushContext(request) => request.session_id.clone(),
         LocalDaemonRequest::InvokeWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowRuns(request) => request.session_id.clone(),
@@ -633,7 +630,6 @@ mod tests {
                     flush_agent_context_before_run: None,
                     max_concurrent: None,
                     run_output_schema_ref: None,
-                    intermediate_output_schema_ref: None,
                     schemas: Vec::new(),
                 },
             },

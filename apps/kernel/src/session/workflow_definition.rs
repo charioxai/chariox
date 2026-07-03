@@ -93,8 +93,6 @@ pub struct WorkflowDefinition {
     max_concurrent: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_output_schema_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    intermediate_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     schemas: Vec<WorkflowSchemaDefinition>,
     nodes: Vec<WorkflowNodeDefinition>,
@@ -114,7 +112,6 @@ impl WorkflowDefinition {
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             max_concurrent: default_workflow_max_concurrent(),
             run_output_schema_ref: None,
-            intermediate_output_schema_ref: None,
             schemas: Vec::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -181,10 +178,6 @@ impl WorkflowDefinition {
         self.run_output_schema_ref.as_deref()
     }
 
-    pub fn intermediate_output_schema_ref(&self) -> Option<&str> {
-        self.intermediate_output_schema_ref.as_deref()
-    }
-
     pub fn schemas(&self) -> &[WorkflowSchemaDefinition] {
         &self.schemas
     }
@@ -232,11 +225,6 @@ impl WorkflowDefinition {
         self.bump_revision();
     }
 
-    pub fn set_intermediate_output_schema_ref(&mut self, value: Option<String>) {
-        self.intermediate_output_schema_ref = value;
-        self.bump_revision();
-    }
-
     pub fn add_schema(&mut self, schema: WorkflowSchemaDefinition) -> WorkflowSchemaDefinition {
         self.schemas.push(schema.clone());
         self.bump_revision();
@@ -257,9 +245,6 @@ impl WorkflowDefinition {
         let mut usages = Vec::new();
         if self.run_output_schema_ref.as_deref() == Some(schema_id) {
             usages.push("workflow.run_output_schema_ref".to_string());
-        }
-        if self.intermediate_output_schema_ref.as_deref() == Some(schema_id) {
-            usages.push("workflow.intermediate_output_schema_ref".to_string());
         }
         for node in &self.nodes {
             if node.intermediate_output_schema_ref() == Some(schema_id) {

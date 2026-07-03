@@ -162,13 +162,6 @@ impl KernelRuntimeOwnedState {
                     metaagent_id,
                     "set workflow output schema",
                 ),
-            LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => self
-                .ensure_workflow_controlled_by_metaagent(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    metaagent_id,
-                    "set workflow intermediate output schema",
-                ),
             LocalDaemonRequest::SetWorkflowFlushContext(request) => self
                 .ensure_workflow_controlled_by_metaagent(
                     &request.session_id,

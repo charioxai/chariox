@@ -209,7 +209,6 @@ test("workflow inspector edit mode describes workflow fields", () => {
           alias: "Release",
           flush_agent_context_before_run: false,
           run_output_schema_ref: "run.schema.json",
-          intermediate_output_schema_ref: "handoff.schema.json",
           nodes: [{ id: "node-1", agent_id: "agent-1" }],
           edges: [],
           endpoints: [],
@@ -229,7 +228,7 @@ test("workflow inspector edit mode describes workflow fields", () => {
   assert.equal(inspector?.title, "Workflow Edit")
   assert.match(inspector?.body ?? "", /Editable workflow fields/)
   assert.match(inspector?.body ?? "", /run-output-schema: run\.schema\.json/)
-  assert.match(inspector?.body ?? "", /intermediate-output-schema: handoff\.schema\.json/)
+  assert.doesNotMatch(inspector?.body ?? "", /intermediate-output-schema/)
 })
 
 test("workflow inspector edit mode describes edge and endpoint fields", () => {

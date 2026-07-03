@@ -457,7 +457,6 @@ const valueOutput = workflow.schema({
 
 workflow.define({
   runOutputSchema: valueOutput,
-  intermediateOutputSchema: valueOutput,
 });
 
 const worker = workflow.node({
@@ -2733,11 +2732,6 @@ async function applyOutputSchemaArtifact(client, session, nodePath, timeoutMs) {
   assert(
     workflow.run_output_schema_ref === apply.schema_refs.value_output,
     'output-schema artifact should assign workflow final output schema',
-    { workflow, schemaRefs: apply.schema_refs },
-  )
-  assert(
-    workflow.intermediate_output_schema_ref === apply.schema_refs.value_output,
-    'output-schema artifact should assign workflow intermediate output schema',
     { workflow, schemaRefs: apply.schema_refs },
   )
   const nodeId = apply.node_ids?.worker

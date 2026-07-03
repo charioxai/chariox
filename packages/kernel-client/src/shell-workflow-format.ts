@@ -34,7 +34,6 @@ export function formatWorkflowDetails(workflow: WorkflowDefinition): string {
     `nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}`,
     `flush_context=${String(workflow.flush_agent_context_before_run ?? true)}`,
     workflow.run_output_schema_ref ? `run_output_schema=${workflow.run_output_schema_ref}` : null,
-    workflow.intermediate_output_schema_ref ? `intermediate_output_schema=${workflow.intermediate_output_schema_ref}` : null,
     ...edgeLines,
   ].filter(Boolean).join("\n")
 }

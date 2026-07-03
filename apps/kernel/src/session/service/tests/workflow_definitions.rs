@@ -100,7 +100,6 @@ fn workflow_design_create_generates_default_alias() {
                     flush_agent_context_before_run: None,
                     max_concurrent: None,
                     run_output_schema_ref: None,
-                    intermediate_output_schema_ref: None,
                     schemas: Vec::new(),
                 },
             },
@@ -244,18 +243,6 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         updated_workflow.run_output_schema_ref(),
         Some("/tmp/workflow-run-output-schema.json")
     );
-    let updated_workflow = service
-        .set_workflow_intermediate_output_schema_ref(
-            session.id(),
-            workflow.id(),
-            Some("/tmp/workflow-intermediate-output-schema.json".to_string()),
-        )
-        .expect("workflow intermediate output schema should update");
-    assert_eq!(
-        updated_workflow.intermediate_output_schema_ref(),
-        Some("/tmp/workflow-intermediate-output-schema.json")
-    );
-
     let updated_node = service
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
         .expect("node completion setting should update");

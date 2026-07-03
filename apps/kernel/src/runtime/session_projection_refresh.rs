@@ -280,7 +280,6 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }

@@ -396,9 +396,6 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
         LocalDaemonRequest::ListWorkflowPromptQueues(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

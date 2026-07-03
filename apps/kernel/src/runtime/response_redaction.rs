@@ -457,12 +457,6 @@ pub(crate) fn redact_response_for_user(
                 session: session.redacted_for_user(caller_user_id),
             }
         }
-        LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session } => {
-            LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated {
-                workflow: workflow.redacted_for_user(caller_user_id),
-                session: session.redacted_for_user(caller_user_id),
-            }
-        }
         LocalDaemonResponse::WorkflowPromptQueueCreated { queue, session } => {
             LocalDaemonResponse::WorkflowPromptQueueCreated {
                 queue,

@@ -47,24 +47,4 @@ impl KernelRuntimeOwnedState {
         Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
     }
 
-    pub(super) fn workflow_set_intermediate_output_schema(
-        &self,
-        request: crate::local::SetWorkflowIntermediateOutputSchemaRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_workflow_revision(
-            &request.session_id,
-            &request.workflow_ref,
-            request.expected_workflow_revision,
-        )?;
-        let workflow = self
-            .session_store
-            .write()
-            .set_workflow_intermediate_output_schema_ref(
-                &request.session_id,
-                &request.workflow_ref,
-                request.intermediate_output_schema_ref,
-            )?;
-        let session = self.workflow_session(&request.session_id)?;
-        Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
-    }
 }

@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 217
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 218
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1944,7 +1944,6 @@ export type WorkflowDefinition = {
   alias: string | null
   flush_agent_context_before_run?: boolean
   run_output_schema_ref?: string | null
-  intermediate_output_schema_ref?: string | null
   schemas?: WorkflowSchemaDefinition[]
   canvas_layout?: WorkflowCanvasLayout | null
   nodes?: WorkflowNodeDefinition[]
@@ -2432,7 +2431,6 @@ export type WorkflowDesignWorkflow = {
   flush_agent_context_before_run?: boolean | null
   max_concurrent?: number | null
   run_output_schema_ref?: string | null
-  intermediate_output_schema_ref?: string | null
   schemas?: WorkflowSchemaDefinition[]
 }
 
@@ -2441,7 +2439,6 @@ export type WorkflowDesignWorkflowPatch = {
   flush_agent_context_before_run?: boolean | null
   max_concurrent?: number | null
   run_output_schema_ref?: string | null
-  intermediate_output_schema_ref?: string | null
 }
 
 export type WorkflowDesignSchemaPatch = {

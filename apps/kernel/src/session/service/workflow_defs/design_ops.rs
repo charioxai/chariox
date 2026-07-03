@@ -22,11 +22,6 @@ impl SessionService {
                 if workflow.run_output_schema_ref.is_some() {
                     definition.set_run_output_schema_ref(workflow.run_output_schema_ref);
                 }
-                if workflow.intermediate_output_schema_ref.is_some() {
-                    definition.set_intermediate_output_schema_ref(
-                        workflow.intermediate_output_schema_ref,
-                    );
-                }
                 let mut schema_ids = std::collections::BTreeSet::new();
                 for schema in workflow.schemas {
                     validate_workflow_design_schema(&schema)?;
@@ -88,9 +83,6 @@ impl SessionService {
                 }
                 if let Some(value) = patch.run_output_schema_ref {
                     workflow.set_run_output_schema_ref(value);
-                }
-                if let Some(value) = patch.intermediate_output_schema_ref {
-                    workflow.set_intermediate_output_schema_ref(value);
                 }
                 Ok(workflow.clone())
             }

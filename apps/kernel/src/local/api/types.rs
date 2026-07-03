@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 217;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 218;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOperationFailure {
@@ -472,7 +472,6 @@ pub enum LocalDaemonRequest {
     PreviewWorkflowSchedule(PreviewWorkflowScheduleRequest),
     SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
     SetWorkflowRunOutputSchema(SetWorkflowRunOutputSchemaRequest),
-    SetWorkflowIntermediateOutputSchema(SetWorkflowIntermediateOutputSchemaRequest),
     ListWorkflowPromptQueues(ListWorkflowPromptQueuesRequest),
     CreateWorkflowPromptQueue(CreateWorkflowPromptQueueRequest),
     UpdateWorkflowPromptQueue(UpdateWorkflowPromptQueueRequest),
@@ -1466,10 +1465,6 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowRunOutputSchemaUpdated {
-        workflow: WorkflowDefinition,
-        session: RuntimeSession,
-    },
-    WorkflowIntermediateOutputSchemaUpdated {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },

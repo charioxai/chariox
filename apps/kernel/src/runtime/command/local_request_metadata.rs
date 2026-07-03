@@ -637,9 +637,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RemoveWorkflowEdge(_) => "workflow_edge.remove",
         LocalDaemonRequest::UpdateWorkflowCanvasLayout(_) => "workflow_canvas.layout.update",
         LocalDaemonRequest::SetWorkflowRunOutputSchema(_) => "workflow.run_output_schema.set",
-        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(_) => {
-            "workflow.intermediate_output_schema.set"
-        }
         LocalDaemonRequest::SetWorkflowFlushContext(_) => "workflow.flush_context.set",
         LocalDaemonRequest::InvokeWorkflowEndpoint(_) => "workflow_prompt.enqueue",
         LocalDaemonRequest::ListWorkflowRuns(_) => "workflow_run.list",

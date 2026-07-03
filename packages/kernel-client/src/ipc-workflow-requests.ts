@@ -1095,20 +1095,6 @@ export function setWorkflowRunOutputSchemaRequest(
   }
 }
 
-export function setWorkflowIntermediateOutputSchemaRequest(
-  sessionId: string,
-  workflowRef: string,
-  intermediateOutputSchemaRef: string | null,
-) {
-  return {
-    SetWorkflowIntermediateOutputSchema: {
-      session_id: sessionId,
-      workflow_ref: workflowRef,
-      intermediate_output_schema_ref: intermediateOutputSchemaRef,
-    },
-  }
-}
-
 export function listWorkflowWatchdogsRequest(sessionId: string, workflowRef?: string | null) {
   return {
     ListWorkflowWatchdogs: {

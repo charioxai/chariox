@@ -207,8 +207,7 @@ workflow.define({
   alias: "scripted_run_flow",
   prompt: "Use the workflow-code default invocation prompt.",
   maxConcurrent: 4,
-  runOutputSchema: finalOutput,
-  intermediateOutputSchema: progressOutput
+  runOutputSchema: finalOutput
 })
 const planner = workflow.node({
   handle: "planner",
@@ -294,15 +293,6 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .apply
             .schema_refs
             .get("final")
-            .map(String::as_str)
-    );
-    assert_eq!(
-        workflow.intermediate_output_schema_ref(),
-        result
-            .apply
-            .apply
-            .schema_refs
-            .get("progress")
             .map(String::as_str)
     );
     let planner_node_id = result
@@ -2521,7 +2511,6 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
             flush_agent_context_before_run: None,
             max_concurrent: None,
             run_output_schema: None,
-            intermediate_output_schema: None,
         },
         schemas: Vec::new(),
         nodes: vec![crate::workflow_code::WorkflowCodeNodeDefinition {
@@ -2624,7 +2613,6 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
             flush_agent_context_before_run: None,
             max_concurrent: None,
             run_output_schema: None,
-            intermediate_output_schema: None,
         },
         schemas: Vec::new(),
         nodes: vec![crate::workflow_code::WorkflowCodeNodeDefinition {

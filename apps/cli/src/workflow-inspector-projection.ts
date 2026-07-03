@@ -342,11 +342,10 @@ function buildEditBody(
       `- alias: ${workflow.alias ?? "none"}`,
       `- flush-context: ${(workflow.flush_agent_context_before_run ?? true) ? "true" : "false"}`,
       `- run-output-schema: ${workflow.run_output_schema_ref ?? "none"}`,
-      `- intermediate-output-schema: ${workflow.intermediate_output_schema_ref ?? "none"}`,
       "",
       "Use /workflow <workflow-ref> <alias> to rename.",
       "Use /workflow flush-context to update context flush policy.",
-      "Use /workflow run-output-schema or /workflow intermediate-output-schema to edit schema refs.",
+      "Use /workflow run-output-schema to edit the final output schema ref.",
     ].join("\n")
   }
   if (selection.kind === "node") {

@@ -10,7 +10,6 @@ const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
 const WORKFLOW_SETTINGS_COMMANDS = [
   "flush-context",
   "run-output-schema",
-  "intermediate-output-schema",
   "max-turns",
 ] as const
 
@@ -48,10 +47,6 @@ export type WorkflowSettingsCommandDeps = {
     workflowRef: string,
     runOutputSchemaRef: string | null,
   ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
-  setWorkflowIntermediateOutputSchema?: (
-    workflowRef: string,
-    intermediateOutputSchemaRef: string | null,
-  ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
 }
 
 export function isWorkflowSettingsCommand(subcommand: string | undefined): subcommand is WorkflowSettingsCommand {
@@ -74,15 +69,6 @@ export async function handleWorkflowSettingsCommand(
       currentValue: (workflow) => workflow.run_output_schema_ref,
       setValue: deps.setWorkflowRunOutputSchema,
       usage: "usage: /workflow run-output-schema [workflow-ref] [schema-ref|none]",
-    })
-    return
-  }
-  if (subcommand === "intermediate-output-schema") {
-    await handleWorkflowSchemaCommand(deps, context, args, {
-      commandName: "intermediate-output-schema",
-      currentValue: (workflow) => workflow.intermediate_output_schema_ref,
-      setValue: deps.setWorkflowIntermediateOutputSchema,
-      usage: "usage: /workflow intermediate-output-schema [workflow-ref] [schema-ref|none]",
     })
     return
   }
@@ -140,7 +126,7 @@ async function handleWorkflowSchemaCommand(
   context: WorkflowSettingsCommandContext,
   args: readonly string[],
   config: {
-    commandName: "run-output-schema" | "intermediate-output-schema"
+    commandName: "run-output-schema"
     currentValue: (workflow: WorkflowDefinition) => string | null | undefined
     setValue: ((workflowRef: string, schemaRef: string | null) => Promise<{
       workflow: WorkflowDefinition

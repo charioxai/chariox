@@ -17,7 +17,6 @@ import {
   resolveWorkflowRequest,
   resumeWorkflowRunRequest,
   setWorkflowFlushContextRequest,
-  setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowRunOutputSchemaRequest,
   updateSessionConfigRequest,
 } from "./ipc-requests.js"
@@ -161,23 +160,17 @@ export async function executeWorkflowCommand(
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowFlushContextUpdated")
       return { ok: true, message: `workflow ${payload.workflow.id} flush-context set to ${String(payload.workflow.flush_agent_context_before_run ?? true)}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
-    case "run-output-schema":
-    case "intermediate-output-schema": {
+    case "run-output-schema": {
       const explicit = args.length >= 2 ? args[0] : null
       const workflowRef = explicit ?? context.workflowId
       const rawValue = explicit ? args[1] : args[0]
       if (!workflowRef || rawValue === undefined) {
-        return { ok: false, message: `usage: workflow ${action} [workflow-ref] <schema-ref|none>` }
+        return { ok: false, message: "usage: workflow run-output-schema [workflow-ref] <schema-ref|none>" }
       }
       const schemaRef = rawValue.trim().toLowerCase() === "none" ? null : rawValue
-      const response = await deps.client.send(action === "run-output-schema"
-        ? setWorkflowRunOutputSchemaRequest(sessionId, workflowRef, schemaRef)
-        : setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowRef, schemaRef))
-      const variant = action === "run-output-schema" ? "WorkflowRunOutputSchemaUpdated" : "WorkflowIntermediateOutputSchemaUpdated"
-      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
-      const field = action === "run-output-schema" ? "run-output-schema" : "intermediate-output-schema"
-      const value = action === "run-output-schema" ? payload.workflow.run_output_schema_ref : payload.workflow.intermediate_output_schema_ref
-      return { ok: true, message: `workflow ${payload.workflow.id} ${field} set to ${value ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+      const response = await deps.client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowRef, schemaRef))
+      const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowRunOutputSchemaUpdated")
+      return { ok: true, message: `workflow ${payload.workflow.id} run-output-schema set to ${payload.workflow.run_output_schema_ref ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
     case "max-turns": {
       const value = args[0]?.trim().toLowerCase()

@@ -307,11 +307,6 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
-                let result = owned.workflow_set_intermediate_output_schema(request);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
             LocalDaemonRequest::ListWorkflowRuns(request) => (
                 owned.workflow_list_runs(request, caller_metaagent_id.as_deref()),
                 None,
@@ -1938,7 +1933,6 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }

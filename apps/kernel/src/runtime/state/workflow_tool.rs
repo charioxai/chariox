@@ -447,12 +447,7 @@ impl KernelRuntimeOwnedState {
             node.is_some_and(|node| node.can_emit_intermediate_run_output());
         let workflow_intermediate_output_schema_ref = node
             .and_then(|node| node.intermediate_output_schema_ref())
-            .map(str::to_string)
-            .or_else(|| {
-                workflow
-                    .intermediate_output_schema_ref()
-                    .map(str::to_string)
-            });
+            .map(str::to_string);
         Ok(
             crate::transport::runtime_tools::WorkflowRuntimeToolContext {
                 session_id,

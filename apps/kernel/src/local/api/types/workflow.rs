@@ -666,16 +666,6 @@ pub struct SetWorkflowRunOutputSchemaRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetWorkflowIntermediateOutputSchemaRequest {
-    pub session_id: String,
-    pub workflow_ref: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intermediate_output_schema_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_workflow_revision: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkflowPromptQueuesRequest {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -767,8 +757,6 @@ pub struct WorkflowDesignWorkflow {
     pub max_concurrent: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_output_schema_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intermediate_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schemas: Vec<crate::session::WorkflowSchemaDefinition>,
 }
@@ -783,8 +771,6 @@ pub struct WorkflowDesignWorkflowPatch {
     pub max_concurrent: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_output_schema_ref: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intermediate_output_schema_ref: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -63,13 +63,9 @@ test("workflow schema settings read and update workflow schema refs", async () =
     },
   })
 
-  await handleWorkflowSettingsCommand(harness.deps, harness.context, ["intermediate-output-schema"])
   await handleWorkflowSettingsCommand(harness.deps, harness.context, ["run-output-schema", "none"])
 
   assert.deepEqual(harness.calls, [
-    "resolve:workflow-1",
-    "upsert:workflow-1",
-    "footer:info:workflow workflow-1 intermediate-output-schema: intermediate-schema",
     "resolve:workflow-1",
     "upsert:workflow-1",
     "set-run-schema:workflow-1:none",
@@ -152,10 +148,6 @@ function createHarness(overrides: HarnessOptions) {
       workflow: workflow({ id: workflowRef, run_output_schema_ref: schemaRef }),
       session: session({ id: "session-schema" }),
     }),
-    setWorkflowIntermediateOutputSchema: async (workflowRef, schemaRef) => ({
-      workflow: workflow({ id: workflowRef, intermediate_output_schema_ref: schemaRef }),
-      session: session({ id: "session-schema" }),
-    }),
     ...depOverrides,
   }
   const context: WorkflowSettingsCommandContext = {
@@ -195,7 +187,6 @@ function workflow(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefiniti
     edges: [],
     endpoints: [],
     run_output_schema_ref: "run-schema",
-    intermediate_output_schema_ref: "intermediate-schema",
     ...overrides,
   }
 }

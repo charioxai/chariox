@@ -35,7 +35,6 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             flush_agent_context_before_run: Some(false),
             max_concurrent: Some(2),
             run_output_schema: Some("final".to_string()),
-            intermediate_output_schema: Some("progress".to_string()),
         },
         schemas: vec![
             WorkflowCodeSchemaDefinition {
@@ -254,10 +253,6 @@ fn applies_workflow_code_definition_to_session_primitives() {
         Some(final_schema_id.as_str())
     );
     assert_eq!(
-        workflow.intermediate_output_schema_ref(),
-        Some(progress_schema_id.as_str())
-    );
-    assert_eq!(
         workflow
             .schema(final_schema_id)
             .and_then(|schema| schema.alias()),
@@ -461,16 +456,8 @@ fn workflow_code_apply_preserves_node_intermediate_schema_override() {
         .expect("planner node should exist");
 
     assert_eq!(
-        workflow.intermediate_output_schema_ref(),
-        report.schema_refs.get("progress").map(String::as_str)
-    );
-    assert_eq!(
         planner.intermediate_output_schema_ref(),
         report.schema_refs.get("node_progress").map(String::as_str)
-    );
-    assert_ne!(
-        workflow.intermediate_output_schema_ref(),
-        planner.intermediate_output_schema_ref()
     );
 }
 
@@ -495,7 +482,6 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             flush_agent_context_before_run: None,
             max_concurrent: Some(2),
             run_output_schema: None,
-            intermediate_output_schema: None,
         },
         schemas: Vec::new(),
         nodes: vec![

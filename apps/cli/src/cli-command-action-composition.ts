@@ -255,7 +255,6 @@ export type CliCommandActionCompositionDeps = {
   removeWorkflowSchedule: AnyFn
   setWorkflowFlushContext: AnyFn
   setWorkflowRunOutputSchema: AnyFn
-  setWorkflowIntermediateOutputSchema: AnyFn
   listWorkflowRuns: AnyFn
   cancelWorkflowRun: AnyFn
   resumeWorkflowRun: AnyFn
@@ -352,7 +351,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     removeWorkflowSchedule,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,
@@ -793,7 +791,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     removeWorkflowSchedule,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
-    setWorkflowIntermediateOutputSchema,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,

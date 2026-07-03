@@ -55,7 +55,6 @@ const {
   setWorkflowNodeCanCompleteRunRequest,
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   setWorkflowNodeIntermediateOutputSchemaRequest,
-  setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowRunOutputSchemaRequest,
   setWorkflowFlushContextRequest,
   endSessionRequest,
@@ -590,7 +589,6 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
-      await client.send(setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[0], true))
       await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[1], true))
       await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[0], true))
@@ -726,7 +724,6 @@ function buildImmediateReleaseDownstreamScenario(providers, model, schemaPath) {
     },
     async configureWorkflow(client, sessionId, workflowId, nodeIds) {
       await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
-      await client.send(setWorkflowIntermediateOutputSchemaRequest(sessionId, workflowId, schemaPath))
       await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowId, nodeIds[0], true))
       await client.send(setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowId, nodeIds[0], schemaPath))
       await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[1], true))

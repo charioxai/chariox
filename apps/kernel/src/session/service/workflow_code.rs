@@ -381,10 +381,6 @@ impl SessionService {
             definition.workflow.run_output_schema.as_deref(),
             schema_refs,
         ));
-        workflow.set_intermediate_output_schema_ref(resolve_workflow_code_schema_ref(
-            definition.workflow.intermediate_output_schema.as_deref(),
-            schema_refs,
-        ));
         Ok(())
     }
 

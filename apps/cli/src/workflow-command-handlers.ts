@@ -209,10 +209,6 @@ export type WorkflowCommandHandlerDeps = {
     workflowRef: string,
     runOutputSchemaRef: string | null,
   ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
-  setWorkflowIntermediateOutputSchema?: (
-    workflowRef: string,
-    intermediateOutputSchemaRef: string | null,
-  ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
   openWorkflowNodeInstructionsEditor?: (workflowId: string, nodeId: string, draft: string) => void
   closeWorkflowNodeInstructionsEditor?: () => void
   getWorkflowNodeInstructionsDraft?: () => string

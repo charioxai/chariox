@@ -55,7 +55,6 @@ mod tests {
                 flush_agent_context_before_run: Some(true),
                 max_concurrent: Some(2),
                 run_output_schema: None,
-                intermediate_output_schema: None,
             },
             schemas: Vec::new(),
             nodes: vec![
