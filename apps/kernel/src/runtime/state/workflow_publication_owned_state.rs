@@ -1099,7 +1099,7 @@ fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
 fn default_publication_route(publication_value: &serde_json::Value) -> &'static str {
     match hook_transport(publication_value).as_str() {
         Some("api_sse_json") => "/invoke",
-        Some("websocket_json") => "/.well-known/arroba/publication/ws",
+        Some("websocket_json") => "/socket",
         Some("mcp") => "/mcp",
         _ => "/*",
     }
