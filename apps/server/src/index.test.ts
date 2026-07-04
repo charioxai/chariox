@@ -618,6 +618,7 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
     parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
     input_schema: { type: "object", required: ["task"] },
     mode: "async",
+    local_port: 3030,
     created_by_user_id: "local",
     created_at_ms: 0,
     updated_at_ms: 0,
@@ -631,6 +632,7 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
     queue_ref: "default",
     kernel_endpoint: "ws://kernel",
     route: "/qa",
+    local_port: 3030,
     methods: ["POST"],
     parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
     input_schema: { type: "object", required: ["task"] },
@@ -688,6 +690,7 @@ test("gateway can load publication config from kernel lookup", async () => {
             endpoint_id: "endpoint-1",
             enabled: true,
             route: "/qa",
+            local_port: 4040,
             methods: ["GET"],
             parser: { kind: "json" },
             mode: "sync",
@@ -713,6 +716,7 @@ test("gateway can load publication config from kernel lookup", async () => {
   assert.equal(config.publication_id, "pub-1")
   assert.equal(config.workflow_ref, "workflow-1")
   assert.equal(config.endpoint_ref, "endpoint-1")
+  assert.equal(config.local_port, 4040)
   assert.deepEqual(config.methods, ["GET"])
 })
 
@@ -728,6 +732,7 @@ test("gateway maps exported publication packages to runtime config", async () =>
       transport: "human_http",
       endpoint_id: "endpoint-1",
       route: "/*",
+      local_port: 3030,
       methods: ["GET", "PATCH"],
       parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
       input_schema: { type: "object", required: ["prompt"] },
@@ -761,6 +766,7 @@ test("gateway maps exported publication packages to runtime config", async () =>
     kernel_endpoint: "ws://kernel",
     transport: "human_http",
     route: "/*",
+    local_port: 3030,
     methods: ["GET"],
     parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
     input_schema: { type: "object", required: ["prompt"] },
@@ -1691,7 +1697,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
     ...baseConfig,
     publication_id: "pub-mcp",
     transport: "mcp",
-    route: "/ignored",
+    route: "/integrations/mcp",
     methods: ["POST"],
     input_schema: {
       type: "object",
@@ -1719,7 +1725,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
   try {
     const initialize = await app.inject({
       method: "POST",
-      url: "/mcp",
+      url: "/integrations/mcp",
       payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } },
     })
     assert.equal(initialize.statusCode, 200)
@@ -1727,7 +1733,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
 
     const tools = await app.inject({
       method: "POST",
-      url: "/mcp",
+      url: "/integrations/mcp",
       payload: { jsonrpc: "2.0", id: 2, method: "tools/list" },
     })
     assert.equal(tools.statusCode, 200)
@@ -1735,7 +1741,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
 
     const called = await app.inject({
       method: "POST",
-      url: "/mcp",
+      url: "/integrations/mcp",
       payload: {
         jsonrpc: "2.0",
         id: 3,
@@ -1751,7 +1757,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
     assert.deepEqual(seenInput, { prompt: "ship" })
     assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "mcp", tool_name: "invoke_pub_mcp" } })
 
-    const genericRoute = await app.inject({ method: "POST", url: "/ignored", payload: { prompt: "nope" } })
+    const genericRoute = await app.inject({ method: "POST", url: "/not-mcp", payload: { prompt: "nope" } })
     assert.equal(genericRoute.statusCode, 404)
   } finally {
     await app.close()
@@ -1803,7 +1809,7 @@ test("mcp accepts browser preflight for JSON-RPC tool calls", async () => {
     ...baseConfig,
     publication_id: "pub-mcp",
     transport: "mcp",
-    route: "/mcp",
+    route: "/integrations/mcp",
     methods: ["POST"],
   }, {
     invokeWorkflow: async () => ({ accepted: true }),
@@ -1812,7 +1818,7 @@ test("mcp accepts browser preflight for JSON-RPC tool calls", async () => {
   try {
     const response = await app.inject({
       method: "OPTIONS",
-      url: "/mcp",
+      url: "/integrations/mcp",
       headers: {
         origin: "https://cloud.example.test",
         "access-control-request-method": "POST",
@@ -1894,7 +1900,7 @@ test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket t
   }> = [
     { transport: "human_http", methods: ["GET"], route: "/qa/*", adapterMarker: /invokeHumanHttp/ },
     { transport: "api_sse_json", methods: ["POST"], route: "/custom/api", adapterMarker: /invokeApiSse/ },
-    { transport: "websocket_json", methods: ["GET"], route: "/.well-known/arroba/publication/ws", adapterMarker: /invokeWebSocket/ },
+    { transport: "websocket_json", methods: ["GET"], route: "/custom/ws", adapterMarker: /invokeWebSocket/ },
   ]
 
   for (const item of cases) {
@@ -3265,6 +3271,8 @@ test("gateway accepts WebSocket publication invocations", async () => {
   const modes: unknown[] = []
   const { app } = buildServer({
     ...baseConfig,
+    transport: "websocket_json",
+    route: "/custom/ws",
     input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
   }, {
     invokeWorkflow: async (invocation) => {
@@ -3290,7 +3298,7 @@ test("gateway accepts WebSocket publication invocations", async () => {
     await app.listen({ host: "127.0.0.1", port: 0 })
     const address = app.server.address()
     const port = typeof address === "object" && address ? address.port : 0
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/.well-known/arroba/publication/ws`)
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/custom/ws`)
     const reader = createWebSocketReader(socket)
     try {
       assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-test" })

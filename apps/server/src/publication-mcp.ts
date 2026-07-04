@@ -54,8 +54,13 @@ const JSON_RPC_VERSION = "2.0"
 const MCP_PROTOCOL_VERSION = "2025-03-26"
 export const PUBLICATION_MCP_PATH = "/mcp"
 
+export function mcpInvokePath(publication: WorkflowPublicationConfig) {
+  return publication.route?.trim() || PUBLICATION_MCP_PATH
+}
+
 export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPublicationConfig, deps: GatewayDeps) {
-  registerMcpOptions(app, PUBLICATION_MCP_PATH, async (_request: unknown, reply: McpReply) => {
+  const invokePath = mcpInvokePath(publication)
+  registerMcpOptions(app, invokePath, async (_request: unknown, reply: McpReply) => {
     if (!isMcpPublication(publication)) {
       reply.code(404)
       return { error: "not found" }
@@ -63,7 +68,7 @@ export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPu
     reply.code(204).headers(mcpCorsHeaders())
     return null
   })
-  registerMcpPost(app, PUBLICATION_MCP_PATH, async (request: { body?: unknown }, reply: McpReply) => {
+  registerMcpPost(app, invokePath, async (request: { body?: unknown }, reply: McpReply) => {
     if (!isMcpPublication(publication)) {
       reply.code(404)
       return { error: "not found" }

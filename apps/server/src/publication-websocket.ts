@@ -57,15 +57,25 @@ type WebSocketConnectionState = {
   started: boolean
 }
 
+export const DEFAULT_WEBSOCKET_INVOKE_PATH = "/.well-known/arroba/publication/ws"
+
+export function websocketInvokePath(publication: WorkflowPublicationConfig) {
+  if (publication.transport === "websocket_json") {
+    return publication.route?.trim() || DEFAULT_WEBSOCKET_INVOKE_PATH
+  }
+  return DEFAULT_WEBSOCKET_INVOKE_PATH
+}
+
 export function installPublicationWebSocket(
   app: WebSocketUpgradeHost,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
   const webSocketServer = new WebSocketServer({ noServer: true })
+  const invokePath = websocketInvokePath(publication)
   app.server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname
-    if (pathname !== "/.well-known/arroba/publication/ws") return
+    if (pathname !== invokePath) return
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
       webSocketServer.emit("connection", webSocket, request)
     })

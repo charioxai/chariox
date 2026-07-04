@@ -170,6 +170,7 @@ function workflowPublicationGatewayConfig(
     workflow_ref: publication.workflow_id,
     endpoint_ref: publication.endpoint_id,
     route: publication.route ?? "/*",
+    local_port: publication.local_port ?? undefined,
     parser: publication.parser ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
@@ -185,7 +186,7 @@ function workflowPublicationEnvTemplate(publication: WorkflowPublicationDefiniti
   return [
     "# Copy this file to .env or export these variables before running run.sh.",
     "HOST=0.0.0.0",
-    "PORT=3000",
+    `PORT=${publication.local_port ?? 3000}`,
     `ARROBA_KERNEL_URL=${kernelUrl ?? "ws://127.0.0.1:43118"}`,
     "ARROBA_PUBLICATION_PACKAGE=./publication.json",
     `ARROBA_PUBLICATION_SESSION_ID=${publication.session_id}`,
@@ -227,6 +228,10 @@ function workflowPublicationReadme(
   const body = primaryMethod === "GET"
     ? ""
     : " \\\n  -H 'content-type: application/json' \\\n  -d '{\"input\":\"hello\"}'"
+  const localPort = publication.local_port ?? 3000
+  const webSocketPath = publication.transport === "websocket_json"
+    ? route
+    : "/.well-known/arroba/publication/ws"
   return [
     `# Workflow Publication ${publication.alias ?? publication.id}`,
     "",
@@ -259,7 +264,7 @@ function workflowPublicationReadme(
     "```",
     "",
     "```bash",
-    "BASE_URL=http://127.0.0.1:3000",
+    `BASE_URL=http://127.0.0.1:${localPort}`,
     `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${body}`,
     "```",
     "",
@@ -268,8 +273,8 @@ function workflowPublicationReadme(
     "The gateway also accepts WebSocket clients at:",
     "",
     "```text",
-    "ws://127.0.0.1:3000/.well-known/arroba/publication/ws",
-    "wss://127.0.0.1:3000/.well-known/arroba/publication/ws",
+    `ws://127.0.0.1:${localPort}${webSocketPath}`,
+    `wss://127.0.0.1:${localPort}${webSocketPath}`,
     "```",
     "",
     "Send `{\"type\":\"invoke\",\"input\":{}}` to invoke the publication.",

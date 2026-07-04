@@ -10,6 +10,7 @@ import {
 import {
   isTerminalWorkflowRunStatus,
 } from "./workflow-run-status.js"
+import { websocketInvokePath } from "./publication-websocket.js"
 
 type ViewerApp = {
   get: (path: string, handler: (_request: unknown, reply: ViewerReply) => unknown) => unknown
@@ -21,7 +22,6 @@ type ViewerReply = {
 }
 
 export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
-const WEBSOCKET_INVOKE_PATH = "/.well-known/arroba/publication/ws"
 
 export function installPublicationViewerRoutes(app: ViewerApp, publication: WorkflowPublicationConfig) {
   app.get("/", async (_request, reply) => {
@@ -70,7 +70,7 @@ export function publicationViewerPage(
       : [],
     eventsUrl: options.eventsUrl ?? null,
     apiSseInvokePath: apiSseInvokePath(publication),
-    websocketInvokePath: WEBSOCKET_INVOKE_PATH,
+    websocketInvokePath: websocketInvokePath(publication),
     humanFormInvokePath: PUBLICATION_VIEWER_FORM_INVOKE_PATH,
     humanPromptTarget: promptTargetParts(publication.route ?? "/*"),
   }

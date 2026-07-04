@@ -760,6 +760,7 @@ impl SessionService {
         mode: Option<String>,
         sync_timeout_ms: Option<u64>,
         poll_ms: Option<u64>,
+        local_port: Option<u16>,
         created_by_user_id: String,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
@@ -773,6 +774,7 @@ impl SessionService {
             &parser,
             mode.as_deref(),
         )?;
+        validate_workflow_publication_local_port(local_port)?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         let alias = normalize_workflow_publication_alias(alias)?;
@@ -795,6 +797,7 @@ impl SessionService {
             mode,
             sync_timeout_ms,
             poll_ms,
+            local_port,
             created_by_user_id,
         );
         let session =
@@ -1197,6 +1200,7 @@ fn validate_workflow_publication_options(
 ) -> Result<(), DaemonError> {
     let kind = workflow_publication_transport_kind(transport)?;
     validate_workflow_publication_mode(mode)?;
+    validate_workflow_publication_route(route)?;
     match kind.as_str() {
         "human_http" => {
             validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
@@ -1213,7 +1217,6 @@ fn validate_workflow_publication_options(
             }
         }
         "websocket_json" => {
-            validate_fixed_publication_route(&kind, route, "/.well-known/arroba/publication/ws")?;
             if !methods.is_empty() {
                 return invalid_workflow_publication_option(
                     "websocket_json publications do not support HTTP method overrides",
@@ -1233,7 +1236,6 @@ fn validate_workflow_publication_options(
             }
         }
         "mcp" => {
-            validate_fixed_publication_route(&kind, route, "/mcp")?;
             validate_workflow_publication_methods(&kind, methods, &["POST"])?;
             if parser.is_some() {
                 return invalid_workflow_publication_option(
@@ -1253,6 +1255,33 @@ fn validate_workflow_publication_options(
                 "unsupported workflow publication transport `{kind}`"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_workflow_publication_route(route: Option<&str>) -> Result<(), DaemonError> {
+    let Some(route) = route.map(str::trim).filter(|route| !route.is_empty()) else {
+        return Ok(());
+    };
+    if route.starts_with('/') {
+        return Ok(());
+    }
+    invalid_workflow_publication_option("workflow publication route must start with `/`")
+}
+
+fn validate_workflow_publication_local_port(port: Option<u16>) -> Result<(), DaemonError> {
+    let Some(port) = port else {
+        return Ok(());
+    };
+    if port == 0 {
+        return invalid_workflow_publication_option(
+            "workflow publication local port must be between 1 and 65535",
+        );
+    }
+    if let Err(error) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+        return invalid_workflow_publication_option(&format!(
+            "workflow publication local port {port} is not available: {error}"
+        ));
     }
     Ok(())
 }
@@ -1310,22 +1339,6 @@ fn validate_json_publication_parser(
     }
     invalid_workflow_publication_option(&format!(
         "{transport} publications only support JSON body input"
-    ))
-}
-
-fn validate_fixed_publication_route(
-    transport: &str,
-    route: Option<&str>,
-    expected: &str,
-) -> Result<(), DaemonError> {
-    let Some(route) = route.map(str::trim).filter(|route| !route.is_empty()) else {
-        return Ok(());
-    };
-    if route == expected {
-        return Ok(());
-    }
-    invalid_workflow_publication_option(&format!(
-        "{transport} publications use fixed route `{expected}`"
     ))
 }
 

@@ -37,6 +37,7 @@ impl KernelRuntimeOwnedState {
             request.mode,
             request.sync_timeout_ms,
             request.poll_ms,
+            request.local_port,
             caller_user_id.to_string(),
         )?;
         let session = self.workflow_session(&request.session_id)?;
@@ -374,6 +375,7 @@ impl KernelRuntimeOwnedState {
             None,
             None,
             None,
+            None,
             caller_user_id.to_string(),
         );
         self.session_store
@@ -575,6 +577,9 @@ fn workflow_publication_package_json(
         "mode": string_field(publication_value, "mode").unwrap_or_else(|| default_publication_mode(publication_value)),
         "response_mode": "accepted",
     });
+    if let Some(local_port) = publication.local_port() {
+        hook["local_port"] = serde_json::json!(local_port);
+    }
     if let Some(parser) = publication_value
         .get("parser")
         .cloned()
@@ -799,6 +804,9 @@ fn workflow_publication_gateway_config_json(
             .unwrap_or_else(|| default_publication_route(publication_value).to_string()),
         "mode": string_field(publication_value, "mode").unwrap_or_else(|| default_publication_mode(publication_value)),
     });
+    if let Some(local_port) = publication.local_port() {
+        config["local_port"] = serde_json::json!(local_port);
+    }
     if let Some(parser) = publication_value
         .get("parser")
         .cloned()
@@ -848,7 +856,7 @@ fn workflow_publication_env_template(
     [
         "# Copy this file to .env or export these variables before running run.sh.",
         "HOST=0.0.0.0",
-        "PORT=3000",
+        &format!("PORT={}", publication.local_port().unwrap_or(3000)),
         &format!(
             "ARROBA_KERNEL_URL={}",
             kernel_url.unwrap_or("ws://127.0.0.1:43118")
@@ -892,6 +900,7 @@ fn workflow_publication_readme(
     } else {
         route.to_string()
     };
+    let local_port = publication.local_port().unwrap_or(3000);
     [
         &format!("# Workflow Publication {}", publication.alias().unwrap_or(publication.id())),
         "",
@@ -911,7 +920,7 @@ fn workflow_publication_readme(
         "## Invoke",
         "",
         "```bash",
-        "BASE_URL=http://127.0.0.1:3000",
+        &format!("BASE_URL=http://127.0.0.1:{local_port}"),
         &format!("curl -sS \"$BASE_URL{}\"", example_path),
         "```",
         "",

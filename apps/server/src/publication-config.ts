@@ -37,6 +37,7 @@ import type {
 } from "./publication-types.js"
 
 export function defaultPublicationConfig(): WorkflowPublicationConfig {
+  const localPort = parseOptionalPort(process.env.ARROBA_PUBLICATION_LOCAL_PORT ?? process.env.PORT)
   const config: WorkflowPublicationConfig = {
     publication_id: process.env.ARROBA_PUBLICATION_ID ?? "default",
     session_id: requiredProcessEnv("ARROBA_PUBLICATION_SESSION_ID"),
@@ -45,6 +46,7 @@ export function defaultPublicationConfig(): WorkflowPublicationConfig {
     route: process.env.ARROBA_PUBLICATION_ROUTE ?? "/*",
     mode: process.env.ARROBA_PUBLICATION_MODE === "async" ? "async" : "sync",
   }
+  if (localPort != null) config.local_port = localPort
   if (process.env.ARROBA_KERNEL_URL) config.kernel_endpoint = process.env.ARROBA_KERNEL_URL
   const tls = tlsConfigFromEnv()
   if (tls) config.tls = tls
@@ -216,6 +218,8 @@ export function publicationConfigFromPackage(
     route: hook.route ?? defaultRouteForTransport(transport),
     mode: hook.mode ?? defaultModeForTransport(transport),
   }
+  const localPort = hook.local_port ?? publicationPackage.local_port
+  if (localPort != null) config.local_port = localPort
   if (parser) config.parser = parser
   if (packageRoot) config.package_root = packageRoot
   if (publicationPackage.agent_app?.enabled) {
@@ -232,6 +236,13 @@ export function publicationConfigFromPackage(
   if (methods) config.methods = methods
   if (hook.input_schema) config.input_schema = hook.input_schema
   return config
+}
+
+function parseOptionalPort(value: string | undefined): number | undefined {
+  if (!value?.trim()) return undefined
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined
+  return port
 }
 
 export async function loadPublicationConfigFromKernel(
@@ -284,6 +295,7 @@ export function publicationConfigFromKernelRecord(
     route: publication.route ?? defaultRouteForTransport(transport),
     mode: normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport),
   }
+  if (publication.local_port != null) config.local_port = publication.local_port
   if (parser) config.parser = parser
   if (publication.sync_timeout_ms != null) config.sync_timeout_ms = publication.sync_timeout_ms
   if (publication.poll_ms != null) config.poll_ms = publication.poll_ms

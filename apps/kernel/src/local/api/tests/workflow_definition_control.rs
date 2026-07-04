@@ -2949,6 +2949,7 @@ fn local_request_api_exports_agent_app_publication_package() {
                 mode: Some("async".to_string()),
                 sync_timeout_ms: None,
                 poll_ms: None,
+                local_port: None,
             },
         ))
         .expect("workflow publication should be created")
@@ -3055,6 +3056,7 @@ fn local_request_api_validates_publication_transport_options() {
                 mode: Some("async".to_string()),
                 sync_timeout_ms: Some(30_000),
                 poll_ms: Some(250),
+                local_port: Some(3031),
             },
         ))
         .expect("api publication should be created")
@@ -3101,6 +3103,14 @@ fn local_request_api_validates_publication_transport_options() {
         publication_json["hooks"][0]["mode"],
         serde_json::json!("async")
     );
+    assert_eq!(
+        publication_json["hooks"][0]["local_port"],
+        serde_json::json!(3031)
+    );
+    assert_eq!(
+        package_text_file(&exported, ".env.example").contains("PORT=3031"),
+        true
+    );
 
     let mcp_publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
@@ -3119,6 +3129,7 @@ fn local_request_api_validates_publication_transport_options() {
                 mode: None,
                 sync_timeout_ms: None,
                 poll_ms: None,
+                local_port: None,
             },
         ))
         .expect("mcp publication should be created")
@@ -3165,6 +3176,7 @@ fn local_request_api_validates_publication_transport_options() {
             mode: Some("sync".to_string()),
             sync_timeout_ms: None,
             poll_ms: None,
+            local_port: None,
         },
     ));
     assert!(api_sync
@@ -3188,6 +3200,7 @@ fn local_request_api_validates_publication_transport_options() {
             mode: Some("sync".to_string()),
             sync_timeout_ms: None,
             poll_ms: None,
+            local_port: None,
         },
     ));
     assert!(mcp_parser
@@ -3195,28 +3208,32 @@ fn local_request_api_validates_publication_transport_options() {
         .to_string()
         .contains("mcp publications read input from MCP tool arguments"));
 
-    let websocket_custom_route = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-        CreateWorkflowPublicationRequest {
-            session_id: graph.session_id,
-            workflow_ref: graph.workflow_id,
-            endpoint_ref: graph.endpoint_id,
-            queue_ref: Some("default".to_string()),
-            alias: Some("custom-ws".to_string()),
-            route: Some("/socket".to_string()),
-            methods: Vec::new(),
-            transport: Some(serde_json::json!({ "kind": "websocket_json" })),
-            parser: None,
-            input_schema: None,
-            trace_exposure: None,
-            mode: Some("async".to_string()),
-            sync_timeout_ms: None,
-            poll_ms: None,
-        },
-    ));
-    assert!(websocket_custom_route
-        .expect_err("websocket_json custom route should fail")
-        .to_string()
-        .contains("websocket_json publications use fixed route"));
+    let websocket_custom_route = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id,
+                workflow_ref: graph.workflow_id,
+                endpoint_ref: graph.endpoint_id,
+                queue_ref: Some("default".to_string()),
+                alias: Some("custom-ws".to_string()),
+                route: Some("/socket".to_string()),
+                methods: Vec::new(),
+                transport: Some(serde_json::json!({ "kind": "websocket_json" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: Some("async".to_string()),
+                sync_timeout_ms: None,
+                poll_ms: None,
+                local_port: None,
+            },
+        ))
+        .expect("websocket_json custom route should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(websocket_custom_route.route(), Some("/socket"));
 }
 
 #[test]
