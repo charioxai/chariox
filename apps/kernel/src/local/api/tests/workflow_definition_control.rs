@@ -2937,6 +2937,7 @@ fn local_request_api_exports_agent_app_publication_package() {
                 endpoint_ref: endpoint.id().to_string(),
                 queue_ref: Some("default".to_string()),
                 alias: Some("shopping-app".to_string()),
+                kind: Some("ingress".to_string()),
                 route: Some("/add/*".to_string()),
                 methods: vec!["GET".to_string()],
                 transport: Some(serde_json::json!({ "kind": "human_http" })),
@@ -3019,6 +3020,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     };
     let publication_json = package_json_file(&exported, "publication.json");
     assert_eq!(publication_json["package_version"], serde_json::json!(2));
+    assert_eq!(publication_json["kind"], serde_json::json!("ingress"));
     assert_eq!(
         publication_json["agent_app"]["routes"][0]["path"],
         serde_json::json!("/add/*")
@@ -3047,6 +3049,7 @@ fn local_request_api_validates_publication_transport_options() {
                 endpoint_ref: graph.endpoint_id.clone(),
                 queue_ref: Some("default".to_string()),
                 alias: Some("api-default-route".to_string()),
+                kind: Some("ingress".to_string()),
                 route: None,
                 methods: vec!["POST".to_string()],
                 transport: Some(serde_json::json!({ "kind": "api_sse_json" })),
@@ -3082,6 +3085,7 @@ fn local_request_api_validates_publication_transport_options() {
         _ => panic!("unexpected local response"),
     };
     let publication_json = package_json_file(&exported, "publication.json");
+    assert_eq!(publication_json["kind"], serde_json::json!("ingress"));
     assert_eq!(
         publication_json["hooks"][0]["route"],
         serde_json::json!("/invoke")
@@ -3110,6 +3114,7 @@ fn local_request_api_validates_publication_transport_options() {
                 endpoint_ref: graph.endpoint_id.clone(),
                 queue_ref: Some("default".to_string()),
                 alias: Some("mcp-defaults".to_string()),
+                kind: Some("ingress".to_string()),
                 route: None,
                 methods: Vec::new(),
                 transport: Some(serde_json::json!({ "kind": "mcp" })),
@@ -3156,9 +3161,10 @@ fn local_request_api_validates_publication_transport_options() {
             endpoint_ref: graph.endpoint_id.clone(),
             queue_ref: Some("default".to_string()),
             alias: Some("schedule-without-watchdog".to_string()),
+            kind: Some("schedule_only".to_string()),
             route: None,
             methods: Vec::new(),
-            transport: Some(serde_json::json!({ "kind": "schedule_only" })),
+            transport: None,
             parser: None,
             input_schema: None,
             trace_exposure: None,
@@ -3171,6 +3177,30 @@ fn local_request_api_validates_publication_transport_options() {
         .expect_err("schedule_only publication without enabled schedule should fail")
         .to_string()
         .contains("require an enabled schedule"));
+
+    let conflicting_kind_and_transport = harness.dispatch(
+        LocalDaemonRequest::CreateWorkflowPublication(CreateWorkflowPublicationRequest {
+            session_id: graph.session_id.clone(),
+            workflow_ref: graph.workflow_id.clone(),
+            endpoint_ref: graph.endpoint_id.clone(),
+            queue_ref: Some("default".to_string()),
+            alias: Some("conflicting-publication-kind".to_string()),
+            kind: Some("ingress".to_string()),
+            route: None,
+            methods: Vec::new(),
+            transport: Some(serde_json::json!({ "kind": "schedule_only" })),
+            parser: None,
+            input_schema: None,
+            trace_exposure: None,
+            mode: None,
+            sync_timeout_ms: None,
+            poll_ms: None,
+        }),
+    );
+    assert!(conflicting_kind_and_transport
+        .expect_err("ingress publication with schedule_only transport should fail")
+        .to_string()
+        .contains("ingress publications must use an ingress transport"));
 
     harness
         .dispatch(LocalDaemonRequest::CreateWorkflowSchedule(
@@ -3195,9 +3225,10 @@ fn local_request_api_validates_publication_transport_options() {
                 endpoint_ref: graph.endpoint_id.clone(),
                 queue_ref: Some("default".to_string()),
                 alias: Some("schedule-only".to_string()),
+                kind: Some("schedule_only".to_string()),
                 route: None,
                 methods: Vec::new(),
-                transport: Some(serde_json::json!({ "kind": "schedule_only" })),
+                transport: None,
                 parser: None,
                 input_schema: None,
                 trace_exposure: None,
@@ -3229,6 +3260,8 @@ fn local_request_api_validates_publication_transport_options() {
         _ => panic!("unexpected local response"),
     };
     let schedule_json = package_json_file(&exported_schedule, "publication.json");
+    assert_eq!(schedule_publication.kind(), "schedule_only");
+    assert_eq!(schedule_json["kind"], serde_json::json!("schedule_only"));
     assert_eq!(
         schedule_json["hooks"][0]["transport"],
         serde_json::json!("schedule_only")
@@ -3245,6 +3278,7 @@ fn local_request_api_validates_publication_transport_options() {
             endpoint_ref: graph.endpoint_id.clone(),
             queue_ref: Some("default".to_string()),
             alias: Some("api-sync".to_string()),
+            kind: Some("ingress".to_string()),
             route: Some("/api".to_string()),
             methods: vec!["POST".to_string()],
             transport: Some(serde_json::json!({ "kind": "api_sse_json" })),
@@ -3268,6 +3302,7 @@ fn local_request_api_validates_publication_transport_options() {
             endpoint_ref: graph.endpoint_id.clone(),
             queue_ref: Some("default".to_string()),
             alias: Some("mcp-json".to_string()),
+            kind: Some("ingress".to_string()),
             route: Some("/mcp".to_string()),
             methods: vec!["POST".to_string()],
             transport: Some(serde_json::json!({ "kind": "mcp" })),
@@ -3292,6 +3327,7 @@ fn local_request_api_validates_publication_transport_options() {
                 endpoint_ref: graph.endpoint_id,
                 queue_ref: Some("default".to_string()),
                 alias: Some("custom-ws".to_string()),
+                kind: Some("ingress".to_string()),
                 route: Some("/socket".to_string()),
                 methods: Vec::new(),
                 transport: Some(serde_json::json!({ "kind": "websocket_json" })),

@@ -662,6 +662,7 @@ export function resolveWorkflowRequest(sessionId: string, workflowRef: string) {
 export type CreateWorkflowPublicationOptions = {
   alias?: string | null
   queueRef?: string | null
+  kind?: "ingress" | "schedule_only" | string | null
   route?: string | null
   methods?: string[]
   transport?: unknown | null
@@ -686,6 +687,7 @@ export function createWorkflowPublicationRequest(
       endpoint_ref: endpointRef,
       queue_ref: options.queueRef ?? null,
       alias: options.alias ?? null,
+      kind: options.kind ?? null,
       route: options.route ?? null,
       methods: options.methods ?? [],
       transport: options.transport ?? null,

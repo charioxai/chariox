@@ -86,6 +86,7 @@ export function makeWorkflowPublication(overrides: Partial<WorkflowPublicationDe
     endpoint_id: "endpoint-1",
     alias: "public_qa",
     enabled: true,
+    kind: "ingress",
     route: "/qa",
     methods: ["POST"],
     parser: { kind: "json" },

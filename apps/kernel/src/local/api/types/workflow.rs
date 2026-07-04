@@ -263,6 +263,8 @@ pub struct CreateWorkflowPublicationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,

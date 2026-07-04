@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 222
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 223
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2535,6 +2535,7 @@ export type WorkflowPublicationDefinition = {
   queue_ref?: string | null
   alias?: string | null
   enabled: boolean
+  kind?: "ingress" | "schedule_only" | string | null
   route?: string | null
   methods?: string[]
   transport?: unknown | null

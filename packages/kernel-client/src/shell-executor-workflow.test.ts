@@ -834,6 +834,7 @@ test("executeShellCommand manages workflow publications", async () => {
         endpoint_ref: "endpoint-1",
         queue_ref: "priority",
         alias: "public_qa",
+        kind: null,
         route: "/qa",
         methods: ["POST"],
         transport: null,

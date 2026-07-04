@@ -521,11 +521,7 @@ fn publication_local_url(host: &str, port: u16, route: Option<&str>) -> String {
 }
 
 fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> bool {
-    publication
-        .transport()
-        .and_then(|transport| transport.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        == Some("schedule_only")
+    publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
 }
 
 #[derive(Clone)]

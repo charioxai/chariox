@@ -70,6 +70,9 @@ pub use types::{
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
+pub use workflow_publication::{
+    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
+};
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 
 pub(crate) fn is_false(value: &bool) -> bool {

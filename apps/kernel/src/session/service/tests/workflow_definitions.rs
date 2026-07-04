@@ -139,6 +139,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             endpoint.id(),
             Some("default".to_string()),
             Some("public_review".to_string()),
+            Some("ingress".to_string()),
             Some("/review".to_string()),
             vec!["POST".to_string()],
             Some(serde_json::json!({"kind": "human_http"})),

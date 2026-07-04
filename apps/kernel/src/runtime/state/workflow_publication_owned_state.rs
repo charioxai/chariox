@@ -28,6 +28,7 @@ impl KernelRuntimeOwnedState {
             &request.endpoint_ref,
             request.queue_ref,
             request.alias,
+            request.kind,
             request.route,
             request.methods,
             request.transport,
@@ -365,6 +366,7 @@ impl KernelRuntimeOwnedState {
             endpoint_id,
             Some("default".to_string()),
             None,
+            crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS,
             None,
             Vec::new(),
             None,
@@ -595,6 +597,7 @@ fn workflow_publication_package_json(
         "schema_version": 1,
         "package_version": workflow_publication_package_version(agent_app),
         "publication_id": publication.id(),
+        "kind": publication.kind(),
         "alias": publication.alias(),
         "source_session_id": publication.session_id(),
         "workflow_id": publication.workflow_id(),
@@ -1072,6 +1075,15 @@ fn workflow_publication_package_archive_base64(
 }
 
 fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
+    if publication_value
+        .get("kind")
+        .and_then(|value| value.as_str())
+        == Some(crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY)
+    {
+        return serde_json::Value::String(
+            crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY.to_string(),
+        );
+    }
     let Some(transport) = publication_value.get("transport") else {
         return serde_json::Value::String("human_http".to_string());
     };

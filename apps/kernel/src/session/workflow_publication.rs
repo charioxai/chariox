@@ -4,6 +4,12 @@ use serde_json::Value;
 use super::types::unix_epoch_ms;
 
 const MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS: usize = 20;
+pub const WORKFLOW_PUBLICATION_KIND_INGRESS: &str = "ingress";
+pub const WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY: &str = "schedule_only";
+
+fn default_workflow_publication_kind() -> String {
+    WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPublicationRuntimeLogEntry {
@@ -22,6 +28,8 @@ pub struct WorkflowPublicationDefinition {
     queue_ref: Option<String>,
     alias: Option<String>,
     enabled: bool,
+    #[serde(default = "default_workflow_publication_kind")]
+    kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     route: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -68,6 +76,7 @@ impl WorkflowPublicationDefinition {
         endpoint_id: impl Into<String>,
         queue_ref: Option<String>,
         alias: Option<String>,
+        kind: impl Into<String>,
         route: Option<String>,
         methods: Vec<String>,
         transport: Option<Value>,
@@ -88,6 +97,7 @@ impl WorkflowPublicationDefinition {
             queue_ref,
             alias,
             enabled: true,
+            kind: kind.into(),
             route,
             methods,
             transport,
@@ -136,6 +146,10 @@ impl WorkflowPublicationDefinition {
 
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn kind(&self) -> &str {
+        &self.kind
     }
 
     pub fn route(&self) -> Option<&str> {

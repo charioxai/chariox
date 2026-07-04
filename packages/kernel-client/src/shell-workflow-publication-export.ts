@@ -66,6 +66,7 @@ function workflowPublicationPackage(publication: WorkflowPublicationDefinition) 
     schema_version: 1,
     package_version: 1,
     publication_id: publication.id,
+    kind: publication.kind ?? "ingress",
     alias: publication.alias ?? null,
     source_session_id: publication.session_id,
     workflow_id: publication.workflow_id,
@@ -160,6 +161,7 @@ function uniqueByName<T extends { name: string }>(items: T[]) {
 }
 
 function hookTransport(publication: WorkflowPublicationDefinition) {
+  if (publication.kind === "schedule_only") return "schedule_only"
   const transport = publication.transport as { kind?: unknown } | null | undefined
   return typeof transport?.kind === "string" ? transport.kind : "human_http"
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY};
 use std::path::Path;
 
 impl SessionService {
@@ -751,6 +752,7 @@ impl SessionService {
         endpoint_ref: &str,
         queue_ref: Option<String>,
         alias: Option<String>,
+        kind: Option<String>,
         route: Option<String>,
         methods: Vec<String>,
         transport: Option<Value>,
@@ -766,7 +768,9 @@ impl SessionService {
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
         validate_workflow_publication_trace_exposure(&trace_exposure, &workflow)?;
+        let publication_kind = resolve_workflow_publication_kind(kind.as_deref(), &transport)?;
         validate_workflow_publication_options(
+            &publication_kind,
             &transport,
             route.as_deref(),
             &methods,
@@ -775,7 +779,7 @@ impl SessionService {
         )?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
-        if workflow_publication_transport_kind(&transport)? == "schedule_only" {
+        if publication_kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
             self.validate_schedule_only_workflow_publication(
                 session_id,
                 workflow.id(),
@@ -794,6 +798,7 @@ impl SessionService {
             endpoint.id().to_string(),
             Some(normalized_queue_ref),
             alias,
+            publication_kind,
             route,
             methods,
             transport,
@@ -1279,15 +1284,51 @@ fn normalize_workflow_publication_queue_ref(queue_ref: Option<String>) -> String
 }
 
 fn validate_workflow_publication_options(
+    publication_kind: &str,
     transport: &Option<serde_json::Value>,
     route: Option<&str>,
     methods: &[String],
     parser: &Option<serde_json::Value>,
     mode: Option<&str>,
 ) -> Result<(), DaemonError> {
-    let kind = workflow_publication_transport_kind(transport)?;
     validate_workflow_publication_mode(mode)?;
     validate_workflow_publication_route(route)?;
+    if publication_kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
+        if route.is_some_and(|route| !route.trim().is_empty()) {
+            return invalid_workflow_publication_option(
+                "schedule_only publications do not expose an ingress route",
+            );
+        }
+        if !methods.is_empty() {
+            return invalid_workflow_publication_option(
+                "schedule_only publications do not support HTTP method overrides",
+            );
+        }
+        if parser.is_some() {
+            return invalid_workflow_publication_option(
+                "schedule_only publications do not parse external request input",
+            );
+        }
+        if mode.is_some() {
+            return invalid_workflow_publication_option(
+                "schedule_only publications do not support response mode overrides",
+            );
+        }
+        let transport_kind = workflow_publication_transport_kind(transport)?;
+        if transport.is_some() && transport_kind != WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
+            return invalid_workflow_publication_option(
+                "schedule_only publications must not configure an ingress transport",
+            );
+        }
+        return Ok(());
+    }
+
+    let kind = workflow_publication_transport_kind(transport)?;
+    if kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
+        return invalid_workflow_publication_option(
+            "ingress publications must use an ingress transport",
+        );
+    }
     match kind.as_str() {
         "human_http" => {
             validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
@@ -1337,28 +1378,6 @@ fn validate_workflow_publication_options(
                 }
             }
         }
-        "schedule_only" => {
-            if route.is_some_and(|route| !route.trim().is_empty()) {
-                return invalid_workflow_publication_option(
-                    "schedule_only publications do not expose an ingress route",
-                );
-            }
-            if !methods.is_empty() {
-                return invalid_workflow_publication_option(
-                    "schedule_only publications do not support HTTP method overrides",
-                );
-            }
-            if parser.is_some() {
-                return invalid_workflow_publication_option(
-                    "schedule_only publications do not parse external request input",
-                );
-            }
-            if mode.is_some() {
-                return invalid_workflow_publication_option(
-                    "schedule_only publications do not support response mode overrides",
-                );
-            }
-        }
         _ => {
             return invalid_workflow_publication_option(&format!(
                 "unsupported workflow publication transport `{kind}`"
@@ -1366,6 +1385,31 @@ fn validate_workflow_publication_options(
         }
     }
     Ok(())
+}
+
+fn resolve_workflow_publication_kind(
+    kind: Option<&str>,
+    transport: &Option<serde_json::Value>,
+) -> Result<String, DaemonError> {
+    let inferred = || -> Result<String, DaemonError> {
+        let transport_kind = workflow_publication_transport_kind(transport)?;
+        if transport_kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
+            Ok(WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY.to_string())
+        } else {
+            Ok(WORKFLOW_PUBLICATION_KIND_INGRESS.to_string())
+        }
+    };
+    let Some(kind) = kind.map(str::trim).filter(|value| !value.is_empty()) else {
+        return inferred();
+    };
+    match kind {
+        WORKFLOW_PUBLICATION_KIND_INGRESS | WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY => {
+            Ok(kind.to_string())
+        }
+        _ => invalid_workflow_publication_option(&format!(
+            "unsupported workflow publication kind `{kind}`"
+        )),
+    }
 }
 
 fn validate_workflow_publication_route(route: Option<&str>) -> Result<(), DaemonError> {
