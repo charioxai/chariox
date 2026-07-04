@@ -293,15 +293,17 @@ async fn start_publication_runtime(
             },
         )
         .await;
+    let is_schedule_only = is_schedule_only_publication(&publication);
+    let runtime_status = launched_publication_runtime_status(is_schedule_only);
     let publication = mark_publication_runtime_status(
         runtime_state,
         &request.session_id,
         publication.id(),
-        "starting",
+        runtime_status,
         Some(local_url.clone()),
         Some(serde_json::json!({
             "kind": "local_runtime",
-            "status": "starting",
+            "status": runtime_status,
             "host": host,
             "port": port,
             "local_url": local_url,
@@ -313,12 +315,12 @@ async fn start_publication_runtime(
     Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
         publication,
         action: request.action,
-        status: "starting".to_string(),
+        status: runtime_status.to_string(),
         local_url: local_url.clone(),
         open_url: local_url.clone(),
         viewer_url: local_url,
         process_id,
-        message: Some("publication runtime starting; endpoint registration will publish a relay display URL when available".to_string()),
+        message: Some(launched_publication_runtime_message(is_schedule_only).to_string()),
     })
 }
 
@@ -578,6 +580,22 @@ fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> 
     publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
 }
 
+fn launched_publication_runtime_status(is_schedule_only: bool) -> &'static str {
+    if is_schedule_only {
+        "running"
+    } else {
+        "starting"
+    }
+}
+
+fn launched_publication_runtime_message(is_schedule_only: bool) -> &'static str {
+    if is_schedule_only {
+        "schedule-only publication runtime running; no ingress endpoint is exposed"
+    } else {
+        "publication runtime starting; endpoint registration will publish a relay display URL when available"
+    }
+}
+
 #[derive(Clone)]
 struct RunningPublicationRuntime {
     process_id: Option<u32>,
@@ -620,5 +638,22 @@ impl WorkflowPublicationRuntimeProcessStore {
 
     async fn remove(&self, key: &str) -> Option<WorkflowPublicationRuntimeProcess> {
         self.inner.lock().await.remove(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{launched_publication_runtime_message, launched_publication_runtime_status};
+
+    #[test]
+    fn launched_ingress_runtime_waits_for_endpoint_registration() {
+        assert_eq!(launched_publication_runtime_status(false), "starting");
+        assert!(launched_publication_runtime_message(false).contains("endpoint registration"));
+    }
+
+    #[test]
+    fn launched_schedule_only_runtime_is_running_without_ingress_registration() {
+        assert_eq!(launched_publication_runtime_status(true), "running");
+        assert!(launched_publication_runtime_message(true).contains("no ingress endpoint"));
     }
 }
