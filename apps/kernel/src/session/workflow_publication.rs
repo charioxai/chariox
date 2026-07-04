@@ -3,6 +3,15 @@ use serde_json::Value;
 
 use super::types::unix_epoch_ms;
 
+const MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationRuntimeLogEntry {
+    pub at_ms: u64,
+    pub level: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPublicationDefinition {
     id: String,
@@ -37,6 +46,12 @@ pub struct WorkflowPublicationDefinition {
     open_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deployment: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_last_heartbeat_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    runtime_logs: Vec<WorkflowPublicationRuntimeLogEntry>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -83,6 +98,9 @@ impl WorkflowPublicationDefinition {
             status: None,
             open_url: None,
             deployment: None,
+            runtime_last_heartbeat_at_ms: None,
+            runtime_last_error: None,
+            runtime_logs: Vec::new(),
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -141,6 +159,18 @@ impl WorkflowPublicationDefinition {
         self.deployment.as_ref()
     }
 
+    pub fn runtime_last_heartbeat_at_ms(&self) -> Option<u64> {
+        self.runtime_last_heartbeat_at_ms
+    }
+
+    pub fn runtime_last_error(&self) -> Option<&str> {
+        self.runtime_last_error.as_deref()
+    }
+
+    pub fn runtime_logs(&self) -> &[WorkflowPublicationRuntimeLogEntry] {
+        &self.runtime_logs
+    }
+
     pub fn trace_exposure(&self) -> Option<&Value> {
         self.trace_exposure.as_ref()
     }
@@ -156,10 +186,15 @@ impl WorkflowPublicationDefinition {
         open_url: impl Into<String>,
         deployment: Value,
     ) {
-        self.status = Some(status.into());
+        let status = status.into();
+        let now = unix_epoch_ms();
+        self.status = Some(status.clone());
         self.open_url = Some(open_url.into());
         self.deployment = Some(deployment);
-        self.updated_at_ms = unix_epoch_ms();
+        self.runtime_last_heartbeat_at_ms = Some(now);
+        self.runtime_last_error = None;
+        self.push_runtime_log_at(now, "info", format!("publication endpoint {status}"));
+        self.updated_at_ms = now;
     }
 
     pub fn mark_runtime_status(
@@ -168,13 +203,49 @@ impl WorkflowPublicationDefinition {
         open_url: Option<Option<String>>,
         deployment: Option<Value>,
     ) {
-        self.status = Some(status.into());
+        let status = status.into();
+        let now = unix_epoch_ms();
+        self.status = Some(status.clone());
         if let Some(open_url) = open_url {
             self.open_url = open_url;
         }
         if let Some(deployment) = deployment {
             self.deployment = Some(deployment);
         }
-        self.updated_at_ms = unix_epoch_ms();
+        self.runtime_last_heartbeat_at_ms = Some(now);
+        if status == "error" {
+            self.runtime_last_error = Some("publication runtime reported error".to_string());
+        } else {
+            self.runtime_last_error = None;
+        }
+        self.push_runtime_log_at(now, "info", format!("publication runtime {status}"));
+        self.updated_at_ms = now;
+    }
+
+    pub fn mark_runtime_error(&mut self, message: impl Into<String>) {
+        let now = unix_epoch_ms();
+        let message = message.into();
+        self.status = Some("error".to_string());
+        self.runtime_last_heartbeat_at_ms = Some(now);
+        self.runtime_last_error = Some(message.clone());
+        self.push_runtime_log_at(now, "error", message);
+        self.updated_at_ms = now;
+    }
+
+    fn push_runtime_log_at(
+        &mut self,
+        at_ms: u64,
+        level: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        self.runtime_logs.push(WorkflowPublicationRuntimeLogEntry {
+            at_ms,
+            level: level.into(),
+            message: message.into(),
+        });
+        if self.runtime_logs.len() > MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS {
+            let overflow = self.runtime_logs.len() - MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS;
+            self.runtime_logs.drain(0..overflow);
+        }
     }
 }

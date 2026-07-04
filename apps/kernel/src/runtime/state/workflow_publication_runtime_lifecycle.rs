@@ -182,23 +182,43 @@ async fn start_publication_runtime(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command.arg("--kernel-url").arg(&kernel_url);
-    let mut child = command
-        .spawn()
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = command.spawn().map_err(|error| {
+        let message = format!("failed to launch arroba publication gateway: {error}");
+        let _ = mark_publication_runtime_error(
+            runtime_state,
+            &request.session_id,
+            publication.id(),
+            &message,
+        );
+        DaemonError::LocalTransport {
             operation: "start workflow publication runtime",
-            message: format!("failed to launch arroba publication gateway: {error}"),
-        })?;
+            message,
+        }
+    })?;
     let process_id = child.id();
-    if let Some(status) = child
-        .try_wait()
-        .map_err(|error| DaemonError::LocalTransport {
+    if let Some(status) = child.try_wait().map_err(|error| {
+        let message = format!("failed to inspect launched publication gateway: {error}");
+        let _ = mark_publication_runtime_error(
+            runtime_state,
+            &request.session_id,
+            publication.id(),
+            &message,
+        );
+        DaemonError::LocalTransport {
             operation: "start workflow publication runtime",
-            message: format!("failed to inspect launched publication gateway: {error}"),
-        })?
-    {
+            message,
+        }
+    })? {
+        let message = format!("publication gateway exited immediately with status {status}");
+        let _ = mark_publication_runtime_error(
+            runtime_state,
+            &request.session_id,
+            publication.id(),
+            &message,
+        );
         return Err(DaemonError::LocalTransport {
             operation: "start workflow publication runtime",
-            message: format!("publication gateway exited immediately with status {status}"),
+            message,
         });
     }
     runtime_state
@@ -259,20 +279,22 @@ async fn stop_publication_runtime(
     if process
         .child
         .try_wait()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "stop workflow publication runtime",
-            message: format!("failed to inspect publication gateway: {error}"),
+        .map_err(|error| {
+            let message = format!("failed to inspect publication gateway: {error}");
+            DaemonError::LocalTransport {
+                operation: "stop workflow publication runtime",
+                message,
+            }
         })?
         .is_none()
     {
-        process
-            .child
-            .kill()
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
+        process.child.kill().await.map_err(|error| {
+            let message = format!("failed to stop publication gateway: {error}");
+            DaemonError::LocalTransport {
                 operation: "stop workflow publication runtime",
-                message: format!("failed to stop publication gateway: {error}"),
-            })?;
+                message,
+            }
+        })?;
     }
     Ok(())
 }
@@ -296,6 +318,19 @@ fn mark_publication_runtime_status(
             open_url,
             deployment,
         )
+}
+
+fn mark_publication_runtime_error(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    publication_ref: &str,
+    message: &str,
+) -> Result<WorkflowPublicationDefinition, DaemonError> {
+    runtime_state
+        .owned
+        .session_store
+        .write()
+        .mark_workflow_publication_runtime_error(session_id, publication_ref, message)
 }
 
 fn publication_runtime_kernel_url(

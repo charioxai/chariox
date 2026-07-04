@@ -979,6 +979,32 @@ impl SessionService {
         Ok(publication.clone())
     }
 
+    pub fn mark_workflow_publication_runtime_error(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        message: impl Into<String>,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "mark workflow publication runtime error",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        publication.mark_runtime_error(message);
+        Ok(publication.clone())
+    }
+
     pub fn list_workflow_runs(
         &self,
         session_id: &str,

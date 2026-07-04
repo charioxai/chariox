@@ -188,6 +188,13 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
         served.open_url(),
         Some("https://relay.example.test/display/publication-1/")
     );
+    assert!(served.runtime_last_heartbeat_at_ms().is_some());
+    assert_eq!(served.runtime_last_error(), None);
+    assert_eq!(served.runtime_logs().len(), 1);
+    assert_eq!(
+        served.runtime_logs()[0].message,
+        "publication endpoint running"
+    );
     assert_eq!(
         served
             .deployment()
@@ -195,6 +202,21 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             .and_then(serde_json::Value::as_str),
         Some("tunnel")
     );
+
+    let failed = service
+        .mark_workflow_publication_runtime_error(
+            session.id(),
+            publication.id(),
+            "gateway exited immediately",
+        )
+        .expect("publication runtime error should update");
+    assert_eq!(failed.status(), Some("error"));
+    assert_eq!(
+        failed.runtime_last_error(),
+        Some("gateway exited immediately")
+    );
+    assert_eq!(failed.runtime_logs().len(), 2);
+    assert_eq!(failed.runtime_logs()[1].level, "error");
 
     let stopped = service
         .mark_workflow_publication_runtime_status(
