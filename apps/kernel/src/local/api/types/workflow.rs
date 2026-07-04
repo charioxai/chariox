@@ -327,6 +327,7 @@ pub enum WorkflowPublicationRuntimeAction {
     Start,
     Stop,
     Restart,
+    Inspect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

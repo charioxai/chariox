@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 223
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 224
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2579,7 +2579,7 @@ export type WorkflowPublicationPackageExportedResponse = {
   }
 }
 
-export type WorkflowPublicationRuntimeAction = "start" | "stop" | "restart"
+export type WorkflowPublicationRuntimeAction = "start" | "stop" | "restart" | "inspect"
 
 export type WorkflowPublicationRuntimeControlledResponse = {
   WorkflowPublicationRuntimeControlled: {

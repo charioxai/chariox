@@ -57,6 +57,9 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
     let publication_id = publication.id().to_string();
     let process_key = publication_runtime_process_key(&request.session_id, &publication_id);
     match request.action {
+        WorkflowPublicationRuntimeAction::Inspect => {
+            inspect_publication_runtime(runtime_state, publication, process_key).await
+        }
         WorkflowPublicationRuntimeAction::Stop => {
             stop_publication_runtime(runtime_state, &process_key).await?;
             let publication = mark_publication_runtime_status(
@@ -88,6 +91,57 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
             start_publication_runtime(runtime_state, request, publication, process_key).await
         }
     }
+}
+
+async fn inspect_publication_runtime(
+    runtime_state: &KernelRuntimeState,
+    publication: WorkflowPublicationDefinition,
+    process_key: String,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let running = runtime_state
+        .owned
+        .workflow_publication_runtimes
+        .running(&process_key)
+        .await?;
+    let local_url = running
+        .as_ref()
+        .and_then(|process| process.local_url.clone());
+    let process_id = running.as_ref().and_then(|process| process.process_id);
+    let status = if running.is_some() {
+        "running".to_string()
+    } else if publication.status() == Some("error") {
+        "error".to_string()
+    } else {
+        "stopped".to_string()
+    };
+    let open_url = running.as_ref().and_then(|_| {
+        publication
+            .open_url()
+            .map(str::to_string)
+            .or(local_url.clone())
+    });
+    let viewer_url = running.as_ref().and_then(|_| {
+        publication
+            .viewer_url()
+            .map(str::to_string)
+            .or_else(|| open_url.clone())
+            .or(local_url.clone())
+    });
+    let message = if running.is_some() {
+        "publication runtime is running"
+    } else {
+        "publication runtime process is not running"
+    };
+    Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
+        publication,
+        action: WorkflowPublicationRuntimeAction::Inspect,
+        status,
+        local_url,
+        open_url,
+        viewer_url,
+        process_id,
+        message: Some(message.to_string()),
+    })
 }
 
 async fn start_publication_runtime(

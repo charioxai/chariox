@@ -66,6 +66,16 @@ test("workflow publication runtime control request matches kernel shape", () => 
       kernel_url: null,
     },
   })
+  assert.deepEqual(controlWorkflowPublicationRuntimeRequest("session-1", "publication-1", "inspect"), {
+    ControlWorkflowPublicationRuntime: {
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      action: "inspect",
+      host: null,
+      port: null,
+      kernel_url: null,
+    },
+  })
 })
 
 test("set workflow node wait-for-all-inputs request matches kernel shape", () => {

@@ -747,7 +747,7 @@ export function disableWorkflowPublicationRequest(sessionId: string, publication
   }
 }
 
-export type WorkflowPublicationRuntimeControlAction = "start" | "stop" | "restart"
+export type WorkflowPublicationRuntimeControlAction = "start" | "stop" | "restart" | "inspect"
 
 export function controlWorkflowPublicationRuntimeRequest(
   sessionId: string,
