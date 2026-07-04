@@ -188,6 +188,10 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
         served.open_url(),
         Some("https://relay.example.test/display/publication-1/")
     );
+    assert_eq!(
+        served.viewer_url(),
+        Some("https://relay.example.test/display/publication-1/")
+    );
     assert!(served.runtime_last_heartbeat_at_ms().is_some());
     assert_eq!(served.runtime_last_error(), None);
     assert_eq!(served.runtime_logs().len(), 1);
@@ -232,6 +236,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
         .expect("publication runtime status should update");
     assert_eq!(stopped.status(), Some("stopped"));
     assert_eq!(stopped.open_url(), None);
+    assert_eq!(stopped.viewer_url(), None);
     assert_eq!(
         stopped
             .deployment()

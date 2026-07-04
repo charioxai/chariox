@@ -76,6 +76,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 status: "stopped".to_string(),
                 local_url: None,
                 open_url: None,
+                viewer_url: None,
                 process_id: None,
                 message: Some("publication runtime stopped".to_string()),
             })
@@ -128,12 +129,14 @@ async fn start_publication_runtime(
             })),
         )?;
         let open_url = refreshed.open_url().map(str::to_string);
+        let viewer_url = refreshed.viewer_url().map(str::to_string);
         return Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
             publication: refreshed,
             action: WorkflowPublicationRuntimeAction::Start,
             status: "running".to_string(),
             local_url: existing.local_url,
             open_url,
+            viewer_url,
             process_id: existing.process_id,
             message: Some("publication runtime is already running".to_string()),
         });
@@ -258,7 +261,8 @@ async fn start_publication_runtime(
         action: request.action,
         status: "starting".to_string(),
         local_url: local_url.clone(),
-        open_url: local_url,
+        open_url: local_url.clone(),
+        viewer_url: local_url,
         process_id,
         message: Some("publication runtime starting; endpoint registration will publish a relay display URL when available".to_string()),
     })

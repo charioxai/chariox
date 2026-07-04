@@ -45,6 +45,8 @@ pub struct WorkflowPublicationDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     open_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    viewer_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     deployment: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_last_heartbeat_at_ms: Option<u64>,
@@ -97,6 +99,7 @@ impl WorkflowPublicationDefinition {
             poll_ms,
             status: None,
             open_url: None,
+            viewer_url: None,
             deployment: None,
             runtime_last_heartbeat_at_ms: None,
             runtime_last_error: None,
@@ -155,6 +158,10 @@ impl WorkflowPublicationDefinition {
         self.open_url.as_deref()
     }
 
+    pub fn viewer_url(&self) -> Option<&str> {
+        self.viewer_url.as_deref()
+    }
+
     pub fn deployment(&self) -> Option<&Value> {
         self.deployment.as_ref()
     }
@@ -187,9 +194,11 @@ impl WorkflowPublicationDefinition {
         deployment: Value,
     ) {
         let status = status.into();
+        let open_url = open_url.into();
         let now = unix_epoch_ms();
         self.status = Some(status.clone());
-        self.open_url = Some(open_url.into());
+        self.open_url = Some(open_url.clone());
+        self.viewer_url = Some(open_url);
         self.deployment = Some(deployment);
         self.runtime_last_heartbeat_at_ms = Some(now);
         self.runtime_last_error = None;
@@ -207,6 +216,7 @@ impl WorkflowPublicationDefinition {
         let now = unix_epoch_ms();
         self.status = Some(status.clone());
         if let Some(open_url) = open_url {
+            self.viewer_url = open_url.clone();
             self.open_url = open_url;
         }
         if let Some(deployment) = deployment {

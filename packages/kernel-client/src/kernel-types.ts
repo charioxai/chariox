@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 221
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 222
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2546,6 +2546,7 @@ export type WorkflowPublicationDefinition = {
   poll_ms?: number | null
   status?: string | null
   open_url?: string | null
+  viewer_url?: string | null
   deployment?: unknown | null
   runtime_last_heartbeat_at_ms?: number | null
   runtime_last_error?: string | null
@@ -2586,6 +2587,7 @@ export type WorkflowPublicationRuntimeControlledResponse = {
     status: string
     local_url?: string | null
     open_url?: string | null
+    viewer_url?: string | null
     process_id?: number | null
     message?: string | null
   }
