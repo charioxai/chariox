@@ -141,8 +141,8 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             Some("public_review".to_string()),
             Some("/review".to_string()),
             vec!["POST".to_string()],
-            Some(serde_json::json!({"kind": "http"})),
-            Some(serde_json::json!({"kind": "webhook"})),
+            Some(serde_json::json!({"kind": "human_http"})),
+            Some(serde_json::json!({"kind": "path_template", "template": "/review/:prompt"})),
             None,
             None,
             Some("async".to_string()),
@@ -194,6 +194,28 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             .and_then(|deployment| deployment.pointer("/kind"))
             .and_then(serde_json::Value::as_str),
         Some("tunnel")
+    );
+
+    let stopped = service
+        .mark_workflow_publication_runtime_status(
+            session.id(),
+            publication.id(),
+            "stopped",
+            Some(None),
+            Some(serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped"
+            })),
+        )
+        .expect("publication runtime status should update");
+    assert_eq!(stopped.status(), Some("stopped"));
+    assert_eq!(stopped.open_url(), None);
+    assert_eq!(
+        stopped
+            .deployment()
+            .and_then(|deployment| deployment.pointer("/status"))
+            .and_then(serde_json::Value::as_str),
+        Some("stopped")
     );
 
     let disabled = service

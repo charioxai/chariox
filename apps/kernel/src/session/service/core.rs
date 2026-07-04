@@ -956,7 +956,7 @@ impl SessionService {
         session_id: &str,
         publication_ref: &str,
         status: impl Into<String>,
-        open_url: Option<String>,
+        open_url: Option<Option<String>>,
         deployment: Option<Value>,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let publication_id = self

@@ -64,7 +64,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 &request.session_id,
                 &publication_id,
                 "stopped",
-                None,
+                Some(None),
                 Some(serde_json::json!({
                     "kind": "local_runtime",
                     "status": "stopped",
@@ -116,7 +116,7 @@ async fn start_publication_runtime(
             &request.session_id,
             publication.id(),
             "running",
-            existing.local_url.clone(),
+            None,
             Some(serde_json::json!({
                 "kind": "local_runtime",
                 "status": "running",
@@ -139,11 +139,12 @@ async fn start_publication_runtime(
         });
     }
 
+    let kernel_url = publication_runtime_kernel_url(runtime_state, request.kernel_url.as_deref());
     let package = runtime_state.owned.workflow_export_publication_package(
         crate::local::ExportWorkflowPublicationPackageRequest {
             session_id: request.session_id.clone(),
             publication_ref: publication.id().to_string(),
-            kernel_url: request.kernel_url.clone(),
+            kernel_url: Some(kernel_url.clone()),
             agent_app: None,
             agent_app_assets_dir: None,
         },
@@ -180,12 +181,7 @@ async fn start_publication_runtime(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(kernel_url) = request.kernel_url.as_deref().and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
-    }) {
-        command.arg("--kernel-url").arg(kernel_url);
-    }
+    command.arg("--kernel-url").arg(&kernel_url);
     let mut child = command
         .spawn()
         .map_err(|error| DaemonError::LocalTransport {
@@ -225,13 +221,14 @@ async fn start_publication_runtime(
         &request.session_id,
         publication.id(),
         "starting",
-        local_url.clone(),
+        Some(local_url.clone()),
         Some(serde_json::json!({
             "kind": "local_runtime",
             "status": "starting",
             "host": host,
             "port": port,
             "local_url": local_url,
+            "kernel_url": kernel_url,
             "process_id": process_id,
             "package_root": package_root,
         })),
@@ -285,7 +282,7 @@ fn mark_publication_runtime_status(
     session_id: &str,
     publication_ref: &str,
     status: &str,
-    open_url: Option<String>,
+    open_url: Option<Option<String>>,
     deployment: Option<serde_json::Value>,
 ) -> Result<WorkflowPublicationDefinition, DaemonError> {
     runtime_state
@@ -299,6 +296,24 @@ fn mark_publication_runtime_status(
             open_url,
             deployment,
         )
+}
+
+fn publication_runtime_kernel_url(
+    runtime_state: &KernelRuntimeState,
+    requested_kernel_url: Option<&str>,
+) -> String {
+    requested_kernel_url
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        })
+        .unwrap_or_else(|| {
+            runtime_state
+                .owned
+                .config_projection
+                .snapshot()
+                .kernel_websocket_url()
+        })
 }
 
 fn materialize_publication_package(

@@ -165,12 +165,12 @@ impl WorkflowPublicationDefinition {
     pub fn mark_runtime_status(
         &mut self,
         status: impl Into<String>,
-        open_url: Option<String>,
+        open_url: Option<Option<String>>,
         deployment: Option<Value>,
     ) {
         self.status = Some(status.into());
         if let Some(open_url) = open_url {
-            self.open_url = Some(open_url);
+            self.open_url = open_url;
         }
         if let Some(deployment) = deployment {
             self.deployment = Some(deployment);

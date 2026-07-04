@@ -1577,7 +1577,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let mut runtime_publication = publication.clone();
     runtime_publication.mark_runtime_status(
         "starting",
-        Some("http://127.0.0.1:3000/qa/".to_string()),
+        Some(Some("http://127.0.0.1:3000/qa/".to_string())),
         Some(serde_json::json!({
             "kind": "local_runtime",
             "status": "starting",
