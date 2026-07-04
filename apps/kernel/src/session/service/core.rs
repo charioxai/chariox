@@ -766,6 +766,13 @@ impl SessionService {
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
         validate_workflow_publication_trace_exposure(&trace_exposure, &workflow)?;
+        validate_workflow_publication_options(
+            &transport,
+            route.as_deref(),
+            &methods,
+            &parser,
+            mode.as_deref(),
+        )?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         let alias = normalize_workflow_publication_alias(alias)?;
@@ -1179,6 +1186,154 @@ fn normalize_workflow_publication_queue_ref(queue_ref: Option<String>) -> String
         .filter(|value| !value.is_empty())
         .unwrap_or("default")
         .to_string()
+}
+
+fn validate_workflow_publication_options(
+    transport: &Option<serde_json::Value>,
+    route: Option<&str>,
+    methods: &[String],
+    parser: &Option<serde_json::Value>,
+    mode: Option<&str>,
+) -> Result<(), DaemonError> {
+    let kind = workflow_publication_transport_kind(transport)?;
+    validate_workflow_publication_mode(mode)?;
+    match kind.as_str() {
+        "human_http" => {
+            validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
+        }
+        "api_sse_json" => {
+            validate_workflow_publication_methods(&kind, methods, &["POST"])?;
+            validate_json_publication_parser(&kind, parser)?;
+            if let Some(mode) = mode {
+                if mode != "async" {
+                    return invalid_workflow_publication_option(
+                        "api_sse_json publications always use async response streaming",
+                    );
+                }
+            }
+        }
+        "websocket_json" => {
+            validate_fixed_publication_route(&kind, route, "/.well-known/arroba/publication/ws")?;
+            if !methods.is_empty() {
+                return invalid_workflow_publication_option(
+                    "websocket_json publications do not support HTTP method overrides",
+                );
+            }
+            if parser.is_some() {
+                return invalid_workflow_publication_option(
+                    "websocket_json publications read input from WebSocket invoke messages",
+                );
+            }
+            if let Some(mode) = mode {
+                if mode != "async" {
+                    return invalid_workflow_publication_option(
+                        "websocket_json publications always use async event streaming",
+                    );
+                }
+            }
+        }
+        "mcp" => {
+            validate_fixed_publication_route(&kind, route, "/mcp")?;
+            validate_workflow_publication_methods(&kind, methods, &["POST"])?;
+            if parser.is_some() {
+                return invalid_workflow_publication_option(
+                    "mcp publications read input from MCP tool arguments",
+                );
+            }
+            if let Some(mode) = mode {
+                if mode != "sync" {
+                    return invalid_workflow_publication_option(
+                        "mcp publications always return a synchronous tool result",
+                    );
+                }
+            }
+        }
+        _ => {
+            return invalid_workflow_publication_option(&format!(
+                "unsupported workflow publication transport `{kind}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn workflow_publication_transport_kind(
+    transport: &Option<serde_json::Value>,
+) -> Result<String, DaemonError> {
+    let Some(transport) = transport else {
+        return Ok("human_http".to_string());
+    };
+    if let Some(kind) = transport.get("kind").and_then(|value| value.as_str()) {
+        return Ok(kind.to_string());
+    }
+    if let Some(kind) = transport.as_str() {
+        return Ok(kind.to_string());
+    }
+    invalid_workflow_publication_option(
+        "workflow publication transport must be a string or { kind }",
+    )
+}
+
+fn validate_workflow_publication_mode(mode: Option<&str>) -> Result<(), DaemonError> {
+    match mode {
+        Some("sync" | "async") | None => Ok(()),
+        Some(mode) => invalid_workflow_publication_option(&format!(
+            "unsupported workflow publication mode `{mode}`"
+        )),
+    }
+}
+
+fn validate_workflow_publication_methods(
+    transport: &str,
+    methods: &[String],
+    allowed: &[&str],
+) -> Result<(), DaemonError> {
+    for method in methods {
+        if !allowed.iter().any(|allowed| *allowed == method) {
+            return invalid_workflow_publication_option(&format!(
+                "{transport} publications do not support HTTP method `{method}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_json_publication_parser(
+    transport: &str,
+    parser: &Option<serde_json::Value>,
+) -> Result<(), DaemonError> {
+    let Some(parser) = parser else {
+        return Ok(());
+    };
+    if parser.get("kind").and_then(|value| value.as_str()) == Some("json") {
+        return Ok(());
+    }
+    invalid_workflow_publication_option(&format!(
+        "{transport} publications only support JSON body input"
+    ))
+}
+
+fn validate_fixed_publication_route(
+    transport: &str,
+    route: Option<&str>,
+    expected: &str,
+) -> Result<(), DaemonError> {
+    let Some(route) = route.map(str::trim).filter(|route| !route.is_empty()) else {
+        return Ok(());
+    };
+    if route == expected {
+        return Ok(());
+    }
+    invalid_workflow_publication_option(&format!(
+        "{transport} publications use fixed route `{expected}`"
+    ))
+}
+
+fn invalid_workflow_publication_option<T>(message: &str) -> Result<T, DaemonError> {
+    Err(DaemonError::LocalTransport {
+        operation: "create workflow publication",
+        message: message.to_string(),
+    })
 }
 
 fn ensure_workspace_link_name_available(

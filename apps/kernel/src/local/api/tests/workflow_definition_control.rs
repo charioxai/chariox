@@ -3034,6 +3034,192 @@ fn local_request_api_exports_agent_app_publication_package() {
 }
 
 #[test]
+fn local_request_api_validates_publication_transport_options() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "publication-validation");
+
+    let api_publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("api-default-route".to_string()),
+                route: None,
+                methods: vec!["POST".to_string()],
+                transport: Some(serde_json::json!({ "kind": "api_sse_json" })),
+                parser: Some(serde_json::json!({ "kind": "json" })),
+                input_schema: None,
+                trace_exposure: None,
+                mode: Some("async".to_string()),
+                sync_timeout_ms: Some(30_000),
+                poll_ms: Some(250),
+            },
+        ))
+        .expect("api publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+
+    let exported = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: api_publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("api publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_files, .. } => {
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let publication_json = package_json_file(&exported, "publication.json");
+    assert_eq!(
+        publication_json["hooks"][0]["route"],
+        serde_json::json!("/invoke")
+    );
+    assert_eq!(
+        publication_json["hooks"][0]["queue_ref"],
+        serde_json::json!("default")
+    );
+    assert_eq!(
+        publication_json["hooks"][0]["methods"],
+        serde_json::json!(["POST"])
+    );
+    assert_eq!(
+        publication_json["hooks"][0]["parser"],
+        serde_json::json!({ "kind": "json" })
+    );
+    assert_eq!(
+        publication_json["hooks"][0]["mode"],
+        serde_json::json!("async")
+    );
+
+    let mcp_publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("mcp-defaults".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: Some(serde_json::json!({ "kind": "mcp" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("mcp publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    let exported_mcp = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: mcp_publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("mcp publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_files, .. } => {
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let mcp_json = package_json_file(&exported_mcp, "publication.json");
+    assert_eq!(mcp_json["hooks"][0]["route"], serde_json::json!("/mcp"));
+    assert_eq!(mcp_json["hooks"][0]["methods"], serde_json::json!(["POST"]));
+    assert_eq!(mcp_json["hooks"][0]["mode"], serde_json::json!("sync"));
+    assert!(mcp_json["hooks"][0].get("parser").is_none());
+
+    let api_sync = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+        CreateWorkflowPublicationRequest {
+            session_id: graph.session_id.clone(),
+            workflow_ref: graph.workflow_id.clone(),
+            endpoint_ref: graph.endpoint_id.clone(),
+            queue_ref: Some("default".to_string()),
+            alias: Some("api-sync".to_string()),
+            route: Some("/api".to_string()),
+            methods: vec!["POST".to_string()],
+            transport: Some(serde_json::json!({ "kind": "api_sse_json" })),
+            parser: Some(serde_json::json!({ "kind": "json" })),
+            input_schema: None,
+            trace_exposure: None,
+            mode: Some("sync".to_string()),
+            sync_timeout_ms: None,
+            poll_ms: None,
+        },
+    ));
+    assert!(api_sync
+        .expect_err("api_sse_json sync mode should fail")
+        .to_string()
+        .contains("api_sse_json publications always use async"));
+
+    let mcp_parser = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+        CreateWorkflowPublicationRequest {
+            session_id: graph.session_id.clone(),
+            workflow_ref: graph.workflow_id.clone(),
+            endpoint_ref: graph.endpoint_id.clone(),
+            queue_ref: Some("default".to_string()),
+            alias: Some("mcp-json".to_string()),
+            route: Some("/mcp".to_string()),
+            methods: vec!["POST".to_string()],
+            transport: Some(serde_json::json!({ "kind": "mcp" })),
+            parser: Some(serde_json::json!({ "kind": "json" })),
+            input_schema: None,
+            trace_exposure: None,
+            mode: Some("sync".to_string()),
+            sync_timeout_ms: None,
+            poll_ms: None,
+        },
+    ));
+    assert!(mcp_parser
+        .expect_err("mcp parser override should fail")
+        .to_string()
+        .contains("mcp publications read input from MCP tool arguments"));
+
+    let websocket_custom_route = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+        CreateWorkflowPublicationRequest {
+            session_id: graph.session_id,
+            workflow_ref: graph.workflow_id,
+            endpoint_ref: graph.endpoint_id,
+            queue_ref: Some("default".to_string()),
+            alias: Some("custom-ws".to_string()),
+            route: Some("/socket".to_string()),
+            methods: Vec::new(),
+            transport: Some(serde_json::json!({ "kind": "websocket_json" })),
+            parser: None,
+            input_schema: None,
+            trace_exposure: None,
+            mode: Some("async".to_string()),
+            sync_timeout_ms: None,
+            poll_ms: None,
+        },
+    ));
+    assert!(websocket_custom_route
+        .expect_err("websocket_json custom route should fail")
+        .to_string()
+        .contains("websocket_json publications use fixed route"));
+}
+
+#[test]
 fn workflow_node_add_rejects_metaagents() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -3077,6 +3263,91 @@ fn workflow_node_add_rejects_metaagents() {
             .contains("metaagents cannot be added as workflow nodes"),
         "unexpected error: {error}"
     );
+}
+
+struct PublicationTestGraph {
+    session_id: String,
+    workflow_id: String,
+    endpoint_id: String,
+}
+
+fn create_publication_test_graph(
+    harness: &LocalRouterTestHarness,
+    label: &str,
+) -> PublicationTestGraph {
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(&format!("workspace-{label}"), &format!("worktree-{label}")),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some(format!("agent-{label}")),
+            provider: Some("dev-stub".to_string()),
+            model: Some("default".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some(format!("workflow-{label}")),
+        }))
+        .expect("workflow create should succeed")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: agent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow node should be added")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        _ => panic!("unexpected local response"),
+    };
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some(format!("endpoint-{label}")),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    PublicationTestGraph {
+        session_id: session.id().to_string(),
+        workflow_id: workflow.id().to_string(),
+        endpoint_id: endpoint.id().to_string(),
+    }
 }
 
 fn package_text_file(files: &[crate::local::WorkflowPublicationPackageFile], path: &str) -> String {

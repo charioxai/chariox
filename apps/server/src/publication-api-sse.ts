@@ -49,12 +49,17 @@ type StreamState = {
 
 export const API_SSE_INVOKE_PATH = "/invoke"
 
+export function apiSseInvokePath(publication: WorkflowPublicationConfig) {
+  return publication.route?.trim() || API_SSE_INVOKE_PATH
+}
+
 export function installApiSseJsonRoutes(
   app: ApiSseApp,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
-  app.options(API_SSE_INVOKE_PATH, async (_request, reply) => {
+  const invokePath = apiSseInvokePath(publication)
+  app.options(invokePath, async (_request, reply) => {
     if (!isApiSseJsonPublication(publication)) {
       reply.code(404)
       return { error: "not found" }
@@ -62,7 +67,7 @@ export function installApiSseJsonRoutes(
     reply.code(204).headers(apiSseCorsHeaders())
     return null
   })
-  app.post(API_SSE_INVOKE_PATH, async (request, reply) => {
+  app.post(invokePath, async (request, reply) => {
     if (!isApiSseJsonPublication(publication)) {
       reply.code(404)
       return { error: "not found" }

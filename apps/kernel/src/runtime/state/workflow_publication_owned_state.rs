@@ -557,6 +557,31 @@ fn workflow_publication_package_json(
     publication_value: &serde_json::Value,
     agent_app: Option<&serde_json::Value>,
 ) -> serde_json::Value {
+    let mut hook = serde_json::json!({
+        "id": format!("{}-hook", publication.id()),
+        "publication_id": publication.id(),
+        "transport": hook_transport(publication_value),
+        "endpoint_id": publication.endpoint_id(),
+        "queue_ref": publication.queue_ref().unwrap_or("default"),
+        "route": string_field(publication_value, "route")
+            .map(str::to_string)
+            .unwrap_or_else(|| default_publication_route(publication_value).to_string()),
+        "methods": publication_value
+            .get("methods")
+            .cloned()
+            .unwrap_or_else(|| default_publication_methods(publication_value)),
+        "input_schema": publication_value.get("input_schema").cloned().unwrap_or(serde_json::Value::Null),
+        "trace_exposure": publication.trace_exposure().cloned().unwrap_or(serde_json::Value::Null),
+        "mode": string_field(publication_value, "mode").unwrap_or_else(|| default_publication_mode(publication_value)),
+        "response_mode": "accepted",
+    });
+    if let Some(parser) = publication_value
+        .get("parser")
+        .cloned()
+        .or_else(|| default_publication_parser(publication_value))
+    {
+        hook["parser"] = parser;
+    }
     let mut package = serde_json::json!({
         "schema_version": 1,
         "package_version": workflow_publication_package_version(agent_app),
@@ -565,20 +590,7 @@ fn workflow_publication_package_json(
         "source_session_id": publication.session_id(),
         "workflow_id": publication.workflow_id(),
         "default_bindings_path": "bindings.local.json",
-        "hooks": [{
-            "id": format!("{}-hook", publication.id()),
-            "publication_id": publication.id(),
-            "transport": hook_transport(publication_value),
-            "endpoint_id": publication.endpoint_id(),
-            "queue_ref": publication.queue_ref().unwrap_or("default"),
-            "route": string_field(publication_value, "route").unwrap_or("/*"),
-            "methods": string_array_field(publication_value, "methods", &["GET"]),
-            "parser": publication_value.get("parser").cloned().unwrap_or_else(|| serde_json::json!({"kind": "json"})),
-            "input_schema": publication_value.get("input_schema").cloned().unwrap_or(serde_json::Value::Null),
-            "trace_exposure": publication.trace_exposure().cloned().unwrap_or(serde_json::Value::Null),
-            "mode": string_field(publication_value, "mode").unwrap_or("sync"),
-            "response_mode": "accepted",
-        }],
+        "hooks": [hook],
         "assets": {
             "public_dir": "public",
             "scripts_dir": "scripts",
@@ -782,10 +794,18 @@ fn workflow_publication_gateway_config_json(
         "session_id": publication.session_id(),
         "workflow_ref": publication.workflow_id(),
         "endpoint_ref": publication.endpoint_id(),
-        "route": string_field(publication_value, "route").unwrap_or("/*"),
-        "parser": publication_value.get("parser").cloned().unwrap_or_else(|| serde_json::json!({"kind": "json"})),
-        "mode": if string_field(publication_value, "mode") == Some("async") { "async" } else { "sync" },
+        "route": string_field(publication_value, "route")
+            .map(str::to_string)
+            .unwrap_or_else(|| default_publication_route(publication_value).to_string()),
+        "mode": string_field(publication_value, "mode").unwrap_or_else(|| default_publication_mode(publication_value)),
     });
+    if let Some(parser) = publication_value
+        .get("parser")
+        .cloned()
+        .or_else(|| default_publication_parser(publication_value))
+    {
+        config["parser"] = parser;
+    }
     if let Some(kernel_url) = kernel_url {
         config["kernel_endpoint"] = serde_json::Value::String(kernel_url.to_string());
     }
@@ -794,6 +814,14 @@ fn workflow_publication_gateway_config_json(
         .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
     {
         config["methods"] = methods.clone();
+    } else {
+        let default_methods = default_publication_methods(publication_value);
+        if default_methods
+            .as_array()
+            .is_some_and(|values| !values.is_empty())
+        {
+            config["methods"] = default_methods;
+        }
     }
     if let Some(transport) = publication_value
         .get("transport")
@@ -1036,26 +1064,39 @@ fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
-    value.get(field).and_then(|field| field.as_str())
+fn default_publication_route(publication_value: &serde_json::Value) -> &'static str {
+    match hook_transport(publication_value).as_str() {
+        Some("api_sse_json") => "/invoke",
+        Some("websocket_json") => "/.well-known/arroba/publication/ws",
+        Some("mcp") => "/mcp",
+        _ => "/*",
+    }
 }
 
-fn string_array_field(value: &serde_json::Value, field: &str, fallback: &[&str]) -> Vec<String> {
-    let values = value
-        .get(field)
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if values.is_empty() {
-        fallback.iter().map(|value| (*value).to_string()).collect()
-    } else {
-        values
+fn default_publication_methods(publication_value: &serde_json::Value) -> serde_json::Value {
+    match hook_transport(publication_value).as_str() {
+        Some("api_sse_json" | "mcp") => serde_json::json!(["POST"]),
+        Some("websocket_json") => serde_json::json!([]),
+        _ => serde_json::json!(["GET"]),
     }
+}
+
+fn default_publication_parser(publication_value: &serde_json::Value) -> Option<serde_json::Value> {
+    match hook_transport(publication_value).as_str() {
+        Some("websocket_json" | "mcp") => None,
+        _ => Some(serde_json::json!({"kind": "json"})),
+    }
+}
+
+fn default_publication_mode(publication_value: &serde_json::Value) -> &'static str {
+    match hook_transport(publication_value).as_str() {
+        Some("api_sse_json" | "websocket_json") => "async",
+        _ => "sync",
+    }
+}
+
+fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    value.get(field).and_then(|field| field.as_str())
 }
 
 fn escape_html(value: &str) -> String {

@@ -2,6 +2,7 @@ import type {
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
+import { apiSseInvokePath } from "./publication-api-sse.js"
 import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
@@ -20,7 +21,6 @@ type ViewerReply = {
 }
 
 export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
-const API_SSE_INVOKE_PATH = "/invoke"
 const WEBSOCKET_INVOKE_PATH = "/.well-known/arroba/publication/ws"
 
 export function installPublicationViewerRoutes(app: ViewerApp, publication: WorkflowPublicationConfig) {
@@ -69,7 +69,7 @@ export function publicationViewerPage(
       ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
       : [],
     eventsUrl: options.eventsUrl ?? null,
-    apiSseInvokePath: API_SSE_INVOKE_PATH,
+    apiSseInvokePath: apiSseInvokePath(publication),
     websocketInvokePath: WEBSOCKET_INVOKE_PATH,
     humanFormInvokePath: PUBLICATION_VIEWER_FORM_INVOKE_PATH,
     humanPromptTarget: promptTargetParts(publication.route ?? "/*"),

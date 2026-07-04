@@ -86,8 +86,12 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     installPublicationViewerRoutes(app, publication)
   }
   installHumanHttpRoutes(app, publication)
-  installApiSseJsonRoutes(app, publication, deps)
-  installPublicationMcpRoutes(app, publication, deps)
+  if (isApiSseJsonPublication(publication)) {
+    installApiSseJsonRoutes(app, publication, deps)
+  }
+  if (isMcpPublication(publication)) {
+    installPublicationMcpRoutes(app, publication, deps)
+  }
 
   app.get("/health", async () => {
     logger.debug("handled health request")

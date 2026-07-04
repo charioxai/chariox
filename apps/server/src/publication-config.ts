@@ -201,6 +201,8 @@ export function publicationConfigFromPackage(
   if (!workflowId) throw new Error("publication package is missing workflow_id")
   if (!endpointId) throw new Error("publication hook is missing endpoint_id")
   const traceExposure = validatePublicationTraceExposure(hook.trace_exposure ?? undefined, snapshot)
+  const transport = publicationTransportKind(hook.transport)
+  const parser = hook.parser ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
     publication_id: hook.publication_id ?? publicationPackage.publication_id,
     session_id: sessionId,
@@ -211,10 +213,10 @@ export function publicationConfigFromPackage(
     queue_ref: hook.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
     transport: hook.transport,
-    route: hook.route ?? "/*",
-    parser: hook.parser ?? { kind: "json" },
-    mode: hook.mode === "async" ? "async" : "sync",
+    route: hook.route ?? defaultRouteForTransport(transport),
+    mode: hook.mode ?? defaultModeForTransport(transport),
   }
+  if (parser) config.parser = parser
   if (packageRoot) config.package_root = packageRoot
   if (publicationPackage.agent_app?.enabled) {
     validateAgentAppConfig(publicationPackage.agent_app, { packageRoot })
@@ -226,7 +228,7 @@ export function publicationConfigFromPackage(
     config.trace_exposure = traceExposure
     config.trace_context = publicationTraceContextFromSnapshot(snapshot)
   }
-  const methods = normalizeHttpMethods(hook.methods)
+  const methods = normalizeHttpMethods(hook.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
   if (hook.input_schema) config.input_schema = hook.input_schema
   return config
@@ -270,6 +272,8 @@ export function publicationConfigFromKernelRecord(
   kernelEndpoint = defaultKernelEndpoint(),
 ): WorkflowPublicationConfig {
   const traceExposure = asTraceExposure(publication.trace_exposure)
+  const transport = publicationTransportKind(publication.transport)
+  const parser = asParserConfig(publication.parser) ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
     publication_id: publication.id,
     session_id: publication.session_id,
@@ -277,16 +281,15 @@ export function publicationConfigFromKernelRecord(
     endpoint_ref: publication.endpoint_id,
     queue_ref: publication.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
-    route: publication.route ?? "/*",
-    parser: asParserConfig(publication.parser) ?? { kind: "json" },
-    mode: publication.mode === "async" ? "async" : "sync",
+    route: publication.route ?? defaultRouteForTransport(transport),
+    mode: normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport),
   }
+  if (parser) config.parser = parser
   if (publication.sync_timeout_ms != null) config.sync_timeout_ms = publication.sync_timeout_ms
   if (publication.poll_ms != null) config.poll_ms = publication.poll_ms
   if (traceExposure) config.trace_exposure = traceExposure
-  const transport = publication.transport as { kind?: unknown } | null | undefined
-  if (typeof transport?.kind === "string") config.transport = transport.kind
-  const methods = normalizeHttpMethods(publication.methods)
+  if (transport) config.transport = transport
+  const methods = normalizeHttpMethods(publication.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
   const inputSchema = asInputSchema(publication.input_schema)
   if (inputSchema) config.input_schema = inputSchema
@@ -371,6 +374,39 @@ function normalizeHttpMethods(methods: string[] | undefined): Array<"GET" | "POS
     .map((method) => method.toUpperCase())
     .filter((method): method is "GET" | "POST" => method === "GET" || method === "POST")
   return normalized.length > 0 ? normalized : undefined
+}
+
+function publicationTransportKind(value: unknown): string | undefined {
+  if (typeof value === "string") return value
+  if (isPlainObject(value) && typeof value.kind === "string") return value.kind
+  return undefined
+}
+
+function defaultRouteForTransport(transport: string | undefined): string {
+  if (transport === "api_sse_json") return "/invoke"
+  if (transport === "websocket_json") return "/.well-known/arroba/publication/ws"
+  if (transport === "mcp") return "/mcp"
+  return "/*"
+}
+
+function defaultMethodsForTransport(transport: string | undefined): Array<"GET" | "POST"> | undefined {
+  if (transport === "api_sse_json" || transport === "mcp") return ["POST"]
+  if (transport === "websocket_json") return undefined
+  return ["GET"]
+}
+
+function defaultParserForTransport(transport: string | undefined): ParserConfig | undefined {
+  if (transport === "websocket_json" || transport === "mcp") return undefined
+  return { kind: "json" }
+}
+
+function defaultModeForTransport(transport: string | undefined): "sync" | "async" {
+  if (transport === "api_sse_json" || transport === "websocket_json") return "async"
+  return "sync"
+}
+
+function normalizePublicationMode(value: unknown): "sync" | "async" | undefined {
+  return value === "sync" || value === "async" ? value : undefined
 }
 
 function selectPublicationHook(hooks: PublicationHookConfig[], hookId?: string) {

@@ -638,6 +638,42 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
   })
 })
 
+test("gateway defaults publication runtime config by transport", async () => {
+  const apiConfig = publicationConfigFromKernelRecord({
+    id: "pub-api",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    alias: "api",
+    enabled: true,
+    transport: { kind: "api_sse_json" },
+    created_by_user_id: "local",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }, "ws://kernel")
+  assert.equal(apiConfig.route, "/invoke")
+  assert.deepEqual(apiConfig.methods, ["POST"])
+  assert.deepEqual(apiConfig.parser, { kind: "json" })
+  assert.equal(apiConfig.mode, "async")
+
+  const websocketConfig = publicationConfigFromKernelRecord({
+    id: "pub-ws",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    alias: "ws",
+    enabled: true,
+    transport: { kind: "websocket_json" },
+    created_by_user_id: "local",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }, "ws://kernel")
+  assert.equal(websocketConfig.route, "/.well-known/arroba/publication/ws")
+  assert.equal(websocketConfig.methods, undefined)
+  assert.equal(websocketConfig.parser, undefined)
+  assert.equal(websocketConfig.mode, "async")
+})
+
 test("gateway can load publication config from kernel lookup", async () => {
   const requests: Record<string, unknown>[] = []
   const config = await loadPublicationConfigFromKernel("session-1", "pub-1", "ws://kernel", {
@@ -1519,7 +1555,7 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   const { app } = buildServer({
     ...baseConfig,
     transport: "api_sse_json",
-    route: "/ignored",
+    route: "/custom/invoke",
     methods: ["POST"],
     input_schema: {
       type: "object",
@@ -1552,7 +1588,7 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/invoke",
+      url: "/custom/invoke",
       headers: { accept: "text/event-stream" },
       payload: {
         prompt: "ship",
@@ -1579,8 +1615,40 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
     })
     assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "api_sse_json" } })
 
-    const genericRoute = await app.inject({ method: "POST", url: "/ignored", payload: { prompt: "nope" } })
-    assert.equal(genericRoute.statusCode, 404)
+    const defaultRoute = await app.inject({ method: "POST", url: "/invoke", payload: { prompt: "nope" } })
+    assert.equal(defaultRoute.statusCode, 404)
+  } finally {
+    await app.close()
+  }
+})
+
+test("api_sse_json defaults to /invoke when no route is configured", async () => {
+  const { route: _route, ...configWithoutRoute } = baseConfig
+  const { app } = buildServer({
+    ...configWithoutRoute,
+    transport: "api_sse_json",
+    methods: ["POST"],
+  }, {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-api-default",
+        status: "Completed",
+        final_output: { message: "done" },
+      },
+    }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/invoke",
+      headers: { accept: "text/event-stream" },
+      payload: { prompt: "ship" },
+    })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(sseEventNames(response.body), ["queued", "started", "final"])
   } finally {
     await app.close()
   }
@@ -1825,7 +1893,7 @@ test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket t
     adapterMarker: RegExp
   }> = [
     { transport: "human_http", methods: ["GET"], route: "/qa/*", adapterMarker: /invokeHumanHttp/ },
-    { transport: "api_sse_json", methods: ["POST"], route: "/invoke", adapterMarker: /invokeApiSse/ },
+    { transport: "api_sse_json", methods: ["POST"], route: "/custom/api", adapterMarker: /invokeApiSse/ },
     { transport: "websocket_json", methods: ["GET"], route: "/.well-known/arroba/publication/ws", adapterMarker: /invokeWebSocket/ },
   ]
 
@@ -1849,6 +1917,9 @@ test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket t
       assert.match(response.body, /type="file" name="artifact" multiple/)
       assert.match(response.body, new RegExp(`"transport":"${item.transport}"`))
       assert.match(response.body, item.adapterMarker)
+      if (item.transport === "api_sse_json") {
+        assert.match(response.body, /"apiSseInvokePath":"\/custom\/api"/)
+      }
     } finally {
       await app.close()
     }
