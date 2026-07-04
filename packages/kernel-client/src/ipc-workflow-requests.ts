@@ -745,6 +745,30 @@ export function disableWorkflowPublicationRequest(sessionId: string, publication
   }
 }
 
+export type WorkflowPublicationRuntimeControlAction = "start" | "stop" | "restart"
+
+export function controlWorkflowPublicationRuntimeRequest(
+  sessionId: string,
+  publicationRef: string,
+  action: WorkflowPublicationRuntimeControlAction,
+  options: {
+    host?: string | null
+    port?: number | null
+    kernelUrl?: string | null
+  } = {},
+) {
+  return {
+    ControlWorkflowPublicationRuntime: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+      action,
+      host: options.host ?? null,
+      port: options.port ?? null,
+      kernel_url: options.kernelUrl ?? null,
+    },
+  }
+}
+
 export function registerWorkflowPublicationEndpointRequest(
   sessionId: string,
   publicationRef: string,

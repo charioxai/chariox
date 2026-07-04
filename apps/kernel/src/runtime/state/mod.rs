@@ -99,6 +99,8 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
+    workflow_publication_runtimes:
+        crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +211,7 @@ use workflow_prompt_dispatches::*;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
 mod workflow_publication_owned_state;
+pub(crate) mod workflow_publication_runtime_lifecycle;
 mod workflow_query_owned_state;
 mod workflow_request_runtime_state;
 mod workflow_resume_owned_state;
@@ -409,6 +412,8 @@ impl KernelRuntimeState {
                 remote_home_extension_inflight: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                workflow_publication_runtimes:
+                    crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
             },
         }
     }

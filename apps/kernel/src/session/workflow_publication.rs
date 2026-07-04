@@ -121,6 +121,10 @@ impl WorkflowPublicationDefinition {
         self.route.as_deref()
     }
 
+    pub fn transport(&self) -> Option<&Value> {
+        self.transport.as_ref()
+    }
+
     pub fn created_by_user_id(&self) -> &str {
         &self.created_by_user_id
     }
@@ -155,6 +159,22 @@ impl WorkflowPublicationDefinition {
         self.status = Some(status.into());
         self.open_url = Some(open_url.into());
         self.deployment = Some(deployment);
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn mark_runtime_status(
+        &mut self,
+        status: impl Into<String>,
+        open_url: Option<String>,
+        deployment: Option<Value>,
+    ) {
+        self.status = Some(status.into());
+        if let Some(open_url) = open_url {
+            self.open_url = Some(open_url);
+        }
+        if let Some(deployment) = deployment {
+            self.deployment = Some(deployment);
+        }
         self.updated_at_ms = unix_epoch_ms();
     }
 }

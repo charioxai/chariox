@@ -320,6 +320,27 @@ pub struct DisableWorkflowPublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowPublicationRuntimeAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlWorkflowPublicationRuntimeRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub action: WorkflowPublicationRuntimeAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterWorkflowPublicationEndpointRequest {
     pub session_id: String,
     pub publication_ref: String,

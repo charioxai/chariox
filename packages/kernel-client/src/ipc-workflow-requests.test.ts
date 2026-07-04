@@ -5,6 +5,7 @@ import {
   applyWorkflowCodeArtifactRequest,
   applyWorkflowCodeRequest,
   createWorkflowCodeArtifactRequest,
+  controlWorkflowPublicationRuntimeRequest,
   deleteWorkflowCodeArtifactRequest,
   exportWorkflowCodeArtifactRequest,
   exportWorkflowCodePackageRequest,
@@ -36,6 +37,33 @@ test("export workflow publication package request matches kernel shape", () => {
         routes: [{ path: "/add/*" }],
       },
       agent_app_assets_dir: "/repo/dist",
+    },
+  })
+})
+
+test("workflow publication runtime control request matches kernel shape", () => {
+  assert.deepEqual(controlWorkflowPublicationRuntimeRequest("session-1", "publication-1", "start", {
+    host: "127.0.0.1",
+    port: 3000,
+    kernelUrl: "ws://127.0.0.1:43118",
+  }), {
+    ControlWorkflowPublicationRuntime: {
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      action: "start",
+      host: "127.0.0.1",
+      port: 3000,
+      kernel_url: "ws://127.0.0.1:43118",
+    },
+  })
+  assert.deepEqual(controlWorkflowPublicationRuntimeRequest("session-1", "publication-1", "stop"), {
+    ControlWorkflowPublicationRuntime: {
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      action: "stop",
+      host: null,
+      port: null,
+      kernel_url: null,
     },
   })
 })
