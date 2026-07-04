@@ -59,12 +59,13 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
   try {
     await pumpPublicationRuntime(client, publication).catch(() => {})
     const watchdogs = await listEndpointWatchdogs(client, publication)
-    const { latestRun, latestOutputRun } = await latestEndpointRunStatus(client, publication, watchdogs)
+    const { latestRun, latestOutputRun, recentRuns } = await latestEndpointRunStatus(client, publication, watchdogs)
     return {
       runtime: { reachable: true },
       watchdog_count: watchdogs.length,
       watchdogs,
       latest_run: latestRun ? summarizeWorkflowRun(latestRun) : null,
+      recent_runs: recentRuns.map(summarizeWorkflowRun),
       latest_output: latestWorkflowRunOutput(latestOutputRun ?? latestRun),
     }
   } catch (error) {
@@ -76,6 +77,7 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
       watchdog_count: null,
       watchdogs: [],
       latest_run: null,
+      recent_runs: [],
       latest_output: null,
     }
   } finally {
@@ -111,6 +113,7 @@ async function latestEndpointRunStatus(
   const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, publication, latestWatchdogRunIds))
   const sortedRuns = matchingRuns.sort((left, right) => runSortKey(right) - runSortKey(left))
   const latestRun = sortedRuns[0] ? await detailedWorkflowRun(client, publication, sortedRuns[0]) : null
+  const recentRuns = latestRun ? [latestRun, ...sortedRuns.slice(1, 5)] : sortedRuns.slice(0, 5)
   let latestOutputRun = latestWorkflowRunOutput(latestRun) ? latestRun : null
   for (const run of sortedRuns.slice(latestOutputRun ? 1 : 0)) {
     const detailed = await detailedWorkflowRun(client, publication, run)
@@ -119,7 +122,7 @@ async function latestEndpointRunStatus(
       break
     }
   }
-  return { latestRun, latestOutputRun }
+  return { latestRun, latestOutputRun, recentRuns }
 }
 
 async function detailedWorkflowRun(

@@ -534,6 +534,16 @@ test("GET publication status includes runtime watchdog and latest output details
         publication_invocation: null,
         final_output: { message: "{\"value\":1842}" },
       },
+      recent_runs: [{
+        id: "run-1",
+        status: "Completed",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        created_at_ms: 800,
+        completed_at_ms: 950,
+        publication_invocation: null,
+        final_output: { message: "{\"value\":1842}" },
+      }],
       latest_output: {
         kind: "final",
         message: "{\"value\":1842}",
@@ -594,6 +604,16 @@ test("GET publication status includes runtime watchdog and latest output details
         publication_invocation: null,
         final_output: { message: "{\"value\":1842}" },
       },
+      recent_runs: [{
+        id: "run-1",
+        status: "Completed",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        created_at_ms: 800,
+        completed_at_ms: 950,
+        publication_invocation: null,
+        final_output: { message: "{\"value\":1842}" },
+      }],
       latest_output: {
         kind: "final",
         message: "{\"value\":1842}",
