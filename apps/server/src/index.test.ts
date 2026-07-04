@@ -3149,6 +3149,348 @@ test("kernel publication client splits prompt from publication invocation envelo
   })
 })
 
+test("human HTTP publication parsers inject prompt consistently", async () => {
+  const prompt = "build a bright checkout page"
+  const cases: Array<{
+    readonly name: string
+    readonly config: () => WorkflowPublicationConfig
+    readonly request: {
+      readonly method: "GET" | "POST"
+      readonly url: string
+      readonly headers?: Record<string, string>
+      readonly payload?: Record<string, unknown>
+    }
+    readonly expectedInput: unknown
+  }> = [{
+    name: "path_template",
+    config: () => publishedHttpConfig("path-template", "/prompt/:prompt", ["GET"], {
+      kind: "path_template",
+      template: "/prompt/:prompt",
+    }),
+    request: { method: "GET", url: `/prompt/${encodeURIComponent(prompt)}` },
+    expectedInput: { prompt },
+  }, {
+    name: "json",
+    config: () => publishedHttpConfig("json", "/prompt", ["POST"], { kind: "json" }),
+    request: {
+      method: "POST",
+      url: "/prompt",
+      headers: { "content-type": "application/json" },
+      payload: { prompt, style: "minimal" },
+    },
+    expectedInput: { prompt, style: "minimal" },
+  }, {
+    name: "query_params",
+    config: () => publishedHttpConfig("query-params", "/prompt", ["GET"], { kind: "query_params" }),
+    request: { method: "GET", url: `/prompt?prompt=${encodeURIComponent(prompt)}&style=minimal` },
+    expectedInput: { prompt, style: "minimal" },
+  }, {
+    name: "webhook",
+    config: () => publishedHttpConfig("webhook", "/webhook", ["POST"], { kind: "webhook" }),
+    request: {
+      method: "POST",
+      url: "/webhook?source=stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "test-signature",
+      },
+      payload: { prompt, event: "checkout.session.completed" },
+    },
+    expectedInput: {
+      body: { prompt, event: "checkout.session.completed" },
+      query: { source: "stripe" },
+    },
+  }]
+
+  for (const candidate of cases) {
+    const prompts: Array<string | null> = []
+    const inputs: unknown[] = []
+    const { app } = buildServer(candidate.config(), {
+      invokeWorkflow: async (invocation) => {
+        prompts.push(promptFromInvocationInput(invocation.input))
+        inputs.push(invocation.input)
+        return { accepted: true, workflow_run: { id: `run-${candidate.name}`, status: "Completed" } }
+      },
+    })
+
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 })
+      const fetchOptions: RequestInit = {
+        method: candidate.request.method,
+      }
+      if (candidate.request.headers) fetchOptions.headers = candidate.request.headers
+      if (candidate.request.payload !== undefined) fetchOptions.body = JSON.stringify(candidate.request.payload)
+      const response = await fetch(`${address}${candidate.request.url}`, fetchOptions)
+      assert.equal(response.status, 200, candidate.name)
+      assert.equal(prompts[0], prompt, candidate.name)
+      if (candidate.name === "webhook") {
+        assert.deepEqual((inputs[0] as Record<string, unknown>).body, (candidate.expectedInput as Record<string, unknown>).body)
+        assert.deepEqual((inputs[0] as Record<string, unknown>).query, (candidate.expectedInput as Record<string, unknown>).query)
+        assert.equal((inputs[0] as { readonly headers?: Record<string, unknown> }).headers?.["stripe-signature"], "test-signature")
+      } else {
+        assert.deepEqual(inputs[0], candidate.expectedInput, candidate.name)
+      }
+    } finally {
+      await app.close()
+    }
+  }
+})
+
+test("published API SSE, WebSocket, and MCP transports invoke through live local gateway", async () => {
+  const prompt = "ship the transport surface"
+
+  {
+    let seenInput: unknown = null
+    let seenCaller: unknown = null
+    let seenMode: unknown = null
+    const { app } = buildServer(publishedTransportConfig({
+      id: "api-sse",
+      transport: "api_sse_json",
+      route: "/api/invoke",
+      methods: ["POST"],
+      inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
+      mode: "async",
+    }), {
+      invokeWorkflow: async (invocation) => {
+        seenInput = invocation.input
+        seenCaller = invocation.caller
+        seenMode = invocation.mode
+        return {
+          accepted: true,
+          workflow_run: {
+            id: "run-api-sse",
+            status: "Completed",
+            final_output: { message: "api done" },
+          },
+        }
+      },
+    })
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 })
+      const response = await fetch(`${address}/api/invoke`, {
+        method: "POST",
+        headers: { accept: "text/event-stream", "content-type": "application/json" },
+        body: JSON.stringify({ prompt, format: "html" }),
+      })
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/)
+      const body = await response.text()
+      assert.deepEqual(sseEventNames(body), ["queued", "started", "final"])
+      assert.match(body, /"workflow_run_id":"run-api-sse"/)
+      assert.match(body, /"message":"api done"/)
+      assert.deepEqual(seenInput, { prompt, format: "html" })
+      assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "api_sse_json" } })
+      assert.equal(seenMode, "async")
+    } finally {
+      await app.close()
+    }
+  }
+
+  {
+    const inputs: unknown[] = []
+    const callers: unknown[] = []
+    const modes: unknown[] = []
+    const { app } = buildServer(publishedTransportConfig({
+      id: "websocket",
+      transport: "websocket_json",
+      route: "/ws/invoke",
+      inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
+      mode: "async",
+    }), {
+      invokeWorkflow: async (invocation) => {
+        inputs.push(invocation.input)
+        callers.push(invocation.caller)
+        modes.push(invocation.mode)
+        return {
+          accepted: true,
+          workflow_run: {
+            id: "run-websocket",
+            status: "Completed",
+            final_output: { message: "ws done" },
+          },
+        }
+      },
+    })
+    try {
+      await app.listen({ host: "127.0.0.1", port: 0 })
+      const address = app.server.address()
+      const port = typeof address === "object" && address ? address.port : 0
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/invoke`)
+      const reader = createWebSocketReader(socket)
+      try {
+        assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-websocket" })
+        socket.send(JSON.stringify({ type: "invoke", input: { prompt, format: "html" } }))
+        const accepted = await reader.read() as { type?: string; workflow_run?: { id?: string } }
+        assert.equal(accepted.type, "accepted")
+        assert.equal(accepted.workflow_run?.id, "run-websocket")
+        const queued = await reader.read() as { type?: string; invocation_id?: string }
+        assert.equal(queued.type, "queued")
+        assert.match(queued.invocation_id ?? "", /^ws_/)
+        const started = await reader.read() as { type?: string; workflow_run_id?: string }
+        assert.equal(started.type, "started")
+        assert.equal(started.workflow_run_id, "run-websocket")
+        const final = await reader.read() as { type?: string; workflow_run?: { final_output?: { message?: string } } }
+        assert.equal(final.type, "final")
+        assert.equal(final.workflow_run?.final_output?.message, "ws done")
+        assert.deepEqual(inputs, [{ prompt, format: "html" }])
+        assert.deepEqual(callers, [{ type: "anonymous" }])
+        assert.deepEqual(modes, ["async"])
+      } finally {
+        socket.close()
+      }
+    } finally {
+      await app.close()
+    }
+  }
+
+  {
+    let seenInput: unknown = null
+    let seenCaller: unknown = null
+    let seenMode: unknown = null
+    const { app } = buildServer(publishedTransportConfig({
+      id: "mcp",
+      transport: "mcp",
+      route: "/integrations/mcp",
+      methods: ["POST"],
+      inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
+      mode: "sync",
+    }), {
+      invokeWorkflow: async (invocation) => {
+        seenInput = invocation.input
+        seenCaller = invocation.caller
+        seenMode = invocation.mode
+        return {
+          accepted: true,
+          workflow_run: {
+            id: "run-mcp-live",
+            status: "Completed",
+            final_output: { message: "mcp done" },
+          },
+        }
+      },
+    })
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 })
+      const initialize = await fetch(`${address}/integrations/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }),
+      })
+      assert.equal(initialize.status, 200)
+      assert.equal((await initialize.json() as { result?: { serverInfo?: { name?: string } } }).result?.serverInfo?.name, "arroba-publication")
+
+      const called = await fetch(`${address}/integrations/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "invoke_pub_mcp", arguments: { prompt, format: "html" } },
+        }),
+      })
+      assert.equal(called.status, 200)
+      const body = await called.json() as {
+        readonly result?: {
+          readonly content?: unknown
+          readonly structuredContent?: { readonly workflow_run_id?: string; readonly message?: unknown }
+          readonly isError?: boolean
+        }
+      }
+      assert.deepEqual(body.result?.content, [{ type: "text", text: "mcp done" }])
+      assert.equal(body.result?.structuredContent?.workflow_run_id, "run-mcp-live")
+      assert.equal(body.result?.isError, false)
+      assert.deepEqual(seenInput, { prompt, format: "html" })
+      assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "mcp", tool_name: "invoke_pub_mcp" } })
+      assert.equal(seenMode, "sync")
+    } finally {
+      await app.close()
+    }
+  }
+})
+
+function publishedHttpConfig(
+  id: string,
+  route: string,
+  methods: Array<"GET" | "POST">,
+  parser: NonNullable<WorkflowPublicationConfig["parser"]>,
+): WorkflowPublicationConfig {
+  return publicationConfigFromPackage({
+    schema_version: 1,
+    package_version: 1,
+    publication_id: `pub-${id}`,
+    source_session_id: "session-1",
+    workflow_id: "workflow-1",
+    hooks: [{
+      id: `hook-${id}`,
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      route,
+      methods,
+      parser,
+      mode: "sync",
+    }],
+  }, {
+    schema_version: 1,
+    source_session: {
+      id: "session-1",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+    },
+    workflow: {
+      id: "workflow-1",
+      alias: null,
+      nodes: [{ id: "node-1", agent_id: "agent-1" }],
+      edges: [],
+      endpoints: [{ id: "endpoint-1", alias: null, entry_node_id: "node-1" }],
+    },
+    endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+  }, "ws://kernel")
+}
+
+function publishedTransportConfig(input: {
+  readonly id: string
+  readonly transport: string
+  readonly route: string
+  readonly methods?: string[]
+  readonly parser?: NonNullable<WorkflowPublicationConfig["parser"]>
+  readonly inputSchema?: WorkflowPublicationConfig["input_schema"]
+  readonly mode?: "sync" | "async"
+}): WorkflowPublicationConfig {
+  return publicationConfigFromPackage({
+    schema_version: 1,
+    package_version: 1,
+    publication_id: `pub-${input.id}`,
+    source_session_id: "session-1",
+    workflow_id: "workflow-1",
+    hooks: [{
+      id: `hook-${input.id}`,
+      transport: input.transport,
+      endpoint_id: "endpoint-1",
+      route: input.route,
+      ...(input.methods ? { methods: input.methods } : {}),
+      ...(input.parser ? { parser: input.parser } : {}),
+      ...(input.inputSchema ? { input_schema: input.inputSchema } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
+    }],
+  }, {
+    schema_version: 1,
+    source_session: {
+      id: "session-1",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+    },
+    workflow: {
+      id: "workflow-1",
+      alias: null,
+      nodes: [{ id: "node-1", agent_id: "agent-1" }],
+      edges: [],
+      endpoints: [{ id: "endpoint-1", alias: null, entry_node_id: "node-1" }],
+    },
+    endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+  }, "ws://kernel")
+}
+
 test("gateway supports regex and path-template parsers", async () => {
   const regexInputs: unknown[] = []
   const regexServer = buildServer({

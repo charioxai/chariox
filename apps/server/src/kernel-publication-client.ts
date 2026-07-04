@@ -55,8 +55,14 @@ export async function invokeKernelWorkflow(
 export function promptFromInvocationInput(input: unknown): string | null {
   if (typeof input === "string") return input
   if (input && typeof input === "object" && !Array.isArray(input)) {
-    const prompt = (input as Record<string, unknown>).prompt
+    const record = input as Record<string, unknown>
+    const prompt = record.prompt
     if (typeof prompt === "string") return prompt
+    const body = record.body
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      const bodyPrompt = (body as Record<string, unknown>).prompt
+      if (typeof bodyPrompt === "string") return bodyPrompt
+    }
   }
   if (input == null) return null
   return JSON.stringify(input)

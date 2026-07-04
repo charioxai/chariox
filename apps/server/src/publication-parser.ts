@@ -47,11 +47,15 @@ async function parseRequest(request: GatewayRequest, config: ParserConfig): Prom
     case "json":
       return request.body ?? {}
     case "query_params":
-      return request.query ?? {}
+      return plainObject(request.query)
     case "headers":
-      return request.headers
+      return plainObject(request.headers)
     case "webhook":
-      return { headers: request.headers, body: request.body ?? {}, query: request.query ?? {} }
+      return {
+        headers: plainObject(request.headers),
+        body: request.body ?? {},
+        query: plainObject(request.query),
+      }
     case "regex":
       return parseRegex(sourceValue(request, config.source ?? "path"), config, config.source ?? "path")
     case "path_template":
@@ -59,6 +63,11 @@ async function parseRequest(request: GatewayRequest, config: ParserConfig): Prom
     case "custom_command":
       return await parseCustomCommand(request, config)
   }
+}
+
+function plainObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  return { ...(value as Record<string, unknown>) }
 }
 
 function parseRegex(source: string, config: ParserConfig, sourceKind: ParserConfig["source"]) {
