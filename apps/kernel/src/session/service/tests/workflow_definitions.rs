@@ -148,7 +148,6 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             Some("async".to_string()),
             None,
             None,
-            None,
             "local".to_string(),
         )
         .expect("workflow publication should be created");

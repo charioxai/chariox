@@ -760,7 +760,6 @@ impl SessionService {
         mode: Option<String>,
         sync_timeout_ms: Option<u64>,
         poll_ms: Option<u64>,
-        local_port: Option<u16>,
         created_by_user_id: String,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
@@ -774,7 +773,6 @@ impl SessionService {
             &parser,
             mode.as_deref(),
         )?;
-        validate_workflow_publication_local_port(local_port)?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         let alias = normalize_workflow_publication_alias(alias)?;
@@ -797,7 +795,6 @@ impl SessionService {
             mode,
             sync_timeout_ms,
             poll_ms,
-            local_port,
             created_by_user_id,
         );
         let session =
@@ -1267,23 +1264,6 @@ fn validate_workflow_publication_route(route: Option<&str>) -> Result<(), Daemon
         return Ok(());
     }
     invalid_workflow_publication_option("workflow publication route must start with `/`")
-}
-
-fn validate_workflow_publication_local_port(port: Option<u16>) -> Result<(), DaemonError> {
-    let Some(port) = port else {
-        return Ok(());
-    };
-    if port == 0 {
-        return invalid_workflow_publication_option(
-            "workflow publication local port must be between 1 and 65535",
-        );
-    }
-    if let Err(error) = std::net::TcpListener::bind(("127.0.0.1", port)) {
-        return invalid_workflow_publication_option(&format!(
-            "workflow publication local port {port} is not available: {error}"
-        ));
-    }
-    Ok(())
 }
 
 fn workflow_publication_transport_kind(

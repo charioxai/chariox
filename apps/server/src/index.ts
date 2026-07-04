@@ -220,7 +220,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const config = await loadGatewayPublicationConfig()
   const { app, logger } = buildServer(config)
   const host = process.env.HOST ?? "0.0.0.0"
-  const port = Number(process.env.PORT ?? config?.local_port ?? 3000)
+  const port = Number(process.env.PORT ?? 3000)
   logger.info("starting workflow gateway", { host, port })
 
   app

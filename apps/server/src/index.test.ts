@@ -618,7 +618,6 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
     parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
     input_schema: { type: "object", required: ["task"] },
     mode: "async",
-    local_port: 3030,
     created_by_user_id: "local",
     created_at_ms: 0,
     updated_at_ms: 0,
@@ -632,7 +631,6 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
     queue_ref: "default",
     kernel_endpoint: "ws://kernel",
     route: "/qa",
-    local_port: 3030,
     methods: ["POST"],
     parser: { kind: "regex", source: "path", pattern: "^/qa/(?<task>.+)$" },
     input_schema: { type: "object", required: ["task"] },
@@ -690,7 +688,6 @@ test("gateway can load publication config from kernel lookup", async () => {
             endpoint_id: "endpoint-1",
             enabled: true,
             route: "/qa",
-            local_port: 4040,
             methods: ["GET"],
             parser: { kind: "json" },
             mode: "sync",
@@ -716,7 +713,6 @@ test("gateway can load publication config from kernel lookup", async () => {
   assert.equal(config.publication_id, "pub-1")
   assert.equal(config.workflow_ref, "workflow-1")
   assert.equal(config.endpoint_ref, "endpoint-1")
-  assert.equal(config.local_port, 4040)
   assert.deepEqual(config.methods, ["GET"])
 })
 
@@ -732,7 +728,6 @@ test("gateway maps exported publication packages to runtime config", async () =>
       transport: "human_http",
       endpoint_id: "endpoint-1",
       route: "/*",
-      local_port: 3030,
       methods: ["GET", "PATCH"],
       parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
       input_schema: { type: "object", required: ["prompt"] },
@@ -766,7 +761,6 @@ test("gateway maps exported publication packages to runtime config", async () =>
     kernel_endpoint: "ws://kernel",
     transport: "human_http",
     route: "/*",
-    local_port: 3030,
     methods: ["GET"],
     parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
     input_schema: { type: "object", required: ["prompt"] },

@@ -39,7 +39,6 @@ export type WorkflowPublicationConfig = {
   kernel_endpoint?: string
   transport?: string
   route?: string
-  local_port?: number
   methods?: Array<"GET" | "POST">
   parser?: ParserConfig
   input_schema?: InputSchema
@@ -61,7 +60,6 @@ export type PublicationHookConfig = {
   endpoint_id: string
   queue_ref?: string
   route?: string
-  local_port?: number
   methods?: string[]
   parser?: ParserConfig
   input_schema?: InputSchema | null
@@ -77,7 +75,6 @@ export type WorkflowPublicationPackage = {
   package_version?: number
   publication_id: string
   alias?: string | null
-  local_port?: number
   source_session_id?: string
   workflow_id: string
   default_bindings_path?: string

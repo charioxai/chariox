@@ -280,8 +280,6 @@ pub struct CreateWorkflowPublicationRequest {
     pub sync_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

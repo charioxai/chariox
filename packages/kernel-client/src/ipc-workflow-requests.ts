@@ -671,7 +671,6 @@ export type CreateWorkflowPublicationOptions = {
   mode?: string | null
   syncTimeoutMs?: number | null
   pollMs?: number | null
-  localPort?: number | null
 }
 
 export function createWorkflowPublicationRequest(
@@ -696,7 +695,6 @@ export function createWorkflowPublicationRequest(
       mode: options.mode ?? null,
       sync_timeout_ms: options.syncTimeoutMs ?? null,
       poll_ms: options.pollMs ?? null,
-      local_port: options.localPort ?? null,
     },
   }
 }

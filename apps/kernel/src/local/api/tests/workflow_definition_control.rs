@@ -2949,7 +2949,6 @@ fn local_request_api_exports_agent_app_publication_package() {
                 mode: Some("async".to_string()),
                 sync_timeout_ms: None,
                 poll_ms: None,
-                local_port: None,
             },
         ))
         .expect("workflow publication should be created")
@@ -3056,7 +3055,6 @@ fn local_request_api_validates_publication_transport_options() {
                 mode: Some("async".to_string()),
                 sync_timeout_ms: Some(30_000),
                 poll_ms: Some(250),
-                local_port: Some(3031),
             },
         ))
         .expect("api publication should be created")
@@ -3103,15 +3101,6 @@ fn local_request_api_validates_publication_transport_options() {
         publication_json["hooks"][0]["mode"],
         serde_json::json!("async")
     );
-    assert_eq!(
-        publication_json["hooks"][0]["local_port"],
-        serde_json::json!(3031)
-    );
-    assert_eq!(
-        package_text_file(&exported, ".env.example").contains("PORT=3031"),
-        true
-    );
-
     let mcp_publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
             CreateWorkflowPublicationRequest {
@@ -3129,7 +3118,6 @@ fn local_request_api_validates_publication_transport_options() {
                 mode: None,
                 sync_timeout_ms: None,
                 poll_ms: None,
-                local_port: None,
             },
         ))
         .expect("mcp publication should be created")
@@ -3176,7 +3164,6 @@ fn local_request_api_validates_publication_transport_options() {
             mode: Some("sync".to_string()),
             sync_timeout_ms: None,
             poll_ms: None,
-            local_port: None,
         },
     ));
     assert!(api_sync
@@ -3200,7 +3187,6 @@ fn local_request_api_validates_publication_transport_options() {
             mode: Some("sync".to_string()),
             sync_timeout_ms: None,
             poll_ms: None,
-            local_port: None,
         },
     ));
     assert!(mcp_parser
@@ -3225,7 +3211,6 @@ fn local_request_api_validates_publication_transport_options() {
                 mode: Some("async".to_string()),
                 sync_timeout_ms: None,
                 poll_ms: None,
-                local_port: None,
             },
         ))
         .expect("websocket_json custom route should be created")

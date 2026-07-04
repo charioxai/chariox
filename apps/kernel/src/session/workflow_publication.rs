@@ -32,8 +32,6 @@ pub struct WorkflowPublicationDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     poll_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    local_port: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     open_url: Option<String>,
@@ -62,7 +60,6 @@ impl WorkflowPublicationDefinition {
         mode: Option<String>,
         sync_timeout_ms: Option<u64>,
         poll_ms: Option<u64>,
-        local_port: Option<u16>,
         created_by_user_id: impl Into<String>,
     ) -> Self {
         let now = unix_epoch_ms();
@@ -83,7 +80,6 @@ impl WorkflowPublicationDefinition {
             mode,
             sync_timeout_ms,
             poll_ms,
-            local_port,
             status: None,
             open_url: None,
             deployment: None,
@@ -143,10 +139,6 @@ impl WorkflowPublicationDefinition {
 
     pub fn trace_exposure(&self) -> Option<&Value> {
         self.trace_exposure.as_ref()
-    }
-
-    pub fn local_port(&self) -> Option<u16> {
-        self.local_port
     }
 
     pub fn disable(&mut self) {
