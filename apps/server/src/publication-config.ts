@@ -213,10 +213,12 @@ export function publicationConfigFromPackage(
     queue_ref: hook.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
     transport: hook.transport,
-    route: hook.route ?? defaultRouteForTransport(transport),
-    mode: hook.mode ?? defaultModeForTransport(transport),
   }
-  if (parser) config.parser = parser
+  if (transport !== "schedule_only") {
+    config.route = hook.route ?? defaultRouteForTransport(transport)
+    config.mode = hook.mode ?? defaultModeForTransport(transport)
+    if (parser) config.parser = parser
+  }
   if (packageRoot) config.package_root = packageRoot
   if (publicationPackage.agent_app?.enabled) {
     validateAgentAppConfig(publicationPackage.agent_app, { packageRoot })
@@ -228,7 +230,9 @@ export function publicationConfigFromPackage(
     config.trace_exposure = traceExposure
     config.trace_context = publicationTraceContextFromSnapshot(snapshot)
   }
-  const methods = normalizeHttpMethods(hook.methods) ?? defaultMethodsForTransport(transport)
+  const methods = transport === "schedule_only"
+    ? null
+    : normalizeHttpMethods(hook.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
   if (hook.input_schema) config.input_schema = hook.input_schema
   return config
@@ -281,15 +285,19 @@ export function publicationConfigFromKernelRecord(
     endpoint_ref: publication.endpoint_id,
     queue_ref: publication.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
-    route: publication.route ?? defaultRouteForTransport(transport),
-    mode: normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport),
   }
-  if (parser) config.parser = parser
+  if (transport !== "schedule_only") {
+    config.route = publication.route ?? defaultRouteForTransport(transport)
+    config.mode = normalizePublicationMode(publication.mode) ?? defaultModeForTransport(transport)
+    if (parser) config.parser = parser
+  }
   if (publication.sync_timeout_ms != null) config.sync_timeout_ms = publication.sync_timeout_ms
   if (publication.poll_ms != null) config.poll_ms = publication.poll_ms
   if (traceExposure) config.trace_exposure = traceExposure
   if (transport) config.transport = transport
-  const methods = normalizeHttpMethods(publication.methods) ?? defaultMethodsForTransport(transport)
+  const methods = transport === "schedule_only"
+    ? null
+    : normalizeHttpMethods(publication.methods) ?? defaultMethodsForTransport(transport)
   if (methods) config.methods = methods
   const inputSchema = asInputSchema(publication.input_schema)
   if (inputSchema) config.input_schema = inputSchema

@@ -80,16 +80,19 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   validateAgentAppConfig(publication.agent_app, { packageRoot: publication.package_root })
   const httpsOptions = resolveHttpsOptions(publication.tls)
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
-  const webSocketServer = installPublicationWebSocket(app, publication, deps)
+  const scheduleOnly = isScheduleOnlyPublication(publication)
+  const webSocketServer = scheduleOnly ? null : installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
-  if (!isAgentAppPublication(publication)) {
+  if (!scheduleOnly && !isAgentAppPublication(publication)) {
     installPublicationViewerRoutes(app, publication)
   }
-  installHumanHttpRoutes(app, publication)
-  if (isApiSseJsonPublication(publication)) {
+  if (!scheduleOnly) {
+    installHumanHttpRoutes(app, publication)
+  }
+  if (!scheduleOnly && isApiSseJsonPublication(publication)) {
     installApiSseJsonRoutes(app, publication, deps)
   }
-  if (isMcpPublication(publication)) {
+  if (!scheduleOnly && isMcpPublication(publication)) {
     installPublicationMcpRoutes(app, publication, deps)
   }
 
@@ -104,7 +107,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   app.get("/.well-known/arroba/publication/status", async () => publicationStatusPayload(publication, deps))
 
   app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
-    if (publication.transport && publication.transport !== "human_http") {
+    if (scheduleOnly || (publication.transport && publication.transport !== "human_http")) {
       reply.code(404)
       return { error: "not found" }
     }
@@ -126,7 +129,9 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
   })
 
-  if (isAgentAppPublication(publication)) {
+  if (scheduleOnly) {
+    // Schedule-only publications have no ingress route; lifecycle APIs start the scheduler runtime.
+  } else if (isAgentAppPublication(publication)) {
     installAgentAppRoutes(app, publication, deps)
   } else if (!isApiSseJsonPublication(publication) && !isMcpPublication(publication)) {
     const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
@@ -162,11 +167,15 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   }
 
   app.addHook("onClose", async () => {
-    webSocketServer.close()
+    webSocketServer?.close()
     logger.info("gateway closed")
   })
 
   return { app, logger }
+}
+
+function isScheduleOnlyPublication(publication: WorkflowPublicationConfig) {
+  return publication.transport === "schedule_only"
 }
 
 function parseHumanHttpFormBody(body: unknown): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
@@ -285,6 +294,7 @@ async function registerServedPublicationEndpoint(
   if (!publication) return
   const sessionId = publication.session_id
   if (!sessionId || !publication.publication_id) return
+  if (isScheduleOnlyPublication(publication)) return
   const localUrl = servedLocalUrl(publication, host, port)
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {

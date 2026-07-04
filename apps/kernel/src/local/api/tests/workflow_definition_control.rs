@@ -1,7 +1,8 @@
 use super::*;
 use crate::local::{
-    CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
-    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
+    CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
+    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, RegisterEnvironmentRequest,
+    RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -3147,6 +3148,95 @@ fn local_request_api_validates_publication_transport_options() {
     assert_eq!(mcp_json["hooks"][0]["methods"], serde_json::json!(["POST"]));
     assert_eq!(mcp_json["hooks"][0]["mode"], serde_json::json!("sync"));
     assert!(mcp_json["hooks"][0].get("parser").is_none());
+
+    let schedule_without_watchdog = harness.dispatch(
+        LocalDaemonRequest::CreateWorkflowPublication(CreateWorkflowPublicationRequest {
+            session_id: graph.session_id.clone(),
+            workflow_ref: graph.workflow_id.clone(),
+            endpoint_ref: graph.endpoint_id.clone(),
+            queue_ref: Some("default".to_string()),
+            alias: Some("schedule-without-watchdog".to_string()),
+            route: None,
+            methods: Vec::new(),
+            transport: Some(serde_json::json!({ "kind": "schedule_only" })),
+            parser: None,
+            input_schema: None,
+            trace_exposure: None,
+            mode: None,
+            sync_timeout_ms: None,
+            poll_ms: None,
+        }),
+    );
+    assert!(schedule_without_watchdog
+        .expect_err("schedule_only publication without enabled schedule should fail")
+        .to_string()
+        .contains("require an enabled schedule"));
+
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowSchedule(
+            CreateWorkflowScheduleRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                trigger: crate::session::WorkflowScheduleTrigger::interval(300),
+                invocation_prompt: "scheduled prompt".to_string(),
+                overlap_policy: crate::session::WorkflowScheduleOverlapPolicy::Skip,
+                max_runs_configured: false,
+                max_runs: None,
+            },
+        ))
+        .expect("workflow schedule should be created");
+    let schedule_publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("schedule-only".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: Some(serde_json::json!({ "kind": "schedule_only" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("schedule_only publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    let exported_schedule = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: schedule_publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("schedule_only publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_files, .. } => {
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let schedule_json = package_json_file(&exported_schedule, "publication.json");
+    assert_eq!(
+        schedule_json["hooks"][0]["transport"],
+        serde_json::json!("schedule_only")
+    );
+    assert!(schedule_json["hooks"][0].get("route").is_none());
+    assert!(schedule_json["hooks"][0].get("methods").is_none());
+    assert!(schedule_json["hooks"][0].get("parser").is_none());
+    assert!(schedule_json["hooks"][0].get("mode").is_none());
 
     let api_sync = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
         CreateWorkflowPublicationRequest {

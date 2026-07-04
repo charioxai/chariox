@@ -775,6 +775,14 @@ impl SessionService {
         )?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
+        if workflow_publication_transport_kind(&transport)? == "schedule_only" {
+            self.validate_schedule_only_workflow_publication(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                &normalized_queue_ref,
+            )?;
+        }
         let alias = normalize_workflow_publication_alias(alias)?;
         if let Some(alias) = alias.as_deref() {
             self.ensure_workflow_publication_alias_available(session_id, alias)?;
@@ -804,6 +812,34 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow_publication(publication))
+    }
+
+    fn validate_schedule_only_workflow_publication(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        queue_ref: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        let queue_id =
+            self.resolve_workflow_prompt_queue_ref(session_id, workflow_id, queue_ref)?;
+        let has_schedule = session.workflow_schedules().iter().any(|schedule| {
+            let schedule_queue_matches = match schedule.queue_id() {
+                Some(schedule_queue_id) => schedule_queue_id == queue_id.as_str(),
+                None => queue_id == "default",
+            };
+            schedule.workflow_id() == workflow_id
+                && schedule.endpoint_id() == endpoint_id
+                && schedule.enabled()
+                && schedule_queue_matches
+        });
+        if has_schedule {
+            return Ok(());
+        }
+        invalid_workflow_publication_option(
+            "schedule_only publications require an enabled schedule for the selected endpoint and queue",
+        )
     }
 
     pub fn list_workflow_publications(
@@ -1245,6 +1281,28 @@ fn validate_workflow_publication_options(
                         "mcp publications always return a synchronous tool result",
                     );
                 }
+            }
+        }
+        "schedule_only" => {
+            if route.is_some_and(|route| !route.trim().is_empty()) {
+                return invalid_workflow_publication_option(
+                    "schedule_only publications do not expose an ingress route",
+                );
+            }
+            if !methods.is_empty() {
+                return invalid_workflow_publication_option(
+                    "schedule_only publications do not support HTTP method overrides",
+                );
+            }
+            if parser.is_some() {
+                return invalid_workflow_publication_option(
+                    "schedule_only publications do not parse external request input",
+                );
+            }
+            if mode.is_some() {
+                return invalid_workflow_publication_option(
+                    "schedule_only publications do not support response mode overrides",
+                );
             }
         }
         _ => {

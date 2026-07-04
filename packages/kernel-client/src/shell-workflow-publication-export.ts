@@ -45,6 +45,23 @@ export async function writeWorkflowPublicationExportPackage(
 }
 
 function workflowPublicationPackage(publication: WorkflowPublicationDefinition) {
+  const transport = hookTransport(publication)
+  const hook: Record<string, unknown> = {
+    id: `${publication.id}-hook`,
+    publication_id: publication.id,
+    transport,
+    endpoint_id: publication.endpoint_id,
+    queue_ref: publication.queue_ref ?? "default",
+    input_schema: publication.input_schema ?? null,
+    trace_exposure: publication.trace_exposure ?? null,
+    response_mode: "accepted",
+  }
+  if (transport !== "schedule_only") {
+    hook.route = publication.route ?? "/*"
+    hook.methods = publication.methods?.length ? publication.methods : ["GET"]
+    hook.parser = publication.parser ?? { kind: "json" }
+    hook.mode = publication.mode ?? "sync"
+  }
   return {
     schema_version: 1,
     package_version: 1,
@@ -53,20 +70,7 @@ function workflowPublicationPackage(publication: WorkflowPublicationDefinition) 
     source_session_id: publication.session_id,
     workflow_id: publication.workflow_id,
     default_bindings_path: "bindings.local.json",
-    hooks: [{
-      id: `${publication.id}-hook`,
-      publication_id: publication.id,
-      transport: hookTransport(publication),
-      endpoint_id: publication.endpoint_id,
-      queue_ref: publication.queue_ref ?? "default",
-      route: publication.route ?? "/*",
-      methods: publication.methods?.length ? publication.methods : ["GET"],
-      parser: publication.parser ?? { kind: "json" },
-      input_schema: publication.input_schema ?? null,
-      trace_exposure: publication.trace_exposure ?? null,
-      mode: publication.mode ?? "sync",
-      response_mode: "accepted",
-    }],
+    hooks: [hook],
     assets: {
       public_dir: "public",
       scripts_dir: "scripts",
@@ -164,17 +168,20 @@ function workflowPublicationGatewayConfig(
   publication: WorkflowPublicationDefinition,
   kernelUrl?: string,
 ) {
+  const transport = hookTransport(publication)
   const config: Record<string, unknown> = {
     publication_id: publication.id,
     session_id: publication.session_id,
     workflow_ref: publication.workflow_id,
     endpoint_ref: publication.endpoint_id,
-    route: publication.route ?? "/*",
-    parser: publication.parser ?? { kind: "json" },
-    mode: publication.mode === "async" ? "async" : "sync",
+  }
+  if (transport !== "schedule_only") {
+    config.route = publication.route ?? "/*"
+    config.parser = publication.parser ?? { kind: "json" }
+    config.mode = publication.mode === "async" ? "async" : "sync"
   }
   if (kernelUrl) config.kernel_endpoint = kernelUrl
-  if (publication.methods?.length) config.methods = publication.methods
+  if (transport !== "schedule_only" && publication.methods?.length) config.methods = publication.methods
   if (publication.transport != null) config.transport = publication.transport
   if (publication.input_schema != null) config.input_schema = publication.input_schema
   if (publication.trace_exposure != null) config.trace_exposure = publication.trace_exposure
@@ -220,6 +227,7 @@ function workflowPublicationReadme(
   publicationPackage: ReturnType<typeof workflowPublicationPackage>,
   config: Record<string, unknown>,
 ) {
+  const scheduleOnly = hookTransport(publication) === "schedule_only"
   const route = String(config.route ?? "/*")
   const examplePath = route.includes("*") ? route.replace("*", "example") : route
   const methods = Array.isArray(config.methods) && config.methods.length ? config.methods.map(String) : ["GET", "POST"]
@@ -253,7 +261,7 @@ function workflowPublicationReadme(
     "./run.sh",
     "```",
     "",
-    "## Invoke",
+    scheduleOnly ? "## Observe" : "## Invoke",
     "",
     "## Hooks",
     "",
@@ -261,22 +269,28 @@ function workflowPublicationReadme(
     JSON.stringify(publicationPackage.hooks, null, 2),
     "```",
     "",
-    "```bash",
-    "BASE_URL=http://127.0.0.1:3000",
-    `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${body}`,
-    "```",
-    "",
-    "## WebSocket",
-    "",
-    "The gateway also accepts WebSocket clients at:",
-    "",
-    "```text",
-    `ws://127.0.0.1:3000${webSocketPath}`,
-    `wss://127.0.0.1:3000${webSocketPath}`,
-    "```",
-    "",
-    "Send `{\"type\":\"invoke\",\"input\":{}}` to invoke the publication.",
-    "",
+    ...(scheduleOnly ? [
+      "This is a schedule-only publication. It has no HTTP, WebSocket, MCP, or API ingress route.",
+      "Start the publication runtime to observe scheduled runs and exposed traces.",
+      "",
+    ] : [
+      "```bash",
+      "BASE_URL=http://127.0.0.1:3000",
+      `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${body}`,
+      "```",
+      "",
+      "## WebSocket",
+      "",
+      "The gateway also accepts WebSocket clients at:",
+      "",
+      "```text",
+      `ws://127.0.0.1:3000${webSocketPath}`,
+      `wss://127.0.0.1:3000${webSocketPath}`,
+      "```",
+      "",
+      "Send `{\"type\":\"invoke\",\"input\":{}}` to invoke the publication.",
+      "",
+    ]),
     "## Local IPC",
     "",
     "Local scripts can invoke the publication without starting the HTTP gateway:",

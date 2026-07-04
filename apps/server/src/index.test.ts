@@ -605,6 +605,46 @@ test("GET publication status includes runtime watchdog and latest output details
   }
 })
 
+test("schedule-only publication exposes status without ingress routes", async () => {
+  let invocations = 0
+  const { app } = buildServer({
+    publication_id: "pub-schedule-only",
+    session_id: "session-1",
+    workflow_ref: "workflow-1",
+    endpoint_ref: "endpoint-1",
+    queue_ref: "default",
+    transport: "schedule_only",
+  }, {
+    invokeWorkflow: async () => {
+      invocations += 1
+      return { accepted: true, workflow_run: { id: "run-schedule", status: "Running" } }
+    },
+  })
+
+  try {
+    const status = await app.inject({
+      method: "GET",
+      url: "/.well-known/arroba/publication/status",
+    })
+    assert.equal(status.statusCode, 200)
+    assert.equal(status.json().transport, "schedule_only")
+
+    const root = await app.inject({ method: "GET", url: "/" })
+    assert.equal(root.statusCode, 404)
+    const route = await app.inject({ method: "GET", url: "/prompt/hello" })
+    assert.equal(route.statusCode, 404)
+    const formInvoke = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/publication/human-http/invoke",
+      payload: { input: { prompt: "hello" } },
+    })
+    assert.equal(formInvoke.statusCode, 404)
+    assert.equal(invocations, 0)
+  } finally {
+    await app.close()
+  }
+})
+
 test("gateway maps kernel-owned publication records to runtime config", async () => {
   const config = publicationConfigFromKernelRecord({
     id: "pub-1",
