@@ -2,6 +2,7 @@ import path from "node:path"
 
 import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
+import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
 import {
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
@@ -93,9 +94,7 @@ function formatSessionHomeKernel(session: SessionListEntry): string {
 }
 
 export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_daemon_id" | "host_machine_id" | "kernel_id">): string {
-  const kernel = session.host_daemon_id?.trim() || session.kernel_id?.trim()
-  const machine = session.host_machine_id?.trim()
-  return kernel && machine ? `${kernel}@${machine}` : kernel || machine || "-"
+  return formatSessionHomeKernelLabel(session)
 }
 
 export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {

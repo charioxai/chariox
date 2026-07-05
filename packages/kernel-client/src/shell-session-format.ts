@@ -11,6 +11,7 @@ import {
   remoteWorkerProviderRunIsMissing,
   remoteWorkerProviderRunRecoveryAction,
 } from "./provider-run-recovery.js"
+import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
 import { sessionAgentIsBusy } from "./shell-agent-activity.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
@@ -34,21 +35,12 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
 
 function formatSessionRuntimeSummary(session: RuntimeSession): string {
   const parts = [
-    `home ${formatSessionHomeKernel(session)}`,
+    `home ${formatSessionHomeKernelLabel(session, "unknown")}`,
     session.owner_user_id?.trim() ? `owner ${session.owner_user_id.trim()}` : null,
     "authority home-owned",
     `live sync ${formatWorkspaceLiveSyncModeLabel(session.workspace_live_sync_mode)}`,
   ].filter(Boolean)
   return ` - ${parts.join(" - ")}`
-}
-
-function formatSessionHomeKernel(session: RuntimeSession): string {
-  const kernel = session.host_daemon_id?.trim() || ""
-  const machine = session.host_machine_id?.trim() || ""
-  if (kernel && machine) {
-    return `${kernel}@${machine}`
-  }
-  return kernel || machine || "unknown"
 }
 
 function formatSessionRemoteRuntime(session: RuntimeSession): string {

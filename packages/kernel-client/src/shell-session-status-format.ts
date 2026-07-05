@@ -8,6 +8,7 @@ import {
   remoteWorkerProviderRunIsMissing,
   remoteWorkerProviderRunRecoveryAction,
 } from "./provider-run-recovery.js"
+import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
 import {
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
@@ -37,7 +38,7 @@ export function formatSessionRuntimeStatus(
     "session runtime",
     `session: ${session.alias ? `${session.alias} (${session.id})` : session.id}`,
     `status: ${session.status}`,
-    `home kernel: ${formatSessionHomeKernel(session)}`,
+    `home kernel: ${formatSessionHomeKernelLabel(session)}`,
     `session owner: ${session.owner_user_id?.trim() || "-"}`,
     "authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools",
     `workspace: ${session.workspace_id}`,
@@ -79,15 +80,6 @@ function formatAgentRuntimeLines(
     formatAgentExtensions(agent),
     formatAgentRemoteExtensionSync(agent),
   ].filter(Boolean).join(" "))
-}
-
-function formatSessionHomeKernel(session: RuntimeSession): string {
-  const kernel = session.host_daemon_id?.trim() || ""
-  const machine = session.host_machine_id?.trim() || ""
-  if (kernel && machine) {
-    return `${kernel}@${machine}`
-  }
-  return kernel || machine || "-"
 }
 
 function formatAgentLabel(agent: RuntimeSession["agents"][number]): string {

@@ -19,6 +19,7 @@ import {
 } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
+import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
 
 export type NativeTuiRuntimeBannerInput = {
   readonly surface: string
@@ -228,10 +229,7 @@ function formatSliceSummary(slice: SliceRecord): string {
 }
 
 function formatHomeKernel(session: RuntimeSession): string {
-  const daemon = session.host_daemon_id?.trim()
-  const machine = session.host_machine_id?.trim()
-  if (daemon && machine) return `${daemon}@${machine}`
-  return daemon || machine || "-"
+  return formatSessionHomeKernelLabel(session)
 }
 
 function formatSessionOwnerLines(session: RuntimeSession): string[] {

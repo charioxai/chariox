@@ -21,6 +21,7 @@ import {
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"
+import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
 
 export type ShellAgentProviderRunContext = {
   activeProviderRunId?: string | null
@@ -256,8 +257,10 @@ function formatSliceLookupNextLines(agent: AgentInstance): string[] {
 }
 
 function formatHomeKernel(context: ShellAgentSessionContext): string {
-  const homeKernel = context.homeKernelId || "<unknown>"
-  return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
+  return formatSessionHomeKernelLabel({
+    homeKernelId: context.homeKernelId || (context.homeMachineId ? "<unknown>" : null),
+    homeMachineId: context.homeMachineId,
+  }, "<unknown>")
 }
 
 function formatLiveSyncScope(context: ShellAgentSessionContext): string {

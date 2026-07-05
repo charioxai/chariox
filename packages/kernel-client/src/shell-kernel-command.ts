@@ -1,5 +1,6 @@
 import type { DaemonHealthProjection, RuntimeSession } from "./kernel-types.js"
 import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest, getSessionStateRequest } from "./ipc-requests.js"
+import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { expectSessionState } from "./shell-session-attachment.js"
 import {
@@ -88,7 +89,7 @@ async function kernelHealthRuntimeContext(
     return [
       "session runtime:",
       `  session: ${session.id}`,
-      `  home kernel: ${formatHomeKernel(session)}`,
+      `  home kernel: ${formatSessionHomeKernelLabel(session)}`,
       `  owner: ${session.owner_user_id?.trim() || "-"}`,
       "  authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools",
       `  agent: ${context.agentId ?? "-"}`,
@@ -103,15 +104,6 @@ async function kernelHealthRuntimeContext(
       `  lookup: ${message || "failed"}`,
     ].join("\n")
   }
-}
-
-function formatHomeKernel(session: RuntimeSession): string {
-  const kernel = session.host_daemon_id?.trim() || ""
-  const machine = session.host_machine_id?.trim() || ""
-  if (kernel && machine) {
-    return `${kernel}@${machine}`
-  }
-  return kernel || machine || "-"
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

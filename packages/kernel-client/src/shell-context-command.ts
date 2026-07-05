@@ -16,6 +16,7 @@ import { sessionAgentIsBusy, sessionHasAgentRuntimeProjection } from "./shell-ag
 import { expectSessionState } from "./shell-session-attachment.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"
+import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
 
 type ShellContextCommandDeps = {
   client: {
@@ -121,12 +122,7 @@ function formatShellContext(
 }
 
 function formatContextHomeKernel(session: RuntimeSession | null): string {
-  const homeKernel = session?.host_daemon_id?.trim() || ""
-  const homeMachine = session?.host_machine_id?.trim() || ""
-  if (homeKernel && homeMachine) {
-    return `${homeKernel}@${homeMachine}`
-  }
-  return homeKernel || homeMachine || "-"
+  return formatSessionHomeKernelLabel(session)
 }
 
 function formatContextRuntimeAuthority(session: RuntimeSession | null): string {
