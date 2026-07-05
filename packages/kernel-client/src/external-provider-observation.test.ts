@@ -294,6 +294,10 @@ test("external provider observed completion time prefers observation time then c
     observedAtMs: Number.NaN,
     createdAtMs: 1_000,
   }, () => 3_000), 1_000)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: Number.POSITIVE_INFINITY,
+    createdAtMs: Number.NaN,
+  }, () => 3_000), 3_000)
   assert.equal(externalProviderObservedCompletionAtMs({}, () => 3_000), 3_000)
 })
 
