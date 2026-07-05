@@ -44,6 +44,7 @@
     "./session-agent-resolver": "./dist/session-agent-resolver.js",
     "./session-bootstrap-policy": "./dist/session-bootstrap-policy.js",
     "./session-browser-policy": "./dist/session-browser-policy.js",
+    "./session-prompt-identity": "./dist/session-prompt-identity.js",
     "./session-prompt-lifecycle": "./dist/session-prompt-lifecycle.js",
     "./session-prompt-work": "./dist/session-prompt-work.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
