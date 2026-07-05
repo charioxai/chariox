@@ -1,4 +1,4 @@
-import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
+import { agentRuntimeActivityIsBusy, projectAgentRuntimeActivity } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { sessionHasAgent } from "./session-agent-prompt-state.js"
 
@@ -264,6 +264,10 @@ function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: st
   }
   const activity = session.agent_activity[agentId]
   if (!activity) {
+    return false
+  }
+  const projection = projectAgentRuntimeActivity(activity)
+  if (projection.queuedPromptCountExplicit && projection.queuedPromptCount === 0) {
     return false
   }
   return agentRuntimeActivityIsBusy(activity)

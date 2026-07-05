@@ -381,6 +381,44 @@ test("queued prompts for agent preserve existing transcript when projected busy 
   assert.equal(queuedPromptsForAgent(session, "agent-1"), null)
 })
 
+test("queued prompts for agent clear stale queues when projected busy has explicit zero queued count", () => {
+  const session = sessionWith({
+    queued_prompts: [prompt("queued-stale")],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        queued_prompt_count: 0,
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "replace",
+    prompts: [],
+  })
+})
+
+test("queued prompts for agent preserve stale rows when projected busy has queued count without details", () => {
+  const session = sessionWith({
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        queued_prompt_count: 2,
+      },
+    },
+  })
+
+  assert.equal(queuedPromptsForAgent(session, "agent-1"), null)
+})
+
 test("queued prompts for agent falls back to legacy top-level queues without projections", () => {
   const queuedForAgent = prompt("queued-agent")
   const queuedForOther = prompt("queued-other", "agent-2")
