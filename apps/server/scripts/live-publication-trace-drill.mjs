@@ -413,7 +413,11 @@ async function stopRuntime(client, sessionId, matrixEntry, prefix) {
   if (!stop) return
   try {
     const stopped = await unwrap(
-      client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId ?? sessionId, stop.publicationId, "stop")),
+      withTimeout(
+        client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId ?? sessionId, stop.publicationId, "stop")),
+        runtimeStartTimeoutMs,
+        `stopping publication runtime ${stop.publicationId}`,
+      ),
       "WorkflowPublicationRuntimeControlled",
     )
     await writeArtifact(`${prefix}/runtime-stopped.json`, stopped)
@@ -430,7 +434,11 @@ async function stopActiveRuntimes(client) {
   while (activeRuntimeStops.length > 0) {
     const stop = activeRuntimeStops.pop()
     try {
-      await client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId, stop.publicationId, "stop"))
+      await withTimeout(
+        client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId, stop.publicationId, "stop")),
+        runtimeStartTimeoutMs,
+        `stopping publication runtime ${stop.publicationId}`,
+      )
     } catch {
       // Best-effort cleanup during process shutdown.
     }
