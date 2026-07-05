@@ -6,6 +6,7 @@ import type {
   ExternalProviderSessionCapabilities,
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
+import type { SessionHistoryCursorSelection as KernelSessionHistoryCursorSelection } from "@arroba/kernel-client/session-history-outline"
 import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@arroba/kernel-client/session-history-transcript"
 import type {
   AgentInstance as KernelAgentInstance,
@@ -330,10 +331,7 @@ export type SessionHistoryOutlineAgent = KernelSessionHistoryOutlineAgent
 
 export type SessionHistoryOutlineCursor = KernelSessionHistoryOutlineCursor
 
-export type SessionHistoryCursorState = {
-  agentId: string
-  cursor: SessionHistoryOutlineCursor
-} | null
+export type SessionHistoryCursorState = KernelSessionHistoryCursorSelection
 
 export type SessionHistoryOutlineTurn = KernelSessionHistoryOutlineTurn
 
