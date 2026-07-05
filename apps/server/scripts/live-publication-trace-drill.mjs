@@ -404,8 +404,8 @@ async function invokeTransport(localUrl, transport, provider, policy) {
     const initialize = await postJson(url, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } })
     const tools = await postJson(url, { jsonrpc: "2.0", id: 2, method: "tools/list" })
     const toolName = tools?.result?.tools?.[0]?.name
-    const called = await postJson(url, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: toolName, arguments: { prompt } } })
-    return { transport: transport.id, url: url.toString(), initialize, tools, called }
+    const calledRaw = await postJsonCapture(url, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: toolName, arguments: { prompt } } })
+    return { transport: transport.id, url: url.toString(), initialize, tools, called: calledRaw.json, called_raw: calledRaw }
   }
   throw new Error(`unsupported transport ${transport.id}`)
 }
@@ -509,7 +509,9 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     const marker = markerNames[level]
     const present = visible.includes(marker)
       || (level === "thinking" && visible.includes("thinking_traces"))
+      || (level === "thinking" && visible.includes('"level":"thinking"'))
       || (level === "tool_use" && visible.includes("runtime_tool_calls"))
+      || (level === "tool_use" && visible.includes('"level":"tool_use"'))
     if (enabled.has(level) && providerEmitted[level] && !present) failures.push(`${level} was emitted by provider but absent from exposed output`)
     if (!enabled.has(level) && present) failures.push(`${level} marker leaked while disabled`)
   }
@@ -537,7 +539,10 @@ function protocolFailures(raw, statusPayload, workflowRun, transport) {
     const messages = Array.isArray(raw?.messages) ? raw.messages.join("\n") : ""
     if (!messages.includes('"type":"final"')) failures.push("websocket_json stream did not emit final frame")
   }
-  if (transport.id === "mcp" && !raw?.called?.result) failures.push("mcp tools/call did not return a result")
+  if (transport.id === "mcp") {
+    if (raw?.called_raw?.timed_out) failures.push("mcp tools/call timed out before returning JSON-RPC result")
+    if (!raw?.called?.result) failures.push("mcp tools/call did not return a result")
+  }
   if (transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
   if (workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
   if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
@@ -560,13 +565,63 @@ async function fetchJson(url) {
 }
 
 async function postJson(url, payload) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(protocolTimeoutMs),
-  })
-  return JSON.parse(await response.text())
+  const captured = await postJsonCapture(url, payload)
+  if (captured.json) return captured.json
+  throw new Error(captured.error ?? `invalid JSON response from ${url}`)
+}
+
+async function postJsonCapture(url, payload) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`JSON request timed out for ${url}`)), protocolTimeoutMs)
+  let status = null
+  let text = ""
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    status = response.status
+    const reader = response.body?.getReader()
+    if (!reader) {
+      text = await response.text()
+    } else {
+      const decoder = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        text += decoder.decode(value, { stream: true })
+      }
+      text += decoder.decode()
+    }
+    return parseCapturedJson(status, text)
+  } catch (error) {
+    const timedOut = error?.name === "AbortError" || /timed out/i.test(String(error?.message ?? error))
+    return {
+      status,
+      text,
+      json: null,
+      timed_out: timedOut,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function parseCapturedJson(status, text) {
+  try {
+    return { status, text, json: JSON.parse(text.trim()), timed_out: false, error: null }
+  } catch (error) {
+    return {
+      status,
+      text,
+      json: null,
+      timed_out: false,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 async function invokeApiSse(url, init) {
