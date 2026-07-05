@@ -108,6 +108,16 @@ export type SessionFocusedStatusBadge = {
   parts: SessionStatusBadgePart[]
 }
 
+export type SessionAgentPaneStatusBadge = {
+  label: string
+  tone: SessionStatusBadgeTone
+}
+
+export type SessionAgentPaneStatusInput = {
+  readonly state?: string | null
+  readonly is_processing?: boolean | null
+}
+
 export type SessionAgentBusyState = {
   id: string
   busy: boolean
@@ -240,6 +250,51 @@ export function sessionFocusedStatusBadge(options: {
     { label: `${idleCount} IDLE`, tone: "idle" },
     { label: `${workingCount} WORKING`, tone: "working" },
   ])
+}
+
+export function sessionStatusLabel(
+  mode: SessionStatusMode,
+  activity: string | null,
+): string {
+  if (mode === "disconnected") {
+    return "DISCONNECTED"
+  }
+  if (mode === "idle") {
+    return "IDLE"
+  }
+  return formatSessionWorkingStatusLabel(activity)
+}
+
+export function sessionAgentPaneStatusBadge(options: {
+  readonly agent: SessionAgentPaneStatusInput | null
+  readonly activeLabel: string | null
+  readonly hasPromptWork?: boolean
+  readonly isStreaming?: boolean
+  readonly busyLatch?: boolean
+  readonly useLegacyAgentProcessingState?: boolean
+}): SessionAgentPaneStatusBadge {
+  const agent = options.agent
+  if (!agent) {
+    return { label: "", tone: "idle" }
+  }
+  if (agent.state === "Error") {
+    return { label: "ERROR", tone: "error" }
+  }
+  if (options.activeLabel) {
+    return { label: sessionStatusLabel("working", options.activeLabel), tone: "working" }
+  }
+  const useLegacyAgentProcessingState = options.useLegacyAgentProcessingState ?? true
+  const legacyAgentBusy = useLegacyAgentProcessingState
+    && (agent.is_processing === true || agent.state === "Working")
+  if (
+    options.hasPromptWork === true
+    || legacyAgentBusy
+    || options.isStreaming === true
+    || options.busyLatch === true
+  ) {
+    return { label: sessionStatusLabel("working", null), tone: "working" }
+  }
+  return { label: "IDLE", tone: "idle" }
 }
 
 function sessionStatusBadge(parts: SessionStatusBadgePart[]): SessionFocusedStatusBadge {

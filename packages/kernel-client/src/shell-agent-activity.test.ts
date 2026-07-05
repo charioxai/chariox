@@ -19,6 +19,7 @@ import {
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionAgentPaneStatusBadge,
   sessionAttachedFooterSummary,
   sessionFooterHint,
   sessionFocusedStatusBadge,
@@ -248,6 +249,42 @@ test("sessionFocusedStatusBadge projects detached, disconnected, focused, and mu
       { id: "agent-2", busy: true },
     ],
   }), badge([{ label: "2 WORKING", tone: "working" }]))
+})
+
+test("sessionAgentPaneStatusBadge projects explicit activity and prompt work", () => {
+  const idleAgent = { state: "Idle", is_processing: false }
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: null,
+    activeLabel: null,
+  }), { label: "", tone: "idle" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: { ...idleAgent, state: "Error" },
+    activeLabel: null,
+  }), { label: "ERROR", tone: "error" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: idleAgent,
+    activeLabel: "patching",
+  }), { label: "PATCHING", tone: "working" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: idleAgent,
+    activeLabel: null,
+    hasPromptWork: true,
+  }), { label: "THINKING", tone: "working" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: idleAgent,
+    activeLabel: null,
+    isStreaming: true,
+  }), { label: "THINKING", tone: "working" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: idleAgent,
+    activeLabel: null,
+    busyLatch: true,
+  }), { label: "THINKING", tone: "working" })
+  assert.deepEqual(sessionAgentPaneStatusBadge({
+    agent: { state: "Working", is_processing: true },
+    activeLabel: null,
+    useLegacyAgentProcessingState: false,
+  }), { label: "IDLE", tone: "idle" })
 })
 
 test("session status mode and footer hint reflect prompt and queue work", () => {

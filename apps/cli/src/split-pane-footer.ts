@@ -1,4 +1,4 @@
-import { getSessionStatusLabel } from "./runtime.js"
+import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/shell-agent-activity"
 import {
   formatPromptMetaParts,
   type PromptMetaPart,
@@ -91,20 +91,14 @@ export function agentPaneStatusBadge(
   busyLatch = false,
   useLegacyAgentProcessingState = true,
 ) {
-  if (!agent) {
-    return { label: "", tone: "idle" as const }
-  }
-  if (agent.state === "Error") {
-    return { label: "ERROR", tone: "error" as const }
-  }
-  if (activeLabel) {
-    return { label: getSessionStatusLabel("working", activeLabel), tone: "working" as const }
-  }
-  const legacyAgentBusy = useLegacyAgentProcessingState && (agent.is_processing || agent.state === "Working")
-  if (hasPromptWork || legacyAgentBusy || isStreaming || busyLatch) {
-    return { label: getSessionStatusLabel("working", null), tone: "working" as const }
-  }
-  return { label: "IDLE", tone: "idle" as const }
+  return sessionAgentPaneStatusBadge({
+    agent,
+    activeLabel,
+    hasPromptWork,
+    isStreaming,
+    busyLatch,
+    useLegacyAgentProcessingState,
+  })
 }
 
 export function formatSplitPaneFooter(
