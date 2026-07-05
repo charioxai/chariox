@@ -6,6 +6,7 @@ import {
   waitingRoomItemActivityHasWork,
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
+  waitingRoomSessionActivityWorkLabel,
 } from "./waiting-room-activity.js"
 
 test("waiting room session activity predicates derive work and unread output", () => {
@@ -28,6 +29,12 @@ test("waiting room session activity predicates derive work and unread output", (
   assert.equal(waitingRoomSessionActivityHasUnreadIdleOutput(null), false)
   assert.equal(waitingRoomSessionActivityHasUnreadIdleOutput({ unread_idle_agent_count: 0 }), false)
   assert.equal(waitingRoomSessionActivityHasUnreadIdleOutput({ unread_idle_agent_count: 1 }), true)
+  assert.equal(waitingRoomSessionActivityWorkLabel(null), "-")
+  assert.equal(waitingRoomSessionActivityWorkLabel({
+    working_agent_count: 1,
+    active_prompt_count: 1,
+    queued_prompt_count: 2,
+  }), "1 working, 1 active prompt, 2 queued prompts")
 })
 
 test("waiting room item activity predicates derive work and unread output", () => {

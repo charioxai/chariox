@@ -20,6 +20,23 @@ export function waitingRoomSessionActivityHasUnreadIdleOutput(
   return (activity?.unread_idle_agent_count ?? 0) > 0
 }
 
+export function waitingRoomSessionActivityWorkLabel(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working_agent_count"
+  > | null | undefined,
+  fallback = "-",
+): string {
+  const workingAgents = activity?.working_agent_count ?? 0
+  const activePrompts = activity?.active_prompt_count ?? 0
+  const queuedPrompts = activity?.queued_prompt_count ?? 0
+  return [
+    workingAgents > 0 ? `${workingAgents} working` : "",
+    activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
+    queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(", ") || fallback
+}
+
 export function waitingRoomItemActivityHasWork(
   activity: Pick<
     WaitingRoomPublicItemActivitySummary,

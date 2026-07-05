@@ -1,6 +1,7 @@
 import {
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
+  waitingRoomSessionActivityWorkLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
 
 import {
@@ -253,20 +254,7 @@ function formatWaitingRoomSessionNext(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionWork(session: SessionListEntry) {
-  const activity = session.activity
-  if (!activity) {
-    return "-"
-  }
-  const parts = [
-    activity.working_agent_count > 0 ? `${activity.working_agent_count} working` : "",
-    activity.active_prompt_count > 0
-      ? `${activity.active_prompt_count} active prompt${activity.active_prompt_count === 1 ? "" : "s"}`
-      : "",
-    activity.queued_prompt_count > 0
-      ? `${activity.queued_prompt_count} queued prompt${activity.queued_prompt_count === 1 ? "" : "s"}`
-      : "",
-  ].filter(Boolean)
-  return parts.length ? parts.join(", ") : "-"
+  return waitingRoomSessionActivityWorkLabel(session.activity)
 }
 
 function sessionHasActiveWork(session: SessionListEntry) {
