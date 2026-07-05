@@ -63,6 +63,13 @@ import type {
   SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
   SessionInvite as KernelSessionInvite,
   SessionMember as KernelSessionMember,
+  SliceBackupRecord as KernelSliceBackupRecord,
+  SliceDisplayEndpoint as KernelSliceDisplayEndpoint,
+  SliceLocalDockerPorts as KernelSliceLocalDockerPorts,
+  SliceLogEntry as KernelSliceLogEntry,
+  SliceRecord as KernelSliceRecord,
+  SliceRelayEndpoint as KernelSliceRelayEndpoint,
+  SliceSavedStateRecord as KernelSliceSavedStateRecord,
   RelayKernelPresence as KernelRelayKernelPresence,
   RelayStatus as KernelRelayStatus,
   RemoteMachineRecord as KernelRemoteMachineRecord,
@@ -104,6 +111,8 @@ import type {
   WorkflowScheduleTrigger as KernelWorkflowScheduleTrigger,
   WorkflowSchemaDefinition as KernelWorkflowSchemaDefinition,
   WorkflowWatchdogDefinition as KernelWorkflowWatchdogDefinition,
+  WorkspaceLinkAttachment as KernelWorkspaceLinkAttachment,
+  WorkspaceLinkDefinition as KernelWorkspaceLinkDefinition,
   WorkspaceLiveSyncApplyStatus as KernelWorkspaceLiveSyncApplyStatus,
   WorkspaceLiveSyncGroupStatus as KernelWorkspaceLiveSyncGroupStatus,
   WorkspaceLiveSyncPathApplyResult as KernelWorkspaceLiveSyncPathApplyResult,
@@ -239,25 +248,9 @@ export type WaitingRoomTerminalView = KernelTerminalRecord
 
 export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
 
-export type WorkspaceLinkAttachment = {
-  link_id: string
-  user_id: string
-  machine_id: string
-  kernel_id: string
-  repo_root: string
-  branch?: string | null
-  repo_fingerprint?: string | null
-  attached_at_ms: number
-}
+export type WorkspaceLinkAttachment = KernelWorkspaceLinkAttachment
 
-export type WorkspaceLinkDefinition = {
-  link_id: string
-  session_id: string
-  name: string
-  created_by_user_id: string
-  created_at_ms: number
-  attachments?: WorkspaceLinkAttachment[]
-}
+export type WorkspaceLinkDefinition = KernelWorkspaceLinkDefinition
 
 export type WorkspaceLiveSyncTargetStatus = KernelWorkspaceLiveSyncTargetStatus
 
@@ -304,108 +297,19 @@ export type UserConfigSchemaEntry = KernelUserConfigSchemaEntry
 
 export type UserConfigMutationEffect = KernelUserConfigMutationEffect
 
-export type SliceDisplayEndpoint = {
-  slice_id: string
-  kind: "novnc" | "arroba_viewer" | "external"
-  url: string
-  access: "local" | "tunnel" | "public"
-  expires_at_ms?: number | null
-  capabilities?: string[]
-}
+export type SliceDisplayEndpoint = KernelSliceDisplayEndpoint
 
-export type SliceRelayEndpoint = {
-  url: string
-  private?: boolean
-}
+export type SliceRelayEndpoint = KernelSliceRelayEndpoint
 
-export type SliceRecord = {
-  id: string
-  name: string
-  owner_kernel_id: string
-  owner_machine_id: string
-  backend: "local_docker" | "ssh_docker"
-  os: string
-  status: "stopped" | "starting" | "stopping" | "running" | "unhealthy"
-  workspace_mount?: string | null
-  workspace_id?: string | null
-  worktree_id?: string | null
-  session_ids?: string[]
-  agent_ids?: string[]
-  display_mode?: "headless" | "headed"
-  last_operation?: string | null
-  last_operation_status?: "accepted" | "in_progress" | "completed" | "failed" | "reconciled" | null
-  last_error?: string | null
-  last_operation_at_ms?: number | null
-  worker_kernel_ref: string
-  worker_kernel_id?: string | null
-  worker_machine_id?: string | null
-  relay_endpoint?: SliceRelayEndpoint | null
-  local_docker_ports?: SliceLocalDockerPorts | null
-  providers?: string[]
-  provider_auth?: Array<{
-    provider: string
-    state: "unknown" | "not_configured" | "configured" | "authenticated"
-    alias?: string | null
-    account_id?: string | null
-    email?: string | null
-    organization_id?: string | null
-    organization_name?: string | null
-    subscription_type?: string | null
-    auth_type?: string | null
-    source?: string | null
-    checked_at_ms?: number | null
-  }>
-  saved_state_ref?: string | null
-  saved_state_status?: "saved" | "missing" | "failed" | null
-  saved_state_updated_at_ms?: number | null
-  display_endpoint?: SliceDisplayEndpoint | null
-  created_at_ms: number
-  updated_at_ms: number
-}
+export type SliceRecord = KernelSliceRecord
 
-export type SliceSavedStateRecord = {
-  id: string
-  slice_name: string
-  source_slice_id: string
-  backend: "local_docker" | "ssh_docker"
-  os: string
-  image_ref: string
-  home_archive_path: string
-  created_at_ms: number
-  updated_at_ms: number
-  last_operation?: string | null
-  last_operation_status?: "accepted" | "in_progress" | "completed" | "failed" | "reconciled" | null
-  last_error?: string | null
-}
+export type SliceSavedStateRecord = KernelSliceSavedStateRecord
 
-export type SliceBackupRecord = {
-  id: string
-  name: string
-  source_slice_id: string
-  source_state_id: string
-  image_ref: string
-  home_archive_path: string
-  created_at_ms: number
-  size_bytes?: number | null
-}
+export type SliceBackupRecord = KernelSliceBackupRecord
 
-export type SliceLocalDockerPorts = {
-  codex: number
-  opencode: number
-  kernel: number
-  mcp: number
-  relay: number
-  novnc: number
-  codex_range_start: number
-  opencode_range_start: number
-}
+export type SliceLocalDockerPorts = KernelSliceLocalDockerPorts
 
-export type SliceLogEntry = {
-  source: string
-  path?: string | null
-  text: string
-  truncated?: boolean
-}
+export type SliceLogEntry = KernelSliceLogEntry
 
 export type AgentInstance = KernelAgentInstance
 
