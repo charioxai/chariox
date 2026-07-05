@@ -23,12 +23,17 @@ export type PromptOriginRecord = {
   readonly prompt_origin?: string | null
   readonly external_provider?: string | null
   readonly external_provider_session_id?: string | null
+  readonly external_provider_turn_id?: string | null
 }
 
 function inferExternalPromptOriginFromRecord(
   record: PromptOriginRecord | null | undefined,
 ): string | null {
-  if (record?.external_provider?.trim() && record.external_provider_session_id?.trim()) {
+  if (
+    record?.external_provider?.trim()
+      || record?.external_provider_session_id?.trim()
+      || record?.external_provider_turn_id?.trim()
+  ) {
     return EXTERNAL_PROMPT_ORIGIN
   }
   return null

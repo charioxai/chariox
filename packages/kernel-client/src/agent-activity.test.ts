@@ -306,6 +306,14 @@ test("agent activity projection exposes live active turn identity", () => {
       status: "running",
     },
   }).activeTurnPromptOrigin, "external")
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-external",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+    },
+  }).activeTurnPromptOrigin, "external")
 })
 
 test("agent activity projection exposes completed turn action metadata", () => {
