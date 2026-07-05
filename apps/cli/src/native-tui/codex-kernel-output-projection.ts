@@ -1,4 +1,9 @@
 import type { TerminalOutputRecord } from "../cli-types.js"
+import { isProviderIdleStatus } from "@arroba/kernel-client/provider-status"
+import {
+  terminalRecordTranscriptProjection,
+  type TerminalRecordTranscriptProjection,
+} from "@arroba/kernel-client/terminal-record-transcript"
 
 type ProjectedItem = {
   key: string
@@ -91,16 +96,15 @@ export function createCodexKernelOutputProjection(options: {
     for (const record of records) {
       if (!projectedThreadId) continue
       if (record.agent_id !== options.agentId) continue
-      if (
-        record.kind !== "prompt_echo"
-        && record.kind !== "provider_output"
-        && record.kind !== "provider_reasoning"
-        && record.kind !== "provider_error"
-      ) continue
       const delta = Buffer.from(record.bytes).toString("utf8")
       if (!delta) continue
+      const recordProjection = terminalRecordTranscriptProjection(record, delta, {
+        isProviderIdleStatus,
+        shouldRenderProviderStatus: () => false,
+      })
+      if (recordProjection.historyRefreshSignal || recordProjection.passiveExternalTelemetry) continue
 
-      if (record.kind === "prompt_echo") {
+      if (recordProjection.transcriptRole === "user") {
         const turnId = startProjectedTurn()
         if (!turnId) continue
         const itemId = `arroba-projected-user-${Date.now()}-${nextProjectedTurnId}`
@@ -111,7 +115,7 @@ export function createCodexKernelOutputProjection(options: {
             item: {
               type: "userMessage",
               id: itemId,
-              content: [{ type: "text", text: delta, text_elements: [] }],
+              content: [{ type: "text", text: recordProjection.transcriptText, text_elements: [] }],
             },
             threadId: projectedThreadId,
             turnId,
@@ -125,7 +129,7 @@ export function createCodexKernelOutputProjection(options: {
             item: {
               type: "userMessage",
               id: itemId,
-              content: [{ type: "text", text: delta, text_elements: [] }],
+              content: [{ type: "text", text: recordProjection.transcriptText, text_elements: [] }],
             },
             threadId: projectedThreadId,
             turnId,
@@ -136,15 +140,16 @@ export function createCodexKernelOutputProjection(options: {
         continue
       }
 
-      const itemKind = record.kind === "provider_reasoning" ? "reasoning" : "agentMessage"
-      const itemKey = `${itemKind}:${record.merge_key ?? "default"}`
-      let projection = projectedItems.get(itemKey)
-      if (!projection) {
+      const itemKind = codexProjectedItemKind(recordProjection)
+      if (!itemKind) continue
+      const itemKey = `${itemKind}:${recordProjection.mergeKey ?? "default"}`
+      let itemProjection = projectedItems.get(itemKey)
+      if (!itemProjection) {
         const turnId = startProjectedTurn()
         if (!turnId) continue
         const itemId = `arroba-projected-${itemKind}-${Date.now()}-${nextProjectedTurnId}`
-        projection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", timer: null }
-        projectedItems.set(itemKey, projection)
+        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", timer: null }
+        projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
           method: "item/started",
@@ -158,18 +163,18 @@ export function createCodexKernelOutputProjection(options: {
           },
         })
       }
-      projection.text += delta
+      itemProjection.text += recordProjection.transcriptText
       options.broadcast({
         jsonrpc: "2.0",
-        method: record.kind === "provider_reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",
+        method: itemKind === "reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",
         params: {
           threadId: projectedThreadId,
-          turnId: projection.turnId,
-          itemId: projection.itemId,
-          delta,
+          turnId: itemProjection.turnId,
+          itemId: itemProjection.itemId,
+          delta: recordProjection.transcriptText,
         },
       })
-      completeProjectedItemSoon(projection)
+      completeProjectedItemSoon(itemProjection)
       options.debug("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
     }
   }
@@ -179,5 +184,19 @@ export function createCodexKernelOutputProjection(options: {
     setThreadId: (threadId: string) => {
       projectedThreadId = threadId
     },
+  }
+}
+
+function codexProjectedItemKind(
+  projection: TerminalRecordTranscriptProjection,
+): ProjectedItem["kind"] | null {
+  switch (projection.transcriptRole) {
+    case "reasoning":
+      return "reasoning"
+    case "assistant":
+    case "error":
+      return "agentMessage"
+    default:
+      return null
   }
 }
