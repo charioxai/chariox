@@ -26,6 +26,7 @@
     "./queued-prompt-selection": "./dist/queued-prompt-selection.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
     "./waiting-room-runtime-placement": "./dist/waiting-room-runtime-placement.js",
+    "./workflow-prompt-state": "./dist/workflow-prompt-state.js",
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
     "./session-history-outline": "./dist/session-history-outline.js",
