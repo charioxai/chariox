@@ -46,6 +46,14 @@ test("session prompt lifecycle transition settles normalized cancelling prompts"
   ), {
     activePromptChanged: true,
     cancelledPromptSettled: true,
+    settledPromptRecords: [{
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "cancelling",
+      promptOrigin: null,
+    }],
     settledAgentIds: ["agent-1"],
   })
 })
@@ -164,6 +172,15 @@ test("session prompt lifecycle transition settles external active turns", () => 
   ), {
     activePromptChanged: true,
     cancelledPromptSettled: true,
+    settledPromptRecords: [{
+      id: "external:codex:thread-1:turn-1",
+      status: "cancelling",
+      promptOrigin: "external",
+      target_agent_id: "agent-1",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+    }],
     settledAgentIds: ["agent-1"],
   })
 })

@@ -27,6 +27,7 @@ export type ActivePromptLifecycleRecord = {
 export type PromptLifecycleTransition = {
   readonly activePromptChanged: boolean
   readonly cancelledPromptSettled: boolean
+  readonly settledPromptRecords: ActivePromptLifecycleRecord[]
   readonly settledAgentIds: string[]
 }
 
@@ -82,6 +83,7 @@ export function sessionPromptLifecycleTransition(
     activePromptChanged:
       previousPromptIds.length !== nextPromptIds.length
       || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
+    settledPromptRecords,
     settledAgentIds: settledPromptRecords
       .map((prompt) => prompt.target_agent_id)
       .filter((agentId): agentId is string => Boolean(agentId)),
