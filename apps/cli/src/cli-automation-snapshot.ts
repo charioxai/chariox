@@ -3,7 +3,7 @@ import {
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
 import {
-  sessionHasAgentRuntimeProjection,
+  sessionAllowsLegacyAgentProcessingState,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
   sessionAgentPaneStatusBadge,
@@ -101,7 +101,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           hasPromptWork: deps.hasPromptWorkByAgent()[agent.id] ?? false,
           isStreaming: agent.id === deps.streamingAgentId(),
           busyLatch: deps.agentBusyLatch(agent.id),
-          useLegacyAgentProcessingState: !sessionHasAgentRuntimeProjection(session),
+          useLegacyAgentProcessingState: sessionAllowsLegacyAgentProcessingState(session),
         })
         return {
           id: agent.id,

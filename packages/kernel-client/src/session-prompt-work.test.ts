@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  sessionAllowsLegacyAgentProcessingState,
   sessionAgentBusyForProviderRunRecovery,
   sessionAgentIsBusy,
+  sessionHasAgentRuntimeProjection,
   sessionProjectedStreamingAgentId,
   sessionQueuedPromptCount,
   sessionPromptWorkByAgent,
@@ -13,6 +15,21 @@ import {
   makeAgent,
   makeSession,
 } from "./shell-executor.test-support.js"
+
+test("session runtime projection helpers gate legacy processing state", () => {
+  const legacyOnly = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+  })
+  assert.equal(sessionHasAgentRuntimeProjection(legacyOnly), false)
+  assert.equal(sessionAllowsLegacyAgentProcessingState(legacyOnly), true)
+
+  const projectedIdle = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+    prompt_states: {},
+  })
+  assert.equal(sessionHasAgentRuntimeProjection(projectedIdle), true)
+  assert.equal(sessionAllowsLegacyAgentProcessingState(projectedIdle), false)
+})
 
 test("session prompt work summary treats prompt states as runtime authority", () => {
   const session = makeSession({

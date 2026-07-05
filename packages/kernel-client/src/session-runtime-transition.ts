@@ -6,8 +6,8 @@ import {
   agentLegacyProcessingStateIsBusy,
 } from "./agent-activity.js"
 import {
+  sessionAllowsLegacyAgentProcessingState,
   sessionAgentIsBusy,
-  sessionHasAgentRuntimeProjection,
   sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionProjectedStreamingAgentId,
@@ -133,6 +133,7 @@ export function sessionRuntimeTransitionState(
   const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.nextSession)
   const nextHasAgentActivityProjection = sessionHasAgentActivityProjection(options.nextSession)
   const nextHasPromptStateProjection = sessionHasPromptStateProjection(options.nextSession)
+  const nextAllowsLegacyAgentProcessingState = sessionAllowsLegacyAgentProcessingState(options.nextSession)
   const nextStreamingAgentId = nextHasAgentActivityProjection
     ? projectedStreamingAgentId
     : resolveSessionStreamingAgentId(
@@ -145,7 +146,7 @@ export function sessionRuntimeTransitionState(
     )
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
-    const legacyAgentBusy = !sessionHasAgentRuntimeProjection(options.nextSession)
+    const legacyAgentBusy = nextAllowsLegacyAgentProcessingState
       && agentLegacyProcessingStateIsBusy(agent)
     nextAgentActivityLabels[agent.id] =
       legacyAgentBusy
@@ -214,7 +215,7 @@ export function shouldPreserveAgentActivityLabel(options: {
   }
   return options.streamingAgentId === agentId
     || sessionAgentIsBusy(options.session, agentId)
-    || (!sessionHasAgentRuntimeProjection(options.session)
+    || (sessionAllowsLegacyAgentProcessingState(options.session)
       && options.session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent)))
 }
 
@@ -277,7 +278,7 @@ export function deriveFocusedAgentBusy(options: {
     return false
   }
   const focused = options.session.agents.find((agent) => agent.id === agentId) ?? null
-  const allowLegacyProcessing = !sessionHasAgentRuntimeProjection(options.session)
+  const allowLegacyProcessing = sessionAllowsLegacyAgentProcessingState(options.session)
   return (options.submitting && options.submittingAgentId === agentId)
     || sessionAgentIsBusy(options.session, agentId)
     || options.streamingAgentId === agentId
@@ -296,7 +297,7 @@ export function deriveAllAgentsBusyState(options: {
 }): AgentBusyState[] {
   return options.session.agents.map((agent) => {
     const agentId = agent.id
-    const allowLegacyProcessing = !sessionHasAgentRuntimeProjection(options.session)
+    const allowLegacyProcessing = sessionAllowsLegacyAgentProcessingState(options.session)
     const isBusy = (options.submitting && options.submittingAgentId === agentId)
       || sessionAgentIsBusy(options.session, agentId)
       || options.streamingAgentId === agentId

@@ -25,6 +25,10 @@ export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null 
   ))
 }
 
+export function sessionAllowsLegacyAgentProcessingState(session: RuntimeSession | null | undefined): boolean {
+  return !sessionHasAgentRuntimeProjection(session)
+}
+
 export type SessionPromptWorkSummary = {
   readonly active: number
   readonly queued: number
@@ -125,7 +129,7 @@ export function sessionAgentBusyForProviderRunRecovery(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
 ): boolean | null {
-  if (!sessionHasAgentRuntimeProjection(session)) {
+  if (sessionAllowsLegacyAgentProcessingState(session)) {
     return null
   }
   return sessionAgentIsBusy(session, agentId)
