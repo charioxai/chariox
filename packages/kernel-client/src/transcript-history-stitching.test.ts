@@ -102,6 +102,36 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
   })
 })
 
+test("stitchPrependedTranscriptHistory keeps external source authoritative across stale fragments", () => {
+  const stitched = stitchPrependedTranscriptHistory(
+    [entry(1, "assistant", "native ", {
+      source: "external_provider_observed",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 12,
+    })],
+    [entry(2, "assistant", "reply", {
+      source: "provider_output",
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 12,
+      historyTotalChars: 12,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.externalProvider, "codex")
+  assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(stitched[0]?.observedAtMs, 1_000)
+})
+
 test("stitchPrependedTranscriptHistory ignores stray external metadata without observed source", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "ordinary ", {

@@ -5,6 +5,7 @@ import {
 } from "@arroba/tool-display"
 import {
   mergeExternalProviderObservedTranscriptFields,
+  mergeExternalProviderObservedSource,
 } from "./external-provider-observation.js"
 import {
   mergeSessionHistoryPromptAttachments,
@@ -114,8 +115,9 @@ function mergeStitchedHistoryMetadata<TEntry extends TranscriptHistoryStitchEntr
   if (target.providerRunId === undefined && older.providerRunId !== undefined) {
     target.providerRunId = older.providerRunId
   }
-  if (target.source === undefined && older.source !== undefined) {
-    target.source = older.source
+  const source = mergeExternalProviderObservedSource(target.source, older.source)
+  if (source !== undefined) {
+    target.source = source
   }
   mergeExternalProviderObservedTranscriptFields(target, older, newer)
   if (target.promptId === undefined && older.promptId !== undefined) {
