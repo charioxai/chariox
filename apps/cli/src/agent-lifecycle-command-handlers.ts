@@ -5,7 +5,10 @@ import type {
   SliceRecord,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
+import {
+  responsePaneBindingsMatch,
+  selectResponsePaneAgents,
+} from "@arroba/kernel-client/response-pane-selection"
 import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
 import {
   formatAgentInspectSummary as formatSharedAgentInspectSummary,

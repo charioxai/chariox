@@ -1,4 +1,4 @@
-import type { ResponsePaneAgent } from "./response-panes.js"
+import type { ResponsePaneAgent } from "@arroba/kernel-client/response-pane-selection"
 
 export type WorkspaceScreenMode = "agents" | "workflow"
 

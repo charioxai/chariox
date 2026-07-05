@@ -1,8 +1,10 @@
 import type { RuntimeSession } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
-  responsePaneRowSlots,
   selectResponsePaneAgents,
+} from "@arroba/kernel-client/response-pane-selection"
+import {
+  responsePaneRowSlots,
 } from "./response-panes.js"
 import { resolveTranscriptSurfaceTone } from "./transcript-render-theme-policy.js"
 import {

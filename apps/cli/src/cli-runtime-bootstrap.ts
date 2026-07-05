@@ -54,7 +54,7 @@ import {
 } from "@arroba/kernel-client/session-runtime-transition"
 import {
   selectResponsePaneAgents,
-} from "./response-panes.js"
+} from "@arroba/kernel-client/response-pane-selection"
 import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import {

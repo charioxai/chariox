@@ -5,7 +5,7 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
-import { selectResponsePaneAgents } from "./response-panes.js"
+import { selectResponsePaneAgents } from "@arroba/kernel-client/response-pane-selection"
 import {
   historyCursorStateForVisibleAgent,
   hydrateOutlineAgentEntries,

@@ -20,7 +20,7 @@ import {
   getSessionHistoryOutline,
 } from "./session-history-api.js"
 import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
-import { splitPaneAuxiliaryAgentIds } from "./response-panes.js"
+import { splitPaneAuxiliaryAgentIds } from "@arroba/kernel-client/response-pane-selection"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,

@@ -12,7 +12,7 @@ import {
 import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
-} from "./response-panes.js"
+} from "@arroba/kernel-client/response-pane-selection"
 import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "./transcript-preview.js"

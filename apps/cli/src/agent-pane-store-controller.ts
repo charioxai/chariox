@@ -1,13 +1,13 @@
 import {
   selectCurrentAgentPaneEntries,
 } from "@arroba/kernel-client/agent-pane-state"
+import {
+  splitPaneAuxiliaryAgentIds,
+} from "@arroba/kernel-client/response-pane-selection"
 import type {
   AgentInstance,
   TranscriptEntry,
 } from "./cli-types.js"
-import {
-  splitPaneAuxiliaryAgentIds,
-} from "./response-panes.js"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 

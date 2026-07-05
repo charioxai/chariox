@@ -28,6 +28,7 @@
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
     "./queued-prompt-strip-state": "./dist/queued-prompt-strip-state.js",
     "./queued-prompt-selection": "./dist/queued-prompt-selection.js",
+    "./response-pane-selection": "./dist/response-pane-selection.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
     "./waiting-room-runtime-placement": "./dist/waiting-room-runtime-placement.js",
     "./workflow-prompt-state": "./dist/workflow-prompt-state.js",
