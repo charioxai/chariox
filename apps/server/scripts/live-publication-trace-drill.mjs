@@ -643,7 +643,7 @@ const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "trace-planner", provider: ${providerId}, model: ${model} }),
   publicLabel: "Planner",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Create a concise plan. Set your node summary to exactly the literal string ${outputSummaryMarker}. Send the Worker a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary. ${assistantMarker} is literal; do not replace it. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. After acknowledging the workflow turn, your first required action is to call workflow_console_write exactly once with content equal to the literal string ${toolMarker}. Do not finish the turn until that workflow_console_write call has completed. Set your node summary to exactly the literal string ${outputSummaryMarker}. Send the Worker a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary. ${assistantMarker} is literal; do not replace it. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 0, y: 120 },
@@ -652,7 +652,7 @@ const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "trace-worker", provider: ${providerId}, model: ${model} }),
   publicLabel: "Worker",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Call workflow_console_write exactly once with content equal to the literal string ${toolMarker}. Set your node summary to exactly worker_done. Then send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"worker_done\\\"}. Do not include any TRACE_ marker text in your summary or handoff message. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Set your node summary to exactly worker_done. Send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"worker_done\\\"}. Do not call workflow_console_write. Do not include any TRACE_ marker text in your summary or handoff message. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 320, y: 120 },
@@ -661,7 +661,7 @@ const finalizer = workflow.node({
   handle: "finalizer",
   agent: workflow.newAgent({ alias: "trace-finalizer", provider: ${providerId}, model: ${model} }),
   publicLabel: "Finalizer",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Set your node summary to exactly final_done. Complete the workflow with compact JSON exactly {\\\"message\\\":\\\"${finalMarker}\\\"}. ${finalMarker} is literal; do not replace it. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Set your node summary to exactly final_done. Return exactly one fenced JSON block and no prose before or after it. The JSON block content must be exactly {\\\"summary\\\":\\\"final_done\\\",\\\"output\\\":{\\\"message\\\":\\\"${finalMarker}\\\"}}. ${finalMarker} is literal; do not replace it. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
   canCompleteWorkflowRun: true,
   maxTurns: 2,
   canvas: { x: 640, y: 120 },
@@ -691,6 +691,9 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     const structuralPresent = structurallyExposesLevel(visible, level)
     const markerPresent = visible.includes(marker)
     const present = markerPresent || structuralPresent
+    if (!policy.mixed && level !== "thinking" && enabled.has(level) && !providerEmitted[level]) {
+      failures.push(`${level} was requested but not emitted by provider`)
+    }
     if (!policy.mixed && enabled.has(level) && providerEmitted[level] && !present) {
       failures.push(`${level} was emitted by provider but absent from exposed output`)
     }
@@ -710,6 +713,15 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     }
     if (providerEmitted.assistant_messages && !plannerAssistantVisible) {
       failures.push("mixed per-node policy hid planner assistant_messages")
+    }
+    if (!providerEmitted.output_summary) {
+      failures.push("mixed per-node policy did not emit planner output_summary")
+    }
+    if (!providerEmitted.assistant_messages) {
+      failures.push("mixed per-node policy did not emit planner assistant_messages")
+    }
+    if (!providerEmitted.tool_use) {
+      failures.push("mixed per-node policy did not emit planner tool_use")
     }
     if (nodeDetailLeaks([raw, statusPayload], nodeIds.worker, ["assistant_messages", "thinking", "tool_use"])) {
       failures.push("mixed per-node policy leaked worker detail beyond output_summary")
