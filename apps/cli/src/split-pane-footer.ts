@@ -1,11 +1,14 @@
-import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import {
+  sessionAgentPaneStatusBadge,
+  type SessionStatusBadgeTone,
+} from "@arroba/kernel-client/session-runtime-status"
 import {
   formatPromptMetaParts,
   type PromptMetaPart,
   type PromptMetaTone,
 } from "./prompt-meta.js"
 
-export type StatusBadgeTone = "idle" | "working" | "disconnected" | "error"
+export type StatusBadgeTone = SessionStatusBadgeTone
 
 export type SplitPaneFooterMode = "idle" | "working" | "disconnected"
 
@@ -81,24 +84,6 @@ export function reflectedDistance(index: number, length: number, frame: number):
   const position = frame % cycle
   const highlight = position <= span ? position : cycle - position
   return Math.abs(index - highlight)
-}
-
-export function agentPaneStatusBadge(
-  agent: SplitPaneFooterAgent | null,
-  activeLabel: string | null,
-  hasPromptWork = false,
-  isStreaming = false,
-  busyLatch = false,
-  useLegacyAgentProcessingState = true,
-) {
-  return sessionAgentPaneStatusBadge({
-    agent,
-    activeLabel,
-    hasPromptWork,
-    isStreaming,
-    busyLatch,
-    useLegacyAgentProcessingState,
-  })
 }
 
 export function formatSplitPaneFooter(
@@ -221,14 +206,14 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     const focused = agent?.id === options.focusedAgentId
     const badge = options.mode === "disconnected"
       ? { label: "DISCONNECTED", tone: "disconnected" as const }
-      : agentPaneStatusBadge(
+      : sessionAgentPaneStatusBadge({
         agent,
-        agent ? options.activityLabels[agent.id] ?? null : null,
-        agent ? options.hasPromptWorkByAgent?.[agent.id] ?? false : false,
-        agent?.id === options.streamingAgentId,
-        agent ? options.busyLatchesByAgent?.[agent.id] ?? false : false,
-        options.useLegacyAgentProcessingState ?? true,
-      )
+        activeLabel: agent ? options.activityLabels[agent.id] ?? null : null,
+        hasPromptWork: agent ? options.hasPromptWorkByAgent?.[agent.id] ?? false : false,
+        isStreaming: agent?.id === options.streamingAgentId,
+        busyLatch: agent ? options.busyLatchesByAgent?.[agent.id] ?? false : false,
+        useLegacyAgentProcessingState: options.useLegacyAgentProcessingState ?? true,
+      })
     return {
       badge,
       focused,

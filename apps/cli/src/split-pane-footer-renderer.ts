@@ -11,10 +11,10 @@ import type {
 } from "./cli-types.js"
 import type { PromptMetaTone } from "./prompt-meta.js"
 import {
-  agentPaneStatusBadge,
   formatSplitPaneFooterParts,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
+import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
@@ -228,14 +228,14 @@ function renderFooter(
   const selectionOverride = agent?.id === options.focusedAgentId
     ? options.currentProviderSelection
     : null
-  const badge = agentPaneStatusBadge(
-    agent ?? null,
-    agent ? options.agentActivityLabels[agent.id] ?? null : null,
-    agent ? options.hasPromptWorkByAgent[agent.id] ?? false : false,
-    agent?.id === options.streamingAgentId,
-    agent ? options.agentBusyLatch(agent.id) : false,
-    !options.hasProjectedRuntimeState,
-  )
+  const badge = sessionAgentPaneStatusBadge({
+    agent: agent ?? null,
+    activeLabel: agent ? options.agentActivityLabels[agent.id] ?? null : null,
+    hasPromptWork: agent ? options.hasPromptWorkByAgent[agent.id] ?? false : false,
+    isStreaming: agent?.id === options.streamingAgentId,
+    busyLatch: agent ? options.agentBusyLatch(agent.id) : false,
+    useLegacyAgentProcessingState: !options.hasProjectedRuntimeState,
+  })
   const focused = agent?.id === options.focusedAgentId
   const task = agent?.meta_mode
     ? options.metaagentTasks.find((entry) => entry.metaagent_id === agent.id) ?? null

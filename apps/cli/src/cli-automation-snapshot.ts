@@ -5,6 +5,9 @@ import {
 import {
   sessionHasAgentRuntimeProjection,
 } from "@arroba/kernel-client/session-prompt-work"
+import {
+  sessionAgentPaneStatusBadge,
+} from "@arroba/kernel-client/session-runtime-status"
 
 import type {
   RuntimeSession,
@@ -17,7 +20,6 @@ import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import { agentPaneStatusBadge } from "./split-pane-footer.js"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type {
   RemoteKernelView,
@@ -89,14 +91,14 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       focusedAgentId: deps.focusedAgentId(),
       agentCount: session.agents.length,
       agents: session.agents.map((agent) => {
-        const badge = agentPaneStatusBadge(
+        const badge = sessionAgentPaneStatusBadge({
           agent,
-          deps.agentActivityLabels()[agent.id] ?? null,
-          deps.hasPromptWorkByAgent()[agent.id] ?? false,
-          agent.id === deps.streamingAgentId(),
-          deps.agentBusyLatch(agent.id),
-          !sessionHasAgentRuntimeProjection(session),
-        )
+          activeLabel: deps.agentActivityLabels()[agent.id] ?? null,
+          hasPromptWork: deps.hasPromptWorkByAgent()[agent.id] ?? false,
+          isStreaming: agent.id === deps.streamingAgentId(),
+          busyLatch: deps.agentBusyLatch(agent.id),
+          useLegacyAgentProcessingState: !sessionHasAgentRuntimeProjection(session),
+        })
         return {
           id: agent.id,
           alias: agent.alias,

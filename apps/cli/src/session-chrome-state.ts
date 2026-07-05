@@ -28,7 +28,6 @@ import {
   type PromptMetaPart,
   type PromptUsageMeta,
 } from "./prompt-meta.js"
-import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type SessionStatusMode = KernelSessionStatusMode

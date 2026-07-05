@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  agentPaneStatusBadge,
   buildSplitPaneFooterState,
   formatSplitPaneFooter,
   formatSplitPaneFooterParts,
@@ -35,49 +34,6 @@ test("reflectedDistance bounces the highlight across the badge width", () => {
   assert.equal(reflectedDistance(0, 5, 0), 0)
   assert.equal(reflectedDistance(4, 5, 4), 0)
   assert.equal(reflectedDistance(3, 5, 5), 0)
-})
-
-test("agentPaneStatusBadge prefers explicit activity labels", () => {
-  assert.deepEqual(agentPaneStatusBadge(primaryAgent, "patching"), {
-    label: "PATCHING",
-    tone: "working",
-  })
-})
-
-test("agentPaneStatusBadge reports error and streaming states", () => {
-  assert.deepEqual(agentPaneStatusBadge({ ...primaryAgent, state: "Error" }, null), {
-    label: "ERROR",
-    tone: "error",
-  })
-  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, false, true), {
-    label: "THINKING",
-    tone: "working",
-  })
-})
-
-test("agentPaneStatusBadge stays working while the agent still has prompt work", () => {
-  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, true, false), {
-    label: "THINKING",
-    tone: "working",
-  })
-})
-
-test("agentPaneStatusBadge stays working while the local busy latch is active", () => {
-  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, false, false, true), {
-    label: "THINKING",
-    tone: "working",
-  })
-})
-
-test("agentPaneStatusBadge can ignore stale legacy processing state", () => {
-  assert.deepEqual(agentPaneStatusBadge({
-    ...primaryAgent,
-    state: "Working",
-    is_processing: true,
-  }, null, false, false, false, false), {
-    label: "IDLE",
-    tone: "idle",
-  })
 })
 
 test("formatSplitPaneFooter includes alias and runtime config metadata", () => {
