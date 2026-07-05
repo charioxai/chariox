@@ -5,6 +5,7 @@ import {
   type SessionFocusedStatusBadge,
   type SessionStatusBadgePart,
 } from "@arroba/kernel-client/shell-agent-activity"
+import { workspaceLiveSyncFooterSummary } from "@arroba/kernel-client/shell-workspace-format"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -188,15 +189,10 @@ export function deriveAttachedFooterSummary(options: {
   const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
   const agentInfo = formatVisibleAgentSummary(options.session)
   const workspaceLiveSyncInfo = options.workspaceLiveSyncStatus
-    ? ` • ${formatAttachedWorkspaceLiveSyncSummary(options.workspaceLiveSyncStatus)}`
+    ? ` • ${workspaceLiveSyncFooterSummary(options.workspaceLiveSyncStatus)}`
     : ""
 
   return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${agentInfo}${workspaceLiveSyncInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
-}
-
-function formatAttachedWorkspaceLiveSyncSummary(status: WorkspaceLiveSyncStatus): string {
-  const mode = status.mode === "unrestricted" ? "off" : status.mode
-  return status.footer_state === mode ? `sync ${mode}` : `sync ${mode} ${status.footer_state}`
 }
 
 function formatVisibleAgentSummary(session: RuntimeSession): string {

@@ -3,6 +3,7 @@ import type {
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
 } from "./kernel-types.js"
+import { formatWorkspaceLiveSyncModeCompactLabel } from "./workspace-live-sync-mode.js"
 
 export function formatWorkspaceLinks(links: WorkspaceLinkDefinition[]): string {
   if (links.length === 0) {
@@ -107,6 +108,11 @@ export function formatWorkspaceLiveSyncAudit(events: readonly RecallEvent[]): st
     ...events.map(formatWorkspaceLiveSyncAuditEvent),
     "next=use workspace sync status for current health, workspace sync conflicts for unresolved fanout conflicts",
   ].join("\n")
+}
+
+export function workspaceLiveSyncFooterSummary(status: WorkspaceLiveSyncStatus): string {
+  const mode = formatWorkspaceLiveSyncModeCompactLabel(status.mode)
+  return status.footer_state === mode ? `sync ${mode}` : `sync ${mode} ${status.footer_state}`
 }
 
 export function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {

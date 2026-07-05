@@ -3,9 +3,21 @@ import test from "node:test"
 
 import type { WorkspaceLiveSyncStatus } from "./kernel-types.js"
 import {
+  workspaceLiveSyncFooterSummary,
   workspaceLiveSyncHealthLabel,
   workspaceLiveSyncProblems,
 } from "./shell-workspace-format.js"
+
+test("workspace live sync footer summary projects compact sync state", () => {
+  assert.equal(workspaceLiveSyncFooterSummary(status()), "sync managed")
+  assert.equal(workspaceLiveSyncFooterSummary(status({
+    footer_state: "conflict",
+  })), "sync managed conflict")
+  assert.equal(workspaceLiveSyncFooterSummary(status({
+    mode: "unrestricted",
+    footer_state: "off",
+  })), "sync off")
+})
 
 test("workspace live sync health label uses one shared precedence order", () => {
   assert.equal(workspaceLiveSyncHealthLabel(status({
