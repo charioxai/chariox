@@ -47,33 +47,15 @@ import type {
   SessionHistoryOutlineTurn,
   SessionHistoryPageEntry,
   SessionHistoryPromptAttachment,
+  TranscriptEntry as KernelTranscriptEntry,
 } from "./kernel-types.js"
 
-export type SessionHistoryTranscriptEntry = {
-  id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
-  text: string
+export type SessionHistoryTranscriptEntry = KernelTranscriptEntry & {
   promptId?: string | null
   sourceAttachmentId?: string | null
   attachments?: SessionHistoryPromptAttachment[]
-  sourceText?: string
-  mergeKey?: string
   providerRunId?: string | null
-  source?: "external_provider_observed" | string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  observedAtMs?: number | null
   externalObservation?: SessionHistoryExternalObservation | null
-  emphasis?: "muted" | "warning" | "error"
-  turnId?: number
-  hidden?: boolean
-  toggleMode?: "expand" | "collapse"
-  blobCollapsible?: boolean
-  blobCollapsed?: boolean
-  blobTitle?: string
-  blobSummary?: string
-  historyDeferred?: boolean
   historyBlobId?: string
   historyBlobAgentId?: string
   historyBlobSourceId?: string
@@ -82,10 +64,6 @@ export type SessionHistoryTranscriptEntry = {
   historyBlobLoading?: boolean
   historyBlobError?: string
   historyTurnCompletedAtMs?: number | null
-  historyEntryIndex?: number
-  historyFragmentStart?: number
-  historyFragmentEnd?: number
-  historyTotalChars?: number
 }
 
 export type SessionHistoryTranscriptHydrateOptions = {
