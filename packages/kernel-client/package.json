@@ -16,6 +16,7 @@
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
     "./prompt-origin": "./dist/prompt-origin.js",
+    "./prompt-submission": "./dist/prompt-submission.js",
     "./provider-status": "./dist/provider-status.js",
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
