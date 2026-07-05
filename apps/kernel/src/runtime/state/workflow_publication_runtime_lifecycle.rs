@@ -159,7 +159,8 @@ async fn start_publication_runtime(
         })
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
-    let port = request.port.unwrap_or(DEFAULT_PUBLICATION_RUNTIME_PORT);
+    let is_schedule_only = is_schedule_only_publication(&publication);
+    let port = publication_runtime_port(request.port, is_schedule_only);
     if let Some(existing) = runtime_state
         .owned
         .workflow_publication_runtimes
@@ -223,7 +224,7 @@ async fn start_publication_runtime(
         &package_digest,
         &package_files,
     )?;
-    let local_url = if is_schedule_only_publication(&publication) {
+    let local_url = if is_schedule_only {
         None
     } else {
         Some(publication_local_url(&host, port, publication.route()))
@@ -293,7 +294,6 @@ async fn start_publication_runtime(
             },
         )
         .await;
-    let is_schedule_only = is_schedule_only_publication(&publication);
     let runtime_status = launched_publication_runtime_status(is_schedule_only);
     let publication = mark_publication_runtime_status(
         runtime_state,
@@ -580,6 +580,14 @@ fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> 
     publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
 }
 
+fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool) -> u16 {
+    if is_schedule_only {
+        0
+    } else {
+        requested_port.unwrap_or(DEFAULT_PUBLICATION_RUNTIME_PORT)
+    }
+}
+
 fn launched_publication_runtime_status(is_schedule_only: bool) -> &'static str {
     if is_schedule_only {
         "running"
@@ -643,7 +651,10 @@ impl WorkflowPublicationRuntimeProcessStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{launched_publication_runtime_message, launched_publication_runtime_status};
+    use super::{
+        DEFAULT_PUBLICATION_RUNTIME_PORT, launched_publication_runtime_message,
+        launched_publication_runtime_status, publication_runtime_port,
+    };
 
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
@@ -655,5 +666,20 @@ mod tests {
     fn launched_schedule_only_runtime_is_running_without_ingress_registration() {
         assert_eq!(launched_publication_runtime_status(true), "running");
         assert!(launched_publication_runtime_message(true).contains("no ingress endpoint"));
+    }
+
+    #[test]
+    fn ingress_runtime_port_uses_requested_or_default_port() {
+        assert_eq!(publication_runtime_port(Some(43123), false), 43123);
+        assert_eq!(
+            publication_runtime_port(None, false),
+            DEFAULT_PUBLICATION_RUNTIME_PORT
+        );
+    }
+
+    #[test]
+    fn schedule_only_runtime_port_is_ephemeral_internal_port() {
+        assert_eq!(publication_runtime_port(Some(43123), true), 0);
+        assert_eq!(publication_runtime_port(None, true), 0);
     }
 }
