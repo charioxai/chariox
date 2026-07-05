@@ -195,45 +195,13 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const isVisibleRecord = recordAgentId === mainTranscriptAgentId
     if (!isVisibleRecord) {
       if (recordAgentId) {
-        const metadata = projection.metadata
-        switch (record.kind) {
-          case "prompt_echo": {
-            if (deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
-              break
-            }
-            const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
-            deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({
-              role: "user",
-              text: deps.trimSingleTrailingNewline(text),
-              turnId: deps.computeNextTurnId(paneEntries),
-            }, metadata))
-            break
-          }
-          case "provider_reasoning":
-            deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, projection.mergeKey ?? undefined, undefined, metadata)
-            break
-          case "provider_tool":
-            deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
-            break
-          case "provider_error": {
-            const normalized = projection.transcriptText
-            if (normalized) {
-              deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "error", text: normalized, emphasis: "error" }, metadata))
-            }
-            break
-          }
-          case "provider_status":
-            if (projection.providerStatusIdle) {
-              break
-            }
+        if (record.kind === "provider_status") {
+          if (!projection.providerStatusIdle) {
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
-            if (projection.renderProviderStatus) {
-              deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, projection.statusMergeKey ?? undefined, undefined, metadata)
-            }
-            break
-          default:
-            deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, projection.mergeKey ?? undefined, undefined, metadata)
-            break
+            appendProjectedRecordToAgentPane(recordAgentId, projection)
+          }
+        } else {
+          appendProjectedRecordToAgentPane(recordAgentId, projection)
         }
       }
       deps.appendAgentPanePreview(recordAgentId, deps.previewLineForTerminalRecord(record.kind, text))
