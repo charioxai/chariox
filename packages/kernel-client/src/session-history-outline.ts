@@ -7,6 +7,7 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./kernel-types.js"
+import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type SessionHistoryCursorSelection = {
   readonly agentId: string
@@ -120,20 +121,11 @@ export function sessionHistoryCursorForVisibleAgent(
 export function sessionHistoryEntryKindTranscriptRole(
   kind: SessionHistoryEntry["kind"],
 ): SessionHistoryTranscriptRole {
-  switch (kind) {
-    case "user_prompt":
-      return "user"
-    case "provider_output":
-      return "assistant"
-    case "provider_reasoning":
-      return "reasoning"
-    case "provider_tool":
-      return "tool"
-    case "provider_error":
-      return "error"
-    case "provider_status":
-      return "status"
-    case "notice":
-      return "notice"
+  if (kind === "user_prompt") {
+    return "user"
   }
+  if (kind === "notice") {
+    return "notice"
+  }
+  return providerTranscriptRoleForKind(kind)
 }

@@ -36,6 +36,7 @@
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
     "./transcript-history-stitching": "./dist/transcript-history-stitching.js",
+    "./transcript-kind-role": "./dist/transcript-kind-role.js",
     "./terminal-record-transcript": "./dist/terminal-record-transcript.js",
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",

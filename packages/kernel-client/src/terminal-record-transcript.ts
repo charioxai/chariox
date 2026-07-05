@@ -9,6 +9,7 @@ import {
   type ExternalProviderObservedTranscriptMetadata,
   type ExternalProviderObservedTranscriptFields,
 } from "./external-provider-observation.js"
+import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type TerminalRecordTranscriptFields = {
   readonly prompt_id?: string | null
@@ -153,20 +154,10 @@ export function normalizeTerminalRecordErrorText(text: string): string {
 }
 
 function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRole | null {
-  switch (kind) {
-    case "prompt_echo":
-      return "user"
-    case "provider_reasoning":
-      return "reasoning"
-    case "provider_tool":
-      return "tool"
-    case "provider_error":
-      return "error"
-    case "provider_status":
-      return "status"
-    default:
-      return "assistant"
+  if (kind === "prompt_echo") {
+    return "user"
   }
+  return providerTranscriptRoleForKind(kind) ?? "assistant"
 }
 
 type TerminalTranscriptMetadataTarget = ExternalProviderObservedMutableTranscriptMetadataFields & {
