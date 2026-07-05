@@ -17,7 +17,7 @@ import {
   sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
-import { sessionAgentIsBusy, sessionPromptWorkSummary } from "./session-prompt-work.js"
+import { sessionAgentBusyForProviderRunRecovery, sessionPromptWorkSummary } from "./session-prompt-work.js"
 import { sessionAgentRuntimeDisplayState } from "./session-runtime-status.js"
 
 export type SessionRuntimeStatusFormatOptions = {
@@ -288,9 +288,7 @@ function formatSessionNextActions(
 function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: RuntimeSession["agents"][number]): boolean {
   return remoteWorkerProviderRunIsMissing({
     agent,
-    agentBusy: session.agent_activity || session.prompt_states
-      ? sessionAgentIsBusy(session, agent.id)
-      : null,
+    agentBusy: sessionAgentBusyForProviderRunRecovery(session, agent.id),
   })
 }
 

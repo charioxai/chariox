@@ -116,6 +116,16 @@ export function sessionAgentIsBusy(
   return legacyTopLevelSessionHasPromptWork(session, agentId)
 }
 
+export function sessionAgentBusyForProviderRunRecovery(
+  session: RuntimeSession | null | undefined,
+  agentId: string | null | undefined,
+): boolean | null {
+  if (!sessionHasAgentRuntimeProjection(session)) {
+    return null
+  }
+  return sessionAgentIsBusy(session, agentId)
+}
+
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
   const summary = sessionPromptWorkSummary(session)
   return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0

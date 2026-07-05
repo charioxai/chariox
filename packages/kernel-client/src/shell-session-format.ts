@@ -12,7 +12,7 @@ import {
   remoteWorkerProviderRunRecoveryAction,
 } from "./provider-run-recovery.js"
 import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
-import { sessionAgentIsBusy } from "./session-prompt-work.js"
+import { sessionAgentBusyForProviderRunRecovery } from "./session-prompt-work.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 export function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {
@@ -65,9 +65,7 @@ function formatSessionRemoteRuntime(session: RuntimeSession): string {
 function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: RuntimeSession["agents"][number]): boolean {
   return remoteWorkerProviderRunIsMissing({
     agent,
-    agentBusy: session.agent_activity || session.prompt_states
-      ? sessionAgentIsBusy(session, agent.id)
-      : null,
+    agentBusy: sessionAgentBusyForProviderRunRecovery(session, agent.id),
   })
 }
 

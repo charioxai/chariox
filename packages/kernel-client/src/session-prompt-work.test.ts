@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  sessionAgentBusyForProviderRunRecovery,
   sessionAgentIsBusy,
   sessionProjectedStreamingAgentId,
   sessionQueuedPromptCount,
@@ -105,6 +106,26 @@ test("session prompt work prefers projected activity over stale prompt state", (
     "agent-2": true,
   })
   assert.equal(sessionQueuedPromptCount(session, "agent-1"), 0)
+  assert.equal(sessionAgentBusyForProviderRunRecovery(session, "agent-1"), false)
+  assert.equal(sessionAgentBusyForProviderRunRecovery(session, "agent-2"), true)
+})
+
+test("session provider run recovery busy state falls back only without runtime projection", () => {
+  const legacyOnly = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+  })
+  assert.equal(sessionAgentBusyForProviderRunRecovery(legacyOnly, "agent-1"), null)
+
+  const promptStateProjected = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+  })
+  assert.equal(sessionAgentBusyForProviderRunRecovery(promptStateProjected, "agent-1"), false)
 })
 
 test("session prompt work ignores projected activity outside session agents", () => {

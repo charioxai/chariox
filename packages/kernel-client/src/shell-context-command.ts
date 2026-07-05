@@ -12,7 +12,7 @@ import {
   parseExecutionMode,
   parsePermissionLevel,
 } from "./shell-agent-policy.js"
-import { sessionAgentIsBusy, sessionHasAgentRuntimeProjection } from "./session-prompt-work.js"
+import { sessionAgentBusyForProviderRunRecovery, sessionAgentIsBusy } from "./session-prompt-work.js"
 import { expectSessionState } from "./shell-session-attachment.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"
@@ -203,9 +203,7 @@ function formatContextProviderRunNextAction(
     agent,
     activeProviderRunId: session?.active_provider_run_id,
     activeProviderRunAgentId: activeProviderRun?.agent_instance_id,
-    agentBusy: sessionHasAgentRuntimeProjection(session)
-      ? sessionAgentIsBusy(session, agent.id)
-      : undefined,
+    agentBusy: sessionAgentBusyForProviderRunRecovery(session, agent.id),
   }).map((action) => `provider run next: ${action}`)
 }
 
