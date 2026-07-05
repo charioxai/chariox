@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { trimAgentPaneEntries } from "./agent-pane-state.js"
+import { trimAgentPaneEntries } from "@arroba/kernel-client/agent-pane-state"
 
 export type AgentPaneTranscriptRetentionControllerDeps = {
   maxEntries: number

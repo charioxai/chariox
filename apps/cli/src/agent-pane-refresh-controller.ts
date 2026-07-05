@@ -8,7 +8,7 @@ import type {
 import {
   refreshAgentPaneState,
   shouldRefreshAgentPanesForSessionChange,
-} from "./agent-pane-state.js"
+} from "@arroba/kernel-client/agent-pane-state"
 import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,

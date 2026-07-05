@@ -1,6 +1,6 @@
 import {
   selectCurrentAgentPaneEntries,
-} from "./agent-pane-state.js"
+} from "@arroba/kernel-client/agent-pane-state"
 import type {
   AgentInstance,
   TranscriptEntry,
