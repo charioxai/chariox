@@ -1,8 +1,8 @@
 import {
-  waitingRoomSessionActivityBadgeState,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
+  waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
 
@@ -235,16 +235,7 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionStatus(session: SessionListEntry) {
-  switch (waitingRoomSessionActivityBadgeState(session.activity)) {
-    case "mixedWorkingDone":
-      return "Working+Done"
-    case "working":
-      return "Working"
-    case "done":
-      return "Done"
-    case "none":
-      return formatSessionStatus(session.status)
-  }
+  return waitingRoomSessionStatusLabel(session)
 }
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
@@ -257,14 +248,6 @@ function formatWaitingRoomSessionWork(session: SessionListEntry) {
 
 function sessionHasActiveWork(session: SessionListEntry) {
   return waitingRoomSessionActivityHasWork(session.activity)
-}
-
-function formatSessionStatus(value: string) {
-  return formatTitleCase(value.toLowerCase())
-}
-
-function formatTitleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
 function formatSessionTimestamp(value: number | null) {

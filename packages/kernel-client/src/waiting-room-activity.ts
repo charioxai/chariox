@@ -5,6 +5,46 @@ import type {
 
 export type WaitingRoomActivityBadgeState = "none" | "working" | "done" | "mixedWorkingDone"
 
+export function waitingRoomLifecycleStatusLabel(
+  status: string | null | undefined,
+  fallback = "-",
+): string {
+  const normalized = status?.trim().toLowerCase().replace(/[_-]+/g, " ") ?? ""
+  const label = normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+  return label || fallback
+}
+
+export function waitingRoomActivityBadgeLabel(state: WaitingRoomActivityBadgeState): string | null {
+  switch (state) {
+    case "mixedWorkingDone":
+      return "Working+Done"
+    case "working":
+      return "Working"
+    case "done":
+      return "Done"
+    case "none":
+      return null
+  }
+}
+
+export function waitingRoomSessionStatusLabel(
+  session: {
+    readonly status?: string | null | undefined
+    readonly activity?: Pick<
+      WaitingRoomSessionActivitySummary,
+      "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count"
+    > | null | undefined
+  } | null | undefined,
+  fallback = "-",
+): string {
+  return waitingRoomActivityBadgeLabel(waitingRoomSessionActivityBadgeState(session?.activity))
+    ?? waitingRoomLifecycleStatusLabel(session?.status, fallback)
+}
+
 export function waitingRoomTimestampLabel(
   value: number | null | undefined,
   options: {

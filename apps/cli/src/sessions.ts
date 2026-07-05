@@ -4,6 +4,7 @@ import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
 import {
   waitingRoomSessionRecencyMs,
+  waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
 
@@ -145,8 +146,8 @@ export function sessionBrowserTitle(session: { id: string; alias?: string | null
   return (session.alias ? `${session.id} (${session.alias})` : session.id).slice(0, 30)
 }
 
-export function sessionBrowserStatus(session: { status: string }) {
-  return session.status.charAt(0).toUpperCase() + session.status.slice(1).toLowerCase()
+export function sessionBrowserStatus(session: Pick<SessionListEntry, "status" | "activity">) {
+  return waitingRoomSessionStatusLabel(session)
 }
 
 export function sessionBrowserTimestamp(value: number | null) {

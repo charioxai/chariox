@@ -2,15 +2,18 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  waitingRoomActivityBadgeLabel,
   waitingRoomItemActivityBadgeState,
   waitingRoomItemActivityHasUnreadIdleOutput,
   waitingRoomItemActivityHasWork,
   waitingRoomItemActivityWorkLabel,
+  waitingRoomLifecycleStatusLabel,
   waitingRoomSessionActivityBadgeState,
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
+  waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "./waiting-room-activity.js"
 
@@ -100,6 +103,27 @@ test("waiting room session activity predicates derive work and unread output", (
     active_prompt_count: 1,
     queued_prompt_count: 2,
   }), "1 working, 1 active prompt, 2 queued prompts")
+})
+
+test("waiting room status labels normalize lifecycle state and activity overrides", () => {
+  assert.equal(waitingRoomLifecycleStatusLabel("active"), "Active")
+  assert.equal(waitingRoomLifecycleStatusLabel("remote_active"), "Remote Active")
+  assert.equal(waitingRoomLifecycleStatusLabel(""), "-")
+  assert.equal(waitingRoomLifecycleStatusLabel(null, "unknown"), "unknown")
+  assert.equal(waitingRoomActivityBadgeLabel("none"), null)
+  assert.equal(waitingRoomActivityBadgeLabel("working"), "Working")
+  assert.equal(waitingRoomActivityBadgeLabel("done"), "Done")
+  assert.equal(waitingRoomActivityBadgeLabel("mixedWorkingDone"), "Working+Done")
+  assert.equal(waitingRoomSessionStatusLabel({ status: "active", activity: null }), "Active")
+  assert.equal(waitingRoomSessionStatusLabel({
+    status: "active",
+    activity: {
+      working_agent_count: 1,
+      active_prompt_count: 0,
+      queued_prompt_count: 0,
+      unread_idle_agent_count: 1,
+    },
+  }), "Working+Done")
 })
 
 test("waiting room item activity predicates derive work and unread output", () => {
