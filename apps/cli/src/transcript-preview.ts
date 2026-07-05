@@ -4,58 +4,30 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  previewLineForTranscriptEntry as sharedPreviewLineForTranscriptEntry,
-  previewLineForSessionHistoryEntry,
-  transcriptEntryPreviewLabel,
+  appendTranscriptPreviewLine,
+  formatSessionHistoryPreview,
+  formatTranscriptPreview as sharedFormatTranscriptPreview,
+  previewLineForTerminalRecord as sharedPreviewLineForTerminalRecord,
 } from "@arroba/kernel-client/session-history-preview"
-import { mergeAdjacentSessionHistoryPageEntries } from "@arroba/kernel-client/session-history-page-entries"
 import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptTurnId,
 } from "@arroba/kernel-client/transcript-entry-state"
 
 export function appendPreviewLine(current: string, line: string) {
-  const combined = current ? `${current}\n${line}` : line
-  const lines = combined.split("\n")
-  return lines.slice(-14).join("\n")
+  return appendTranscriptPreviewLine(current, line)
 }
 
 export function formatHistoryPreview(historyEntries: SessionHistoryPageEntry[]) {
-  const lines = mergeAdjacentSessionHistoryPageEntries(historyEntries)
-    .map((item) => previewLineForSessionHistoryEntry(item.entry))
-    .filter(Boolean) as string[]
-  return lines.slice(-14).join("\n")
+  return formatSessionHistoryPreview(historyEntries)
 }
 
 export function formatTranscriptPreview(transcriptEntries: TranscriptEntry[]) {
-  const lines = transcriptEntries
-    .filter((entry) => entry && !entry.hidden)
-    .map(previewLineForTranscriptEntry)
-    .filter(Boolean) as string[]
-  return lines.slice(-14).join("\n")
-}
-
-function previewLineForTranscriptEntry(entry: TranscriptEntry) {
-  return sharedPreviewLineForTranscriptEntry(entry)
+  return sharedFormatTranscriptPreview(transcriptEntries)
 }
 
 export function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"], text: string) {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!normalized) {
-    return ""
-  }
-  const label = kind === "prompt_echo"
-    ? "You"
-    : transcriptEntryPreviewLabel(kind === "provider_reasoning"
-      ? "reasoning"
-      : kind === "provider_tool"
-        ? "tool"
-        : kind === "provider_error"
-          ? "error"
-          : kind === "provider_status"
-            ? "status"
-            : "assistant")
-  return `${label}: ${normalized.split("\n")[0]}`
+  return sharedPreviewLineForTerminalRecord(kind, text)
 }
 
 export function computeCurrentTurnId(entries: TranscriptEntry[]) {
