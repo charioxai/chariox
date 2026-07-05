@@ -9,8 +9,8 @@ import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
-  pendingPromptAttachmentsToParts,
-} from "./prompt-submission-state.js"
+  promptSubmissionAttachmentsToParts,
+} from "@arroba/kernel-client/prompt-submission"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import {
   activePromptIdForAgent,
@@ -72,7 +72,7 @@ export function createNormalPromptSubmitController(
   return {
     async submit(rawPrompt, targetAgentIdOverride) {
       const prompt = formatPromptSubmissionBody(rawPrompt)
-      const rawAttachments = pendingPromptAttachmentsToParts(deps.getPendingAttachments())
+      const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()

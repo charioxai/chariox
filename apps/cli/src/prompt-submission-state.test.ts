@@ -4,8 +4,8 @@ import test from "node:test"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
-  pendingPromptAttachmentsToParts,
-} from "./prompt-submission-state.js"
+  promptSubmissionAttachmentsToParts,
+} from "@arroba/kernel-client/prompt-submission"
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
 
 test("formatPromptSubmissionBody terminates non-empty prompts", () => {
@@ -14,7 +14,7 @@ test("formatPromptSubmissionBody terminates non-empty prompts", () => {
   assert.equal(formatPromptSubmissionBody("  "), "")
 })
 
-test("pendingPromptAttachmentsToParts strips prompt-only attachment fields", () => {
+test("promptSubmissionAttachmentsToParts strips prompt-only attachment fields", () => {
   const attachments: PendingPromptAttachment[] = [
     {
       id: "attachment-1",
@@ -26,7 +26,7 @@ test("pendingPromptAttachmentsToParts strips prompt-only attachment fields", () 
     },
   ]
 
-  assert.deepEqual(pendingPromptAttachmentsToParts(attachments), [
+  assert.deepEqual(promptSubmissionAttachmentsToParts(attachments), [
     {
       url: "file:///tmp/a.txt",
       mime: "text/plain",
