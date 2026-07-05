@@ -42,6 +42,7 @@
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
+    "./transcript-pane-reconcile": "./dist/transcript-pane-reconcile.js",
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
     "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-agent-activity": "./dist/shell-agent-activity.js",
