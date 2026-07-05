@@ -103,6 +103,14 @@ export function resolveSessionStreamingAgentId(
   return null
 }
 
+export function resolveVisibleTranscriptAgentId(
+  splitMode: boolean,
+  primaryAgentId: string | null,
+  focusedAgentId: string | null,
+): string | null {
+  return splitMode ? (primaryAgentId ?? focusedAgentId) : focusedAgentId
+}
+
 export function sessionRuntimeTransitionState(
   options: SessionRuntimeTransitionOptions,
 ): SessionRuntimeTransitionState {

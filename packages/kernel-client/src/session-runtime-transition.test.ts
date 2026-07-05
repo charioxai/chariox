@@ -5,6 +5,7 @@ import {
   nextAgentBusyLatches,
   readAgentBusyLatch,
   resolveSessionStreamingAgentId,
+  resolveVisibleTranscriptAgentId,
   sessionFocusedAgentId,
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
@@ -29,6 +30,13 @@ test("session focused agent keeps only session-scoped focus and falls back witho
     agents: [makeAgent({ id: "agent-a" })],
     focused_agent_id: null,
   })), "agent-a")
+})
+
+test("visible transcript follows focus in individual mode and primary pane in split mode", () => {
+  assert.equal(resolveVisibleTranscriptAgentId(false, "agent-a", "agent-b"), "agent-b")
+  assert.equal(resolveVisibleTranscriptAgentId(true, "agent-a", "agent-b"), "agent-a")
+  assert.equal(resolveVisibleTranscriptAgentId(true, null, "agent-b"), "agent-b")
+  assert.equal(resolveVisibleTranscriptAgentId(false, null, null), null)
 })
 
 test("session runtime transition preserves active labels and clears idle labels", () => {

@@ -11,6 +11,7 @@ import {
 } from "@arroba/kernel-client/session-runtime-status"
 import {
   resolveSessionStreamingAgentId,
+  resolveVisibleTranscriptAgentId,
   sessionWorkingStateAfterPromptWork,
   turnCompletionDelayMs,
   type SessionStreamingAgent,
@@ -49,15 +50,7 @@ export function getSessionStatusLabel(
   return sessionStatusLabel(mode, activity)
 }
 
-export { getProviderActivityLabel, getToolActivityLabel, isProviderIdleStatus, chooseVisibleActivityLabel }
-
-export function resolveVisibleTranscriptAgentId(
-  splitMode: boolean,
-  primaryAgentId: string | null,
-  focusedAgentId: string | null,
-) {
-  return splitMode ? (primaryAgentId ?? focusedAgentId) : focusedAgentId
-}
+export { getProviderActivityLabel, getToolActivityLabel, isProviderIdleStatus, chooseVisibleActivityLabel, resolveVisibleTranscriptAgentId }
 
 export function resolveStreamingAgentId(
   agents: ReadonlyArray<SessionStreamingAgent>,
