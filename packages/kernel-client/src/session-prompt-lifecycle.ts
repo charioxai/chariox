@@ -6,6 +6,7 @@ import {
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   sessionHasAgent,
   sessionPromptStateEntriesForSessionAgents,
@@ -92,7 +93,7 @@ function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActiveP
   return {
     ...prompt,
     status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
-    promptOrigin: prompt.prompt_origin ?? null,
+    promptOrigin: promptOriginFromRecord(prompt),
   }
 }
 

@@ -18,6 +18,7 @@ test("session prompt lifecycle records normalize active prompt status", () => {
       target_agent_id: "agent-1",
       prompt: "hello",
       status: " Running ",
+      prompt_origin: " External ",
     },
   })), [{
     id: "prompt-1",
@@ -25,7 +26,8 @@ test("session prompt lifecycle records normalize active prompt status", () => {
     target_agent_id: "agent-1",
     prompt: "hello",
     status: "running",
-    promptOrigin: null,
+    prompt_origin: " External ",
+    promptOrigin: "external",
   }])
 })
 
