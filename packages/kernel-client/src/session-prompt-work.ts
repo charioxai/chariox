@@ -12,6 +12,7 @@ import {
 import {
   agentPromptStateHasWork,
   sessionHasAgent,
+  sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
@@ -73,19 +74,15 @@ export function sessionQueuedPromptCount(
   if (!agentId) {
     return sessionPromptWorkSummary(session).queued
   }
-  if (!sessionHasAgent(session, agentId)) {
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (projected === "not_found" || projected === "idle") {
     return 0
   }
-  if (session.agent_activity) {
-    const activity = session.agent_activity[agentId]
-    if (!activity) {
-      return 0
+  if (projected) {
+    if (projected.queuedPromptCountExplicit) {
+      return projected.queuedPromptCount
     }
-    const projection = projectAgentRuntimeActivity(activity)
-    if (projection.queuedPromptCountExplicit) {
-      return projection.queuedPromptCount
-    }
-    if (!agentRuntimeActivityIsBusy(activity)) {
+    if (!projected.busy) {
       return 0
     }
   }
@@ -106,15 +103,12 @@ export function sessionAgentIsBusy(
   if (!session || !agentId) {
     return false
   }
-  if (!sessionHasAgent(session, agentId)) {
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (projected === "not_found" || projected === "idle") {
     return false
   }
-  if (session.agent_activity && !(agentId in session.agent_activity)) {
-    return false
-  }
-  const projected = session.agent_activity?.[agentId]
   if (projected) {
-    return agentRuntimeActivityIsBusy(projected)
+    return projected.busy
   }
   const promptState = sessionPromptStateRecordForAgent(session, agentId)
   if (promptState !== undefined) {

@@ -4,14 +4,11 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
-  projectAgentRuntimeActivity,
-  type AgentRuntimeActivityProjection,
-} from "./agent-activity.js"
-import {
   sessionActivePromptLifecycleRecords,
 } from "./session-prompt-lifecycle.js"
 import {
   sessionHasAgent,
+  sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
 
@@ -41,7 +38,7 @@ export function sessionPromptStateForAgent(
 }
 
 export function sessionHasActivePrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
-  const projected = projectedPromptActivityForAgent(session, agentId)
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
   if (projected === "not_found" || projected === "idle") {
     return false
   }
@@ -52,7 +49,7 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
 }
 
 export function sessionPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  const projected = projectedPromptActivityForAgent(session, agentId)
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
   if (projected === "not_found" || projected === "idle") {
     return null
   }
@@ -64,7 +61,7 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
 }
 
 export function sessionActivePromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  const projected = projectedPromptActivityForAgent(session, agentId)
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
   if (projected === "not_found" || projected === "idle") {
     return null
   }
@@ -80,7 +77,7 @@ export function sessionActivePromptIdForAgent(
   agentId: string | null | undefined,
 ): string | null {
   if (agentId) {
-    const projected = projectedPromptActivityForAgent(session, agentId)
+    const projected = sessionProjectedPromptActivityForAgent(session, agentId)
     if (projected === "not_found" || projected === "idle") {
       return null
     }
@@ -92,27 +89,6 @@ export function sessionActivePromptIdForAgent(
 
   const records = sessionActivePromptLifecycleRecords(session)
   return records.length === 1 ? records[0]?.id ?? null : null
-}
-
-function projectedPromptActivityForAgent(
-  session: RuntimeSession,
-  agentId: string,
-): AgentRuntimeActivityProjection | "idle" | "not_found" | null {
-  if (!sessionHasAgent(session, agentId)) {
-    return "not_found"
-  }
-  if (!session.agent_activity) {
-    return null
-  }
-  const activity = session.agent_activity[agentId]
-  if (!activity) {
-    return "not_found"
-  }
-  const projection = projectAgentRuntimeActivity(activity)
-  if (!projection.activeTurnPromptId && !projection.busy) {
-    return "idle"
-  }
-  return projection
 }
 
 function legacySessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {

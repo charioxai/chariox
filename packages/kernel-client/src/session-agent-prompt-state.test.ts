@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   agentPromptStateHasWork,
   sessionHasAgent,
+  sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
@@ -73,4 +74,56 @@ test("agent prompt state work predicate follows active and queued prompts", () =
     active_prompt: null,
     queued_prompts: [{ id: "queued-1" }],
   }), true)
+})
+
+test("session projected prompt activity scopes activity to session agents", () => {
+  const unprojected = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  assert.equal(sessionProjectedPromptActivityForAgent(unprojected, "agent-1"), null)
+  assert.equal(sessionProjectedPromptActivityForAgent(unprojected, "agent-missing"), "not_found")
+
+  const projected = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-outside": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+  assert.equal(sessionProjectedPromptActivityForAgent(projected, "agent-1"), "idle")
+  assert.equal(sessionProjectedPromptActivityForAgent(projected, "agent-outside"), "not_found")
+
+  const active = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+  const projection = sessionProjectedPromptActivityForAgent(active, "agent-1")
+  assert.notEqual(projection, null)
+  assert.notEqual(projection, "idle")
+  assert.notEqual(projection, "not_found")
+  if (projection && projection !== "idle" && projection !== "not_found") {
+    assert.equal(projection.activeTurnPromptId, "prompt-1")
+  }
 })
