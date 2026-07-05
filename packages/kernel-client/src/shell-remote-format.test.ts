@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { formatRemoteKernels, formatRemoteMachines } from "./shell-remote-format.js"
+import {
+  formatRemoteKernels,
+  formatRemoteMachines,
+  remoteKernelReadiness,
+  remoteKernelReadinessCounts,
+} from "./shell-remote-format.js"
 
 test("remote machine formatter shows provider account identities", () => {
   const output = formatRemoteMachines([{
@@ -97,4 +102,29 @@ test("remote kernel formatter makes empty machine recovery actionable", () => {
     formatRemoteKernels([], "machine-1"),
     "no live kernels found for machine machine-1; next: reconnect that machine or choose another worker",
   )
+})
+
+test("remote kernel readiness helpers classify worker state", () => {
+  const kernels = [
+    { kernel_id: "ready", machine_id: "machine", available_providers: ["codex"], provider_accounts: [{ provider: "codex", state: "authenticated" }], accepting_remote_leases: true },
+    { kernel_id: "blocked", machine_id: "machine", available_providers: ["codex"], accepting_remote_leases: false },
+    { kernel_id: "provider", machine_id: "machine", available_providers: [], accepting_remote_leases: true },
+    { kernel_id: "account", machine_id: "machine", available_providers: ["codex"], provider_accounts: [], accepting_remote_leases: true },
+    { kernel_id: "unknown", machine_id: "machine", available_providers: ["codex"] },
+  ]
+
+  assert.deepEqual(kernels.map((kernel) => remoteKernelReadiness(kernel)), [
+    "ready",
+    "blocked",
+    "needs-provider",
+    "needs-account",
+    "unknown",
+  ])
+  assert.deepEqual(remoteKernelReadinessCounts(kernels), {
+    ready: 1,
+    blocked: 1,
+    "needs-provider": 1,
+    "needs-account": 1,
+    unknown: 1,
+  })
 })

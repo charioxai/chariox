@@ -173,14 +173,10 @@ function remoteKernelProviderAccountNextAction(kernel: RelayKernelPresence): str
   return `configure/import or refresh provider accounts on ${remoteKernelLabel(kernel)} before spawning remote agents`
 }
 
-type RemoteKernelReadiness = "ready" | "blocked" | "needs-provider" | "needs-account" | "unknown"
+export type RemoteKernelReadiness = "ready" | "blocked" | "needs-provider" | "needs-account" | "unknown"
 
 function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: string): string {
-  const counts = kernels.reduce<Record<RemoteKernelReadiness, number>>((acc, kernel) => {
-    const readiness = remoteKernelReadiness(kernel)
-    acc[readiness] += 1
-    return acc
-  }, { ready: 0, blocked: 0, "needs-provider": 0, "needs-account": 0, unknown: 0 })
+  const counts = remoteKernelReadinessCounts(kernels)
   const total = kernels.length
   const parts = [`${counts.ready}/${total} ready`]
   if (counts["needs-provider"] > 0) parts.push(`${counts["needs-provider"]} needs provider`)
@@ -206,6 +202,16 @@ export function remoteKernelReadiness(kernel: RelayKernelPresence): RemoteKernel
     return "needs-account"
   }
   return "ready"
+}
+
+export function remoteKernelReadinessCounts(
+  kernels: readonly RelayKernelPresence[],
+): Record<RemoteKernelReadiness, number> {
+  return kernels.reduce<Record<RemoteKernelReadiness, number>>((acc, kernel) => {
+    const readiness = remoteKernelReadiness(kernel)
+    acc[readiness] += 1
+    return acc
+  }, { ready: 0, blocked: 0, "needs-provider": 0, "needs-account": 0, unknown: 0 })
 }
 
 function remoteKernelLabel(kernel: RelayKernelPresence): string {

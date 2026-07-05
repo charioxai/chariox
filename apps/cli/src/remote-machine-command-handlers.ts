@@ -1,5 +1,5 @@
 import type { ParsedSlashCommand } from "./commands.js"
-import { remoteKernelReadiness } from "./remote-kernel-readiness.js"
+import { remoteKernelReadiness } from "@arroba/kernel-client/shell-remote-format"
 
 type FooterTone = "info" | "error"
 

@@ -62,6 +62,7 @@
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
     "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-session-footer": "./dist/shell-session-footer.js",
+    "./shell-remote-format": "./dist/shell-remote-format.js",
     "./shell-core": "./dist/shell-core.js",
     "./shell-executor": "./dist/shell-executor.js",
     "./shell-script": "./dist/shell-script.js",

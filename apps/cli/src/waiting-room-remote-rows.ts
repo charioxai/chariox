@@ -5,7 +5,10 @@ import type {
   WaitingRoomRow,
   WaitingRoomState,
 } from "./waiting-room-types.js"
-import { remoteKernelReadiness, remoteKernelReadinessCounts } from "./remote-kernel-readiness.js"
+import {
+  remoteKernelReadiness,
+  remoteKernelReadinessCounts,
+} from "@arroba/kernel-client/shell-remote-format"
 
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,
