@@ -9,6 +9,16 @@ import type {
 import type {
   AgentPromptState as KernelAgentPromptState,
   RuntimeSession as KernelRuntimeSession,
+  SessionHistoryBlobContent as KernelSessionHistoryBlobContent,
+  SessionHistoryEntry as KernelSessionHistoryEntry,
+  SessionHistoryExternalObservation as KernelSessionHistoryExternalObservation,
+  SessionHistoryOutline as KernelSessionHistoryOutline,
+  SessionHistoryOutlineAgent as KernelSessionHistoryOutlineAgent,
+  SessionHistoryOutlineBlob as KernelSessionHistoryOutlineBlob,
+  SessionHistoryOutlineCursor as KernelSessionHistoryOutlineCursor,
+  SessionHistoryOutlineTurn as KernelSessionHistoryOutlineTurn,
+  SessionHistoryPageEntry as KernelSessionHistoryPageEntry,
+  SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
   TerminalCommandCatalog,
 } from "@arroba/kernel-client/kernel-types"
 import {
@@ -954,93 +964,30 @@ export type QueuedPromptCancelledPayload = {
   agent_activity_revision?: number
 }
 
-export type SessionHistoryPageEntry = {
-  entry_index: number
-  fragment_start: number
-  fragment_end: number
-  total_chars: number
-  entry: SessionHistoryEntry
-}
+export type SessionHistoryPageEntry = KernelSessionHistoryPageEntry
 
-export type SessionHistoryEntry = {
-  agent_id?: string | null
-  provider_run_id?: string | null
-  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
-  merge_key?: string
-  source?: "external_provider_observed" | null
-  external_provider?: string | null
-  external_provider_session_id?: string | null
-  external_provider_turn_id?: string | null
-  observed_at_ms?: number | null
-  external_observation?: SessionHistoryExternalObservation | null
-  attachments?: SessionHistoryPromptAttachment[]
-  text: string
-  timestamp_ms?: number
-  source_attachment_id?: string | null
-}
+export type SessionHistoryEntry = KernelSessionHistoryEntry
 
-export type SessionHistoryExternalObservation = {
-  settles_active_prompt: boolean
-  passive_telemetry: boolean
-}
+export type SessionHistoryExternalObservation = KernelSessionHistoryExternalObservation
 
-export type SessionHistoryPromptAttachment = {
-  url: string
-  mime: string
-  filename?: string | null
-  preview_url?: string | null
-}
+export type SessionHistoryPromptAttachment = KernelSessionHistoryPromptAttachment
 
-export type SessionHistoryOutline = {
-  agents: SessionHistoryOutlineAgent[]
-}
+export type SessionHistoryOutline = KernelSessionHistoryOutline
 
-export type SessionHistoryOutlineAgent = {
-  agent_id: string
-  turns: SessionHistoryOutlineTurn[]
-  next_cursor?: SessionHistoryOutlineCursor | null
-}
+export type SessionHistoryOutlineAgent = KernelSessionHistoryOutlineAgent
 
-export type SessionHistoryOutlineCursor = {
-  before_sequence: number
-}
+export type SessionHistoryOutlineCursor = KernelSessionHistoryOutlineCursor
 
 export type SessionHistoryCursorState = {
   agentId: string
   cursor: SessionHistoryOutlineCursor
 } | null
 
-export type SessionHistoryOutlineTurn = {
-  turn_id: string
-  prompt_id?: string | null
-  prompt_origin?: "arroba" | "external" | string | null
-  external_provider?: string | null
-  external_provider_session_id?: string | null
-  external_provider_turn_id?: string | null
-  started_at_ms: number
-  completed_at_ms: number | null
-  user_prompt: SessionHistoryPageEntry
-  entries: SessionHistoryPageEntry[]
-  summary?: SessionHistoryPageEntry | null
-  blobs: SessionHistoryOutlineBlob[]
-}
+export type SessionHistoryOutlineTurn = KernelSessionHistoryOutlineTurn
 
-export type SessionHistoryOutlineBlob = {
-  blob_id: string
-  kind: SessionHistoryEntry["kind"]
-  title: string
-  summary: string
-  sequence_start: number
-  sequence_end: number
-  entry_count: number
-  total_chars: number
-  timestamp_ms: number
-}
+export type SessionHistoryOutlineBlob = KernelSessionHistoryOutlineBlob
 
-export type SessionHistoryBlobContent = {
-  blob_id: string
-  entries: SessionHistoryPageEntry[]
-}
+export type SessionHistoryBlobContent = KernelSessionHistoryBlobContent
 
 export type PromptInputHistoryEntry = {
   sequence: number
