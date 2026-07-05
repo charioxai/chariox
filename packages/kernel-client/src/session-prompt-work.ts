@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  AgentPromptState,
   RuntimeSession,
 } from "./kernel-types.js"
 import {
@@ -27,9 +28,10 @@ export type SessionPromptWorkSummary = {
 }
 
 export function sessionPromptWorkSummary(session: RuntimeSession): SessionPromptWorkSummary {
-  const promptStates = session.prompt_states
+  const hasPromptStates = Boolean(session.prompt_states)
   const promptStateEntries = sessionPromptStateEntriesForSessionAgents(session)
-  const queued = promptStates
+  const promptStateByAgent = new Map<string, AgentPromptState>(promptStateEntries)
+  const queued = hasPromptStates
     ? promptStateEntries.reduce((count, [, state]) => count + (state?.queued_prompts?.length ?? 0), 0)
     : session.queued_prompts.length
 
@@ -41,7 +43,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
     return {
       active: activities.reduce(
         (count, [agentId, projection]) =>
-          count + projectedActivePromptCount(projection, promptStates?.[agentId]),
+          count + projectedActivePromptCount(projection, promptStateByAgent.get(agentId)),
         0,
       ),
       queued: projectedQueued ?? queued,
@@ -49,7 +51,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
     }
   }
 
-  if (promptStates) {
+  if (hasPromptStates) {
     const busyAgents = promptStateEntries.filter(([, state]) => agentPromptStateHasWork(state)).length
     return {
       active: promptStateEntries.filter(([, state]) => Boolean(state?.active_prompt)).length,
@@ -148,11 +150,10 @@ export function sessionProjectedStreamingAgentId(session: RuntimeSession): strin
       .find(([, projection]) => agentRuntimeActivityProjectionHasTurnWork(projection))?.[0] ?? null
   }
   if (session.prompt_states) {
-    const activeAgents = session.agents.filter((agent) => {
-      const promptState = session.prompt_states?.[agent.id]
-      return Boolean(promptState?.active_prompt)
-    })
-    return activeAgents.length === 1 ? activeAgents[0]?.id ?? null : null
+    const activeAgents = sessionPromptStateEntriesForSessionAgents(session)
+      .filter(([, state]) => Boolean(state.active_prompt))
+      .map(([agentId]) => agentId)
+    return activeAgents.length === 1 ? activeAgents[0] ?? null : null
   }
   return session.active_prompt?.target_agent_id ?? null
 }
@@ -164,7 +165,7 @@ function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: st
 
 function agentRuntimeActivityHasActivePrompt(
   projection: AgentRuntimeActivityProjection,
-  promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
+  promptState?: AgentPromptState,
 ): boolean {
   if (agentRuntimeActivityProjectionHasTurnWork(projection)) {
     return true
@@ -177,7 +178,7 @@ function agentRuntimeActivityHasActivePrompt(
 
 function projectedActivePromptCount(
   projection: AgentRuntimeActivityProjection,
-  promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
+  promptState?: AgentPromptState,
 ): number {
   if (projection.activePromptCountExplicit) {
     return projection.activePromptCount

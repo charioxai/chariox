@@ -172,6 +172,26 @@ test("session prompt work ignores projected activity outside session agents", ()
   assert.equal(sessionQueuedPromptCount(session, "agent-ghost"), 0)
 })
 
+test("session projected streaming agent ignores prompt states outside session agents", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: {
+          id: "prompt-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionProjectedStreamingAgentId(session), null)
+})
+
 test("session queued prompt count uses explicit projected activity counts", () => {
   const session = makeSession({
     prompt_states: {
