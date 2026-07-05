@@ -5,9 +5,9 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import { clampScrollTop } from "./history-viewport.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
-import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import {
   buildTranscriptEntryRenderable,
@@ -242,7 +242,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           ? { agentId: visibleAgentId, cursor: outlineAgent.next_cursor }
           : null,
       )
-      const olderEntries = outlineAgent ? hydrateOutlineAgentEntries(outlineAgent) : []
+      const olderEntries = outlineAgent ? hydrateSessionHistoryOutlineAgentEntries(outlineAgent) : []
       if (olderEntries.length === 0) {
         return false
       }

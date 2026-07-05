@@ -9,6 +9,7 @@ import {
   resolveLaunchTargetAgent,
   resolveStoredAgentLaunch,
 } from "@arroba/kernel-client/session-lifecycle-state"
+import { sessionHistoryCursorForVisibleAgent } from "@arroba/kernel-client/session-history-outline"
 
 import type {
   CliOptions,
@@ -22,7 +23,6 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { historyCursorStateForVisibleAgent } from "./session-history-outline.js"
 
 type BootstrapDeps = {
   logger?: ArrobaLogger | null
@@ -243,7 +243,7 @@ async function hydrateAttachedHistory(
     agentEntries,
     historyEntries,
     promptHistoryEntries,
-    nextHistoryCursor: historyCursorStateForVisibleAgent(outline, visibleAgentId),
+    nextHistoryCursor: sessionHistoryCursorForVisibleAgent(outline, visibleAgentId),
   }
 }
 

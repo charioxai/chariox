@@ -3,9 +3,9 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  markHistoryBlobLoading,
-  replaceHistoryBlobPlaceholder,
-} from "./session-history-outline.js"
+  markSessionHistoryBlobLoading,
+  replaceSessionHistoryBlobPlaceholder,
+} from "@arroba/kernel-client/session-history-transcript"
 import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
@@ -70,27 +70,27 @@ export function createAgentPaneTranscriptInteractionController(
       && target.historyBlobAgentId
       && deps.loadHistoryBlobContent
     ) {
-      const loadingEntries = markHistoryBlobLoading(currentEntries, entryId, true)
+      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
       commitAndRefocus(deps, agentId, currentEntries, loadingEntries)
       void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
         .then((content) => {
           const latestEntries = deps.currentAgentPaneEntries(agentId)
-          const nextEntries = replaceHistoryBlobPlaceholder(
+          const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
             entryId,
             content,
             deps.expandedTurnIdsForAgent(agentId),
-          )
+          ) as TranscriptEntry[]
           commitAndRefocus(deps, agentId, latestEntries, nextEntries)
         })
         .catch((error) => {
           const latestEntries = deps.currentAgentPaneEntries(agentId)
-          const nextEntries = markHistoryBlobLoading(
+          const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
             entryId,
             false,
             deps.formatError?.(error) ?? String(error),
-          )
+          ) as TranscriptEntry[]
           commitAndRefocus(deps, agentId, latestEntries, nextEntries)
         })
       return

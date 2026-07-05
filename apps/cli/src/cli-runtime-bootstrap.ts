@@ -55,7 +55,7 @@ import {
 import {
   selectResponsePaneAgents,
 } from "@arroba/kernel-client/response-pane-selection"
-import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import {
   inferWorkspaceTargetsFromLaunchDirectory,
@@ -313,7 +313,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     },
     prepareHistoryOutlineAgent: (agent, _session) =>
       reindexTranscriptEntries(
-        hydrateOutlineAgentEntries(agent),
+        hydrateSessionHistoryOutlineAgentEntries(agent),
         0,
       ),
   })

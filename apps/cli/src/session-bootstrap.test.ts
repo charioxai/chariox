@@ -4,7 +4,7 @@ import test from "node:test"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
 
 function terminalCatalog() {
   return {
@@ -345,7 +345,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
         }],
       }),
       resolveVisibleAgentId: () => "agent-a",
-      prepareHistoryOutlineAgent: hydrateOutlineAgentEntries,
+      prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
     },
   )
 

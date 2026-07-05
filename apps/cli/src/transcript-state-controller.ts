@@ -1,9 +1,9 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import type { SessionHistoryBlobContent } from "./cli-types.js"
 import {
-  markHistoryBlobLoading,
-  replaceHistoryBlobPlaceholder,
-} from "./session-history-outline.js"
+  markSessionHistoryBlobLoading,
+  replaceSessionHistoryBlobPlaceholder,
+} from "@arroba/kernel-client/session-history-transcript"
 import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
@@ -74,7 +74,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       && target.historyBlobAgentId
       && deps.loadHistoryBlobContent
     ) {
-      const loadingEntries = markHistoryBlobLoading(currentEntries, entryId, true)
+      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
       deps.setEntries(loadingEntries)
       deps.persistVisibleTranscriptEntries(loadingEntries)
       deps.reconcileMountedTranscript(currentEntries, loadingEntries)
@@ -82,12 +82,12 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
         .then((content) => {
           const latestEntries = deps.entries().filter(Boolean)
-          const nextEntries = replaceHistoryBlobPlaceholder(
+          const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
             entryId,
             content,
             deps.expandedTurnIdsForAgent(agentId),
-          )
+          ) as TranscriptEntry[]
           deps.setEntries(nextEntries)
           deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
           deps.persistVisibleTranscriptEntries(nextEntries)
@@ -96,12 +96,12 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
         })
         .catch((error) => {
           const latestEntries = deps.entries().filter(Boolean)
-          const nextEntries = markHistoryBlobLoading(
+          const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
             entryId,
             false,
             deps.formatError?.(error) ?? String(error),
-          )
+          ) as TranscriptEntry[]
           deps.setEntries(nextEntries)
           deps.persistVisibleTranscriptEntries(nextEntries)
           deps.reconcileMountedTranscript(latestEntries, nextEntries)

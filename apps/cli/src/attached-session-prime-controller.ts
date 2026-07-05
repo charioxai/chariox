@@ -7,9 +7,11 @@ import type {
 import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { selectResponsePaneAgents } from "@arroba/kernel-client/response-pane-selection"
 import {
-  historyCursorStateForVisibleAgent,
-  hydrateOutlineAgentEntries,
-} from "./session-history-outline.js"
+  sessionHistoryCursorForVisibleAgent,
+} from "@arroba/kernel-client/session-history-outline"
+import {
+  hydrateSessionHistoryOutlineAgentEntries,
+} from "@arroba/kernel-client/session-history-transcript"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
@@ -50,7 +52,7 @@ export function createAttachedSessionPrimeController(
     await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
     const entriesByAgent = new Map(outline.agents.map((agent) => [
       agent.agent_id,
-      reindexTranscriptEntries(hydrateOutlineAgentEntries(agent), 0),
+      reindexTranscriptEntries(hydrateSessionHistoryOutlineAgentEntries(agent), 0),
     ]))
     for (const [agentId, entries] of entriesByAgent) {
       deps.setAgentPaneEntries(agentId, cloneTranscriptEntries(entries))
@@ -59,7 +61,7 @@ export function createAttachedSessionPrimeController(
     const preparedEntries = entriesByAgent.get(visibleAgentId) ?? []
 
     deps.replaceTranscriptEntries(cloneTranscriptEntries(preparedEntries), visibleAgentId)
-    deps.setNextHistoryCursor(historyCursorStateForVisibleAgent(outline, visibleAgentId))
+    deps.setNextHistoryCursor(sessionHistoryCursorForVisibleAgent(outline, visibleAgentId))
   }
 
   return {

@@ -19,7 +19,7 @@ import {
   getSessionHistoryBlobContent,
   getSessionHistoryOutline,
 } from "./session-history-api.js"
-import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
 import { splitPaneAuxiliaryAgentIds } from "@arroba/kernel-client/response-pane-selection"
 import {
   buildTranscriptEntryRenderable,
@@ -239,7 +239,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       const outline = await getSessionHistoryOutline(deps.client, sessionId, [agentId], 4, cursor)
       const outlineAgent = outline.agents.find((agent) => agent.agent_id === agentId)
       return {
-        entries: outlineAgent ? hydrateOutlineAgentEntries(outlineAgent) : [],
+        entries: outlineAgent ? hydrateSessionHistoryOutlineAgentEntries(outlineAgent) : [],
         nextCursor: outlineAgent?.next_cursor ?? null,
       }
     },

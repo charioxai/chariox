@@ -358,6 +358,82 @@ test("session history outline hydration projects sparse external turn metadata",
   assert.equal(prompt?.externalProviderTurnId, undefined)
 })
 
+test("session history outline hydration does not infer external ownership for arroba-origin turns", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: "arroba",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "arroba prompt\n"),
+      entries: [pageEntry(1, "provider_output", "arroba reply\n")],
+      summary: null,
+      blobs: [blob("blob-1", "provider_tool", 2, "tool", "1 tool called")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const prompt = entries.find((entry) => entry.role === "user")
+  const assistant = entries.find((entry) => entry.role === "assistant")
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(prompt?.source, undefined)
+  assert.equal(assistant?.source, undefined)
+  assert.equal(placeholder?.source, undefined)
+  assert.equal(prompt?.externalProvider, undefined)
+  assert.equal(placeholder?.externalProviderSessionId, undefined)
+})
+
+test("session history blob replacement keeps incomplete external turns active", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: "external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      completed_at_ms: null,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
+      summary: pageEntry(3, "provider_output", "partial assistant\n"),
+      blobs: [blob("blob-1", "provider_tool", 2, "tool", "running tool")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.ok(placeholder)
+
+  const replaced = replaceSessionHistoryBlobPlaceholder(
+    entries,
+    placeholder.id,
+    {
+      blob_id: "blob-1",
+      entries: [pageEntry(2, "provider_tool", JSON.stringify({
+        id: "tool-1",
+        tool: "bash",
+        status: "running",
+        output: "",
+      }))],
+    },
+    [],
+  )
+
+  assert.equal(replaced.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(replaced.filter((entry) => !entry.hidden).map((entry) => entry.role), [
+    "user",
+    "reasoning",
+    "tool",
+    "assistant",
+  ])
+  assert.equal(replaced.find((entry) => entry.role === "tool")?.historyTurnCompletedAtMs, null)
+})
+
 test("session history blob replacement preserves prompt and external turn metadata", () => {
   const entries = hydrateSessionHistoryOutlineAgentEntries({
     agent_id: "agent-1",
