@@ -5,10 +5,6 @@ import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "@arroba/kernel-client/session-config-projection"
 import {
-  runtimeProviderRunForAgent as kernelRuntimeProviderRunForAgent,
-  sessionActiveInteractionForAgent as kernelSessionActiveInteractionForAgent,
-} from "@arroba/kernel-client/session-runtime-lookup"
-import {
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
@@ -33,8 +29,6 @@ import {
 import {
   type AgentPromptState,
   type CliOptions,
-  type RuntimeInteraction,
-  type RuntimeProviderRun,
   type RuntimeSession,
   type SessionHistoryCursorState,
   type TranscriptEntry,
@@ -148,26 +142,6 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
   return kernelSessionFocusedAgentId(session as Parameters<typeof kernelSessionFocusedAgentId>[0])
-}
-
-export function activeInteractionForAgent(
-  session: RuntimeSession,
-  agentId: string | null | undefined,
-): RuntimeInteraction | null {
-  return kernelSessionActiveInteractionForAgent(
-    session as Parameters<typeof kernelSessionActiveInteractionForAgent>[0],
-    agentId,
-  ) as RuntimeInteraction | null
-}
-
-export function focusedProviderRunForAgent(
-  run: RuntimeProviderRun | null,
-  focusedAgentId: string | null | undefined,
-): RuntimeProviderRun | null {
-  return kernelRuntimeProviderRunForAgent(
-    run as Parameters<typeof kernelRuntimeProviderRunForAgent>[0],
-    focusedAgentId,
-  ) as RuntimeProviderRun | null
 }
 
 export function activePromptIdForAgent(

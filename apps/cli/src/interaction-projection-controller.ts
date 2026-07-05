@@ -3,8 +3,8 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import {
-  activeInteractionForAgent as activeInteractionForAgentForSession,
-} from "./session-state.js"
+  sessionActiveInteractionForAgent,
+} from "@arroba/kernel-client/session-runtime-lookup"
 
 type InteractionProjectionControllerDeps = {
   getSession: () => RuntimeSession
@@ -20,7 +20,7 @@ export function createInteractionProjectionController(
   const activeInteractionForAgent = (
     agentId: string | null | undefined,
   ): RuntimeInteraction | null => {
-    return activeInteractionForAgentForSession(deps.getSession(), agentId)
+    return sessionActiveInteractionForAgent(deps.getSession(), agentId) as RuntimeInteraction | null
   }
 
   const focusedAgentInteraction = (): RuntimeInteraction | null => {

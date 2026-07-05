@@ -10,6 +10,9 @@ import {
   type AgentToolActivityUpdate as ToolActivityUpdate,
   type AgentBusyState,
 } from "@arroba/kernel-client/session-runtime-transition"
+import {
+  runtimeProviderRunForAgent,
+} from "@arroba/kernel-client/session-runtime-lookup"
 import type {
   AgentInstance,
   RuntimeProviderRun,
@@ -17,7 +20,6 @@ import type {
 } from "./cli-types.js"
 import {
   agentPromptState,
-  focusedProviderRunForAgent,
   promptWorkByAgent,
   sessionHasPromptWork,
 } from "./session-state.js"
@@ -66,10 +68,10 @@ export function createAgentRuntimeProjectionController(
       ? normalizeBackendProviderId(provider)
       : null
   }
-  const focusedProviderRun = () => focusedProviderRunForAgent(
+  const focusedProviderRun = () => runtimeProviderRunForAgent(
     deps.getProviderRun(),
     deps.getFocusedAgentId(),
-  )
+  ) as RuntimeProviderRun | null
   const resolveSessionAgent = (reference?: string | null): ResolvedAgentReference =>
     resolveSessionAgentReference(deps.getSession(), deps.getFocusedAgentId(), reference)
   const promptStateForAgent = (agentId: string | null | undefined) =>
