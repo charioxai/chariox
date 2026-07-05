@@ -34,23 +34,26 @@ const activeRuntimeStops = []
 const runtimeStartTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
 const protocolTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
 const scheduleOnlyObservationTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
+const modelOverrideForProvider = (provider) => process.env[`ARROBA_TRACE_DRILL_MODEL_${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`] ?? null
+const requestedModelForProvider = (provider, requestedModel) => modelOverrideForProvider(provider) ?? requestedModel
+const acceptableModelIdsForProvider = (provider, acceptableModelIds) => modelOverrideForProvider(provider) ? [modelOverrideForProvider(provider)] : acceptableModelIds
 const providerSpecs = [
   {
     provider: "opencode",
-    requestedModel: "Kimi K2.6",
-    acceptableModelIds: ["kimi-k2.6"],
+    requestedModel: requestedModelForProvider("opencode", "Kimi K2.6"),
+    acceptableModelIds: acceptableModelIdsForProvider("opencode", ["kimi-k2.6"]),
     authMode: "cli_catalog",
   },
   {
     provider: "claude-headless",
-    requestedModel: "Sonnet 3.6",
-    acceptableModelIds: ["claude-sonnet-3-6", "claude-sonnet-3.6"],
+    requestedModel: requestedModelForProvider("claude-headless", "Sonnet 3.6"),
+    acceptableModelIds: acceptableModelIdsForProvider("claude-headless", ["claude-sonnet-3-6", "claude-sonnet-3.6"]),
     authMode: "kernel",
   },
   {
     provider: "codex",
-    requestedModel: "gpt-5.5",
-    acceptableModelIds: ["gpt-5.5"],
+    requestedModel: requestedModelForProvider("codex", "gpt-5.5"),
+    acceptableModelIds: acceptableModelIdsForProvider("codex", ["gpt-5.5"]),
     authMode: "kernel",
   },
 ]
@@ -184,6 +187,7 @@ async function providerAuth(client, spec) {
 function resolveRequestedModel(providerCatalog, spec) {
   const models = Object.values(providerCatalog?.models ?? {})
   const requested = models.find((model) => spec.acceptableModelIds.includes(model.id))
+    ?? models.find((model) => normalizeModelToken(model.id) === normalizeModelToken(spec.requestedModel))
     ?? models.find((model) => normalizeModelToken(model.name) === normalizeModelToken(spec.requestedModel))
   if (requested) {
     return { model: requested, requestedAvailable: true, reason: "requested" }
