@@ -162,49 +162,11 @@ export type SkillImportSkip = KernelSkillImportSkip
 
 export type SkillImportOutcome = KernelSkillImportOutcome
 
-export type RuntimeSession = {
-  id: string
-  alias?: string | null
-  workspace_id: string
-  worktree_id: string
-  owner_user_id?: string
-  host_machine_id?: string | null
-  host_daemon_id?: string | null
-  members?: SessionMember[]
-  invites?: SessionInvite[]
+export type RuntimeSession = KernelRuntimeSession & {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
-  created_at_ms: number
-  last_used_at_ms?: number | null
-  last_prompt_sent_at_ms?: number | null
   hidden?: boolean
-  status: string
-  agent_defaults?: SessionAgentDefaults
-  active_provider_run_id: string | null
-  attachment_ids: string[]
-  active_prompt: PromptQueueItem | null
-  queued_prompts: PromptQueueItem[]
-  prompt_states?: Record<string, AgentPromptState>
-  agent_activity?: Record<string, AgentRuntimeActivity>
-  agent_activity_revision?: number
-  active_interactions?: RuntimeInteraction[]
-  metaagent_tasks?: MetaagentTask[]
-  focused_agent_id: string | null
-  max_agents: number
-  agents: AgentInstance[]
-  collaboration_agent_counts?: SessionCollaborationAgentCounts | null
-  config_state: SessionConfigState
-  workflows?: WorkflowDefinition[]
-  workflow_runs?: WorkflowRun[]
-  workflow_prompt_queues?: WorkflowPromptQueueDefinition[]
-  workflow_queued_prompts?: WorkflowQueuedPrompt[]
-  workflow_schedules?: WorkflowScheduleDefinition[]
-  workflow_watchdogs?: WorkflowWatchdogDefinition[]
-  workflow_consoles?: WorkflowConsole[]
-  workspace_links?: WorkspaceLinkDefinition[]
-  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
-  external_provider_imports?: ExternalProviderImportMetadata[]
 }
 
 export type MetaagentTaskStatus = KernelMetaagentTaskStatus
