@@ -1,7 +1,7 @@
 import {
   derivePromptAreaBackground,
   derivePromptPlaceholder,
-} from "./prompt-surface-state.js"
+} from "@arroba/kernel-client/prompt-surface-state"
 import {
   deriveFooterHint,
   deriveSessionStatusMode,

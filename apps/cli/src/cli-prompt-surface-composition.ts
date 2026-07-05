@@ -33,8 +33,10 @@ import { createPromptSessionHistoryController } from "./prompt-session-history-c
 import { createPromptSessionStatePersistenceController } from "./prompt-session-state-persistence-controller.js"
 import {
   createPromptPlaceholderSyncController,
-  derivePromptInputMaxHeight,
 } from "./prompt-surface-state.js"
+import {
+  derivePromptInputMaxHeight,
+} from "@arroba/kernel-client/prompt-surface-state"
 import {
   createPromptSubmissionUiController,
 } from "./prompt-submission-ui-controller.js"
