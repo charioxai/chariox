@@ -27,6 +27,45 @@ test("transcript stream state appends provider chunks to the current turn", () =
   ])
 })
 
+test("transcript stream state can use an explicit current turn id before visible entries exist", () => {
+  const result = applyTranscriptProviderChunk([], {
+    role: "assistant",
+    chunk: "hello",
+    currentTurnId: 7,
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.deepEqual(result.entries, [
+    entry(1, "assistant", "hello", { turnId: 7 }),
+  ])
+})
+
+test("transcript stream state accepts a caller-owned next entry id", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(2, "assistant", "visible retained entry"),
+  ], {
+    role: "assistant",
+    chunk: "new",
+    nextEntryId: 11,
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.updatedEntryId, 2)
+
+  const appended = applyTranscriptProviderChunk([
+    entry(2, "assistant", "visible retained entry", { turnId: 1 }),
+    entry(3, "user", "next turn", { turnId: 2 }),
+  ], {
+    role: "assistant",
+    chunk: "new",
+    nextEntryId: 11,
+  })
+
+  assert.equal(appended.kind, "appended")
+  assert.equal(appended.updatedEntryId, 11)
+  assert.equal(appended.entries.at(-1)?.id, 11)
+})
+
 test("transcript stream state merges adjacent assistant chunks", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "assistant", "hel"),

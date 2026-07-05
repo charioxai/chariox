@@ -36,6 +36,8 @@ export type TranscriptProviderChunkOptions = {
   readonly mergeKey?: string | null
   readonly sourceText?: string | null
   readonly metadata?: TranscriptStreamMetadata
+  readonly nextEntryId?: number | null | undefined
+  readonly currentTurnId?: number | null | undefined
 }
 
 export type TranscriptStreamApplyResult<TEntry extends TranscriptStreamEntry> = {
@@ -78,7 +80,9 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
   }
 
   const nextEntries = cloneEntries(entries) as MutableTranscriptStreamEntry[]
-  const currentTurnId = computeCurrentTranscriptTurnId(nextEntries)
+  const currentTurnId = options.currentTurnId !== undefined
+    ? options.currentTurnId
+    : computeCurrentTranscriptTurnId(nextEntries)
   const mergedEntry = mergeProviderChunk(nextEntries, {
     role: options.role,
     normalized,
@@ -102,6 +106,8 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
     normalizedSource,
     mergeKey: options.mergeKey ?? undefined,
     metadata,
+    nextEntryId: options.nextEntryId ?? undefined,
+    currentTurnId,
   })
   nextEntries.push(nextEntry)
   return {
@@ -116,6 +122,10 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
   chunk: string,
   toolState: Map<string, ToolTranscriptUpdate>,
   metadata: TranscriptStreamMetadata = {},
+  options: {
+    readonly nextEntryId?: number | null
+    readonly currentTurnId?: number | null
+  } = {},
 ): TranscriptToolUpdateApplyResult<TEntry> {
   const normalized = normalizeTranscriptProviderChunk(chunk)
   if (!normalized) {
@@ -133,6 +143,8 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
         mergeKey: parsed.id,
         sourceText: JSON.stringify(merged),
         metadata,
+        nextEntryId: options.nextEntryId ?? undefined,
+        currentTurnId: options.currentTurnId,
       }),
       parsedUpdate: parsed,
       mergedUpdate: merged,
@@ -144,6 +156,8 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
     chunk: normalized,
     sourceText: normalized,
     metadata,
+    nextEntryId: options.nextEntryId ?? undefined,
+    currentTurnId: options.currentTurnId,
   })
 }
 
@@ -223,16 +237,17 @@ function createTranscriptEntry(
     normalizedSource: string | undefined
     mergeKey: string | undefined
     metadata: TranscriptStreamMetadata
+    nextEntryId: number | undefined
+    currentTurnId: number | null
   },
 ): MutableTranscriptStreamEntry {
   const nextEntry: MutableTranscriptStreamEntry = {
-    id: computeNextTranscriptEntryId(entries),
+    id: options.nextEntryId ?? computeNextTranscriptEntryId(entries),
     role: options.role,
     text: options.normalized,
   }
-  const currentTurnId = computeCurrentTranscriptTurnId(entries)
-  if (currentTurnId !== null) {
-    nextEntry.turnId = currentTurnId
+  if (options.currentTurnId !== null) {
+    nextEntry.turnId = options.currentTurnId
   }
   if (options.mergeKey) {
     nextEntry.mergeKey = options.mergeKey

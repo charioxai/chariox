@@ -1,11 +1,12 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
-  formatToolTranscriptUpdate,
-  mergeToolTranscriptUpdate,
-  parseToolTranscriptUpdate,
-  type ToolTranscriptUpdate,
-} from "./transcript.js"
+  applyTranscriptProviderChunk,
+  applyTranscriptToolUpdate,
+  type TranscriptStreamApplyResult,
+  type TranscriptStreamMetadata,
+} from "@arroba/kernel-client/transcript-stream-state"
+import type { ToolTranscriptUpdate } from "./transcript.js"
 
 export type TranscriptStreamControllerDeps = {
   entries: () => TranscriptEntry[]
@@ -33,11 +34,6 @@ export type TranscriptStreamControllerDeps = {
   maybeScheduleConfirmedTurnCompletion: () => void
 }
 
-type TranscriptStreamMetadata = {
-  promptId?: string | null
-  sourceAttachmentId?: string | null
-}
-
 export function createTranscriptStreamController(deps: TranscriptStreamControllerDeps) {
   const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {
     const label = getToolActivityLabel(update.tool)
@@ -58,9 +54,17 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     sourceText?: string,
     metadata: TranscriptStreamMetadata = {},
   ) => {
-    const normalized = normalizeProviderChunk(chunk)
-    const normalizedSource = sourceText === undefined ? undefined : normalizeProviderChunk(sourceText)
-    if (!normalized) {
+    const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const result = applyTranscriptProviderChunk(currentEntries, {
+      role,
+      chunk,
+      mergeKey,
+      sourceText,
+      metadata,
+      nextEntryId: deps.entryCounter() + 1,
+      currentTurnId: deps.currentTurnId(),
+    })
+    if (result.kind === "noop") {
       return
     }
 
@@ -68,74 +72,62 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     deps.setWorking(true)
     deps.setSubmitting(false)
 
-    const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
-    const nextEntries = currentEntries.map((entry) => ({ ...entry }))
-    const currentTurnId = deps.currentTurnId()
-    const mergedEntry = mergeProviderChunk(nextEntries, {
-      role,
-      normalized,
-      normalizedSource,
-      mergeKey,
-      metadata,
-      currentTurnId,
-    })
-
-    if (mergedEntry) {
-      deps.setEntries(nextEntries)
-      deps.persistVisibleTranscriptEntries(nextEntries)
-      deps.updateTranscriptEntry(mergedEntry.id, mergedEntry.text, mergedEntry.sourceText)
-      deps.logVisibleTranscriptOutput(role, mergedEntry.text, true, mergeKey)
-      deps.enforceTranscriptRetention()
-      deps.maybeScheduleConfirmedTurnCompletion()
-      return
-    }
-
-    const nextEntry: TranscriptEntry = {
-      id: deps.entryCounter() + 1,
-      role,
-      text: normalized,
-    }
-    if (currentTurnId !== null) {
-      nextEntry.turnId = currentTurnId
-    }
-    if (mergeKey) {
-      nextEntry.mergeKey = mergeKey
-    }
-    if (normalizedSource !== undefined) {
-      nextEntry.sourceText = normalizedSource
-    }
-    applyStreamMetadata(nextEntry, metadata)
-    nextEntries.push(nextEntry)
-
-    const preparedEntries = deps.applyVisibleTranscriptState(nextEntries)
-    deps.persistVisibleTranscriptEntries(preparedEntries)
-    deps.reconcileMountedTranscript(currentEntries, preparedEntries)
-    const loggedEntry = [...preparedEntries].reverse().find((entry) => entry.role === role && (mergeKey ? entry.mergeKey === mergeKey : true))
-    deps.logVisibleTranscriptOutput(role, loggedEntry?.text ?? normalized, false, mergeKey)
+    commitStreamResult(role, currentEntries, result, mergeKey)
     deps.enforceTranscriptRetention()
     deps.maybeScheduleConfirmedTurnCompletion()
   }
 
   const appendToolUpdate = (chunk: string, metadata: TranscriptStreamMetadata = {}) => {
-    const normalized = normalizeProviderChunk(chunk)
-    if (!normalized) {
+    const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const result = applyTranscriptToolUpdate(
+      currentEntries,
+      chunk,
+      deps.tools,
+      metadata,
+      { nextEntryId: deps.entryCounter() + 1, currentTurnId: deps.currentTurnId() },
+    )
+    if (result.kind === "noop") {
       return
     }
 
     deps.cancelPendingTurnCompletion()
     deps.setWorking(true)
+    deps.setSubmitting(false)
     deps.updateSessionChrome()
 
-    const parsed = parseToolTranscriptUpdate(normalized)
-    if (parsed) {
-      const merged = mergeToolTranscriptUpdate(deps.tools.get(parsed.id) ?? null, parsed)
-      deps.tools.set(parsed.id, merged)
-      syncActiveToolLabel(merged)
-      appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id, JSON.stringify(merged), metadata)
+    if (result.mergedUpdate) {
+      syncActiveToolLabel(result.mergedUpdate)
+    }
+
+    const updatedEntry = findUpdatedEntry(result.entries as TranscriptEntry[], result.updatedEntryId)
+    commitStreamResult("tool", currentEntries, result, updatedEntry?.mergeKey ?? undefined)
+    deps.enforceTranscriptRetention()
+    deps.maybeScheduleConfirmedTurnCompletion()
+  }
+
+  const commitStreamResult = (
+    role: TranscriptEntry["role"],
+    currentEntries: TranscriptEntry[],
+    result: TranscriptStreamApplyResult<TranscriptEntry>,
+    mergeKey: string | undefined,
+  ): void => {
+    const nextEntries = result.entries as TranscriptEntry[]
+    const updatedEntry = findUpdatedEntry(nextEntries, result.updatedEntryId)
+
+    if (result.kind === "merged" && updatedEntry) {
+      deps.setEntries(nextEntries)
+      deps.persistVisibleTranscriptEntries(nextEntries)
+      deps.updateTranscriptEntry(updatedEntry.id, updatedEntry.text, updatedEntry.sourceText)
+      deps.logVisibleTranscriptOutput(role, updatedEntry.text, true, mergeKey)
       return
     }
 
-    appendProviderChunk("tool", normalized, undefined, normalized, metadata)
+    const preparedEntries = deps.applyVisibleTranscriptState(nextEntries)
+    deps.persistVisibleTranscriptEntries(preparedEntries)
+    deps.reconcileMountedTranscript(currentEntries, preparedEntries)
+    const loggedEntry = findUpdatedEntry(preparedEntries, result.updatedEntryId)
+      ?? [...preparedEntries].reverse().find((entry) => entry.role === role && (mergeKey ? entry.mergeKey === mergeKey : true))
+    deps.logVisibleTranscriptOutput(role, loggedEntry?.text ?? "", false, mergeKey)
   }
 
   return {
@@ -144,73 +136,9 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
   }
 }
 
-function normalizeProviderChunk(chunk: string) {
-  return chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-}
-
-function mergeProviderChunk(
-  entries: TranscriptEntry[],
-  options: {
-    role: TranscriptEntry["role"]
-    normalized: string
-    normalizedSource: string | undefined
-    mergeKey: string | undefined
-    metadata: TranscriptStreamMetadata
-    currentTurnId: number | null
-  },
-) {
-  const { role, normalized, normalizedSource, mergeKey, metadata, currentTurnId } = options
-
-  if (mergeKey) {
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const candidate = entries[index]
-      if (
-        candidate?.role !== role
-        || candidate.mergeKey !== mergeKey
-        || !sameStreamingTurn(candidate, currentTurnId)
-      ) {
-        continue
-      }
-      if (role === "assistant" || role === "reasoning") {
-        candidate.text += normalized
-        if (normalizedSource !== undefined) {
-          candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
-        }
-      } else {
-        candidate.text = normalized
-        if (normalizedSource !== undefined) {
-          candidate.sourceText = normalizedSource
-        }
-      }
-      applyStreamMetadata(candidate, metadata)
-      return candidate
-    }
+function findUpdatedEntry(entries: TranscriptEntry[], updatedEntryId: number | undefined) {
+  if (updatedEntryId === undefined) {
+    return undefined
   }
-
-  const last = [...entries].reverse().find((entry) => entry.role !== "turn_toggle")
-  if (
-    !mergeKey
-    && last?.role === role
-    && sameStreamingTurn(last, currentTurnId)
-    && (role === "assistant" || role === "reasoning")
-  ) {
-    last.text += normalized
-    applyStreamMetadata(last, metadata)
-    return last
-  }
-
-  return null
-}
-
-function sameStreamingTurn(entry: TranscriptEntry, currentTurnId: number | null) {
-  return currentTurnId === null || entry.turnId === currentTurnId
-}
-
-function applyStreamMetadata(entry: TranscriptEntry, metadata: TranscriptStreamMetadata) {
-  if (metadata.promptId !== undefined) {
-    entry.promptId = metadata.promptId
-  }
-  if (metadata.sourceAttachmentId !== undefined) {
-    entry.sourceAttachmentId = metadata.sourceAttachmentId
-  }
+  return entries.find((entry) => entry.id === updatedEntryId)
 }
