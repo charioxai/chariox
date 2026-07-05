@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  applyExternalProviderObservedTurnMetadata,
   externalProviderObservedCompletionAtMs,
   externalProviderObservedEntryBelongsToImport,
   externalProviderObservedEntryIsPassiveTelemetry,
@@ -496,6 +497,49 @@ test("external provider observed transcript field merge preserves identity and s
       settles_active_prompt: true,
       passive_telemetry: false,
     },
+  })
+})
+
+test("external provider observed turn metadata applies only missing transcript identity fields", () => {
+  const target = {
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: undefined as string | null | undefined,
+    externalProviderTurnId: undefined as string | null | undefined,
+  }
+
+  applyExternalProviderObservedTurnMetadata(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+
+  assert.deepEqual(target, {
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+})
+
+test("external provider observed turn metadata ignores null provider identity fields", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+  } = {}
+
+  applyExternalProviderObservedTurnMetadata(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   })
 })
 

@@ -9,6 +9,7 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
+  applyExternalProviderObservedTurnMetadata,
   promptOriginExternalProviderObservedMetadata,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTurnMetadata,
@@ -153,23 +154,7 @@ function applyOutlineTurnExternalMetadata(
   entry: TranscriptEntry,
   metadata: OutlineTurnExternalMetadata | null,
 ): TranscriptEntry {
-  if (!metadata) {
-    return entry
-  }
-  const next: TranscriptEntry = {
-    ...entry,
-    source: entry.source ?? metadata.source,
-  }
-  if (next.externalProvider === undefined && metadata.externalProvider !== null) {
-    next.externalProvider = metadata.externalProvider
-  }
-  if (next.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== null) {
-    next.externalProviderSessionId = metadata.externalProviderSessionId
-  }
-  if (next.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== null) {
-    next.externalProviderTurnId = metadata.externalProviderTurnId
-  }
-  return next
+  return applyExternalProviderObservedTurnMetadata({ ...entry }, metadata)
 }
 
 function transcriptEntryExternalMetadata(

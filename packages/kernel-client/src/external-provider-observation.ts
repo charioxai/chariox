@@ -237,6 +237,28 @@ export function mergeExternalProviderObservedTranscriptFields<T extends External
   return target
 }
 
+export function applyExternalProviderObservedTurnMetadata<T extends ExternalProviderObservedMutableTurnMetadataFields>(
+  target: T,
+  metadata: ExternalProviderObservedTurnMetadata | null | undefined,
+): T {
+  if (!metadata) {
+    return target
+  }
+  if (target.source === undefined || target.source === null) {
+    target.source = metadata.source
+  }
+  if (target.externalProvider === undefined && metadata.externalProvider !== null) {
+    target.externalProvider = metadata.externalProvider
+  }
+  if (target.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== null) {
+    target.externalProviderSessionId = metadata.externalProviderSessionId
+  }
+  if (target.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== null) {
+    target.externalProviderTurnId = metadata.externalProviderTurnId
+  }
+  return target
+}
+
 export type ExternalProviderObservedKernelFields = {
   readonly kind?: string | null | undefined
   readonly source?: string | null | undefined
@@ -271,6 +293,13 @@ export type ExternalProviderObservedMutableTranscriptFields = {
   externalProviderTurnId?: string | null | undefined
   observedAtMs?: number | null | undefined
   externalObservation?: SessionHistoryExternalObservation | null | undefined
+}
+
+export type ExternalProviderObservedMutableTurnMetadataFields = {
+  source?: string | null | undefined
+  externalProvider?: string | null | undefined
+  externalProviderSessionId?: string | null | undefined
+  externalProviderTurnId?: string | null | undefined
 }
 
 export type ExternalProviderObservedStatusSignalFields = Pick<
