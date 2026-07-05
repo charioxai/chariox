@@ -8,6 +8,7 @@ import {
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
 } from "./transcript-entry-lineage.js"
+import { transcriptRetentionSlice } from "./transcript-entry-state.js"
 
 export type AgentPaneExternalProviderImport = ExternalProviderImportMatchFields
 
@@ -139,29 +140,21 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
   readonly maxChars: number
   readonly onTrimmedMergeKey?: (mergeKey: string) => void
 }): TEntry[] {
-  const { entries, maxEntries, maxChars, onTrimmedMergeKey } = options
-  let totalChars = entries.reduce((sum, entry) => sum + entry.text.length, 0)
-  let removeCount = 0
-
-  while (
-    entries.length - removeCount > maxEntries
-    || (totalChars > maxChars && removeCount < entries.length - 1)
-  ) {
-    totalChars -= entries[removeCount]?.text.length ?? 0
-    removeCount += 1
+  const retention = transcriptRetentionSlice(options.entries, {
+    maxEntries: options.maxEntries,
+    maxChars: options.maxChars,
+  })
+  if (!retention.changed) {
+    return options.entries
   }
 
-  if (removeCount === 0) {
-    return entries
-  }
-
-  for (const entry of entries.slice(0, removeCount)) {
+  for (const entry of retention.removed) {
     if (entry.mergeKey) {
-      onTrimmedMergeKey?.(entry.mergeKey)
+      options.onTrimmedMergeKey?.(entry.mergeKey)
     }
   }
 
-  return entries.slice(removeCount)
+  return retention.kept
 }
 
 export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEntry>(options: {

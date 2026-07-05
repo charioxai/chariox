@@ -74,6 +74,20 @@ test("trimAgentPaneEntries drops oldest entries and reports trimmed merge keys",
   assert.deepEqual(trimmedMergeKeys, ["tool-1"])
 })
 
+test("trimAgentPaneEntries preserves entry array identity when unchanged", () => {
+  const source = [
+    { id: 1, text: "alpha", mergeKey: "tool-1" },
+    { id: 2, text: "beta" },
+  ]
+  const entries = trimAgentPaneEntries({
+    entries: source,
+    maxEntries: 4,
+    maxChars: 99,
+  })
+
+  assert.equal(entries, source)
+})
+
 test("shouldPreferCurrentPaneEntries preserves richer live entries with matching lineage", () => {
   assert.equal(shouldPreferCurrentPaneEntries([
     {
