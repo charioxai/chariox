@@ -3041,6 +3041,63 @@ fn local_request_api_validates_publication_transport_options() {
     let harness = LocalRouterTestHarness::new();
     let graph = create_publication_test_graph(&harness, "publication-validation");
 
+    let human_publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("human-defaults".to_string()),
+                kind: Some("ingress".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: Some(serde_json::json!({ "kind": "human_http" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("human_http publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    let exported_human = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: human_publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("human_http publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_files, .. } => {
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let human_json = package_json_file(&exported_human, "publication.json");
+    assert_eq!(
+        human_json["hooks"][0]["route"],
+        serde_json::json!("/prompt/*")
+    );
+    assert_eq!(
+        human_json["hooks"][0]["methods"],
+        serde_json::json!(["GET", "POST"])
+    );
+    assert_eq!(
+        human_json["hooks"][0]["parser"],
+        serde_json::json!({"kind": "path_template", "template": "/prompt/:prompt"})
+    );
+    assert_eq!(human_json["hooks"][0]["mode"], serde_json::json!("async"));
+
     let api_publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
             CreateWorkflowPublicationRequest {

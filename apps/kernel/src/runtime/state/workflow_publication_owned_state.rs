@@ -4,7 +4,7 @@
 //! administration stay in `workflow_admin`.
 
 use base64::Engine;
-use flate2::{write::GzEncoder, Compression};
+use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -1101,7 +1101,7 @@ fn default_publication_route(publication_value: &serde_json::Value) -> &'static 
         Some("api_sse_json") => "/invoke",
         Some("websocket_json") => "/socket",
         Some("mcp") => "/mcp",
-        _ => "/*",
+        _ => "/prompt/*",
     }
 }
 
@@ -1109,21 +1109,45 @@ fn default_publication_methods(publication_value: &serde_json::Value) -> serde_j
     match hook_transport(publication_value).as_str() {
         Some("api_sse_json" | "mcp") => serde_json::json!(["POST"]),
         Some("websocket_json") => serde_json::json!([]),
-        _ => serde_json::json!(["GET"]),
+        _ => serde_json::json!(["GET", "POST"]),
     }
 }
 
 fn default_publication_parser(publication_value: &serde_json::Value) -> Option<serde_json::Value> {
     match hook_transport(publication_value).as_str() {
         Some("websocket_json" | "mcp") => None,
-        _ => Some(serde_json::json!({"kind": "json"})),
+        Some("api_sse_json") => Some(serde_json::json!({"kind": "json"})),
+        _ => {
+            let route = string_field(publication_value, "route")
+                .unwrap_or_else(|| default_publication_route(publication_value));
+            Some(serde_json::json!({
+                "kind": "path_template",
+                "template": route_prompt_template(route),
+            }))
+        }
     }
+}
+
+fn route_prompt_template(route: &str) -> String {
+    let normalized = if route.trim().is_empty() {
+        "/prompt/*"
+    } else {
+        route.trim()
+    };
+    if normalized.contains('*') {
+        return normalized.replace('*', ":prompt");
+    }
+    if normalized.contains(":prompt") {
+        return normalized.to_string();
+    }
+    format!("{}/:prompt", normalized.trim_end_matches('/'))
 }
 
 fn default_publication_mode(publication_value: &serde_json::Value) -> &'static str {
     match hook_transport(publication_value).as_str() {
         Some("api_sse_json" | "websocket_json") => "async",
-        _ => "sync",
+        Some("mcp") => "sync",
+        _ => "async",
     }
 }
 
