@@ -200,6 +200,7 @@ async function runProviderMatrix(client, provider) {
       }
       report.matrix.push(matrixEntry)
       const prefix = `${provider.provider}/${policy.id}/${transport.id}`
+      let rawResponseWritten = false
       try {
         const publication = await createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix)
         await writeArtifact(`${prefix}/publication.json`, publication)
@@ -212,6 +213,7 @@ async function runProviderMatrix(client, provider) {
           `invoking ${transport.id} publication ${publication.id}`,
         )
         await writeArtifact(`${prefix}/raw-response.json`, raw)
+        rawResponseWritten = true
         let statusPayload = runtime.local_url
           ? await waitForPublicationStatus(runtime.local_url, transport)
           : transport.id === "schedule_only"
@@ -250,6 +252,13 @@ async function runProviderMatrix(client, provider) {
       } catch (error) {
         matrixEntry.status = "fail"
         matrixEntry.error = error instanceof Error ? error.stack ?? error.message : String(error)
+        if (!rawResponseWritten) {
+          await writeArtifact(`${prefix}/raw-response.json`, {
+            transport: transport.id,
+            timed_out: /timed out/i.test(matrixEntry.error),
+            error: matrixEntry.error,
+          })
+        }
         await writeArtifact(`${prefix}/error.txt`, matrixEntry.error)
       } finally {
         await stopRuntime(client, sessionId, matrixEntry, prefix)
@@ -399,8 +408,7 @@ async function invokeTransport(localUrl, transport, provider, policy) {
   const base = new URL(localUrl)
   if (transport.id === "human_http") {
     const url = new URL(`/prompt/${encodeURIComponent(prompt)}`, base)
-    const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(protocolTimeoutMs) })
-    return { transport: transport.id, url: url.toString(), status: response.status, body: await response.text() }
+    return await invokeHumanHttp(url.toString())
   }
   if (transport.id === "api_sse_json") {
     const url = new URL("/invoke", base)
@@ -424,6 +432,30 @@ async function invokeTransport(localUrl, transport, provider, policy) {
     return { transport: transport.id, url: url.toString(), initialize, tools, called: calledRaw.json, called_raw: calledRaw }
   }
   throw new Error(`unsupported transport ${transport.id}`)
+}
+
+async function invokeHumanHttp(url) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`human_http invocation timed out for ${url}`)), protocolTimeoutMs)
+  let status = null
+  let body = ""
+  try {
+    const response = await fetch(url, { headers: { accept: "application/json" }, signal: controller.signal })
+    status = response.status
+    body = await response.text()
+    return { transport: "human_http", url, status, body }
+  } catch (error) {
+    return {
+      transport: "human_http",
+      url,
+      status,
+      body,
+      timed_out: error?.name === "AbortError" || /timed out/i.test(String(error?.message ?? error)),
+      error: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 async function waitForPublicationStatus(localUrl, transport) {
