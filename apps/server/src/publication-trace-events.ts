@@ -4,7 +4,10 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
-import { visibleAssistantWorkflowMessage } from "./publication-workflow-message-visibility.js"
+import {
+  visibleAssistantWorkflowMessage,
+  visibleRuntimeToolCall,
+} from "./publication-workflow-message-visibility.js"
 
 export type PublicationTraceStreamState = {
   traceKeys: Set<string>
@@ -75,11 +78,12 @@ export function collectPublicationTraceEvents(
     }
     if (levels.has("tool_use")) {
       for (const [index, toolCall] of (nodeRun.turn_envelope?.runtime_tool_calls ?? []).entries()) {
+        const visibleToolCall = visibleRuntimeToolCall(toolCall)
         pushTraceEvent(events, state, publication, workflowRun, nodeRun, "tool_use", {
-          key: `tool:${nodeRun.id}:${index}:${toolCall.timestamp_ms}`,
-          timestampMs: toolCall.timestamp_ms,
-          message: `${toolCall.tool_name} ${toolCall.ok ? "ok" : "failed"}`,
-          data: toolCall,
+          key: `tool:${nodeRun.id}:${index}:${visibleToolCall.timestamp_ms}`,
+          timestampMs: visibleToolCall.timestamp_ms,
+          message: `${visibleToolCall.tool_name} ${visibleToolCall.ok ? "ok" : "failed"}`,
+          data: visibleToolCall,
         })
       }
     }

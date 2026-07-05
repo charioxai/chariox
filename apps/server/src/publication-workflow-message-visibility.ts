@@ -1,6 +1,8 @@
 import type { WorkflowRun } from "./publication-types.js"
 
 type WorkflowMessage = NonNullable<WorkflowRun["messages"]>[number]
+type WorkflowNodeRun = NonNullable<WorkflowRun["node_runs"]>[number]
+type WorkflowRuntimeToolCall = NonNullable<NonNullable<WorkflowNodeRun["turn_envelope"]>["runtime_tool_calls"]>[number]
 
 export function visibleAssistantWorkflowMessage(message: WorkflowMessage): WorkflowMessage {
   const visible = { ...message }
@@ -18,6 +20,18 @@ export function sanitizeAssistantHandoffPayload(payload: string): string {
   } catch {
     return payload
   }
+}
+
+export function visibleRuntimeToolCall(toolCall: WorkflowRuntimeToolCall): WorkflowRuntimeToolCall {
+  const visible = {
+    tool_name: toolCall.tool_name,
+    ok: toolCall.ok,
+    timestamp_ms: toolCall.timestamp_ms,
+  } as WorkflowRuntimeToolCall
+  const record = toolCall as Record<string, unknown>
+  const visibleRecord = visible as Record<string, unknown>
+  if (typeof record.error === "string") visibleRecord.error = record.error
+  return visible
 }
 
 function sanitizeAssistantHandoffValue(value: unknown): unknown {

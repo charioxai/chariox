@@ -3,7 +3,10 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
-import { visibleAssistantWorkflowMessage } from "./publication-workflow-message-visibility.js"
+import {
+  visibleAssistantWorkflowMessage,
+  visibleRuntimeToolCall,
+} from "./publication-workflow-message-visibility.js"
 
 export function visibleWorkflowInvocationResult(
   publication: WorkflowPublicationConfig,
@@ -52,7 +55,9 @@ export function visibleWorkflowRun(
       }
       if (levels.has("thinking") && nodeRun.thinking_traces !== undefined) visibleNodeRun.thinking_traces = nodeRun.thinking_traces
       if (levels.has("tool_use")) {
-        visibleNodeRun.turn_envelope = { runtime_tool_calls: nodeRun.turn_envelope?.runtime_tool_calls ?? [] }
+        visibleNodeRun.turn_envelope = {
+          runtime_tool_calls: (nodeRun.turn_envelope?.runtime_tool_calls ?? []).map(visibleRuntimeToolCall),
+        }
       }
       return visibleNodeRun
     })
