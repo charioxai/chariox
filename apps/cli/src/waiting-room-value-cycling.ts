@@ -18,7 +18,7 @@ import {
 import {
   cycleWaitingRoomLaunchKernel,
   cycleWaitingRoomLaunchMachine,
-} from "./waiting-room-runtime-placement.js"
+} from "@arroba/kernel-client/waiting-room-runtime-placement"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"

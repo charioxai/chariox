@@ -16,7 +16,7 @@ import {
   waitingRoomLaunchMachineOptions,
   waitingRoomSelectedLaunchKernelRef,
   waitingRoomSelectedLaunchMachineRef,
-} from "./waiting-room-runtime-placement.js"
+} from "@arroba/kernel-client/waiting-room-runtime-placement"
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 

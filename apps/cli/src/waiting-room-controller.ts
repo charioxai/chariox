@@ -13,7 +13,7 @@ import {
   waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
-import { waitingRoomLaunchPlacement } from "./waiting-room-runtime-placement.js"
+import { waitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomSliceSelectionUnavailable, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"

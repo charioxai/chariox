@@ -20,7 +20,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { normalizeWaitingRoomLaunchPlacement } from "./waiting-room-runtime-placement.js"
+import { normalizeWaitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
 import {
   waitingRoomPreviewSessions,
   waitingRoomSessions,
