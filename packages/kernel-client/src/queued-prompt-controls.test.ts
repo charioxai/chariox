@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
+  projectedQueuedPromptListsMatch,
   projectQueuedPrompt,
   queuedPromptActionability,
   queuedPromptActionabilityMatches,
@@ -16,6 +17,7 @@ import {
   queuedPromptStatusIsQueued,
   queuedPromptTitleLabel,
 } from "./queued-prompt-controls.js"
+import type { ProjectedQueuedPrompt } from "./queued-prompt-controls.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 
 test("queued prompt actionability defaults queued prompts to both actions", () => {
@@ -77,6 +79,28 @@ test("queued prompt actionability comparison includes status and controls", () =
     ...current,
     steerDisabledReason: "kernel reason",
   }), false)
+})
+
+test("projected queued prompt comparison includes identity and actionability", () => {
+  const current = projectedPrompt({
+    id: "queued-1",
+    pendingPromptId: "pending-1",
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "queued",
+    attachmentCount: 1,
+  })
+
+  assert.equal(projectedQueuedPromptListsMatch([current], [{ ...current }]), true)
+  assert.equal(projectedQueuedPromptListsMatch([current], [{
+    ...current,
+    canSteer: false,
+  }]), false)
+  assert.equal(projectedQueuedPromptListsMatch([current], [{
+    ...current,
+    prompt: "edited queued prompt",
+  }]), false)
+  assert.equal(projectedQueuedPromptListsMatch([current], []), false)
 })
 
 test("queued prompt control lookup requires matching projected prompt identity", () => {
@@ -412,5 +436,25 @@ function prompt(id: string, agentId = "agent-1"): PromptQueueItem {
     target_agent_id: agentId,
     prompt: id,
     status: "Queued",
+  }
+}
+
+function projectedPrompt(
+  overrides: Partial<ProjectedQueuedPrompt> = {},
+): ProjectedQueuedPrompt {
+  return {
+    id: "queued-1",
+    pendingPromptId: null,
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "queued",
+    attachmentCount: 0,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+    ...overrides,
   }
 }

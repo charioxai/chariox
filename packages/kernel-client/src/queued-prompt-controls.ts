@@ -71,6 +71,27 @@ export function queuedPromptActionabilityMatches(
     && current.cancelDisabledReason === next.cancelDisabledReason
 }
 
+export function projectedQueuedPromptMatches(
+  current: ProjectedQueuedPrompt,
+  next: ProjectedQueuedPrompt,
+): boolean {
+  return current.id === next.id
+    && current.pendingPromptId === next.pendingPromptId
+    && current.sourceAttachmentId === next.sourceAttachmentId
+    && current.targetAgentId === next.targetAgentId
+    && current.prompt === next.prompt
+    && current.attachmentCount === next.attachmentCount
+    && queuedPromptActionabilityMatches(current, next)
+}
+
+export function projectedQueuedPromptListsMatch(
+  current: readonly ProjectedQueuedPrompt[],
+  next: readonly ProjectedQueuedPrompt[],
+): boolean {
+  return current.length === next.length
+    && current.every((prompt, index) => projectedQueuedPromptMatches(prompt, next[index]!))
+}
+
 export function queuedPromptControlForPrompt(
   controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
   promptId: string | null | undefined,
