@@ -151,6 +151,33 @@ export function waitingRoomSessionActivityNextAction(
   return null
 }
 
+export function waitingRoomSessionRemoteActivityLabel(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    | "remote_agent_count"
+    | "missing_worker_provider_run_count"
+    | "home_proxy_agent_count"
+    | "remote_extension_sync_issue_count"
+    | "remote_extension_pending_revoke_count"
+  > | null | undefined,
+  fallback = "",
+): string {
+  const remoteAgents = activity?.remote_agent_count ?? 0
+  const workerRunGaps = activity?.missing_worker_provider_run_count ?? 0
+  const homeProxyAgents = activity?.home_proxy_agent_count ?? 0
+  const remoteExtensionSyncIssues = activity?.remote_extension_sync_issue_count ?? 0
+  const pendingRevokes = activity?.remote_extension_pending_revoke_count ?? 0
+  return [
+    remoteAgents > 0 ? `${remoteAgents} remote/slice ${remoteAgents === 1 ? "agent" : "agents"}` : "",
+    workerRunGaps > 0 ? `${workerRunGaps} worker run ${workerRunGaps === 1 ? "gap" : "gaps"}` : "",
+    homeProxyAgents > 0 ? `${homeProxyAgents} home-proxy ${homeProxyAgents === 1 ? "agent" : "agents"}` : "",
+    remoteExtensionSyncIssues > 0
+      ? `${remoteExtensionSyncIssues} extension sync ${remoteExtensionSyncIssues === 1 ? "issue" : "issues"}`
+      : "",
+    pendingRevokes > 0 ? `${pendingRevokes} pending ${pendingRevokes === 1 ? "revoke" : "revokes"}` : "",
+  ].filter(Boolean).join(", ") || fallback
+}
+
 export function waitingRoomItemActivityHasWork(
   activity: Pick<
     WaitingRoomPublicItemActivitySummary,

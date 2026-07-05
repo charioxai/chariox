@@ -12,6 +12,7 @@ import {
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityNextAction,
+  waitingRoomSessionRemoteActivityLabel,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
@@ -139,6 +140,18 @@ test("waiting room session activity next action surfaces recovery policy", () =>
     remote_extension_sync_issue_count: 1,
     remote_extension_pending_revoke_count: 1,
   } }), "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects")
+})
+
+test("waiting room session remote activity label summarizes remote runtime gaps", () => {
+  assert.equal(waitingRoomSessionRemoteActivityLabel(null), "")
+  assert.equal(waitingRoomSessionRemoteActivityLabel(null, "-"), "-")
+  assert.equal(waitingRoomSessionRemoteActivityLabel({
+    remote_agent_count: 1,
+    missing_worker_provider_run_count: 2,
+    home_proxy_agent_count: 1,
+    remote_extension_sync_issue_count: 1,
+    remote_extension_pending_revoke_count: 2,
+  }), "1 remote/slice agent, 2 worker run gaps, 1 home-proxy agent, 1 extension sync issue, 2 pending revokes")
 })
 
 test("waiting room item activity predicates derive work and unread output", () => {
