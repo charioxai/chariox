@@ -35,22 +35,24 @@ export type QueuedPromptStripStatusOverride = {
   cancelDisabledReason: string | null
 }
 
+export type QueuedPromptTranscriptMetadata = {
+  promptId: string
+  agentId: string
+  status: string
+  attachmentCount: number
+  steerDisabled: boolean
+  canSteer: boolean
+  canCancel: boolean
+  steerDisabledReason: string | null
+  cancelDisabledReason: string | null
+}
+
 export type QueuedPromptStripTranscriptEntry = {
   id: number
   role: "user"
   text: string
   sourceAttachmentId?: string | null
-  queuedPrompt?: {
-    promptId: string
-    agentId: string
-    status: string
-    attachmentCount: number
-    steerDisabled: boolean
-    canSteer: boolean
-    canCancel: boolean
-    steerDisabledReason: string | null
-    cancelDisabledReason: string | null
-  }
+  queuedPrompt?: QueuedPromptTranscriptMetadata
 }
 
 export type QueuedPromptStripSourceEntry = {
@@ -58,17 +60,7 @@ export type QueuedPromptStripSourceEntry = {
   readonly role?: string
   readonly text: string
   readonly sourceAttachmentId?: string | null
-  readonly queuedPrompt?: {
-    readonly promptId: string
-    readonly agentId: string
-    readonly status: string
-    readonly attachmentCount: number
-    readonly steerDisabled: boolean
-    readonly canSteer: boolean
-    readonly canCancel: boolean
-    readonly steerDisabledReason: string | null
-    readonly cancelDisabledReason: string | null
-  }
+  readonly queuedPrompt?: Readonly<QueuedPromptTranscriptMetadata>
 }
 
 export type QueuedPromptTranscriptSyncEntry = QueuedPromptStripSourceEntry & {

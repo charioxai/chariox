@@ -6,6 +6,7 @@ import type {
   ExternalProviderSessionCapabilities,
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
+import type { QueuedPromptTranscriptMetadata as KernelQueuedPromptTranscriptMetadata } from "@arroba/kernel-client/queued-prompt-strip-state"
 import type { SessionHistoryCursorSelection as KernelSessionHistoryCursorSelection } from "@arroba/kernel-client/session-history-outline"
 import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@arroba/kernel-client/session-history-transcript"
 import type {
@@ -346,17 +347,7 @@ export type PromptInputHistoryEntry = KernelPromptInputHistoryEntry
 export type PromptInputHistoryPage = KernelPromptInputHistoryPage
 
 export type TranscriptEntry = KernelSessionHistoryTranscriptEntry & {
-  queuedPrompt?: {
-    promptId: string
-    agentId: string
-    status: string
-    attachmentCount: number
-    steerDisabled: boolean
-    canSteer: boolean
-    canCancel: boolean
-    steerDisabledReason: string | null
-    cancelDisabledReason: string | null
-  }
+  queuedPrompt?: KernelQueuedPromptTranscriptMetadata
   turnTracking?: "none"
 }
 
