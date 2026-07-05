@@ -6,6 +6,7 @@ import {
   focusedAgentIdForAgentPaneSession,
   preserveLoadedHistoryBlobs,
   prependHistoryEntriesWithoutDuplicates,
+  refreshAgentPaneState,
   selectCurrentAgentPaneEntries,
   shouldPreferCurrentPaneEntries,
   shouldRefreshAgentPanesForSessionChange,
@@ -218,4 +219,196 @@ test("focusedAgentIdForAgentPaneSession ignores stale focus", () => {
     focused_agent_id: "agent-b",
     agents: [{ id: "agent-a" }, { id: "agent-b" }],
   }), "agent-b")
+})
+
+test("refreshAgentPaneState backfills enough history to preserve current pane depth", async () => {
+  const requestedCursors: Array<string | null> = []
+  const result = await refreshAgentPaneState<
+    { id: string },
+    { role: string; turnId?: number; text: string },
+    { id?: number; role: string; turnId?: number; text: string },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "first question" },
+        { role: "assistant", turnId: 1, text: "first answer" },
+        { role: "user", turnId: 2, text: "second question" },
+        { role: "assistant", turnId: 2, text: "second answer" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (_agentId, cursor) => {
+      requestedCursors.push(cursor)
+      if (cursor === null) {
+        return {
+          entries: [
+            { role: "user", turnId: 2, text: "second question" },
+            { role: "assistant", turnId: 2, text: "second answer" },
+          ],
+          nextCursor: "older",
+        }
+      }
+      return {
+        entries: [
+          { role: "user", turnId: 1, text: "first question" },
+          { role: "assistant", turnId: 1, text: "first answer" },
+        ],
+        nextCursor: null,
+      }
+    },
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(requestedCursors, [null, "older"])
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["first question", "first answer", "second question", "second answer"],
+  )
+  assert.equal(result.visibleCursor, null)
+})
+
+test("refreshAgentPaneState prefers refreshed external history over queued prompt echoes", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-a",
+        external_provider_import: {
+          external_provider: "opencode",
+          external_provider_session_id: "opencode:thread-a",
+          external_provider_session_provider_id: "thread-a",
+        },
+      }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        { role: "user", text: "queued arroba prompt" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "assistant",
+          text: "external assistant settled",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
+    "external prompt",
+    "external assistant settled",
+  ])
+})
+
+test("refreshAgentPaneState preserves loaded history blob content across refresh", async () => {
+  const result = await refreshAgentPaneState<
+    { id: string },
+    {
+      role: string
+      turnId?: number
+      text: string
+      historyBlobId?: string
+      historyBlobAgentId?: string
+    },
+    {
+      id?: number
+      role: string
+      turnId?: number
+      text: string
+      historyBlobId?: string
+      historyBlobAgentId?: string
+      historyBlobSourceId?: string
+      historyBlobSourceAgentId?: string
+      historyBlobLoaded?: boolean
+    },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: { "agent-a": [1] },
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "question" },
+        {
+          role: "tool",
+          turnId: 1,
+          text: "TOOL_STEP_01 loaded output",
+          historyBlobSourceId: "blob-1",
+          historyBlobSourceAgentId: "agent-a",
+          historyBlobLoaded: true,
+        },
+        { role: "assistant", turnId: 1, text: "answer" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        { role: "user", turnId: 1, text: "question" },
+        {
+          role: "tool",
+          turnId: 1,
+          text: "",
+          historyBlobId: "blob-1",
+          historyBlobAgentId: "agent-a",
+        },
+        { role: "assistant", turnId: 1, text: "answer" },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["question", "TOOL_STEP_01 loaded output", "answer"],
+  )
+  assert.equal(result.visibleEntries[1]?.historyBlobLoaded, true)
 })

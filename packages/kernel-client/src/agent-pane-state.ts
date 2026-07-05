@@ -34,6 +34,15 @@ export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly historyBlobLoaded?: boolean
 }
 
+export type AgentPaneRefreshResult<TEntry, TCursor> = {
+  readonly paneEntries: Record<string, TEntry[]>
+  readonly previews: Record<string, string>
+  readonly expandedTurnIdsByAgent: Record<string, number[]>
+  readonly visibleAgentId: string | null
+  readonly visibleEntries: TEntry[]
+  readonly visibleCursor: TCursor | null
+}
+
 export function selectCurrentAgentPaneEntries<TEntry extends object>(options: {
   readonly agentId: string
   readonly visibleAgentId: string | null
@@ -224,4 +233,116 @@ export function focusedAgentIdForAgentPaneSession<TAgent extends { id: string }>
     return focusedAgentId
   }
   return session.agents[0]?.id ?? null
+}
+
+function historyCursorKey(cursor: unknown): string {
+  return JSON.stringify(cursor)
+}
+
+export async function refreshAgentPaneState<
+  TAgent extends { id: string; external_provider_import?: AgentPaneExternalProviderImport | null },
+  THistoryEntry,
+  TEntry extends AgentPaneHistoryBlobEntry,
+  TCursor,
+>(options: {
+  readonly session: AgentPaneSession<TAgent>
+  readonly hasPromptWork: boolean
+  readonly expandedTurnIdsByAgent: Record<string, readonly number[] | undefined>
+  readonly currentPaneEntriesByAgent?: Record<string, readonly TEntry[] | undefined>
+  readonly resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
+  readonly loadHistoryPage: (
+    agentId: string,
+    cursor: TCursor | null,
+  ) => Promise<{ entries: THistoryEntry[]; nextCursor: TCursor | null }>
+  readonly hydrateEntries: (entries: THistoryEntry[]) => TEntry[]
+  readonly collapseHistoricalTurns: (entries: TEntry[], keepLatestExpanded: boolean) => TEntry[]
+  readonly applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
+  readonly reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
+  readonly formatPreview: (entries: TEntry[]) => string
+  readonly preserveExpandedTurnIds?: boolean
+}): Promise<AgentPaneRefreshResult<TEntry, TCursor>> {
+  const previews: Record<string, string> = {}
+  const paneEntries: Record<string, TEntry[]> = {}
+  const expandedTurnIdsByAgent: Record<string, number[]> = {}
+  const visibleAgentId = options.resolveVisibleAgentId(
+    options.session.agents,
+    focusedAgentIdForAgentPaneSession(options.session),
+  )
+  let visibleEntries: TEntry[] = []
+  let visibleCursor: TCursor | null = null
+
+  for (const agent of options.session.agents) {
+    const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
+      .filter((entry) => entryBelongsToAgent(agent, entry))
+    let historyPage = await options.loadHistoryPage(agent.id, null)
+    let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
+    const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
+    const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
+    while (
+      !options.hasPromptWork
+      && historyPage.nextCursor
+      && currentRenderableCount > countRenderablePaneEntries(resolvedHistoryEntries)
+    ) {
+      const cursorKey = historyCursorKey(historyPage.nextCursor)
+      if (requestedHistoryCursorKeys.has(cursorKey)) {
+        historyPage = { ...historyPage, nextCursor: null }
+        break
+      }
+      requestedHistoryCursorKeys.add(cursorKey)
+      historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
+      resolvedHistoryEntries = prependHistoryEntriesWithoutDuplicates(
+        options.hydrateEntries(historyPage.entries),
+        resolvedHistoryEntries,
+      )
+    }
+
+    const availableTurnIds = new Set(
+      resolvedHistoryEntries
+        .map((entry) => entry.turnId)
+        .filter((turnId): turnId is number => typeof turnId === "number"),
+    )
+    const expandedTurnIds = options.preserveExpandedTurnIds
+      ? [...new Set(options.expandedTurnIdsByAgent[agent.id] ?? [])]
+      : (options.expandedTurnIdsByAgent[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
+    if (expandedTurnIds.length > 0) {
+      expandedTurnIdsByAgent[agent.id] = expandedTurnIds
+    }
+
+    let nextPaneEntries = options.reindexEntries(
+      options.applyExpandedTurns(
+        options.collapseHistoricalTurns(
+          resolvedHistoryEntries,
+          true,
+        ),
+        expandedTurnIds,
+      ),
+      0,
+    )
+    nextPaneEntries = preserveLoadedHistoryBlobs({
+      refreshedEntries: nextPaneEntries,
+      currentEntries: currentPaneEntries,
+      expandedTurnIds,
+      applyExpandedTurns: options.applyExpandedTurns,
+      reindexEntries: options.reindexEntries,
+    })
+    if (options.hasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
+      nextPaneEntries = currentPaneEntries.map((entry) => ({ ...entry }))
+    }
+    paneEntries[agent.id] = nextPaneEntries
+    previews[agent.id] = options.formatPreview(nextPaneEntries)
+
+    if (agent.id === visibleAgentId) {
+      visibleEntries = nextPaneEntries
+      visibleCursor = historyPage.nextCursor
+    }
+  }
+
+  return {
+    paneEntries,
+    previews,
+    expandedTurnIdsByAgent,
+    visibleAgentId,
+    visibleEntries,
+    visibleCursor,
+  }
 }
