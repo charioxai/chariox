@@ -2,7 +2,6 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
-  mergeExternalProviderObservedTranscriptFields,
 } from "@arroba/kernel-client/external-provider-observation"
 import { previewLineForSessionHistoryEntry } from "@arroba/kernel-client/session-history-preview"
 import {
@@ -12,8 +11,11 @@ import {
 import {
   applyTranscriptHistoryDeferral,
   markDeferredTranscriptHistoryEntries,
-  transcriptHistoryFragmentsAreAdjacent,
 } from "@arroba/kernel-client/session-history-fragments"
+import {
+  mergePrependedTranscriptHistoryFragments,
+  stitchPrependedTranscriptHistory,
+} from "@arroba/kernel-client/transcript-history-stitching"
 import { sessionHistoryEntryKindTranscriptRole } from "@arroba/kernel-client/session-history-outline"
 import { mergeAdjacentSessionHistoryPageEntries } from "@arroba/kernel-client/session-history-page-entries"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
@@ -34,63 +36,11 @@ export function markDeferredHistoryEntries(items: TranscriptEntry[]) {
 }
 
 export function mergePrependedHistoryFragments(older: TranscriptEntry, newer: TranscriptEntry): TranscriptEntry {
-  const sourceText = (older.sourceText ?? older.text) + (newer.sourceText ?? newer.text)
-  const mergedBase: TranscriptEntry = {
-    ...newer,
-    text: newer.text,
-    sourceText,
-  }
-  mergeStitchedHistoryMetadata(mergedBase, older, newer)
-  if (older.historyFragmentStart !== undefined) mergedBase.historyFragmentStart = older.historyFragmentStart
-  if (newer.historyFragmentEnd !== undefined) mergedBase.historyFragmentEnd = newer.historyFragmentEnd
-  const totalChars = newer.historyTotalChars ?? older.historyTotalChars
-  if (totalChars !== undefined) mergedBase.historyTotalChars = totalChars
-  if (older.role !== "tool") {
-    return applyHistoryDeferral({
-      ...mergedBase,
-      text: older.text + newer.text,
-    })
-  }
-
-  const parsed = parseToolTranscriptUpdate(sourceText)
-  if (!parsed) {
-    const pending: TranscriptEntry = {
-      ...mergedBase,
-      text: sourceText,
-    }
-    delete pending.mergeKey
-    return {
-      ...applyHistoryDeferral(pending),
-    }
-  }
-
-  const merged = mergeToolTranscriptUpdate(null, parsed)
-  return applyHistoryDeferral({
-    ...mergedBase,
-    text: formatToolTranscriptUpdate(merged),
-    mergeKey: parsed.id,
-  })
+  return mergePrependedTranscriptHistoryFragments(older, newer) as TranscriptEntry
 }
 
 export function stitchPrependedHistory(olderEntries: TranscriptEntry[], currentEntries: TranscriptEntry[]) {
-  if (olderEntries.length === 0 || currentEntries.length === 0) {
-    return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
-  }
-
-  const tail = olderEntries.at(-1)
-  const head = currentEntries[0]
-  if (!tail || !head) {
-    return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
-  }
-  if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
-    return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
-  }
-
-  return markDeferredHistoryEntries([
-    ...olderEntries.slice(0, -1),
-    mergePrependedHistoryFragments(tail, head),
-    ...currentEntries.slice(1),
-  ])
+  return stitchPrependedTranscriptHistory(olderEntries, currentEntries) as TranscriptEntry[]
 }
 
 export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPageEntry[]) {
@@ -370,32 +320,6 @@ function sameTranscriptHistoryIdentity(
     return false
   }
   return true
-}
-
-function mergeStitchedHistoryMetadata(
-  target: TranscriptEntry,
-  older: TranscriptEntry,
-  newer: TranscriptEntry,
-) {
-  if (target.providerRunId === undefined && older.providerRunId !== undefined) {
-    target.providerRunId = older.providerRunId
-  }
-  if (target.source === undefined && older.source !== undefined) {
-    target.source = older.source
-  }
-  mergeExternalProviderObservedTranscriptFields(target, older, newer)
-  if (target.promptId === undefined && older.promptId !== undefined) {
-    target.promptId = older.promptId
-  }
-  if (target.sourceAttachmentId === undefined && older.sourceAttachmentId !== undefined) {
-    target.sourceAttachmentId = older.sourceAttachmentId
-  }
-  if (older.attachments !== undefined || newer.attachments !== undefined) {
-    target.attachments = mergeSessionHistoryPromptAttachments(
-      older.attachments,
-      newer.attachments,
-    )
-  }
 }
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {

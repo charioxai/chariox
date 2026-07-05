@@ -32,6 +32,7 @@
     "./workflow-prompt-state": "./dist/workflow-prompt-state.js",
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
+    "./transcript-history-stitching": "./dist/transcript-history-stitching.js",
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
     "./session-history-preview": "./dist/session-history-preview.js",
