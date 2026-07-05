@@ -7,6 +7,9 @@ import type {
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type {
+  ArrobaUserConfig as KernelArrobaUserConfig,
+  ArrobaUserConfigPayload as KernelArrobaUserConfigPayload,
+  ArrobaUserConfigSchemaPayload as KernelArrobaUserConfigSchemaPayload,
   CollaborationLevel as KernelCollaborationLevel,
   AgentPromptState as KernelAgentPromptState,
   AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
@@ -19,8 +22,12 @@ import type {
   PromptAttachmentPart as KernelPromptAttachmentPart,
   PromptQueueItem as KernelPromptQueueItem,
   RuntimeSession as KernelRuntimeSession,
+  RuntimeInteraction as KernelRuntimeInteraction,
+  RuntimeInteractionChoice as KernelRuntimeInteractionChoice,
+  RuntimeInteractionCustomChoice as KernelRuntimeInteractionCustomChoice,
   SessionAgentDefaults as KernelSessionAgentDefaults,
   SessionCollaborationAgentCounts as KernelSessionCollaborationAgentCounts,
+  SessionConfigState as KernelSessionConfigState,
   SessionHistoryBlobContent as KernelSessionHistoryBlobContent,
   SessionHistoryEntry as KernelSessionHistoryEntry,
   SessionHistoryExternalObservation as KernelSessionHistoryExternalObservation,
@@ -38,6 +45,9 @@ import type {
   RemoteMachineRecord as KernelRemoteMachineRecord,
   TerminalRecord as KernelTerminalRecord,
   TerminalCommandCatalog,
+  TurnUndoResult as KernelTurnUndoResult,
+  UserConfigMutationEffect as KernelUserConfigMutationEffect,
+  UserConfigSchemaEntry as KernelUserConfigSchemaEntry,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
   WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
   WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
@@ -49,6 +59,7 @@ import type {
   WaitingRoomSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
   WorkspaceLiveSyncApplyStatus as KernelWorkspaceLiveSyncApplyStatus,
   WorkspaceLiveSyncGroupStatus as KernelWorkspaceLiveSyncGroupStatus,
+  WorkspaceLiveSyncPathApplyResult as KernelWorkspaceLiveSyncPathApplyResult,
   WorkspaceLiveSyncStatus as KernelWorkspaceLiveSyncStatus,
   WorkspaceLiveSyncTargetStatus as KernelWorkspaceLiveSyncTargetStatus,
 } from "@arroba/kernel-client/kernel-types"
@@ -288,21 +299,9 @@ export type CompletedGitTurnActionProjection = KernelCompletedGitTurnActionProje
 
 export type WorkspaceLiveSyncApplyStatus = KernelWorkspaceLiveSyncApplyStatus
 
-export type WorkspaceLiveSyncPathApplyResult = {
-  path: string
-  status: WorkspaceLiveSyncApplyStatus
-  message: string
-}
+export type WorkspaceLiveSyncPathApplyResult = KernelWorkspaceLiveSyncPathApplyResult
 
-export type TurnUndoResult = {
-  session_id: string
-  agent_id: string
-  turn_id: string
-  prompt_id: string
-  provider_run_id: string
-  reverted_paths: string[]
-  path_results: WorkspaceLiveSyncPathApplyResult[]
-}
+export type TurnUndoResult = KernelTurnUndoResult
 
 export type AgentForkPayload = {
   source_agent_id: string
@@ -311,112 +310,23 @@ export type AgentForkPayload = {
   session: RuntimeSession
 }
 
-export type RuntimeInteraction = {
-  id: string
-  agent_id: string
-  kind: "choice" | "permission"
-  level: "info" | "warning" | "critical"
-  title?: string | null
-  message: string
-  choices: RuntimeInteractionChoice[]
-  custom_choice?: RuntimeInteractionCustomChoice | null
-  timeout_sec?: number | null
-  default_on_timeout?: string | null
-  requested_at_ms: number
-}
+export type RuntimeInteraction = KernelRuntimeInteraction
 
-export type RuntimeInteractionChoice = {
-  id: string
-  label: string
-  reply: string
-  style?: "primary" | "secondary" | "danger" | null
-}
+export type RuntimeInteractionChoice = KernelRuntimeInteractionChoice
 
-export type RuntimeInteractionCustomChoice = {
-  id: string
-  label: string
-  placeholder?: string | null
-  min_length?: number | null
-  max_length?: number | null
-  input_kind?: "text" | "secret" | null
-}
+export type RuntimeInteractionCustomChoice = KernelRuntimeInteractionCustomChoice
 
-export type SessionConfigState = {
-  version: number
-  values: Record<string, string>
-  updated_by_attachment_id?: string | null
-}
+export type SessionConfigState = KernelSessionConfigState
 
-export type ArrobaUserConfig = {
-  version: number
-  providers?: {
-    default?: string
-    model?: string
-    account_profile?: string
-    effort?: string
-    workspace_live_sync?: "off" | "managed" | "tracked"
-  }
-  history?: {
-    operational?: {
-      backend?: "sqlite"
-      path?: string
-      retention_days?: number
-      max_size_mb?: number
-      keep_pinned_sessions?: boolean
-      archive_inactive_after_days?: number
-      archive_deleted_agents?: boolean
-    }
-    archive?: {
-      mode?: "disabled" | "external"
-      url?: string
-      token_env?: string
-      archive_deleted_agents?: boolean
-      archive_before_delete?: boolean
-      delete_operational_after_verified_archive?: boolean
-      require_durable_acceptance?: boolean
-    }
-  }
-  state?: {
-    backend?: "sqlite"
-    path?: string
-    snapshot_interval_events?: number
-  }
-  ui?: Record<string, unknown>
-  relay?: Record<string, unknown>
-  kernel?: Record<string, unknown>
-}
+export type ArrobaUserConfig = KernelArrobaUserConfig
 
-export type ArrobaUserConfigPayload = {
-  path: string
-  config: ArrobaUserConfig
-  effects?: UserConfigMutationEffect[]
-}
+export type ArrobaUserConfigPayload = KernelArrobaUserConfigPayload
 
-export type ArrobaUserConfigSchemaPayload = {
-  entries: UserConfigSchemaEntry[]
-}
+export type ArrobaUserConfigSchemaPayload = KernelArrobaUserConfigSchemaPayload
 
-export type UserConfigSchemaEntry = {
-  path: string
-  value_type: string
-  allowed_values?: string[]
-  settable: boolean
-  unsettable: boolean
-  effect: string
-  status: string
-  description: string
-}
+export type UserConfigSchemaEntry = KernelUserConfigSchemaEntry
 
-export type UserConfigMutationEffect = {
-  kind: string
-  path: string
-  message: string
-  provider_reload?: {
-    reloaded: number
-    deferred: number
-    unaffected: number
-  } | null
-}
+export type UserConfigMutationEffect = KernelUserConfigMutationEffect
 
 export type SliceDisplayEndpoint = {
   slice_id: string
