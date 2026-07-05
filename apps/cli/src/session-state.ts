@@ -4,6 +4,10 @@ import {
   agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
 } from "@arroba/kernel-client/agent-activity"
 import {
+  sessionResponseLayout as kernelSessionResponseLayout,
+  SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
+} from "@arroba/kernel-client/session-config-projection"
+import {
   runtimeProviderRunForAgent as kernelRuntimeProviderRunForAgent,
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent as kernelSessionActiveInteractionForAgent,
@@ -35,7 +39,7 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export const NO_SESSION_ID = "no-session"
-export const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = "ui.multiAgentResponseLayout"
+export const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY
 
 type SessionTransitionOptions = {
   currentSession: RuntimeSession
@@ -216,11 +220,10 @@ export function sessionResponseLayout(
   session: RuntimeSession | null | undefined,
   fallback?: MultiAgentResponseLayout | null,
 ): MultiAgentResponseLayout {
-  return normalizeMultiAgentResponseLayout(
-    session?.config_state?.values?.[SESSION_CONFIG_RESPONSE_LAYOUT_KEY],
+  return kernelSessionResponseLayout(
+    session as Parameters<typeof kernelSessionResponseLayout>[0],
+    fallback,
   )
-    ?? normalizeMultiAgentResponseLayout(fallback)
-    ?? "individual"
 }
 
 export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
@@ -315,10 +318,4 @@ function resetWaitingRoomState(state: WaitingRoomState): WaitingRoomState {
     introStep: 0,
     keyState: { up: false, down: false, left: false, right: false },
   }
-}
-
-function normalizeMultiAgentResponseLayout(
-  value?: string | null,
-): MultiAgentResponseLayout | null {
-  return value === "split" || value === "individual" ? value : null
 }

@@ -25,6 +25,7 @@
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
     "./session-history-preview": "./dist/session-history-preview.js",
+    "./session-config-projection": "./dist/session-config-projection.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
