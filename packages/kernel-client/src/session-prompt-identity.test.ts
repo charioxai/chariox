@@ -105,6 +105,25 @@ test("session prompt identity suppresses stale legacy prompts under idle project
   assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
 })
 
+test("session prompt identity suppresses stale legacy prompts under sparse activity projection", () => {
+  const session = makeSession({
+    active_prompt: {
+      id: "legacy-prompt",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "Running",
+    },
+    agent_activity: {},
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "legacy-prompt"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
+})
+
 test("session prompt identity ignores prompt state and activity outside session agents", () => {
   const session = makeSession({
     prompt_states: {

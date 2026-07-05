@@ -7,6 +7,7 @@ import {
   sessionActivePromptLifecycleRecords,
 } from "./session-prompt-lifecycle.js"
 import {
+  sessionAgentActivityRecordForAgent,
   sessionHasAgent,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
@@ -23,7 +24,7 @@ export function sessionPromptStateForAgent(
   if (projectedPromptState !== undefined) {
     return projectedPromptState
   }
-  if (session.agent_activity) {
+  if (sessionAgentActivityRecordForAgent(session, agentId) !== undefined) {
     return null
   }
   const activePrompt = session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
@@ -118,7 +119,7 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
   if (promptState !== undefined) {
     return promptState?.active_prompt ?? null
   }
-  if (session.agent_activity) {
+  if (sessionAgentActivityRecordForAgent(session, agentId) !== undefined) {
     return null
   }
   return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
