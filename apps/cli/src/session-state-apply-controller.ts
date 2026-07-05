@@ -8,9 +8,13 @@ import {
   sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  derivePromptLifecycleTransition,
+  sessionPromptLifecycleTransition,
+} from "@arroba/kernel-client/session-prompt-lifecycle"
+import {
+  sessionShouldConfirmIdleTurnCompletion,
+} from "@arroba/kernel-client/session-runtime-transition"
+import {
   deriveSessionTransitionState,
-  shouldConfirmIdleTurnCompletion,
 } from "./session-state.js"
 
 export type SessionStateApplyTurnCompletion = {
@@ -66,7 +70,7 @@ export function createSessionStateApplyController(
     const currentSession = deps.getSession()
     const previousFocusedAgentId = deps.getFocusedAgentId()
     const previousLayout = deps.getCurrentResponseLayout()
-    const promptLifecycle = derivePromptLifecycleTransition(currentSession, nextSession)
+    const promptLifecycle = sessionPromptLifecycleTransition(currentSession, nextSession)
     const transition = deriveSessionTransitionState({
       currentSession,
       nextSession,
@@ -75,7 +79,7 @@ export function createSessionStateApplyController(
       currentAgentActivityLabels: deps.getAgentActivityLabels(),
       layoutPreference: deps.getLayoutPreference(),
     })
-    const shouldConfirmIdleCompletion = shouldConfirmIdleTurnCompletion({
+    const shouldConfirmIdleCompletion = sessionShouldConfirmIdleTurnCompletion({
       nextSession,
       currentWorking: deps.getWorking(),
       currentSubmitting: deps.getSubmitting(),

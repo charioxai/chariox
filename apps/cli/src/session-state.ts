@@ -7,15 +7,8 @@ import {
   sessionHasPromptWork as kernelSessionHasPromptWork,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState as kernelSessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
-import type {
-  PromptLifecycleTransition as KernelPromptLifecycleTransition,
-} from "@arroba/kernel-client/session-prompt-lifecycle"
-import {
-  sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
-} from "@arroba/kernel-client/session-prompt-lifecycle"
 import {
   type CliOptions,
   type RuntimeSession,
@@ -47,8 +40,6 @@ export type SessionTransitionState = {
   previousAgentSignature: string
   nextAgentSignature: string
 }
-
-export type PromptLifecycleTransition = KernelPromptLifecycleTransition
 
 export type DetachedCliTransitionState = {
   centerMode: "transcript"
@@ -120,21 +111,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
   }
 }
 
-export function shouldConfirmIdleTurnCompletion(options: {
-  nextSession: RuntimeSession
-  currentWorking: boolean
-  currentSubmitting: boolean
-  currentBusyLatches: Record<string, boolean>
-  currentStreamingAgentId: string | null
-  currentProviderActivityLabel: string | null
-  currentActiveStatusLabel: string | null
-}): boolean {
-  return kernelSessionShouldConfirmIdleTurnCompletion({
-    ...options,
-    nextSession: options.nextSession as Parameters<typeof kernelSessionShouldConfirmIdleTurnCompletion>[0]["nextSession"],
-  })
-}
-
 export function deriveSessionTransitionState(
   options: SessionTransitionOptions,
 ): SessionTransitionState {
@@ -153,16 +129,6 @@ export function deriveSessionTransitionState(
       options.layoutPreference,
     ),
   }
-}
-
-export function derivePromptLifecycleTransition(
-  currentSession: RuntimeSession,
-  nextSession: RuntimeSession,
-): PromptLifecycleTransition {
-  return kernelSessionPromptLifecycleTransition(
-    currentSession as Parameters<typeof kernelSessionPromptLifecycleTransition>[0],
-    nextSession as Parameters<typeof kernelSessionPromptLifecycleTransition>[1],
-  )
 }
 
 export function deriveDetachedCliTransitionState(options: {

@@ -9,9 +9,7 @@ import {
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
-  derivePromptLifecycleTransition,
   deriveSessionTransitionState,
-  shouldConfirmIdleTurnCompletion,
 } from "./session-state.js"
 
 test("buildDetachedSessionState creates a parked local placeholder session", () => {
@@ -82,50 +80,6 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
   assert.equal(transition.nextWorking, true)
   assert.equal(transition.previousAgentSignature, "agent-a,agent-b")
   assert.equal(transition.nextAgentSignature, "agent-a,agent-b")
-})
-
-test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
-  const idleSession = session({
-    agents: [agent("agent-a", { state: "Focused" }), agent("agent-b")],
-  })
-
-  assert.equal(shouldConfirmIdleTurnCompletion({
-    nextSession: idleSession,
-    currentWorking: true,
-    currentSubmitting: false,
-    currentBusyLatches: {},
-    currentStreamingAgentId: "agent-a",
-    currentProviderActivityLabel: "thinking",
-    currentActiveStatusLabel: "thinking",
-  }), true)
-})
-
-test("shouldConfirmIdleTurnCompletion does not override active prompt or processing snapshots", () => {
-  const activePromptSession = session({
-    active_prompt: {
-      id: "prompt-1",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "hello",
-      status: "running",
-    },
-    agents: [agent("agent-a", { is_processing: false, state: "Focused" })],
-  })
-  const processingSession = session({
-    agents: [agent("agent-a", { is_processing: true, state: "Working" })],
-  })
-
-  for (const nextSession of [activePromptSession, processingSession]) {
-    assert.equal(shouldConfirmIdleTurnCompletion({
-      nextSession,
-      currentWorking: true,
-      currentSubmitting: true,
-      currentBusyLatches: { "agent-a": true },
-      currentStreamingAgentId: "agent-a",
-      currentProviderActivityLabel: "thinking",
-      currentActiveStatusLabel: "thinking",
-    }), false)
-  }
 })
 
 test("deriveSessionTransitionState clears stale streaming state once prompt work ends", () => {
@@ -306,177 +260,6 @@ test("deriveSessionTransitionState resolves streaming from active prompt state b
   })
 })
 
-test("derivePromptLifecycleTransition detects when a cancelling prompt settles", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "hello",
-        status: "cancelling",
-      },
-    }),
-    session(),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, true)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
-test("derivePromptLifecycleTransition treats projected idle activity as prompt settlement", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "hello",
-        status: "cancelling",
-      },
-    }),
-    session({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "stale",
-        status: "cancelling",
-      },
-      agent_activity: {},
-    }),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, true)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
-test("derivePromptLifecycleTransition ignores already-settled projected active turns", () => {
-  const settledSession = session({
-    agent_activity: {
-      "agent-a": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-        active_turn: {
-          prompt_id: "prompt-settled",
-          status: malformedRuntimeValue("cancelled"),
-          phase: malformedRuntimeValue("settled"),
-        },
-      },
-    },
-  })
-  const transition = derivePromptLifecycleTransition(settledSession, session())
-
-  assert.equal(transition.activePromptChanged, false)
-  assert.equal(transition.cancelledPromptSettled, false)
-  assert.deepEqual(transition.settledAgentIds, [])
-})
-
-test("derivePromptLifecycleTransition ignores normal prompt replacement", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "hello",
-        status: "running",
-      },
-    }),
-    session({
-      active_prompt: {
-        id: "prompt-2",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "next",
-        status: "running",
-      },
-    }),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, false)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
-test("derivePromptLifecycleTransition settles external prompts when they disappear", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      agent_activity: {
-        "agent-a": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-1",
-            status: "running",
-            prompt_origin: "external",
-            phase: "streaming",
-          },
-        },
-      },
-    }),
-    session(),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, false)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
-test("derivePromptLifecycleTransition settles external prompts regardless of origin casing", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      agent_activity: {
-        "agent-a": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-1",
-            status: "running",
-            prompt_origin: " External ",
-            phase: "streaming",
-          },
-        },
-      },
-    }),
-    session(),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, false)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
-test("derivePromptLifecycleTransition still settles external prompts with explicit cancellation", () => {
-  const transition = derivePromptLifecycleTransition(
-    session({
-      agent_activity: {
-        "agent-a": {
-          status: "working",
-          prompt_status: "cancelling",
-          busy: true,
-          active_turn: {
-            prompt_id: "prompt-1",
-            status: "cancelling",
-            prompt_origin: "External",
-            phase: "settling",
-          },
-        },
-      },
-    }),
-    session(),
-  )
-
-  assert.equal(transition.activePromptChanged, true)
-  assert.equal(transition.cancelledPromptSettled, true)
-  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
-})
-
 test("deriveDetachedCliTransitionState resets waiting room and clears session-bound state", () => {
   const detached = deriveDetachedCliTransitionState({
     cliOptions: {
@@ -590,8 +373,4 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     last_activity_at_ms: 1,
     ...overrides,
   }
-}
-
-function malformedRuntimeValue<T>(value: string): T {
-  return value as T
 }
