@@ -964,6 +964,7 @@ impl SessionService {
         open_url: Option<Option<String>>,
         deployment: Option<Value>,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let status = status.into();
         let publication_id = self
             .resolve_workflow_publication_ref(session_id, publication_ref)?
             .id()
@@ -974,6 +975,16 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        let runtime_observability =
+            session
+                .workflow_publication(&publication_id)
+                .map(|publication| {
+                    workflow_publication_runtime_observability(
+                        session,
+                        publication,
+                        runtime_reachability_for_status(&status),
+                    )
+                });
         let publication = session
             .workflow_publication_mut(&publication_id)
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -981,6 +992,15 @@ impl SessionService {
                 message: format!("workflow publication `{publication_ref}` was not found"),
             })?;
         publication.mark_runtime_status(status, open_url, deployment);
+        if let Some(runtime_observability) = runtime_observability {
+            publication.set_runtime_observability(
+                runtime_observability.runtime,
+                runtime_observability.schedules,
+                runtime_observability.latest_run,
+                runtime_observability.recent_runs,
+                runtime_observability.latest_output,
+            );
+        }
         Ok(publication.clone())
     }
 
@@ -990,6 +1010,7 @@ impl SessionService {
         publication_ref: &str,
         message: impl Into<String>,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let message = message.into();
         let publication_id = self
             .resolve_workflow_publication_ref(session_id, publication_ref)?
             .id()
@@ -1000,6 +1021,19 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        let runtime_observability =
+            session
+                .workflow_publication(&publication_id)
+                .map(|publication| {
+                    workflow_publication_runtime_observability(
+                        session,
+                        publication,
+                        Some(serde_json::json!({
+                            "reachable": false,
+                            "error": message.clone(),
+                        })),
+                    )
+                });
         let publication = session
             .workflow_publication_mut(&publication_id)
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -1007,6 +1041,15 @@ impl SessionService {
                 message: format!("workflow publication `{publication_ref}` was not found"),
             })?;
         publication.mark_runtime_error(message);
+        if let Some(runtime_observability) = runtime_observability {
+            publication.set_runtime_observability(
+                runtime_observability.runtime,
+                runtime_observability.schedules,
+                runtime_observability.latest_run,
+                runtime_observability.recent_runs,
+                runtime_observability.latest_output,
+            );
+        }
         Ok(publication.clone())
     }
 
@@ -1229,6 +1272,149 @@ fn validate_workflow_publication_trace_exposure(
         }
     }
     Ok(())
+}
+
+struct WorkflowPublicationRuntimeObservability {
+    runtime: Option<Value>,
+    schedules: Vec<Value>,
+    latest_run: Option<Value>,
+    recent_runs: Vec<Value>,
+    latest_output: Option<Value>,
+}
+
+fn workflow_publication_runtime_observability(
+    session: &RuntimeSession,
+    publication: &WorkflowPublicationDefinition,
+    runtime: Option<Value>,
+) -> WorkflowPublicationRuntimeObservability {
+    let queue_refs = workflow_publication_queue_reference_set(session, publication);
+    let mut schedules = session
+        .workflow_schedules()
+        .iter()
+        .filter(|schedule| {
+            if schedule.workflow_id() != publication.workflow_id()
+                || schedule.endpoint_id() != publication.endpoint_id()
+            {
+                return false;
+            }
+            schedule
+                .queue_id()
+                .is_none_or(|queue_id| queue_refs.contains(queue_id))
+        })
+        .filter_map(|schedule| serde_json::to_value(schedule).ok())
+        .collect::<Vec<_>>();
+    schedules.sort_by_key(|schedule| {
+        schedule
+            .get("next_run_at_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+
+    let mut runs = session
+        .workflow_runs()
+        .iter()
+        .filter(|run| workflow_run_matches_publication(run, publication))
+        .cloned()
+        .collect::<Vec<_>>();
+    runs.sort_by_key(|run| std::cmp::Reverse(workflow_run_sort_time(run)));
+
+    let latest_run = runs.first().and_then(|run| serde_json::to_value(run).ok());
+    let recent_runs = runs
+        .iter()
+        .take(5)
+        .filter_map(|run| serde_json::to_value(run).ok())
+        .collect::<Vec<_>>();
+    let latest_output = runs.iter().find_map(workflow_run_latest_output_value);
+
+    WorkflowPublicationRuntimeObservability {
+        runtime,
+        schedules,
+        latest_run,
+        recent_runs,
+        latest_output,
+    }
+}
+
+fn workflow_publication_queue_reference_set(
+    session: &RuntimeSession,
+    publication: &WorkflowPublicationDefinition,
+) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    let queue_ref = publication.queue_ref().unwrap_or("default").trim();
+    let queue_ref = if queue_ref.is_empty() {
+        "default"
+    } else {
+        queue_ref
+    };
+    refs.insert(queue_ref.to_string());
+    if let Some(queue) = session.workflow_prompt_queues().iter().find(|candidate| {
+        candidate.workflow_id() == publication.workflow_id()
+            && (candidate.id() == queue_ref || candidate.alias() == queue_ref)
+    }) {
+        refs.insert(queue.id().to_string());
+        refs.insert(queue.alias().to_string());
+    }
+    refs
+}
+
+fn workflow_run_matches_publication(
+    run: &WorkflowRun,
+    publication: &WorkflowPublicationDefinition,
+) -> bool {
+    if let Some(invocation) = run.publication_invocation() {
+        return invocation.publication_id == publication.id();
+    }
+    if run.workflow_id() != publication.workflow_id()
+        || run.endpoint_id() != publication.endpoint_id()
+    {
+        return false;
+    }
+    true
+}
+
+fn workflow_run_sort_time(run: &WorkflowRun) -> u64 {
+    let Ok(value) = serde_json::to_value(run) else {
+        return 0;
+    };
+    ["completed_at_ms", "started_at_ms", "created_at_ms"]
+        .iter()
+        .find_map(|field| value.get(*field).and_then(Value::as_u64))
+        .unwrap_or(0)
+}
+
+fn workflow_run_latest_output_value(run: &WorkflowRun) -> Option<Value> {
+    if let Some(output) = run.final_output() {
+        return Some(serde_json::json!({
+            "kind": "final",
+            "message": serde_json::to_value(output).ok()?,
+            "artifacts": [],
+        }));
+    }
+    run.intermediate_outputs()
+        .iter()
+        .max_by_key(|output| {
+            serde_json::to_value(output)
+                .ok()
+                .and_then(|value| value.get("timestamp_ms").and_then(Value::as_u64))
+                .unwrap_or(0)
+        })
+        .and_then(|output| {
+            let output_value = serde_json::to_value(output).ok()?;
+            Some(serde_json::json!({
+                "kind": "partial",
+                "message": output_value.get("output").cloned().unwrap_or(Value::Null),
+                "artifacts": [],
+                "intermediate_output_id": output_value.get("id").cloned().unwrap_or(Value::Null),
+            }))
+        })
+}
+
+fn runtime_reachability_for_status(status: &str) -> Option<Value> {
+    match status {
+        "starting" | "ready" | "running" => Some(serde_json::json!({ "reachable": true })),
+        "error" => Some(serde_json::json!({ "reachable": false })),
+        _ => None,
+    }
 }
 
 impl SessionService {

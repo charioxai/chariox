@@ -60,6 +60,22 @@ pub struct WorkflowPublicationDefinition {
     runtime_last_heartbeat_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schedule_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    schedules: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watchdog_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    watchdogs: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_run: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_runs: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_output: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtime_logs: Vec<WorkflowPublicationRuntimeLogEntry>,
     created_by_user_id: String,
@@ -113,6 +129,14 @@ impl WorkflowPublicationDefinition {
             deployment: None,
             runtime_last_heartbeat_at_ms: None,
             runtime_last_error: None,
+            runtime: None,
+            schedule_count: None,
+            schedules: Vec::new(),
+            watchdog_count: None,
+            watchdogs: Vec::new(),
+            latest_run: None,
+            recent_runs: Vec::new(),
+            latest_output: None,
             runtime_logs: Vec::new(),
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
@@ -190,6 +214,26 @@ impl WorkflowPublicationDefinition {
 
     pub fn runtime_logs(&self) -> &[WorkflowPublicationRuntimeLogEntry] {
         &self.runtime_logs
+    }
+
+    pub fn set_runtime_observability(
+        &mut self,
+        runtime: Option<Value>,
+        schedules: Vec<Value>,
+        latest_run: Option<Value>,
+        recent_runs: Vec<Value>,
+        latest_output: Option<Value>,
+    ) {
+        let schedule_count = schedules.len() as u64;
+        self.runtime = runtime;
+        self.schedule_count = Some(schedule_count);
+        self.schedules = schedules.clone();
+        self.watchdog_count = Some(schedule_count);
+        self.watchdogs = schedules;
+        self.latest_run = latest_run;
+        self.recent_runs = recent_runs;
+        self.latest_output = latest_output;
+        self.updated_at_ms = unix_epoch_ms();
     }
 
     pub fn trace_exposure(&self) -> Option<&Value> {
