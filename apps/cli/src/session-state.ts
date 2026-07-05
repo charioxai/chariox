@@ -1,45 +1,17 @@
 import process from "node:process"
 
 import {
-  sessionResponseLayout as kernelSessionResponseLayout,
-} from "@arroba/kernel-client/session-config-projection"
-import {
   sessionHasPromptWork as kernelSessionHasPromptWork,
 } from "@arroba/kernel-client/session-prompt-work"
-import {
-  sessionRuntimeTransitionState as kernelSessionRuntimeTransitionState,
-} from "@arroba/kernel-client/session-runtime-transition"
 import {
   type CliOptions,
   type RuntimeSession,
   type SessionHistoryCursorState,
   type TranscriptEntry,
 } from "./cli-types.js"
-import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export const NO_SESSION_ID = "no-session"
-
-type SessionTransitionOptions = {
-  currentSession: RuntimeSession
-  nextSession: RuntimeSession
-  currentWorking: boolean
-  currentStreamingAgentId: string | null
-  currentAgentActivityLabels: Record<string, string | null>
-  layoutPreference?: MultiAgentResponseLayout | null | undefined
-}
-
-export type SessionTransitionState = {
-  nextFocusedAgentId: string | null
-  nextHasPromptWork: boolean
-  nextStreamingAgentId: string | null
-  nextFocusedActivityLabel: string | null
-  nextAgentActivityLabels: Record<string, string | null>
-  nextLayout: MultiAgentResponseLayout
-  nextWorking: boolean
-  previousAgentSignature: string
-  nextAgentSignature: string
-}
 
 export type DetachedCliTransitionState = {
   centerMode: "transcript"
@@ -108,26 +80,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
       values: {},
       updated_by_attachment_id: null,
     },
-  }
-}
-
-export function deriveSessionTransitionState(
-  options: SessionTransitionOptions,
-): SessionTransitionState {
-  const transition = kernelSessionRuntimeTransitionState({
-    currentSession: options.currentSession as Parameters<typeof kernelSessionRuntimeTransitionState>[0]["currentSession"],
-    nextSession: options.nextSession as Parameters<typeof kernelSessionRuntimeTransitionState>[0]["nextSession"],
-    currentWorking: options.currentWorking,
-    currentStreamingAgentId: options.currentStreamingAgentId,
-    currentAgentActivityLabels: options.currentAgentActivityLabels,
-  })
-
-  return {
-    ...transition,
-    nextLayout: kernelSessionResponseLayout(
-      options.nextSession as Parameters<typeof kernelSessionResponseLayout>[0],
-      options.layoutPreference,
-    ),
   }
 }
 

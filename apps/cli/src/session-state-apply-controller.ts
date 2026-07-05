@@ -5,6 +5,9 @@ import {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
+  sessionResponseLayout,
+} from "@arroba/kernel-client/session-config-projection"
+import {
   sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
@@ -12,10 +15,8 @@ import {
 } from "@arroba/kernel-client/session-prompt-lifecycle"
 import {
   sessionShouldConfirmIdleTurnCompletion,
+  sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
-import {
-  deriveSessionTransitionState,
-} from "./session-state.js"
 
 export type SessionStateApplyTurnCompletion = {
   reset(): void
@@ -71,14 +72,14 @@ export function createSessionStateApplyController(
     const previousFocusedAgentId = deps.getFocusedAgentId()
     const previousLayout = deps.getCurrentResponseLayout()
     const promptLifecycle = sessionPromptLifecycleTransition(currentSession, nextSession)
-    const transition = deriveSessionTransitionState({
+    const transition = sessionRuntimeTransitionState({
       currentSession,
       nextSession,
       currentWorking: deps.getWorking(),
       currentStreamingAgentId: deps.getStreamingAgentId(),
       currentAgentActivityLabels: deps.getAgentActivityLabels(),
-      layoutPreference: deps.getLayoutPreference(),
     })
+    const nextLayout = sessionResponseLayout(nextSession, deps.getLayoutPreference())
     const shouldConfirmIdleCompletion = sessionShouldConfirmIdleTurnCompletion({
       nextSession,
       currentWorking: deps.getWorking(),
@@ -93,7 +94,7 @@ export function createSessionStateApplyController(
     deps.syncQueuedPromptEntries(nextSession)
     deps.setAgentActivityLabels(transition.nextAgentActivityLabels)
     deps.setStreamingAgentId(transition.nextStreamingAgentId)
-    deps.setResponseLayout(transition.nextLayout)
+    deps.setResponseLayout(nextLayout)
     deps.setWorking(transition.nextWorking)
 
     if (transition.nextHasPromptWork) {
@@ -142,8 +143,8 @@ export function createSessionStateApplyController(
     deps.updateSessionChrome()
 
     if (
-      transition.nextLayout === "split"
-      && (previousLayout !== transition.nextLayout
+      nextLayout === "split"
+      && (previousLayout !== nextLayout
         || previousFocusedAgentId !== transition.nextFocusedAgentId
         || transition.previousAgentSignature !== transition.nextAgentSignature)
     ) {
