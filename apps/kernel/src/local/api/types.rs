@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 225;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 226;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOperationFailure {
@@ -1320,6 +1320,7 @@ pub enum LocalDaemonResponse {
     WorkflowPublicationEndpointRegistered {
         publication: WorkflowPublicationDefinition,
         open_url: String,
+        viewer_url: String,
         access: String,
         expires_at_ms: Option<u64>,
     },

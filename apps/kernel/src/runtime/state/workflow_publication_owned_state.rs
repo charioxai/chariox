@@ -160,7 +160,8 @@ impl KernelRuntimeOwnedState {
             )?;
         Ok(LocalDaemonResponse::WorkflowPublicationEndpointRegistered {
             publication,
-            open_url,
+            open_url: open_url.clone(),
+            viewer_url: open_url,
             access,
             expires_at_ms,
         })

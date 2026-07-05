@@ -4167,11 +4167,13 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         LocalDaemonResponse::WorkflowPublicationEndpointRegistered {
             publication,
             open_url,
+            viewer_url,
             ..
         } => {
             assert_eq!(publication.id(), "publication-1");
             assert_eq!(publication.open_url(), Some(open_url.as_str()));
-            assert_eq!(publication.viewer_url(), Some(open_url.as_str()));
+            assert_eq!(publication.viewer_url(), Some(viewer_url.as_str()));
+            assert_eq!(viewer_url, open_url);
         }
         _ => panic!("unexpected local response"),
     }
