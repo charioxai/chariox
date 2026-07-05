@@ -125,9 +125,11 @@ fn load_agent_outline(
     let mut turns = Vec::new();
     let mut seen_turn_ids = BTreeSet::new();
     for (index, prompt) in prompts.iter().enumerate() {
+        let has_newer_prompt = prompts.get(index + 1).is_some() || before_sequence.is_some();
         let sequence_end = prompts
             .get(index + 1)
             .map(|event| event.sequence.saturating_sub(1))
+            .or_else(|| before_sequence.map(|sequence| sequence.saturating_sub(1)))
             .unwrap_or(i64::MAX as u64);
         let events = operational_history.load_session_events_for_agent_sequence_range(
             session_id,
@@ -135,7 +137,7 @@ fn load_agent_outline(
             prompt.sequence,
             sequence_end,
         )?;
-        if let Some(mut turn) = outline_turn_from_events(prompt, events) {
+        if let Some(mut turn) = outline_turn_from_events(prompt, events, has_newer_prompt) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
         }
@@ -206,7 +208,7 @@ fn load_promptless_agent_outline(
     let mut events_with_prompt = Vec::with_capacity(turn_events.len() + 1);
     events_with_prompt.push(synthetic_prompt.clone());
     events_with_prompt.extend(turn_events);
-    let turns = outline_turn_from_events(&synthetic_prompt, events_with_prompt)
+    let turns = outline_turn_from_events(&synthetic_prompt, events_with_prompt, false)
         .into_iter()
         .collect::<Vec<_>>();
     Ok(SessionHistoryOutlineAgent {
@@ -253,11 +255,13 @@ fn promptless_turn_group_key(event: &HistoryEvent) -> String {
 fn outline_turn_from_events(
     prompt: &HistoryEvent,
     events: Vec<HistoryEvent>,
+    has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
     let user_prompt = page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
-    let completed_at_ms = outline_turn_completed_at_ms(prompt, &events, prompt_origin);
+    let completed_at_ms =
+        outline_turn_completed_at_ms(prompt, &events, prompt_origin, has_newer_prompt);
     let summary_sequence = events
         .iter()
         .rev()
@@ -314,11 +318,12 @@ fn outline_turn_completed_at_ms(
     prompt: &HistoryEvent,
     events: &[HistoryEvent],
     prompt_origin: PromptOrigin,
+    has_newer_prompt: bool,
 ) -> Option<u64> {
     if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
         return Some(settled_at_ms);
     }
-    if prompt_origin == PromptOrigin::External {
+    if prompt_origin == PromptOrigin::External && !has_newer_prompt {
         return None;
     }
     Some(
@@ -665,6 +670,7 @@ mod tests {
                 external_status,
                 summary,
             ],
+            false,
         )
         .expect("turn should be outlined");
 
@@ -745,7 +751,7 @@ mod tests {
         let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
         let assistant = HistoryEvent::transcript(11, &external_assistant, context);
 
-        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant])
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], false)
             .expect("external active turn should be outlined");
 
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
@@ -754,6 +760,127 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("partial output")
         );
+    }
+
+    #[test]
+    fn outline_external_turn_without_settlement_completes_when_newer_prompt_exists() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external prompt",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let external_assistant = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "final output",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_100),
+        );
+        let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+        let assistant = HistoryEvent::transcript(11, &external_assistant, context);
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], true)
+            .expect("external bounded turn should be outlined");
+
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.completed_at_ms, Some(2_100));
+    }
+
+    #[test]
+    fn agent_outline_completes_bounded_external_turns_without_client_repair() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-external-bounded-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        for index in 1..=2 {
+            let context = HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some(format!("turn-{index}")),
+                prompt_id: Some(format!("prompt-{index}")),
+                provider_run_id: Some(format!("run-{index}")),
+                ..HistoryEventTurnContext::default()
+            };
+            let prompt = SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                Some(&format!("run-{index}")),
+                "agent-1",
+                SessionHistoryEntryKind::UserPrompt,
+                &format!("external prompt {index}"),
+                "codex",
+                "thread-1",
+                Some(format!("turn-{index}")),
+                Some(index * 1_000),
+            );
+            let assistant = SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                Some(&format!("run-{index}")),
+                "agent-1",
+                SessionHistoryEntryKind::ProviderOutput,
+                &format!("external output {index}"),
+                "codex",
+                "thread-1",
+                Some(format!("turn-{index}")),
+                Some(index * 1_000 + 100),
+            );
+            store
+                .append(&HistoryEvent::transcript(
+                    index * 10,
+                    &prompt,
+                    context.clone(),
+                ))
+                .expect("external prompt should append");
+            store
+                .append(&HistoryEvent::transcript(
+                    index * 10 + 1,
+                    &assistant,
+                    context,
+                ))
+                .expect("external assistant output should append");
+        }
+
+        let outline = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+            .expect("outline should load");
+
+        assert_eq!(outline.turns.len(), 2);
+        assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::External);
+        assert_eq!(outline.turns[0].completed_at_ms, Some(1_100));
+        assert_eq!(outline.turns[1].prompt_origin, PromptOrigin::External);
+        assert_eq!(outline.turns[1].completed_at_ms, None);
+
+        let older = load_agent_outline(&store, "session-1", "agent-1", 1, Some(20))
+            .expect("older outline page should load");
+        assert_eq!(older.turns.len(), 1);
+        assert_eq!(older.turns[0].completed_at_ms, Some(1_100));
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]
@@ -796,7 +923,7 @@ mod tests {
         let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
         let status = HistoryEvent::transcript(11, &external_status, context);
 
-        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), status])
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), status], false)
             .expect("external completed turn should be outlined");
 
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
@@ -861,8 +988,9 @@ mod tests {
         let assistant = HistoryEvent::transcript(11, &external_assistant, context.clone());
         let settlement = HistoryEvent::transcript(12, &hidden_settlement, context);
 
-        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant, settlement])
-            .expect("external completed turn should be outlined");
+        let turn =
+            outline_turn_from_events(&prompt, vec![prompt.clone(), assistant, settlement], false)
+                .expect("external completed turn should be outlined");
 
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
         assert_eq!(turn.completed_at_ms, Some(2_200));
