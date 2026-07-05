@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { TranscriptEntry } from "./cli-types.js"
+import { sessionHistoryEntryKindTranscriptRole } from "@arroba/kernel-client/session-history-outline"
+import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
   previewLineForHistoryEntry,
   hydrateTranscriptEntries,
@@ -64,6 +65,35 @@ test("hydrateTranscriptEntries reconstructs tool updates and suppresses idle sta
   assert.match(entries[2]?.text ?? "", /\*\*bash\*\*/)
   assert.match(entries[2]?.text ?? "", /npm test/)
   assert.equal(entries[3]?.text, "all green\n")
+})
+
+test("hydrateTranscriptEntries uses shared history kind transcript roles", () => {
+  const entries = hydrateTranscriptEntries([
+    pageEntry(0, "user_prompt", "prompt\n"),
+    pageEntry(1, "provider_reasoning", "thinking"),
+    pageEntry(2, "provider_error", "failed"),
+    pageEntry(3, "provider_status", "codex task_complete", {
+      source: "external_provider_observed",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "done",
+      external_observation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+    }),
+    pageEntry(4, "notice", "noticed"),
+    pageEntry(5, "provider_output", "summary"),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.role), [
+    sessionHistoryEntryKindTranscriptRole("user_prompt"),
+    sessionHistoryEntryKindTranscriptRole("provider_reasoning"),
+    sessionHistoryEntryKindTranscriptRole("provider_error"),
+    sessionHistoryEntryKindTranscriptRole("provider_status"),
+    sessionHistoryEntryKindTranscriptRole("notice"),
+    sessionHistoryEntryKindTranscriptRole("provider_output"),
+  ])
 })
 
 test("hydrateTranscriptEntries marks only the head partial fragment as deferred after rejoin catch-up", () => {
@@ -717,5 +747,24 @@ function entry(
     role,
     text,
     ...overrides,
+  }
+}
+
+function pageEntry(
+  entryIndex: number,
+  kind: SessionHistoryEntry["kind"],
+  text: string,
+  overrides: Partial<SessionHistoryEntry> = {},
+): SessionHistoryPageEntry {
+  return {
+    entry_index: entryIndex,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: {
+      kind,
+      text,
+      ...overrides,
+    },
   }
 }

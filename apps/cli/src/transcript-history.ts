@@ -14,6 +14,7 @@ import {
   markDeferredTranscriptHistoryEntries,
   transcriptHistoryFragmentsAreAdjacent,
 } from "@arroba/kernel-client/session-history-fragments"
+import { sessionHistoryEntryKindTranscriptRole } from "@arroba/kernel-client/session-history-outline"
 import { mergeAdjacentSessionHistoryPageEntries } from "@arroba/kernel-client/session-history-page-entries"
 import type { SessionHistoryEntry, SessionHistoryPageEntry, TranscriptEntry } from "./cli-types.js"
 import {
@@ -234,8 +235,9 @@ export function hydrateTranscriptEntries(
     if (currentTurnId > 0) entryOptions.turnId = currentTurnId
     const observedOptions = externalProviderObservedOptions(pageEntry.entry)
     const identityOptions = historyEntryIdentityOptions(pageEntry.entry, hydrateOptions.promptId)
-    switch (pageEntry.entry.kind) {
-      case "user_prompt":
+    const role = sessionHistoryEntryKindTranscriptRole(pageEntry.entry.kind)
+    switch (role) {
+      case "user":
         currentTurnId = Math.max(currentTurnId + 1, (pageEntry.entry_index ?? 0) + 1)
         appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), {
           ...entryOptions,
@@ -245,7 +247,7 @@ export function hydrateTranscriptEntries(
           turnId: currentTurnId,
         })
         break
-      case "provider_reasoning":
+      case "reasoning":
         appendTranscriptEntry("reasoning", pageEntry.entry.text, {
           ...entryOptions,
           ...observedOptions,
@@ -253,7 +255,7 @@ export function hydrateTranscriptEntries(
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
         })
         break
-      case "provider_tool": {
+      case "tool": {
         const parsed = parseToolTranscriptUpdate(pageEntry.entry.text)
         if (!parsed) {
           appendTranscriptEntry("tool", pageEntry.entry.text, {
@@ -275,7 +277,7 @@ export function hydrateTranscriptEntries(
         })
         break
       }
-      case "provider_error":
+      case "error":
         appendTranscriptEntry("error", pageEntry.entry.text, {
           ...entryOptions,
           ...observedOptions,
@@ -283,7 +285,7 @@ export function hydrateTranscriptEntries(
           emphasis: "error",
         })
         break
-      case "provider_status":
+      case "status":
         if (externalProviderObservedProviderStatusShouldRender(pageEntry.entry)) {
           appendTranscriptEntry("status", pageEntry.entry.text, {
             ...entryOptions,
@@ -300,7 +302,7 @@ export function hydrateTranscriptEntries(
           ...identityOptions,
         })
         break
-      default:
+      case "assistant":
         appendTranscriptEntry("assistant", pageEntry.entry.text, {
           ...entryOptions,
           ...observedOptions,
