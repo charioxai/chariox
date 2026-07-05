@@ -1,8 +1,11 @@
 import { agentRuntimeActivityIsBusy, projectAgentRuntimeActivity } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import { promptOriginIsExternal } from "./prompt-origin.js"
 import { sessionHasAgent } from "./session-agent-prompt-state.js"
 
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
+export const QUEUED_PROMPT_STEER_EXTERNAL_REASON =
+  "Steering is unavailable while the active provider turn was started outside Arroba."
 
 export type QueuedPromptControlInput = {
   readonly prompt_id?: string | null
@@ -140,15 +143,18 @@ export function queuedPromptProjectionForAgent(
   if (prompts === null) {
     return { action: "preserve" }
   }
+  const activity = session.agent_activity?.[agentId]
+  const disableSteeringBehindExternalTurn = activityHasExternalActiveTurn(activity)
   return {
     action: "replace",
     prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
       const promptId = prompt.pending_prompt_id ?? prompt.id
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
-        control: queuedPromptControlForPrompt(
-          session.agent_activity?.[agentId]?.queued_prompt_controls,
+        control: queuedPromptControlWithActivityFallback(
+          activity?.queued_prompt_controls,
           promptId,
+          disableSteeringBehindExternalTurn,
         ),
       })
       return projected ? [projected] : []
@@ -271,4 +277,30 @@ function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: st
     return false
   }
   return agentRuntimeActivityIsBusy(activity)
+}
+
+function queuedPromptControlWithActivityFallback(
+  controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
+  promptId: string | null | undefined,
+  disableSteeringBehindExternalTurn: boolean,
+): QueuedPromptControlInput | null {
+  const control = queuedPromptControlForPrompt(controls, promptId)
+  if (control || !disableSteeringBehindExternalTurn || !promptId) {
+    return control
+  }
+  return {
+    prompt_id: promptId,
+    can_steer: false,
+    steer_disabled_reason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+  }
+}
+
+function activityHasExternalActiveTurn(activity: unknown): boolean {
+  const projection = projectAgentRuntimeActivity(activity)
+  return promptOriginIsExternal(projection.activeTurnPromptOrigin)
+    || Boolean(
+      projection.activeTurnExternalProvider
+        || projection.activeTurnExternalProviderSessionId
+        || projection.activeTurnExternalProviderTurnId,
+    )
 }

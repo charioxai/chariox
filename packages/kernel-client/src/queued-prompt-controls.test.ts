@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  QUEUED_PROMPT_STEER_EXTERNAL_REASON,
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
   projectedQueuedPromptListsMatch,
@@ -247,6 +248,57 @@ test("queued prompt projection returns display prompts with actionability", () =
       canSteer: false,
       canCancel: true,
       steerDisabledReason: "Kernel projected steer reason.",
+      cancelDisabledReason: null,
+    }],
+  })
+})
+
+test("queued prompt projection disables steering behind external active turn without explicit controls", () => {
+  const session = sessionWith({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          ...prompt("external-active"),
+          status: "Running",
+        },
+        queued_prompts: [prompt("queued-1")],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_prompt_count: 1,
+        queued_prompt_count: 1,
+        active_turn: {
+          prompt_id: "external-active",
+          prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "provider-session-1",
+          external_provider_turn_id: "provider-turn-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "replace",
+    prompts: [{
+      id: "queued-1",
+      pendingPromptId: null,
+      sourceAttachmentId: "attachment-1",
+      targetAgentId: "agent-1",
+      prompt: "queued-1",
+      attachmentCount: 0,
+      status: "queued",
+      steerDisabled: true,
+      canSteer: false,
+      canCancel: true,
+      steerDisabledReason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
       cancelDisabledReason: null,
     }],
   })
