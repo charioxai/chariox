@@ -5,6 +5,11 @@ import {
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
+import {
+  DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
+  sessionBrowserPreviewSessions,
+  sessionBrowserVisibleSessions,
+} from "@arroba/kernel-client/session-browser-policy"
 
 import {
   formatSessionActivityNextAction,
@@ -14,7 +19,7 @@ import {
 } from "./sessions.js"
 import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
-export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
+export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT
 
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
 const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
@@ -201,14 +206,11 @@ export function waitingRoomMenuTrailingPadding() {
 }
 
 export function waitingRoomSessions(sessions: SessionListEntry[]) {
-  return sessions
-    .filter((session) => session.status !== "Ended")
-    .slice()
-    .sort((left, right) => sessionLastActiveMs(right) - sessionLastActiveMs(left))
+  return sessionBrowserVisibleSessions(sessions)
 }
 
 export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
-  return waitingRoomSessions(sessions).slice(0, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
+  return sessionBrowserPreviewSessions(sessions, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
 }
 
 export function sessionLastActiveMs(session: SessionListEntry) {

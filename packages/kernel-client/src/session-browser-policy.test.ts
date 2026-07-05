@@ -3,8 +3,10 @@ import test from "node:test"
 
 import {
   clampSessionBrowserIndex,
+  DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
   nextSessionBrowserIndex,
   resolveSessionBrowserKeyAction,
+  sessionBrowserPreviewSessions,
   sessionBrowserVisibleSessions,
 } from "./session-browser-policy.js"
 
@@ -91,6 +93,23 @@ test("sessionBrowserVisibleSessions filters ended sessions and sorts by recent a
     session("activity", { status: "Active", last_activity_at_ms: 30, last_used_at_ms: 5, created_at_ms: 3 }),
     session("prompted", { status: "Active", last_prompt_sent_at_ms: 40, last_activity_at_ms: 10, created_at_ms: 4 }),
   ]).map((session) => session.id), ["prompted", "activity", "recent", "old"])
+})
+
+test("sessionBrowserPreviewSessions returns a bounded visible session preview", () => {
+  assert.equal(DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT, 2)
+  assert.deepEqual(sessionBrowserPreviewSessions([
+    session("one", { created_at_ms: 1 }),
+    session("two", { created_at_ms: 2 }),
+    session("three", { created_at_ms: 3 }),
+    session("ended", { status: "Ended", created_at_ms: 4 }),
+  ]).map((session) => session.id), ["three", "two"])
+  assert.deepEqual(sessionBrowserPreviewSessions([
+    session("one", { created_at_ms: 1 }),
+    session("two", { created_at_ms: 2 }),
+  ], 1).map((session) => session.id), ["two"])
+  assert.deepEqual(sessionBrowserPreviewSessions([
+    session("one", { created_at_ms: 1 }),
+  ], -1), [])
 })
 
 test("clampSessionBrowserIndex keeps selection in range", () => {

@@ -1,5 +1,7 @@
 import { waitingRoomSessionRecencyMs } from "./waiting-room-activity.js"
 
+export const DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT = 2
+
 export type SessionBrowserKeyEvent = {
   name: string
   eventType?: string | undefined
@@ -80,6 +82,13 @@ export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(s
     .filter((session) => session.status !== "Ended")
     .slice()
     .sort((left, right) => waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left))
+}
+
+export function sessionBrowserPreviewSessions<T extends SessionBrowserSession>(
+  sessions: readonly T[],
+  limit = DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
+): T[] {
+  return sessionBrowserVisibleSessions(sessions).slice(0, Math.max(0, limit))
 }
 
 export function clampSessionBrowserIndex(index: number, sessionCount: number): number {
