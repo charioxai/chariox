@@ -9,8 +9,10 @@ import {
   resolveSessionStreamingAgentId,
   sessionStatusLabel,
   sessionWorkingStateAfterPromptWork,
+  turnCompletionDelayMs,
   type SessionStatusMode,
   type SessionStreamingAgent,
+  type TurnCompletionDelayInput,
 } from "@arroba/kernel-client/shell-agent-activity"
 
 export const DEFAULT_CONNECTED_STATUS = ""
@@ -37,14 +39,7 @@ export type ExitCleanupDecision = {
   message: string
 }
 
-export type TurnCompletionDelayOptions = {
-  sessionHasPromptWork: boolean
-  pendingTerminalRecordCount: number
-  pendingTerminalRecordFlush: boolean
-  lastTurnActivityAt: number
-  now: number
-  quietWindowMs: number
-}
+export type TurnCompletionDelayOptions = TurnCompletionDelayInput
 
 export function reconcileWorkingStateFromSession(currentWorking: boolean, sessionHasPromptWork: boolean) {
   return sessionWorkingStateAfterPromptWork(currentWorking, sessionHasPromptWork)
@@ -112,14 +107,7 @@ export function describeCliError(error: unknown): string {
 }
 
 export function getTurnCompletionDelayMs(options: TurnCompletionDelayOptions) {
-  if (
-    options.sessionHasPromptWork
-    || options.pendingTerminalRecordCount > 0
-    || options.pendingTerminalRecordFlush
-  ) {
-    return null
-  }
-  return Math.max(0, options.quietWindowMs - Math.max(0, options.now - options.lastTurnActivityAt))
+  return turnCompletionDelayMs(options)
 }
 
 export function getPollRecoveryDecision(

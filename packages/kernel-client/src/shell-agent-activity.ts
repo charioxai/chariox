@@ -658,6 +658,26 @@ export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnC
     || options.currentActiveStatusLabel !== null
 }
 
+export type TurnCompletionDelayInput = {
+  readonly sessionHasPromptWork: boolean
+  readonly pendingTerminalRecordCount: number
+  readonly pendingTerminalRecordFlush: boolean
+  readonly lastTurnActivityAt: number
+  readonly now: number
+  readonly quietWindowMs: number
+}
+
+export function turnCompletionDelayMs(options: TurnCompletionDelayInput): number | null {
+  if (
+    options.sessionHasPromptWork
+    || options.pendingTerminalRecordCount > 0
+    || options.pendingTerminalRecordFlush
+  ) {
+    return null
+  }
+  return Math.max(0, options.quietWindowMs - Math.max(0, options.now - options.lastTurnActivityAt))
+}
+
 export function sessionPromptStateForAgent(
   session: RuntimeSession,
   agentId: string | null | undefined,

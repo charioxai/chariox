@@ -44,6 +44,7 @@ import {
   sessionVisibleAgentSummary,
   sessionWorkingStateAfterPromptWork,
   shouldPreserveAgentActivityLabel,
+  turnCompletionDelayMs,
 } from "./shell-agent-activity.js"
 import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
@@ -1322,6 +1323,60 @@ test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or 
       currentActiveStatusLabel: "thinking",
     }), false)
   }
+})
+
+test("turnCompletionDelayMs waits for prompt work and terminal record flushes", () => {
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: true,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), null)
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 1,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), null)
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: true,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), null)
+})
+
+test("turnCompletionDelayMs returns the remaining quiet window after last turn activity", () => {
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), 1_400)
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 0,
+    now: 1_500,
+    quietWindowMs: 1_500,
+  }), 0)
+  assert.equal(turnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 2_000,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), 1_500)
 })
 
 test("sessionPromptWorkSummary ignores prompt states for agents outside the session", () => {
