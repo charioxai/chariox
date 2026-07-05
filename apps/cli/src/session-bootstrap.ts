@@ -1,7 +1,7 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
-import { extractPromptInputHistoryEntries } from "./prompt-history.js"
+import { extractPromptInputHistoryEntries } from "@arroba/kernel-client/prompt-history"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"

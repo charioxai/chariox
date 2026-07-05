@@ -1,7 +1,7 @@
 import {
   promptHistoryEntryListsEqual,
   pushPromptHistoryEntry,
-} from "./prompt-history.js"
+} from "@arroba/kernel-client/prompt-history"
 
 type PromptInputHistoryEntry = {
   sequence: number

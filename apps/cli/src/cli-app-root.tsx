@@ -106,7 +106,7 @@ import { createResponsePaneRenderRefStoreController } from "./response-pane-rend
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
 import {
   extractPromptHistoryEntries,
-} from "./prompt-history.js"
+} from "@arroba/kernel-client/prompt-history"
 import {
   DEFAULT_CONNECTED_STATUS,
 } from "./runtime.js"

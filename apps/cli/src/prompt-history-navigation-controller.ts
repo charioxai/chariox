@@ -1,4 +1,4 @@
-import { navigatePromptHistory } from "./prompt-history.js"
+import { navigatePromptHistory } from "@arroba/kernel-client/prompt-history"
 
 type PromptHistoryNavigationControllerOptions = {
   getPromptText: () => string

@@ -2,7 +2,7 @@ import type { PromptInputHistoryPage } from "./cli-types.js"
 import {
   extractPromptInputHistoryEntries,
   maxPromptInputHistorySequence,
-} from "./prompt-history.js"
+} from "@arroba/kernel-client/prompt-history"
 
 type PromptHistoryHydrationControllerOptions = {
   loadHistory: (sessionId: string) => Promise<PromptInputHistoryPage>

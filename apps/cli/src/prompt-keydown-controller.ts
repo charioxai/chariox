@@ -1,7 +1,7 @@
 import {
   resolvePromptHistoryKeyNavigation,
   type PromptHistoryDirection,
-} from "./prompt-history.js"
+} from "@arroba/kernel-client/prompt-history"
 
 export type PromptKeyDownEvent = {
   name: string

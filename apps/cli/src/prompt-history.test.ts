@@ -11,7 +11,7 @@ import {
   promptHistoryDirectionForKey,
   resolvePromptHistoryKeyNavigation,
   pushPromptHistoryEntry,
-} from "./prompt-history.js"
+} from "@arroba/kernel-client/prompt-history"
 
 test("pushPromptHistoryEntry appends normalized prompts and skips consecutive duplicates", () => {
   assert.deepEqual(
