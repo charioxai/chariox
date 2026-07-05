@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -198,6 +199,16 @@ async fn start_publication_runtime(
     }
 
     let kernel_url = publication_runtime_kernel_url(runtime_state, request.kernel_url.as_deref());
+    if let Err(error) = validate_publication_runtime_bind_address(&host, port, is_schedule_only) {
+        let message = error.to_string();
+        let _ = mark_publication_runtime_error(
+            runtime_state,
+            &request.session_id,
+            publication.id(),
+            &message,
+        );
+        return Err(error);
+    }
     let package = runtime_state.owned.workflow_export_publication_package(
         crate::local::ExportWorkflowPublicationPackageRequest {
             session_id: request.session_id.clone(),
@@ -588,6 +599,28 @@ fn publication_runtime_port(requested_port: Option<u16>, is_schedule_only: bool)
     }
 }
 
+fn validate_publication_runtime_bind_address(
+    host: &str,
+    port: u16,
+    is_schedule_only: bool,
+) -> Result<(), DaemonError> {
+    if is_schedule_only {
+        return Ok(());
+    }
+    if port == 0 {
+        return Err(DaemonError::LocalTransport {
+            operation: "start workflow publication runtime",
+            message: "ingress publication runtime port must be between 1 and 65535".to_string(),
+        });
+    }
+    TcpListener::bind((host, port))
+        .map(|listener| drop(listener))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "start workflow publication runtime",
+            message: format!("publication runtime port {port} is not available on {host}: {error}"),
+        })
+}
+
 fn launched_publication_runtime_status(is_schedule_only: bool) -> &'static str {
     if is_schedule_only {
         "running"
@@ -654,7 +687,9 @@ mod tests {
     use super::{
         DEFAULT_PUBLICATION_RUNTIME_PORT, launched_publication_runtime_message,
         launched_publication_runtime_status, publication_runtime_port,
+        validate_publication_runtime_bind_address,
     };
+    use std::net::TcpListener;
 
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
@@ -681,5 +716,34 @@ mod tests {
     fn schedule_only_runtime_port_is_ephemeral_internal_port() {
         assert_eq!(publication_runtime_port(Some(43123), true), 0);
         assert_eq!(publication_runtime_port(None, true), 0);
+    }
+
+    #[test]
+    fn ingress_runtime_rejects_zero_port() {
+        let error = validate_publication_runtime_bind_address("127.0.0.1", 0, false)
+            .expect_err("ingress port 0 should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("port must be between 1 and 65535")
+        );
+    }
+
+    #[test]
+    fn ingress_runtime_rejects_occupied_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener.local_addr().expect("local addr").port();
+        let error = validate_publication_runtime_bind_address("127.0.0.1", port, false)
+            .expect_err("occupied ingress port should be rejected");
+        assert!(error.to_string().contains("not available"));
+        assert!(error.to_string().contains(&port.to_string()));
+    }
+
+    #[test]
+    fn schedule_only_runtime_skips_ingress_port_check() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener.local_addr().expect("local addr").port();
+        validate_publication_runtime_bind_address("127.0.0.1", port, true)
+            .expect("schedule-only runtime has no ingress bind");
     }
 }
