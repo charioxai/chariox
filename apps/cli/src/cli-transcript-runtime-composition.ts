@@ -21,7 +21,6 @@ import { createTranscriptStreamController } from "./transcript-stream-controller
 import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTurnCompletionController } from "./turn-completion-controller.js"
-import { createVisibleActivityLabelController } from "./visible-activity-label-controller.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -309,11 +308,9 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     maybeScheduleConfirmedTurnCompletion,
   })
 
-  const visibleActivityLabelController = createVisibleActivityLabelController({
-    focusedActivityLabel: deps.focusedActivityLabel,
-    setActiveStatusLabel: deps.setActiveStatusLabel,
-  })
-  const syncVisibleActivityLabel = visibleActivityLabelController.sync
+  const syncVisibleActivityLabel = () => {
+    deps.setActiveStatusLabel(deps.focusedActivityLabel())
+  }
 
   const transcriptStreamController = createTranscriptStreamController({
     entries: deps.entries,
