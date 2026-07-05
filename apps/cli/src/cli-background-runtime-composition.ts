@@ -22,7 +22,6 @@ import { getProviderActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyProviderRunProfileToSession,
 } from "@arroba/kernel-client/prompt-provider-selection"
-import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { isSessionUnavailableError } from "./session-errors.js"
 import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import {
@@ -360,9 +359,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     }
     const nextSession = apply(deps.sessionState())
     deps.applySessionState(nextSession)
-    if (!sessionHasPromptWork(nextSession)) {
-      deps.clearLocalBusyStateForAuthoritativeIdle(nextSession)
-    }
+    deps.clearLocalBusyStateForAuthoritativeIdle(nextSession)
     deps.updateSessionChrome()
   }
   const applyAgentActivityChanged = (
