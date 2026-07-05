@@ -19,6 +19,7 @@ export type TranscriptStreamEntry = {
   readonly role: string
   readonly text: string
   readonly turnId?: number | null
+  readonly providerRunId?: string | null
   readonly mergeKey?: string | null
   readonly sourceText?: string | null
   readonly promptId?: string | null
@@ -26,18 +27,20 @@ export type TranscriptStreamEntry = {
 }
 
 export type TranscriptStreamMetadata = {
-  readonly promptId?: string | null
-  readonly sourceAttachmentId?: string | null
+  readonly promptId?: string | null | undefined
+  readonly sourceAttachmentId?: string | null | undefined
 }
 
 export type TranscriptProviderChunkOptions = {
   readonly role: string
   readonly chunk: string
-  readonly mergeKey?: string | null
-  readonly sourceText?: string | null
+  readonly mergeKey?: string | null | undefined
+  readonly sourceText?: string | null | undefined
   readonly metadata?: TranscriptStreamMetadata
   readonly nextEntryId?: number | null | undefined
   readonly currentTurnId?: number | null | undefined
+  readonly providerRunId?: string | null | undefined
+  readonly mergeAdjacentUnkeyedRoles?: readonly string[] | undefined
 }
 
 export type TranscriptStreamApplyResult<TEntry extends TranscriptStreamEntry> = {
@@ -53,9 +56,10 @@ export type TranscriptToolUpdateApplyResult<TEntry extends TranscriptStreamEntry
   }
 
 type MutableTranscriptStreamEntry =
-  Omit<TranscriptStreamEntry, "text" | "turnId" | "mergeKey" | "sourceText" | "promptId" | "sourceAttachmentId"> & {
+  Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "sourceAttachmentId"> & {
     text: string
     turnId?: number | null
+    providerRunId?: string | null
     mergeKey?: string | null
     sourceText?: string | null
     promptId?: string | null
@@ -90,6 +94,8 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
     mergeKey: options.mergeKey ?? undefined,
     metadata,
     currentTurnId,
+    providerRunId: options.providerRunId,
+    mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles ?? ["assistant", "reasoning"],
   })
 
   if (mergedEntry) {
@@ -108,6 +114,7 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
     metadata,
     nextEntryId: options.nextEntryId ?? undefined,
     currentTurnId,
+    providerRunId: options.providerRunId,
   })
   nextEntries.push(nextEntry)
   return {
@@ -125,6 +132,8 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
   options: {
     readonly nextEntryId?: number | null
     readonly currentTurnId?: number | null
+    readonly providerRunId?: string | null
+    readonly mergeAdjacentUnkeyedRoles?: readonly string[]
   } = {},
 ): TranscriptToolUpdateApplyResult<TEntry> {
   const normalized = normalizeTranscriptProviderChunk(chunk)
@@ -145,6 +154,8 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
         metadata,
         nextEntryId: options.nextEntryId ?? undefined,
         currentTurnId: options.currentTurnId,
+        providerRunId: options.providerRunId,
+        mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles,
       }),
       parsedUpdate: parsed,
       mergedUpdate: merged,
@@ -158,6 +169,8 @@ export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
     metadata,
     nextEntryId: options.nextEntryId ?? undefined,
     currentTurnId: options.currentTurnId,
+    providerRunId: options.providerRunId,
+    mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles,
   })
 }
 
@@ -170,9 +183,20 @@ function mergeProviderChunk(
     mergeKey: string | undefined
     metadata: TranscriptStreamMetadata
     currentTurnId: number | null
+    providerRunId: string | null | undefined
+    mergeAdjacentUnkeyedRoles: readonly string[]
   },
 ): MutableTranscriptStreamEntry | null {
-  const { role, normalized, normalizedSource, mergeKey, metadata, currentTurnId } = options
+  const {
+    role,
+    normalized,
+    normalizedSource,
+    mergeKey,
+    metadata,
+    currentTurnId,
+    providerRunId,
+    mergeAdjacentUnkeyedRoles,
+  } = options
 
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -180,7 +204,7 @@ function mergeProviderChunk(
       if (
         candidate?.role !== role
         || candidate.mergeKey !== mergeKey
-        || !sameStreamingTurn(candidate, currentTurnId)
+        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId })
       ) {
         continue
       }
@@ -194,8 +218,8 @@ function mergeProviderChunk(
   if (
     !mergeKey
     && last?.role === role
-    && sameStreamingTurn(last, currentTurnId)
-    && (role === "assistant" || role === "reasoning")
+    && sameStreamingMergeIdentity(last, { currentTurnId, providerRunId })
+    && mergeAdjacentUnkeyedRoles.includes(role)
   ) {
     last.text += normalized
     applyStreamMetadata(last, metadata)
@@ -205,8 +229,17 @@ function mergeProviderChunk(
   return null
 }
 
-function sameStreamingTurn(entry: TranscriptStreamEntry, currentTurnId: number | null): boolean {
-  return currentTurnId === null || entry.turnId === currentTurnId
+function sameStreamingMergeIdentity(
+  entry: TranscriptStreamEntry,
+  options: { currentTurnId: number | null; providerRunId: string | null | undefined },
+): boolean {
+  if (options.currentTurnId !== null && entry.turnId !== options.currentTurnId) {
+    return false
+  }
+  if (options.providerRunId !== undefined && entry.providerRunId !== options.providerRunId) {
+    return false
+  }
+  return true
 }
 
 function applyMergedChunk(
@@ -239,6 +272,7 @@ function createTranscriptEntry(
     metadata: TranscriptStreamMetadata
     nextEntryId: number | undefined
     currentTurnId: number | null
+    providerRunId: string | null | undefined
   },
 ): MutableTranscriptStreamEntry {
   const nextEntry: MutableTranscriptStreamEntry = {
@@ -248,6 +282,9 @@ function createTranscriptEntry(
   }
   if (options.currentTurnId !== null) {
     nextEntry.turnId = options.currentTurnId
+  }
+  if (options.providerRunId !== undefined) {
+    nextEntry.providerRunId = options.providerRunId
   }
   if (options.mergeKey) {
     nextEntry.mergeKey = options.mergeKey

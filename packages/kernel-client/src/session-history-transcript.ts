@@ -29,6 +29,7 @@ import {
 import { applyTranscriptDisplayState } from "./transcript-display-state.js"
 import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
 import { reindexTranscriptEntries } from "./transcript-entry-state.js"
+import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
 import {
   orderedSessionHistoryOutlineItems,
@@ -120,7 +121,7 @@ export function hydrateSessionHistoryTranscriptEntries(
   hydrateOptions: SessionHistoryTranscriptHydrateOptions = {},
 ): SessionHistoryTranscriptEntry[] {
   const mergedHistoryEntries = mergeAdjacentSessionHistoryPageEntries(historyEntries)
-  const entries: SessionHistoryTranscriptEntry[] = []
+  let entries: SessionHistoryTranscriptEntry[] = []
   const tools = new Map<string, ToolTranscriptUpdate>()
   let nextId = 0
   let currentTurnId = 0
@@ -135,50 +136,36 @@ export function hydrateSessionHistoryTranscriptEntries(
       turnId?: number
     } = {},
   ) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
+    const result = applyTranscriptProviderChunk(entries, {
+      role,
+      chunk,
+      mergeKey: options.mergeKey,
+      sourceText: options.sourceText,
+      nextEntryId: nextId + 1,
+      currentTurnId: options.turnId ?? null,
+      providerRunId: options.providerRunId,
+      mergeAdjacentUnkeyedRoles: ["reasoning"],
+      metadata: {
+        promptId: options.promptId,
+        sourceAttachmentId: options.sourceAttachmentId,
+      },
+    })
+    if (result.kind === "noop") {
       return
     }
 
-    if (options.mergeKey) {
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const candidate = entries[index]
-        if (
-          candidate?.role === role
-          && candidate.mergeKey === options.mergeKey
-          && sameSessionHistoryTranscriptIdentity(candidate, options)
-        ) {
-          if (role === "assistant" || role === "reasoning") {
-            candidate.text += normalized
-            if (options.sourceText !== undefined) {
-              candidate.sourceText = `${candidate.sourceText ?? ""}${options.sourceText}`
-            }
-          } else {
-            candidate.text = normalized
-            if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
-          }
-          if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
-          applySessionHistoryTranscriptMetadata(candidate, options)
-          return
-        }
-      }
+    entries = result.entries as SessionHistoryTranscriptEntry[]
+    if (result.updatedEntryId !== undefined) {
+      nextId = Math.max(nextId, result.updatedEntryId)
     }
-
-    const last = entries.at(-1)
-    if (!options.mergeKey && last?.role === role && role === "reasoning") {
-      last.text += normalized
-      applySessionHistoryTranscriptMetadata(last, options)
+    const updatedEntry = result.updatedEntryId === undefined
+      ? entries.at(-1)
+      : entries.find((entry) => entry.id === result.updatedEntryId)
+    if (!updatedEntry) {
       return
     }
-
-    nextId += 1
-    const nextEntry: SessionHistoryTranscriptEntry = { id: nextId, role, text: normalized }
-    if (options.mergeKey) nextEntry.mergeKey = options.mergeKey
-    if (options.sourceText !== undefined) nextEntry.sourceText = options.sourceText
-    if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
-    if (options.turnId !== undefined) nextEntry.turnId = options.turnId
-    applySessionHistoryTranscriptMetadata(nextEntry, options)
-    entries.push(nextEntry)
+    if (options.emphasis !== undefined) updatedEntry.emphasis = options.emphasis
+    applySessionHistoryTranscriptMetadata(updatedEntry, options)
   }
 
   for (const pageEntry of mergedHistoryEntries) {
@@ -434,19 +421,6 @@ type SessionHistoryTranscriptMetadataOptions = {
   historyFragmentStart?: number | undefined
   historyFragmentEnd?: number | undefined
   historyTotalChars?: number | undefined
-}
-
-function sameSessionHistoryTranscriptIdentity(
-  candidate: SessionHistoryTranscriptEntry,
-  options: Pick<SessionHistoryTranscriptMetadataOptions, "providerRunId"> & { turnId?: number },
-) {
-  if (options.providerRunId !== undefined && candidate.providerRunId !== options.providerRunId) {
-    return false
-  }
-  if (options.turnId !== undefined && candidate.turnId !== options.turnId) {
-    return false
-  }
-  return true
 }
 
 function historyEntryTranscriptIdentityOptions(

@@ -66,6 +66,36 @@ test("transcript stream state accepts a caller-owned next entry id", () => {
   assert.equal(appended.entries.at(-1)?.id, 11)
 })
 
+test("transcript stream state scopes merge keys by provider run when supplied", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "first", { mergeKey: "reply", providerRunId: "run-1" }),
+  ], {
+    role: "assistant",
+    chunk: "second",
+    mergeKey: "reply",
+    providerRunId: "run-2",
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.deepEqual(result.entries, [
+    entry(1, "assistant", "first", { mergeKey: "reply", providerRunId: "run-1" }),
+    entry(2, "assistant", "second", { mergeKey: "reply", providerRunId: "run-2" }),
+  ])
+})
+
+test("transcript stream state lets callers choose adjacent unkeyed merge roles", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "first"),
+  ], {
+    role: "assistant",
+    chunk: "second",
+    mergeAdjacentUnkeyedRoles: ["reasoning"],
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.deepEqual(result.entries.map((candidate) => candidate.text), ["first", "second"])
+})
+
 test("transcript stream state merges adjacent assistant chunks", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "assistant", "hel"),

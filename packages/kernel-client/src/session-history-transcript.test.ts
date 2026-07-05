@@ -60,6 +60,25 @@ test("session history transcript hydration keeps repeated merge keys scoped to t
   assert.deepEqual(entries.map((entry) => entry.providerRunId), ["run-1", "run-1", "run-2", "run-2"])
 })
 
+test("session history transcript hydration scopes repeated merge keys by provider run before a turn exists", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(0, "provider_output", "first partial\n", {
+      provider_run_id: "run-1",
+      merge_key: "assistant",
+    }),
+    pageEntry(1, "provider_output", "second partial\n", {
+      provider_run_id: "run-2",
+      merge_key: "assistant",
+    }),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.text), [
+    "first partial\n",
+    "second partial\n",
+  ])
+  assert.deepEqual(entries.map((entry) => entry.providerRunId), ["run-1", "run-2"])
+})
+
 test("session history transcript hydration keeps adjacent unkeyed assistant entries separate", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(1, "provider_output", "first blob\n", { provider_run_id: "run-1" }),
