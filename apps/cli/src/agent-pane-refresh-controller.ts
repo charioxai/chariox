@@ -15,7 +15,7 @@ import {
 } from "./response-panes.js"
 import { focusedAgentIdForSession, sessionHasPromptWork } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
-import { reindexTranscriptEntries } from "./transcript-text.js"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
 type AgentPaneRefreshControllerDeps = {
   getCurrentAgents: () => readonly AgentInstance[]

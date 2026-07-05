@@ -7,7 +7,7 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { formatTranscriptPreview } from "./transcript-preview.js"
-import { reindexTranscriptEntries } from "./transcript-text.js"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
 export type DeferredBootstrapControllerDeps = {
   getDeferred: () => BootstrapDeferredState | undefined

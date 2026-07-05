@@ -11,7 +11,7 @@ import {
   hydrateOutlineAgentEntries,
 } from "./session-history-outline.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
-import { reindexTranscriptEntries } from "./transcript-text.js"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
 export type AttachedSessionPrimeControllerDeps = {
   promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">

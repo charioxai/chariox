@@ -5,9 +5,9 @@ import type {
 import {
   queuedPromptProjectionForAgent,
 } from "@arroba/kernel-client/queued-prompt-controls"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
-import { reindexTranscriptEntries } from "./transcript-text.js"
 
 export type QueuedPromptTranscriptSyncResult = {
   entries: TranscriptEntry[]

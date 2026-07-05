@@ -1,6 +1,6 @@
 import type { AgentInstance, TranscriptEntry } from "./cli-types.js"
 import { computeNextTurnId } from "./transcript-preview.js"
-import { trimSingleTrailingNewline } from "./transcript-text.js"
+import { trimSingleTrailingNewline } from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptEventControllerDeps = {
   recordTurnActivity: (activityType: string) => void

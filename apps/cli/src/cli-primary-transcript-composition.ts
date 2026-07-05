@@ -8,7 +8,7 @@ import { createPrimaryTranscriptRenderController } from "./primary-transcript-re
 import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
-import { reindexTranscriptEntries } from "./transcript-text.js"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,

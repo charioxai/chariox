@@ -30,12 +30,10 @@ import {
   previewLineForTerminalRecord,
 } from "./transcript-preview.js"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
+import { trimSingleTrailingNewline } from "@arroba/kernel-client/transcript-entry-state"
 import {
   shouldRenderProviderStatus,
 } from "./transcript.js"
-import {
-  trimSingleTrailingNewline,
-} from "./transcript-text.js"
 import type { WorkflowDesignOpForwarded } from "@arroba/kernel-client/kernel-types"
 import type {
   AgentRuntimeActivity,

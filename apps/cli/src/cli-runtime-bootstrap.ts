@@ -54,9 +54,7 @@ import {
   selectResponsePaneAgents,
 } from "./response-panes.js"
 import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
-import {
-  reindexTranscriptEntries,
-} from "./transcript-text.js"
+import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 import {
   inferWorkspaceTargetsFromLaunchDirectory,
 } from "./workspace-launch-targets.js"
