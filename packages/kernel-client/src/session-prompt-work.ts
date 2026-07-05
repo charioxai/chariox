@@ -65,6 +65,39 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   }
 }
 
+export function sessionQueuedPromptCount(
+  session: RuntimeSession,
+  agentId: string | null | undefined = null,
+): number {
+  if (!agentId) {
+    return sessionPromptWorkSummary(session).queued
+  }
+  if (!sessionHasAgent(session, agentId)) {
+    return 0
+  }
+  if (session.agent_activity) {
+    const activity = session.agent_activity[agentId]
+    if (!activity) {
+      return 0
+    }
+    const projection = projectAgentRuntimeActivity(activity)
+    if (projection.queuedPromptCountExplicit) {
+      return projection.queuedPromptCount
+    }
+    if (!agentRuntimeActivityIsBusy(activity)) {
+      return 0
+    }
+  }
+  const promptState = sessionPromptStateRecordForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptState?.queued_prompts?.length ?? 0
+  }
+  if (session.agent_activity) {
+    return 0
+  }
+  return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId).length
+}
+
 export function sessionAgentIsBusy(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,

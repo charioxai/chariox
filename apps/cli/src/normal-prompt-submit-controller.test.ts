@@ -65,7 +65,15 @@ test("normal prompt submit drops stale focused agent ids", async () => {
 
 test("normal prompt submit reports queued status with active prompt id", async () => {
   const harness = createHarness({
-    submitPrompt: async () => promptSubmissionResult("session-submitted", null, "Queued", "prompt-active"),
+    submitPrompt: async () => ({
+      ...promptSubmissionResult("session-submitted", null, "Queued", "prompt-active"),
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", "prompt-active", {
+          agents: [agent("agent-1")],
+        }),
+      },
+    }),
   })
 
   await harness.controller.submit("hello\n")
@@ -82,6 +90,7 @@ test("normal prompt submit reports queued status from per-agent active prompt st
       payload: {
         outcome: {},
         session: runtimeSession("session-submitted", null, {
+          agents: [agent("agent-1")],
           prompt_states: {
             "agent-1": {
               active_prompt: {
@@ -109,6 +118,45 @@ test("normal prompt submit reports queued status from per-agent active prompt st
 
   assert.deepEqual(harness.statusLines(), ["Prompt queued behind prompt-active-agent."])
   assert.deepEqual(harness.appendedPrompts(), [])
+})
+
+test("normal prompt submit logs projected queued prompt counts", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => ({
+      ...promptSubmissionResult("session-submitted", "agent-1", "Queued"),
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", null, {
+          agents: [agent("agent-1")],
+          prompt_states: {
+            "agent-1": {
+              active_prompt: null,
+              queued_prompts: [{
+                id: "stale-queued",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-1",
+                prompt: "stale",
+                status: "queued",
+              }],
+            },
+          },
+          agent_activity: {
+            "agent-1": {
+              status: "working",
+              prompt_status: "queued",
+              busy: true,
+              queued_prompt_count: 2,
+              unread_idle_output: false,
+            },
+          },
+        }),
+      },
+    }),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.equal(harness.logInfos().find((entry) => entry.message === "prompt submitted")?.fields.queued_prompts, 2)
 })
 
 test("normal prompt submit restores UI after submit failure", async () => {
@@ -156,6 +204,7 @@ function createHarness(options: {
   const workingValues: boolean[] = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   const logErrors: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const logInfos: Array<{ message: string; fields: Record<string, unknown> }> = []
   const fatalErrors: string[] = []
   let clearPromptCount = 0
 
@@ -229,6 +278,9 @@ function createHarness(options: {
     logError: (message, fields) => {
       logErrors.push({ message, fields })
     },
+    logInfo: (message, fields) => {
+      logInfos.push({ message, fields })
+    },
     formatError: (error) => error instanceof Error ? error.message : String(error),
   })
 
@@ -247,9 +299,30 @@ function createHarness(options: {
     submittingValues: () => submittingValues,
     workingValues: () => workingValues,
     footerMessages: () => footerMessages,
+    logInfos: () => logInfos,
     logErrors: () => logErrors,
     fatalErrors: () => fatalErrors,
     clearPromptCount: () => clearPromptCount,
+  }
+}
+
+function agent(id: string): RuntimeSession["agents"][number] {
+  return {
+    id,
+    agent_ref: id,
+    session_id: "session-submitted",
+    alias: id,
+    provider: "codex",
+    model: null,
+    worktree_id: "/workspace/tree",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
   }
 }
 

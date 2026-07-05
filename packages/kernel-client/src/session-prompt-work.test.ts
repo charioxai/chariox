@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   sessionAgentIsBusy,
   sessionProjectedStreamingAgentId,
+  sessionQueuedPromptCount,
   sessionPromptWorkByAgent,
   sessionPromptWorkSummary,
 } from "./session-prompt-work.js"
@@ -57,6 +58,9 @@ test("session prompt work summary treats prompt states as runtime authority", ()
     "agent-2": true,
     "agent-3": true,
   })
+  assert.equal(sessionQueuedPromptCount(session), 1)
+  assert.equal(sessionQueuedPromptCount(session, "agent-1"), 0)
+  assert.equal(sessionQueuedPromptCount(session, "agent-3"), 1)
 })
 
 test("session prompt work prefers projected activity over stale prompt state", () => {
@@ -100,6 +104,7 @@ test("session prompt work prefers projected activity over stale prompt state", (
     "agent-1": false,
     "agent-2": true,
   })
+  assert.equal(sessionQueuedPromptCount(session, "agent-1"), 0)
 })
 
 test("session prompt work ignores projected activity outside session agents", () => {
@@ -142,6 +147,50 @@ test("session prompt work ignores projected activity outside session agents", ()
   })
   assert.equal(sessionAgentIsBusy(session, "agent-ghost"), false)
   assert.equal(sessionProjectedStreamingAgentId(session), null)
+  assert.equal(sessionQueuedPromptCount(session), 0)
+  assert.equal(sessionQueuedPromptCount(session, "agent-ghost"), 0)
+})
+
+test("session queued prompt count uses explicit projected activity counts", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "stale-queued",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "stale",
+          status: "queued",
+        }],
+      },
+      "agent-2": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        queued_prompt_count: 2,
+        unread_idle_output: false,
+      },
+      "agent-2": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
+  })
+
+  assert.equal(sessionQueuedPromptCount(session), 2)
+  assert.equal(sessionQueuedPromptCount(session, "agent-1"), 2)
+  assert.equal(sessionQueuedPromptCount(session, "agent-2"), 0)
 })
 
 test("session projected streaming agent follows projected activity before legacy prompts", () => {

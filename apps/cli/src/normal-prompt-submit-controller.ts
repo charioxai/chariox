@@ -14,8 +14,8 @@ import {
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import {
   sessionActivePromptIdForAgent,
-  sessionPromptStateForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
+import { sessionQueuedPromptCount } from "@arroba/kernel-client/session-prompt-work"
 
 export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
@@ -109,9 +109,7 @@ export function createNormalPromptSubmitController(
         deps.setWorking(true)
         deps.updateSessionChrome()
         const activePromptId = sessionActivePromptIdForAgent(payload.session, submittedTargetAgentId)
-        const queuedPromptCount = submittedTargetAgentId
-          ? sessionPromptStateForAgent(payload.session, submittedTargetAgentId)?.queued_prompts.length ?? 0
-          : payload.session.queued_prompts.length
+        const queuedPromptCount = sessionQueuedPromptCount(payload.session, submittedTargetAgentId)
         deps.logInfo?.("prompt submitted", {
           outcome: outcomeName,
           active_prompt_id: activePromptId,
