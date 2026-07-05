@@ -6,6 +6,7 @@ import {
   sessionAgentHasUnreadIdleOutput,
   sessionAgentPaneStatusBadge,
   sessionAgentRuntimeDisplayState,
+  sessionAgentRuntimeDisplayStates,
   sessionAgentRuntimeState,
   sessionFocusedStatusBadge,
   sessionStatusLabel,
@@ -211,6 +212,10 @@ test("session runtime display marks unfocused unread idle output as done", () =>
   assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({ id: "agent-1" })), "Done")
   assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-focused"), false)
   assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({ id: "agent-focused" })), "Idle")
+  assert.deepEqual(sessionAgentRuntimeDisplayStates(session), [
+    { id: "agent-focused", state: "Idle" },
+    { id: "agent-1", state: "Done" },
+  ])
 })
 
 test("session runtime display ignores unread activity outside session agents", () => {

@@ -59,6 +59,11 @@ export type SessionAgentBusyState = {
   busy: boolean
 }
 
+export type SessionAgentRuntimeDisplayState = {
+  id: string
+  state: AgentRuntimeDisplayState
+}
+
 export function sessionStatusMode(options: {
   readonly daemonDisconnected: boolean
   readonly working: boolean
@@ -221,6 +226,18 @@ export function sessionAgentRuntimeDisplayState(
 ): AgentRuntimeDisplayState {
   const runtimeState = sessionAgentRuntimeState(session, agent)
   return sessionAgentHasUnreadIdleOutput(session, agent.id) && runtimeState === "Idle" ? "Done" : runtimeState
+}
+
+export function sessionAgentRuntimeDisplayStates(
+  session: RuntimeSession | null | undefined,
+): readonly SessionAgentRuntimeDisplayState[] {
+  if (!session) {
+    return []
+  }
+  return session.agents.map((agent) => ({
+    id: agent.id,
+    state: sessionAgentRuntimeDisplayState(session, agent),
+  }))
 }
 
 export function agentRuntimeStateFromProjection(

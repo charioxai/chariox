@@ -3,6 +3,9 @@ import {
   sessionHasAgentRuntimeProjection,
   sessionAgentIsBusy,
 } from "@arroba/kernel-client/session-prompt-work"
+import {
+  sessionAgentRuntimeDisplayStates,
+} from "@arroba/kernel-client/session-runtime-status"
 import { createEffect } from "solid-js"
 
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
@@ -293,10 +296,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     deps.streamingAgentId()
     deps.workspaceLiveSyncStatus()
     deps.agentBusyLatches()
-    for (const agent of deps.sessionState().agents) {
-      agent.is_processing
-      agent.state
-    }
+    sessionAgentRuntimeDisplayStates(deps.sessionState())
     deps.agentActivityLabels()
     updateSessionChrome()
   })
