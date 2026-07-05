@@ -34,6 +34,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
 
   if (session.agent_activity) {
     const activities = Object.entries(session.agent_activity)
+      .filter(([agentId]) => sessionHasAgent(session, agentId))
     const projectedQueued = promptWorkCountFromProjectedActivities(
       activities.map(([, activity]) => activity),
     )

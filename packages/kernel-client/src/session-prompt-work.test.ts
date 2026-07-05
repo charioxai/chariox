@@ -102,6 +102,48 @@ test("session prompt work prefers projected activity over stale prompt state", (
   })
 })
 
+test("session prompt work ignores projected activity outside session agents", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+      },
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_prompt_count: 1,
+        queued_prompt_count: 3,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-ghost",
+          provider_run_id: "run-ghost",
+          prompt_origin: "external",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 0,
+    queued: 0,
+    busyAgents: 0,
+  })
+  assert.deepEqual(sessionPromptWorkByAgent(session), {
+    "agent-1": false,
+  })
+  assert.equal(sessionAgentIsBusy(session, "agent-ghost"), false)
+  assert.equal(sessionProjectedStreamingAgentId(session), null)
+})
+
 test("session projected streaming agent follows projected activity before legacy prompts", () => {
   assert.equal(sessionProjectedStreamingAgentId(makeSession({
     active_prompt: {
