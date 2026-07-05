@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   providerRunRecoveryActions,
+  remoteWorkerProviderRunIsMissing,
   remoteWorkerProviderRunRecoveryAction,
 } from "./provider-run-recovery.js"
 
@@ -57,6 +58,33 @@ test("providerRunRecoveryActions uses projected busy state when supplied", () =>
   }), [
     "run /kernel remote-runtime and /machine kernels hetzner; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent if no active worker run appears",
   ])
+})
+
+test("remoteWorkerProviderRunIsMissing shares legacy and projected busy policy", () => {
+  const agent = {
+    id: "agent-1",
+    agent_ref: "A1",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_machine_id: "hetzner",
+    },
+  }
+
+  assert.equal(remoteWorkerProviderRunIsMissing({ agent }), true)
+  assert.equal(remoteWorkerProviderRunIsMissing({ agent, agentBusy: false }), false)
+  assert.equal(remoteWorkerProviderRunIsMissing({
+    agent: {
+      ...agent,
+      state: "Idle",
+      is_processing: false,
+      remote_execution: {
+        worker_machine_id: "hetzner",
+        active_worker_provider_run_id: "worker-run-1",
+      },
+    },
+    agentBusy: true,
+  }), false)
 })
 
 test("providerRunRecoveryActions stays quiet for healthy local and remote runs", () => {

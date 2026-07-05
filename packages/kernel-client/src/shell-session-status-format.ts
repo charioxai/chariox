@@ -1,10 +1,13 @@
-import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
+import type { RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionGrantPlacementSummary,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
-import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import {
+  remoteWorkerProviderRunIsMissing,
+  remoteWorkerProviderRunRecoveryAction,
+} from "./provider-run-recovery.js"
 import {
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
@@ -289,11 +292,13 @@ function formatSessionNextActions(
   return actions
 }
 
-function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: AgentInstance): boolean {
-  if (!session.agent_activity && !session.prompt_states) {
-    return agent.state === "Working" || agent.is_processing
-  }
-  return sessionAgentIsBusy(session, agent.id)
+function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: RuntimeSession["agents"][number]): boolean {
+  return remoteWorkerProviderRunIsMissing({
+    agent,
+    agentBusy: session.agent_activity || session.prompt_states
+      ? sessionAgentIsBusy(session, agent.id)
+      : null,
+  })
 }
 
 function formatSliceAuthNextAction(

@@ -1,14 +1,16 @@
 import { basename } from "node:path"
 
 import type {
-  AgentInstance,
   CloudCollaborator,
   CloudSessionMember,
   RuntimeSession,
   SessionInvite,
   SessionMember,
 } from "./kernel-types.js"
-import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import {
+  remoteWorkerProviderRunIsMissing,
+  remoteWorkerProviderRunRecoveryAction,
+} from "./provider-run-recovery.js"
 import { sessionAgentIsBusy } from "./shell-agent-activity.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
@@ -68,18 +70,16 @@ function formatSessionRemoteRuntime(session: RuntimeSession): string {
   return `${remote}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"} - next ${next}`
 }
 
-function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: AgentInstance): boolean {
-  const remote = agent.remote_execution
-  if (!remote) return false
-  const workerRun = remote.active_worker_provider_run_id?.trim()
-  if (workerRun) return false
-  if (!session.agent_activity && !session.prompt_states) {
-    return agent.state === "Working" || agent.is_processing
-  }
-  return sessionAgentIsBusy(session, agent.id)
+function remoteAgentHasWorkerRunGap(session: RuntimeSession, agent: RuntimeSession["agents"][number]): boolean {
+  return remoteWorkerProviderRunIsMissing({
+    agent,
+    agentBusy: session.agent_activity || session.prompt_states
+      ? sessionAgentIsBusy(session, agent.id)
+      : null,
+  })
 }
 
-function remoteAgentIsSliceBacked(agent: AgentInstance): boolean {
+function remoteAgentIsSliceBacked(agent: RuntimeSession["agents"][number]): boolean {
   return agent.remote_execution?.worker_kernel_id?.startsWith("slice:") ?? false
 }
 
