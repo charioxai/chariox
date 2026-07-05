@@ -38,6 +38,7 @@
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
     "./session-history-preview": "./dist/session-history-preview.js",
+    "./session-history-transcript": "./dist/session-history-transcript.js",
     "./session-config-projection": "./dist/session-config-projection.js",
     "./session-lifecycle-state": "./dist/session-lifecycle-state.js",
     "./session-agent-resolver": "./dist/session-agent-resolver.js",
