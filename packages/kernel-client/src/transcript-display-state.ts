@@ -87,7 +87,10 @@ export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEnt
   }
 
   const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
-  if (!transcriptTurnIsCollapsible(turnEntries, inferredActiveHistoryTurnId(normalized))) {
+  if (
+    inferredActiveHistoryTurnIds(normalized).has(latestTurnId)
+    || !transcriptTurnIsCollapsible(turnEntries)
+  ) {
     return sortedTurnIds(nextCollapsedTurnIds)
   }
 
@@ -108,12 +111,13 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
   const collapsedTurnIdSet = new Set(collapsedTurnIds)
   let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
-  const effectiveActiveTurnId = activeTurnId ?? inferredActiveHistoryTurnId(normalized)
+  const activeHistoryTurnIds = inferredActiveHistoryTurnIds(normalized)
 
   for (const turnId of turnIds) {
     const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
     const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
-    const collapsibleTurn = transcriptTurnIsCollapsible(turnEntries, effectiveActiveTurnId)
+    const collapsibleTurn = !activeHistoryTurnIds.has(turnId)
+      && transcriptTurnIsCollapsible(turnEntries, activeTurnId)
     const expanded = collapsibleTurn ? !collapsedTurnIdSet.has(turnId) : false
 
     for (const entry of turnEntries) {
@@ -169,14 +173,13 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
   return normalized as TEntry[]
 }
 
-function inferredActiveHistoryTurnId(
+function inferredActiveHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
-): number | null {
-  const activeTurnIds = entries
+): ReadonlySet<number> {
+  return new Set(entries
     .filter((entry) => entry.historyTurnCompletedAtMs === null)
     .map((entry) => entry.turnId)
-    .filter((turnId): turnId is number => typeof turnId === "number")
-  return activeTurnIds.at(-1) ?? null
+    .filter((turnId): turnId is number => typeof turnId === "number"))
 }
 
 export function setTranscriptTurnExpanded<TEntry extends TranscriptDisplayEntry>(

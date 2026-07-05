@@ -150,6 +150,32 @@ test("applyTranscriptDisplayState infers active turns from history lifecycle met
   )
 })
 
+test("applyTranscriptDisplayState keeps every incomplete history turn expanded", () => {
+  const entries = applyTranscriptDisplayState([
+    ...baseTurnEntries().map((entry) => ({
+      ...entry,
+      historyTurnCompletedAtMs: null,
+    })),
+    { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null },
+    { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null },
+    { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null },
+  ], [1, 2])
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => [entry.turnId ?? null, entry.role]),
+    [
+      [1, "user"],
+      [1, "reasoning"],
+      [1, "tool"],
+      [1, "assistant"],
+      [2, "user"],
+      [2, "reasoning"],
+      [2, "assistant"],
+    ],
+  )
+})
+
 test("collapseLatestTranscriptTurn marks only completed non-trivial turns", () => {
   assert.deepEqual(collapseLatestTranscriptTurn(baseTurnEntries()), [1])
   assert.deepEqual(
@@ -168,6 +194,21 @@ test("collapseLatestTranscriptTurn skips active history turns", () => {
       ...entry,
       historyTurnCompletedAtMs: null,
     }))),
+    [],
+  )
+})
+
+test("collapseLatestTranscriptTurn skips latest active history turn when earlier turns are also incomplete", () => {
+  assert.deepEqual(
+    collapseLatestTranscriptTurn([
+      ...baseTurnEntries().map((entry) => ({
+        ...entry,
+        historyTurnCompletedAtMs: null,
+      })),
+      { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null },
+      { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null },
+      { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null },
+    ]),
     [],
   )
 })
