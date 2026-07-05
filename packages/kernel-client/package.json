@@ -26,6 +26,7 @@
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
     "./provider-status": "./dist/provider-status.js",
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
+    "./queued-prompt-strip-state": "./dist/queued-prompt-strip-state.js",
     "./queued-prompt-selection": "./dist/queued-prompt-selection.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
     "./waiting-room-runtime-placement": "./dist/waiting-room-runtime-placement.js",
