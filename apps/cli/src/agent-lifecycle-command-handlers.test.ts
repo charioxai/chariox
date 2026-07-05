@@ -372,6 +372,7 @@ test("agent focus command applies focus, launches a run, and reports the focused
   const focusedSession = session({ focused_agent_id: agentB.id, agents: [agentA, agentB] })
   let flashedMessage = ""
   let launchedAgentId: string | null = null
+  let launchedVariant: string | null = null
   let appliedSessionId: string | null = null
 
   await handleAgentFocusCommand({
@@ -389,8 +390,9 @@ test("agent focus command applies focus, launches a run, and reports the focused
     refreshAgentPanes: async () => {},
     rebuildTranscript: () => {},
     cycleAgentFocus: async () => ({ agent: agentB, session: focusedSession }),
-    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => {
+    launchAgentProviderRun: async (_provider, _model, variant, agentId) => {
       launchedAgentId = agentId
+      launchedVariant = variant
       return providerRun({ agent_instance_id: agentId })
     },
     setProviderRunState: () => {},
@@ -403,8 +405,62 @@ test("agent focus command applies focus, launches a run, and reports the focused
   }, ["focus", agentB.id])
 
   assert.equal(launchedAgentId, agentB.id)
+  assert.equal(launchedVariant, agentB.effort)
   assert.equal(appliedSessionId, agentB.id)
   assert.equal(flashedMessage, "focused on agent agent-b")
+})
+
+test("agent focus command does not launch a local provider run for remote-backed agents", async () => {
+  const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const previousSession = session({ focused_agent_id: agentA.id, agents: [agentA, remoteAgent] })
+  const focusedSession = session({ focused_agent_id: remoteAgent.id, agents: [agentA, remoteAgent] })
+  let launched = false
+  let providerRunCleared = false
+
+  await handleAgentFocusCommand({
+    isAttached: () => true,
+    sessionState: () => previousSession,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual",
+    maxAgentsPerScreen: () => 4,
+    flashFooter: () => {},
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: remoteAgent, session: focusedSession }),
+    launchAgentProviderRun: async () => {
+      launched = true
+      return providerRun()
+    },
+    setProviderRunState: (run) => {
+      if (run === null) {
+        providerRunCleared = true
+      }
+    },
+    refreshSessionState: async () => focusedSession,
+    destroyAgent: async () => focusedSession,
+    focusAgent: async () => ({ agent: remoteAgent, session: focusedSession }),
+    resolveSessionAgent: () => ({ agent: remoteAgent, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["focus", remoteAgent.id])
+
+  assert.equal(launched, false)
+  assert.equal(providerRunCleared, true)
 })
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {

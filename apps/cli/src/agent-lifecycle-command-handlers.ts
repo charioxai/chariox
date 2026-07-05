@@ -10,6 +10,7 @@ import {
   selectResponsePaneAgents,
 } from "@arroba/kernel-client/response-pane-selection"
 import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import { resolveAttachTimeProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
 import {
   formatAgentInspectSummary as formatSharedAgentInspectSummary,
   formatAgentListSummary as formatSharedAgentListSummary,
@@ -184,12 +185,20 @@ async function applyFocusedAgentSession(
   if (shouldRefreshPaneContents) {
     await deps.refreshAgentPanes(nextSession)
   }
-  if (!nextSession.active_provider_run_id && agent) {
+  const launchDecision = resolveAttachTimeProviderLaunch(nextSession, {
+    provider: agent?.provider ?? nextSession.agent_defaults?.provider ?? "opencode",
+    model: agent?.model ?? deps.currentModelId(),
+    effort: agent?.effort ?? deps.currentVariantId(),
+  }, false)
+  if (launchDecision.action === "skip_launch") {
+    deps.setProviderRunState(null)
+  }
+  if (launchDecision.action === "launch_provider_run" && launchDecision.targetAgentId) {
     const run = await deps.launchAgentProviderRun(
-      agent.provider,
-      agent.model ?? deps.currentModelId(),
-      deps.currentVariantId(),
-      agent.id,
+      launchDecision.launch.provider,
+      launchDecision.launch.model,
+      launchDecision.launch.effort,
+      launchDecision.targetAgentId,
     )
     deps.setProviderRunState(run)
     deps.applySessionState(await deps.refreshSessionState(nextSession.id))
