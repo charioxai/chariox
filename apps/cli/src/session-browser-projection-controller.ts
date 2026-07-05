@@ -3,7 +3,7 @@ import type { SessionListEntry } from "./sessions.js"
 import {
   clampSessionBrowserIndex,
   sessionBrowserVisibleSessions,
-} from "./session-browser-key-policy.js"
+} from "@arroba/kernel-client/session-browser-policy"
 
 export type SessionBrowserProjectionControllerDeps = {
   isAttached: () => boolean

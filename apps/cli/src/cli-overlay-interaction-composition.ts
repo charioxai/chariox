@@ -15,7 +15,7 @@ import {
 import { createSessionBrowserController } from "./session-browser-controller.js"
 import {
   clampSessionBrowserIndex,
-} from "./session-browser-key-policy.js"
+} from "@arroba/kernel-client/session-browser-policy"
 import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 
 type AnyFn = (...args: any[]) => any

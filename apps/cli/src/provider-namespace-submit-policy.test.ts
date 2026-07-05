@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { validateProviderNamespaceSubmit } from "./provider-namespace-submit-policy.js"
+import { validateProviderNamespaceSubmit } from "@arroba/kernel-client/provider-namespace-submit-policy"
 
 test("provider namespace submit policy accepts matching focused providers", () => {
   assert.deepEqual(

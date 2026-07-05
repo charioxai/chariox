@@ -10,7 +10,7 @@ import {
 import type { BackendProviderId } from "./provider-catalog.js"
 import {
   validateProviderNamespaceSubmit,
-} from "./provider-namespace-submit-policy.js"
+} from "@arroba/kernel-client/provider-namespace-submit-policy"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 

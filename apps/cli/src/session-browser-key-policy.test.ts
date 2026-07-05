@@ -6,7 +6,7 @@ import {
   nextSessionBrowserIndex,
   resolveSessionBrowserKeyAction,
   sessionBrowserVisibleSessions,
-} from "./session-browser-key-policy.js"
+} from "@arroba/kernel-client/session-browser-policy"
 
 test("resolveSessionBrowserKeyAction ignores inactive or modified events", () => {
   assert.deepEqual(resolveSessionBrowserKeyAction({

@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { createSessionBrowserController, type SessionBrowserControllerDeps } from "./session-browser-controller.js"
-import { clampSessionBrowserIndex, sessionBrowserVisibleSessions } from "./session-browser-key-policy.js"
+import { clampSessionBrowserIndex, sessionBrowserVisibleSessions } from "@arroba/kernel-client/session-browser-policy"
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
