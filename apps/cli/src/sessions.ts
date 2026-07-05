@@ -9,6 +9,11 @@ import {
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
+import {
+  decideBootstrapAction,
+  selectAttachableSession,
+  type SessionBootstrapDecision,
+} from "@arroba/kernel-client/session-bootstrap-policy"
 
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
@@ -61,11 +66,11 @@ export type SessionActivitySummary = {
   remote_extension_pending_revoke_count?: number
 }
 
-export type SessionBootstrapDecision =
-  | { action: "create" }
-  | { action: "resolve"; sessionRef: string }
-  | { action: "attach_existing"; sessionId: string }
-  | { action: "none" }
+export {
+  decideBootstrapAction,
+  selectAttachableSession,
+  type SessionBootstrapDecision,
+}
 
 export function formatSessionList(sessions: SessionListEntry[], currentSessionId?: string) {
   if (sessions.length === 0) {
@@ -160,33 +165,4 @@ export function sessionBrowserSortTime(session: {
   created_at_ms?: number | null
 }) {
   return waitingRoomSessionRecencyMs(session)
-}
-
-export function selectAttachableSession(
-  sessions: SessionListEntry[],
-  workspace: string,
-  worktree: string,
-) {
-  return sessions
-    .filter((session) => session.workspace_id === workspace && session.worktree_id === worktree && session.status !== "Ended")
-    .sort((left, right) => (right.created_at_ms ?? 0) - (left.created_at_ms ?? 0))[0] ?? null
-}
-
-export function decideBootstrapAction(
-  options: { createSession?: boolean; sessionId?: string },
-  sessions: SessionListEntry[],
-  workspace: string,
-  worktree: string,
-): SessionBootstrapDecision {
-  if (options.createSession) {
-    return { action: "create" }
-  }
-  if (options.sessionId) {
-    return { action: "resolve", sessionRef: options.sessionId }
-  }
-  const existing = selectAttachableSession(sessions, workspace, worktree)
-  if (existing) {
-    return { action: "none" }
-  }
-  return { action: "none" }
 }
