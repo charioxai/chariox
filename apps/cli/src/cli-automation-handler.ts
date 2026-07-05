@@ -8,7 +8,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaLogger } from "./logging.js"
-import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
+import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import {
   automationSnapshotMatches,

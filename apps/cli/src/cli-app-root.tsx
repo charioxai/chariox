@@ -87,7 +87,7 @@ import {
   queuedPromptStripItemToTranscriptEntry,
   type QueuedPromptStripItem,
   type QueuedPromptStripStatusOverride,
-} from "./queued-prompt-strip-state.js"
+} from "@arroba/kernel-client/queued-prompt-strip-state"
 import {
   nextQueuedPromptSelectionId,
   selectedQueuedPromptIndex,

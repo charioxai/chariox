@@ -10,7 +10,7 @@ import type {
   ExternalProviderSessionRecord,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
-import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
+import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"

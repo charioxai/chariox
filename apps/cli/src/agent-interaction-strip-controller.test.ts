@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { RuntimeInteraction } from "./cli-types.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
-import type { QueuedPromptStripItem } from "./queued-prompt-strip-state.js"
+import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
 
 test("agent interaction strip controller renders current pane and interaction inputs", () => {
   const interaction = interactionFixture()
