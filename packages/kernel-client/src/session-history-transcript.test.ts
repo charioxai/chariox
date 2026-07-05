@@ -1,10 +1,16 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SessionHistoryEntry, SessionHistoryPageEntry } from "./kernel-types.js"
+import type {
+  SessionHistoryEntry,
+  SessionHistoryOutlineAgent,
+  SessionHistoryPageEntry,
+} from "./kernel-types.js"
 import {
+  hydrateSessionHistoryOutlineAgentEntries,
   hydrateSessionHistoryTranscriptEntries,
   mergePrependedHistoryTranscriptFragments,
+  replaceSessionHistoryBlobPlaceholder,
   stitchPrependedHistoryTranscript,
   type SessionHistoryTranscriptEntry,
 } from "./session-history-transcript.js"
@@ -229,6 +235,172 @@ test("shared history transcript fragment merge rebuilds structured tool fragment
   assert.equal(merged.sourceText, toolPayload)
 })
 
+test("session history outline hydration carries prompt identity into entries and blob placeholders", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      external_provider: " codex ",
+      external_provider_session_id: " thread-1 ",
+      external_provider_turn_id: " user-1 ",
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "build\n"),
+      entries: [pageEntry(1, "provider_reasoning", "thinking\n")],
+      summary: pageEntry(2, "provider_output", "done\n"),
+      blobs: [blob("blob-1", "provider_tool", 3, "tool", "1 tool called")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  assert.equal(entries.find((entry) => entry.role === "user")?.promptId, "prompt-1")
+  assert.equal(entries.find((entry) => entry.role === "reasoning")?.promptId, "prompt-1")
+  assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptId, "prompt-1")
+  const prompt = entries.find((entry) => entry.role === "user")
+  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(prompt?.externalProvider, "codex")
+  assert.equal(prompt?.externalProviderSessionId, "thread-1")
+  assert.equal(prompt?.externalProviderTurnId, "user-1")
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(placeholder?.source, "external_provider_observed")
+  assert.equal(placeholder?.externalProvider, "codex")
+  assert.equal(placeholder?.externalProviderSessionId, "thread-1")
+  assert.equal(placeholder?.externalProviderTurnId, "user-1")
+})
+
+test("session history outline hydration orders turns and keeps stable turn ids", () => {
+  const currentOnlyEntries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [outlineTurn(20, "prompt-current", "current prompt\n", "current reply\n")],
+    next_cursor: null,
+  })
+  const currentOnlyTurnId = currentOnlyEntries.find((entry) => entry.promptId === "prompt-current" && entry.role === "user")?.turnId
+
+  const prependedEntries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [
+      outlineTurn(10, "prompt-older", "older prompt\n", "older reply\n"),
+      outlineTurn(20, "prompt-current", "current prompt\n", "current reply\n"),
+    ],
+    next_cursor: null,
+  })
+  const semanticEntries = prependedEntries.filter((entry) => entry.text !== "click to collapse")
+  const prependedTurnId = prependedEntries.find((entry) => entry.promptId === "prompt-current" && entry.role === "user")?.turnId
+
+  assert.deepEqual(semanticEntries.map((entry) => entry.text.trim()), [
+    "older prompt",
+    "older reply",
+    "current prompt",
+    "current reply",
+  ])
+  assert.equal(currentOnlyTurnId, 21)
+  assert.equal(prependedTurnId, currentOnlyTurnId)
+})
+
+test("session history outline hydration keeps incomplete external turns active", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: "external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      completed_at_ms: null,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
+      summary: pageEntry(2, "provider_output", "partial assistant\n"),
+      blobs: [blob("blob-1", "provider_tool", 3, "tool", "running tool")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(entries.filter((entry) => !entry.hidden).map((entry) => entry.role), [
+    "user",
+    "reasoning",
+    "assistant",
+    "tool",
+  ])
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, null)
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, null)
+})
+
+test("session history outline hydration projects sparse external turn metadata", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      prompt_origin: " External ",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: null,
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_output", "external reply\n")],
+      summary: null,
+      blobs: [blob("blob-1", "provider_reasoning", 2, "thinking", "reasoning")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const prompt = entries.find((entry) => entry.role === "user")
+  const assistant = entries.find((entry) => entry.role === "assistant")
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(assistant?.source, "external_provider_observed")
+  assert.equal(placeholder?.source, "external_provider_observed")
+  assert.equal(prompt?.externalProvider, "codex")
+  assert.equal(prompt?.externalProviderSessionId, "thread-1")
+  assert.equal(prompt?.externalProviderTurnId, undefined)
+})
+
+test("session history blob replacement preserves prompt and external turn metadata", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "build\n"),
+      entries: [],
+      summary: pageEntry(2, "provider_output", "done\n"),
+      blobs: [blob("blob-1", "provider_tool", 1, "tool", "1 tool called")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.ok(placeholder)
+
+  const replaced = replaceSessionHistoryBlobPlaceholder(
+    entries,
+    placeholder.id,
+    {
+      blob_id: "blob-1",
+      entries: [pageEntry(1, "provider_tool", JSON.stringify({
+        id: "tool-1",
+        tool: "bash",
+        status: "completed",
+        output: "ok",
+      }))],
+    },
+    [],
+  )
+
+  const tool = replaced.find((entry) => entry.role === "tool")
+  assert.equal(tool?.promptId, "prompt-1")
+  assert.equal(tool?.source, "external_provider_observed")
+  assert.equal(tool?.externalProvider, "codex")
+  assert.equal(tool?.externalProviderSessionId, "thread-1")
+  assert.equal(tool?.externalProviderTurnId, "user-1")
+})
+
 function pageEntry(
   entryIndex: number,
   kind: SessionHistoryEntry["kind"],
@@ -250,6 +422,43 @@ function pageEntry(
       text,
       ...overrides,
     },
+  }
+}
+
+function outlineTurn(
+  entryIndex: number,
+  promptId: string,
+  promptText: string,
+  replyText: string,
+) {
+  return {
+    turn_id: `turn-${entryIndex}`,
+    prompt_id: promptId,
+    started_at_ms: entryIndex,
+    user_prompt: pageEntry(entryIndex, "user_prompt", promptText),
+    entries: [pageEntry(entryIndex + 1, "provider_output", replyText)],
+    summary: null,
+    blobs: [],
+  }
+}
+
+function blob(
+  blobId: string,
+  kind: SessionHistoryEntry["kind"],
+  sequenceStart: number,
+  title: string,
+  summary: string,
+) {
+  return {
+    blob_id: blobId,
+    kind,
+    title,
+    summary,
+    sequence_start: sequenceStart,
+    sequence_end: sequenceStart,
+    entry_count: 1,
+    total_chars: 80,
+    timestamp_ms: sequenceStart,
   }
 }
 

@@ -5,9 +5,13 @@ import {
   type ToolTranscriptUpdate,
 } from "@arroba/tool-display"
 import {
+  applyExternalProviderObservedTurnMetadata,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservation,
+  promptOriginExternalProviderObservedMetadata,
+  transcriptExternalProviderObservedTurnMetadata,
+  type ExternalProviderObservedTurnMetadata,
 } from "./external-provider-observation.js"
 import { previewLineForSessionHistoryEntry } from "./session-history-preview.js"
 import {
@@ -22,12 +26,24 @@ import {
   mergePrependedTranscriptHistoryFragments,
   stitchPrependedTranscriptHistory,
 } from "./transcript-history-stitching.js"
+import { applyTranscriptDisplayState } from "./transcript-display-state.js"
 import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
+import { reindexTranscriptEntries } from "./transcript-entry-state.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
+import {
+  orderedSessionHistoryOutlineItems,
+  orderedSessionHistoryOutlineTurns,
+  sessionHistoryOutlineTurnCompletedAtMs,
+  sessionHistoryOutlineTurnDisplayId,
+} from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
 import type {
   SessionHistoryEntry,
   SessionHistoryExternalObservation,
+  SessionHistoryBlobContent,
+  SessionHistoryOutlineAgent,
+  SessionHistoryOutlineBlob,
+  SessionHistoryOutlineTurn,
   SessionHistoryPageEntry,
   SessionHistoryPromptAttachment,
 } from "./kernel-types.js"
@@ -50,7 +66,21 @@ export type SessionHistoryTranscriptEntry = {
   externalObservation?: SessionHistoryExternalObservation | null
   emphasis?: "muted" | "warning" | "error"
   turnId?: number
+  hidden?: boolean
+  toggleMode?: "expand" | "collapse"
+  blobCollapsible?: boolean
+  blobCollapsed?: boolean
+  blobTitle?: string
+  blobSummary?: string
   historyDeferred?: boolean
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+  historyBlobLoaded?: boolean
+  historyBlobLoading?: boolean
+  historyBlobError?: string
+  historyTurnCompletedAtMs?: number | null
   historyEntryIndex?: number
   historyFragmentStart?: number
   historyFragmentEnd?: number
@@ -243,6 +273,121 @@ export function hydrateSessionHistoryTranscriptEntries(
   return markDeferredHistoryTranscriptEntries(entries)
 }
 
+export function hydrateSessionHistoryOutlineAgentEntries(
+  agent: SessionHistoryOutlineAgent,
+): SessionHistoryTranscriptEntry[] {
+  const entries: SessionHistoryTranscriptEntry[] = []
+  let nextId = 0
+  let activeTurnId: number | null = null
+
+  orderedSessionHistoryOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
+    const turnId = sessionHistoryOutlineTurnDisplayId(turn, turnIndex)
+    const completedAtMs = sessionHistoryOutlineTurnCompletedAtMs(turn)
+    if (completedAtMs === null) {
+      activeTurnId = turnId
+    }
+    const externalMetadata = outlineTurnExternalMetadata(turn)
+    const promptEntries = hydrateSessionHistoryPageEntriesForTurn([turn.user_prompt], turnId, turn.prompt_id ?? null)
+    for (const entry of promptEntries) {
+      entries.push(applyOutlineTurnExternalMetadata(
+        applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+        externalMetadata,
+      ))
+    }
+    for (const item of orderedSessionHistoryOutlineItems(turn)) {
+      if (item.kind === "blob") {
+        entries.push(applyOutlineTurnExternalMetadata(
+          applyOutlineTurnLifecycleMetadata(
+            outlineBlobTranscriptEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
+            completedAtMs,
+          ),
+          externalMetadata,
+        ))
+        continue
+      }
+      const hydratedEntries = hydrateSessionHistoryPageEntriesForTurn([item.entry], turnId, turn.prompt_id ?? null)
+      for (const entry of hydratedEntries) {
+        entries.push(applyOutlineTurnExternalMetadata(
+          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+          externalMetadata,
+        ))
+      }
+    }
+  })
+
+  return applyTranscriptDisplayState(entries, [], activeTurnId) as SessionHistoryTranscriptEntry[]
+}
+
+export function replaceSessionHistoryBlobPlaceholder(
+  entries: SessionHistoryTranscriptEntry[],
+  entryId: number,
+  content: SessionHistoryBlobContent,
+  expandedTurnIds: readonly number[],
+): SessionHistoryTranscriptEntry[] {
+  const placeholder = entries.find((entry) => entry.id === entryId)
+  if (!placeholder?.historyBlobId) {
+    return entries
+  }
+  const turnId = placeholder.turnId
+  const externalMetadata = transcriptEntryExternalMetadata(placeholder)
+  const activeTurnId = placeholder.historyTurnCompletedAtMs === null
+    && typeof turnId === "number"
+    ? turnId
+    : null
+  const hydrated = hydrateSessionHistoryPageEntriesForTurn(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
+    const next: SessionHistoryTranscriptEntry = {
+      ...entry,
+      blobCollapsed: false,
+      historyBlobLoaded: true,
+    }
+    if (placeholder.historyBlobId) {
+      next.historyBlobSourceId = placeholder.historyBlobId
+    }
+    if (placeholder.historyBlobAgentId) {
+      next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
+    }
+    return applyOutlineTurnExternalMetadata(
+      applyOutlineTurnLifecycleMetadata(next, placeholder.historyTurnCompletedAtMs),
+      externalMetadata,
+    )
+  })
+  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
+  return applyTranscriptDisplayState(
+    reindexTranscriptEntries(replaced, 0),
+    expandedTurnIds,
+    activeTurnId,
+  ) as SessionHistoryTranscriptEntry[]
+}
+
+export function markSessionHistoryBlobLoading(
+  entries: SessionHistoryTranscriptEntry[],
+  entryId: number,
+  loading: boolean,
+  error?: string | null,
+): SessionHistoryTranscriptEntry[] {
+  return entries.map((entry) => {
+    if (entry.id !== entryId || !entry.historyBlobId) {
+      return entry
+    }
+    const next: SessionHistoryTranscriptEntry = {
+      ...entry,
+      historyBlobLoading: loading,
+    }
+    if (loading) {
+      next.blobSummary = "loading..."
+      delete next.historyBlobError
+      return next
+    }
+    if (error) {
+      next.historyBlobError = error
+      next.blobSummary = `failed: ${error}`
+      return next
+    }
+    delete next.historyBlobError
+    return next
+  })
+}
+
 export function previewLineForHistoryTranscriptEntry(entry: SessionHistoryEntry): string | null {
   return previewLineForSessionHistoryEntry(entry)
 }
@@ -313,5 +458,79 @@ function historyEntryTranscriptIdentityOptions(
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
+  }
+}
+
+type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
+
+function outlineTurnExternalMetadata(
+  turn: SessionHistoryOutlineTurn,
+): OutlineTurnExternalMetadata | null {
+  return promptOriginExternalProviderObservedMetadata(turn)
+}
+
+function applyOutlineTurnExternalMetadata(
+  entry: SessionHistoryTranscriptEntry,
+  metadata: OutlineTurnExternalMetadata | null,
+): SessionHistoryTranscriptEntry {
+  return applyExternalProviderObservedTurnMetadata({ ...entry }, metadata)
+}
+
+function transcriptEntryExternalMetadata(
+  entry: SessionHistoryTranscriptEntry,
+): OutlineTurnExternalMetadata | null {
+  return transcriptExternalProviderObservedTurnMetadata(entry)
+}
+
+function applyOutlineTurnLifecycleMetadata(
+  entry: SessionHistoryTranscriptEntry,
+  completedAtMs: number | null | undefined,
+): SessionHistoryTranscriptEntry {
+  if (completedAtMs === undefined) {
+    return entry
+  }
+  return {
+    ...entry,
+    historyTurnCompletedAtMs: completedAtMs,
+  }
+}
+
+function hydrateSessionHistoryPageEntriesForTurn(
+  pageEntries: SessionHistoryPageEntry[],
+  turnId?: number,
+  promptId?: string | null,
+): SessionHistoryTranscriptEntry[] {
+  const hydrateOptions = promptId === undefined ? {} : { promptId }
+  return hydrateSessionHistoryTranscriptEntries(pageEntries, hydrateOptions).map((entry) => ({
+    ...entry,
+    ...(turnId !== undefined ? { turnId } : {}),
+  }))
+}
+
+function outlineBlobTranscriptEntry(
+  blob: SessionHistoryOutlineBlob,
+  agentId: string,
+  turnId: number,
+  promptId: string | null,
+  id: number,
+): SessionHistoryTranscriptEntry {
+  return {
+    id,
+    role: sessionHistoryEntryKindTranscriptRole(blob.kind),
+    text: "",
+    sourceText: "",
+    turnId,
+    promptId,
+    blobCollapsible: true,
+    blobCollapsed: true,
+    blobTitle: blob.title,
+    blobSummary: blob.summary,
+    historyBlobId: blob.blob_id,
+    historyBlobAgentId: agentId,
+    historyBlobLoaded: false,
+    historyEntryIndex: blob.sequence_start,
+    historyFragmentStart: 0,
+    historyFragmentEnd: blob.total_chars,
+    historyTotalChars: blob.total_chars,
   }
 }
