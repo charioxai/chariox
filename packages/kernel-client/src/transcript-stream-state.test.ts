@@ -1,0 +1,154 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  applyTranscriptProviderChunk,
+  applyTranscriptToolUpdate,
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptEntryId,
+  normalizeTranscriptProviderChunk,
+  type TranscriptStreamEntry,
+} from "./transcript-stream-state.js"
+import type { ToolTranscriptUpdate } from "@arroba/tool-display"
+
+test("transcript stream state appends provider chunks to the current turn", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "user", "prompt", { turnId: 4 }),
+  ], {
+    role: "assistant",
+    chunk: "hello\r\n",
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.equal(result.updatedEntryId, 2)
+  assert.deepEqual(result.entries, [
+    entry(1, "user", "prompt", { turnId: 4 }),
+    entry(2, "assistant", "hello\n", { turnId: 4 }),
+  ])
+})
+
+test("transcript stream state merges adjacent assistant chunks", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "hel"),
+  ], {
+    role: "assistant",
+    chunk: "lo",
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.updatedEntryId, 1)
+  assert.equal(result.entries[0]?.text, "hello")
+})
+
+test("transcript stream state preserves prompt identity while merging chunks", () => {
+  const first = applyTranscriptProviderChunk<TranscriptStreamEntry>([], {
+    role: "assistant",
+    chunk: "hel",
+    mergeKey: "reply-1",
+    metadata: {
+      promptId: "prompt-1",
+      sourceAttachmentId: "attachment-1",
+    },
+  })
+  const second = applyTranscriptProviderChunk(first.entries, {
+    role: "assistant",
+    chunk: "lo",
+    mergeKey: "reply-1",
+    metadata: {
+      promptId: "prompt-1",
+      sourceAttachmentId: "attachment-1",
+    },
+  })
+
+  assert.equal(second.kind, "merged")
+  assert.equal(second.entries[0]?.text, "hello")
+  assert.equal(second.entries[0]?.promptId, "prompt-1")
+  assert.equal(second.entries[0]?.sourceAttachmentId, "attachment-1")
+})
+
+test("transcript stream state scopes reused merge keys to the current turn", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "user", "first", { turnId: 1 }),
+    entry(2, "assistant", "first reply", { turnId: 1, mergeKey: "reply" }),
+    entry(3, "user", "second", { turnId: 2 }),
+  ], {
+    role: "assistant",
+    chunk: "second reply",
+    mergeKey: "reply",
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.deepEqual(result.entries, [
+    entry(1, "user", "first", { turnId: 1 }),
+    entry(2, "assistant", "first reply", { turnId: 1, mergeKey: "reply" }),
+    entry(3, "user", "second", { turnId: 2 }),
+    entry(4, "assistant", "second reply", { turnId: 2, mergeKey: "reply" }),
+  ])
+})
+
+test("transcript stream state updates structured tool entries", () => {
+  const toolState = new Map<string, ToolTranscriptUpdate>()
+  const first = applyTranscriptToolUpdate<TranscriptStreamEntry>(
+    [],
+    '{"id":"tool-1","tool":"bash","status":"running"}',
+    toolState,
+  )
+  const second = applyTranscriptToolUpdate(
+    first.entries,
+    '{"id":"tool-1","tool":"bash","status":"completed","output":"done"}',
+    toolState,
+  )
+
+  assert.equal(toolState.get("tool-1")?.status, "completed")
+  assert.equal(first.kind, "appended")
+  assert.equal(second.kind, "merged")
+  assert.equal(second.updatedEntryId, 1)
+  assert.equal(second.entries[0]?.mergeKey, "tool-1")
+  assert.equal(second.entries[0]?.sourceText, JSON.stringify(toolState.get("tool-1")))
+})
+
+test("transcript stream state keeps unstructured tool output as source text", () => {
+  const result = applyTranscriptToolUpdate<TranscriptStreamEntry>([], "plain output", new Map())
+
+  assert.equal(result.kind, "appended")
+  assert.equal(result.entries[0]?.role, "tool")
+  assert.equal(result.entries[0]?.text, "plain output")
+  assert.equal(result.entries[0]?.sourceText, "plain output")
+})
+
+test("transcript stream helpers compute current turn and next ids", () => {
+  assert.equal(normalizeTranscriptProviderChunk("a\r\nb\rc"), "a\nb\nc")
+  assert.equal(computeCurrentTranscriptTurnId([
+    entry(1, "user", "first", { turnId: 3 }),
+    entry(2, "assistant", "reply", { turnId: 3 }),
+    entry(3, "user", "second", { turnId: 4 }),
+  ]), 4)
+  assert.equal(computeNextTranscriptEntryId([
+    entry(3, "assistant", "reply"),
+    entry(7, "tool", "tool"),
+  ]), 8)
+})
+
+test("transcript stream state treats empty normalized chunks as no-op", () => {
+  const result = applyTranscriptProviderChunk([entry(1, "assistant", "reply")], {
+    role: "assistant",
+    chunk: "",
+  })
+
+  assert.equal(result.kind, "noop")
+  assert.deepEqual(result.entries, [entry(1, "assistant", "reply")])
+})
+
+function entry(
+  id: number,
+  role: string,
+  text: string,
+  overrides: Partial<TranscriptStreamEntry> = {},
+): TranscriptStreamEntry {
+  return {
+    id,
+    role,
+    text,
+    ...overrides,
+  }
+}
