@@ -1,10 +1,14 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
-  externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
-  externalProviderObservedProviderStatusShouldRender,
-  historyEntryExternalProviderObservedMetadata,
 } from "@arroba/kernel-client/external-provider-observation"
+import {
+  terminalRecordIsPassiveExternalProviderTelemetry,
+  terminalRecordProviderStatusShouldRender,
+  terminalRecordTranscriptMetadata,
+  transcriptEntryWithTerminalMetadata,
+  type TerminalRecordTranscriptMetadata,
+} from "@arroba/kernel-client/terminal-record-transcript"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 import { isProviderIdleStatus } from "./runtime.js"
 
@@ -58,17 +62,6 @@ type KernelEventControllerDeps = {
   connectedStatusLine: string
   markAssistantMessageCompleted: (agentId: string | null | undefined) => void
   handleExternalProviderHistoryUpdated?: (agentId: string | null) => void
-}
-
-type TerminalRecordTranscriptMetadata = {
-  promptId?: string | null
-  sourceAttachmentId?: string | null
-  source?: TranscriptEntry["source"]
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  observedAtMs?: number | null
-  externalObservation?: TranscriptEntry["externalObservation"]
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
@@ -142,7 +135,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           break
         }
         case "provider_status":
-          if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
+          if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
             deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
           }
           break
@@ -189,7 +182,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
               break
             }
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
-            if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
+            if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
               deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
             }
             break
@@ -235,7 +228,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         if (activityLabel !== null) {
           deps.syncVisibleActivityLabel()
         }
-        if (terminalRecordProviderStatusShouldRender(record, text, deps)) {
+        if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
           deps.appendProviderChunk("status", text, "__provider_status__", undefined, metadata)
           deps.syncVisibleTranscriptPreview()
         }
@@ -300,44 +293,4 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
 function normalize(text: string) {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-}
-
-function transcriptEntryWithTerminalMetadata(
-  entry: Omit<TranscriptEntry, "id">,
-  metadata: TerminalRecordTranscriptMetadata,
-): Omit<TranscriptEntry, "id"> {
-  const next: Omit<TranscriptEntry, "id"> = { ...entry }
-  if (metadata.promptId !== undefined) next.promptId = metadata.promptId
-  if (metadata.sourceAttachmentId !== undefined) next.sourceAttachmentId = metadata.sourceAttachmentId
-  if (metadata.source !== undefined) next.source = metadata.source
-  if (metadata.externalProvider !== undefined) next.externalProvider = metadata.externalProvider
-  if (metadata.externalProviderSessionId !== undefined) next.externalProviderSessionId = metadata.externalProviderSessionId
-  if (metadata.externalProviderTurnId !== undefined) next.externalProviderTurnId = metadata.externalProviderTurnId
-  if (metadata.observedAtMs !== undefined) next.observedAtMs = metadata.observedAtMs
-  if (metadata.externalObservation !== undefined) next.externalObservation = metadata.externalObservation
-  return next
-}
-
-function terminalRecordTranscriptMetadata(record: TerminalOutputRecord): TerminalRecordTranscriptMetadata {
-  const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
-  return {
-    ...(record.prompt_id !== undefined ? { promptId: record.prompt_id } : {}),
-    ...(record.source_attachment_id !== undefined ? { sourceAttachmentId: record.source_attachment_id } : {}),
-    ...(externalObservedMetadata ?? {}),
-  }
-}
-
-function terminalRecordProviderStatusShouldRender(
-  record: TerminalOutputRecord,
-  text: string,
-  deps: Pick<KernelEventControllerDeps, "shouldRenderProviderStatus">,
-): boolean {
-  if (historyEntryExternalProviderObservedMetadata(record) !== null) {
-    return externalProviderObservedProviderStatusShouldRender({ ...record, text })
-  }
-  return deps.shouldRenderProviderStatus(text)
-}
-
-function terminalRecordIsPassiveExternalProviderTelemetry(record: TerminalOutputRecord): boolean {
-  return externalProviderObservedEntryIsPassiveTelemetry(record)
 }
