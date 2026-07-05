@@ -54,6 +54,23 @@ export function sessionPromptStateEntriesForSessionAgents(
     .map(([agentId, state]) => [agentId, normalizeAgentPromptState(state)] as const)
 }
 
+export function sessionProjectedPromptActivityEntriesForSessionAgents(
+  session: RuntimeSession,
+): readonly (readonly [string, AgentRuntimeActivityProjection])[] {
+  if (!session.agent_activity) {
+    return []
+  }
+  const entries: (readonly [string, AgentRuntimeActivityProjection])[] = []
+  for (const agent of session.agents) {
+    const projection = sessionProjectedPromptActivityForAgent(session, agent.id)
+    if (!projection || projection === "idle" || projection === "not_found") {
+      continue
+    }
+    entries.push([agent.id, projection])
+  }
+  return entries
+}
+
 export function agentPromptStateHasWork(state: SessionAgentPromptStateLike | null | undefined): boolean {
   return Boolean(state?.active_prompt) || Boolean(state?.queued_prompts?.length)
 }

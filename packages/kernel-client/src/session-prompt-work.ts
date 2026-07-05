@@ -5,13 +5,13 @@ import type {
 import {
   agentLegacyProcessingStateIsBusy,
   agentRuntimeActivityHasTurnWork,
-  agentRuntimeActivityIsBusy,
+  agentRuntimeActivityProjectionHasTurnWork,
   agentRuntimePromptStatusIsActivePrompt,
-  projectAgentRuntimeActivity,
+  type AgentRuntimeActivityProjection,
 } from "./agent-activity.js"
 import {
   agentPromptStateHasWork,
-  sessionHasAgent,
+  sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
@@ -35,19 +35,18 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
     : session.queued_prompts.length
 
   if (session.agent_activity) {
-    const activities = Object.entries(session.agent_activity)
-      .filter(([agentId]) => sessionHasAgent(session, agentId))
+    const activities = sessionProjectedPromptActivityEntriesForSessionAgents(session)
     const projectedQueued = promptWorkCountFromProjectedActivities(
-      activities.map(([, activity]) => activity),
+      activities.map(([, projection]) => projection),
     )
     return {
       active: activities.reduce(
-        (count, [agentId, activity]) =>
-          count + projectedActivePromptCount(activity, promptStates?.[agentId]),
+        (count, [agentId, projection]) =>
+          count + projectedActivePromptCount(projection, promptStates?.[agentId]),
         0,
       ),
       queued: projectedQueued ?? queued,
-      busyAgents: activities.filter(([, activity]) => agentRuntimeActivityIsBusy(activity)).length,
+      busyAgents: activities.filter(([, projection]) => projection.busy).length,
     }
   }
 
@@ -154,36 +153,33 @@ function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: st
 }
 
 function agentRuntimeActivityHasActivePrompt(
-  activity: NonNullable<RuntimeSession["agent_activity"]>[string],
+  projection: AgentRuntimeActivityProjection,
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): boolean {
-  const projection = projectAgentRuntimeActivity(activity)
-  if (agentRuntimeActivityHasTurnWork(activity)) {
+  if (agentRuntimeActivityProjectionHasTurnWork(projection)) {
     return true
   }
-  if (agentRuntimeActivityIsBusy(activity) && promptState?.active_prompt) {
+  if (projection.busy && promptState?.active_prompt) {
     return true
   }
   return agentRuntimePromptStatusIsActivePrompt(projection.promptStatus)
 }
 
 function projectedActivePromptCount(
-  activity: NonNullable<RuntimeSession["agent_activity"]>[string],
+  projection: AgentRuntimeActivityProjection,
   promptState?: NonNullable<RuntimeSession["prompt_states"]>[string],
 ): number {
-  const projection = projectAgentRuntimeActivity(activity)
   if (projection.activePromptCountExplicit) {
     return projection.activePromptCount
   }
-  return agentRuntimeActivityHasActivePrompt(activity, promptState) ? 1 : 0
+  return agentRuntimeActivityHasActivePrompt(projection, promptState) ? 1 : 0
 }
 
 function promptWorkCountFromProjectedActivities(
-  activities: readonly NonNullable<RuntimeSession["agent_activity"]>[string][],
+  activities: readonly AgentRuntimeActivityProjection[],
 ): number | null {
   let count = 0
-  for (const activity of activities) {
-    const projection = projectAgentRuntimeActivity(activity)
+  for (const projection of activities) {
     if (!projection.queuedPromptCountExplicit) {
       return null
     }

@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   agentPromptStateHasWork,
   sessionHasAgent,
+  sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
@@ -126,4 +127,42 @@ test("session projected prompt activity scopes activity to session agents", () =
   if (projection && projection !== "idle" && projection !== "not_found") {
     assert.equal(projection.activeTurnPromptId, "prompt-1")
   }
+})
+
+test("session projected prompt activity entries keep active session agent projections only", () => {
+  const session = makeSession({
+    agents: [
+      makeAgent({ id: "agent-1" }),
+      makeAgent({ id: "agent-2" }),
+    ],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+      "agent-2": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-outside": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const entries = sessionProjectedPromptActivityEntriesForSessionAgents(session)
+  assert.deepEqual(entries.map(([agentId]) => agentId), ["agent-1"])
+  assert.equal(entries[0]?.[1].activeTurnPromptId, "prompt-1")
 })

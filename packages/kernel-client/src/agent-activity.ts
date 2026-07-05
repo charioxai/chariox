@@ -72,7 +72,12 @@ export function agentLegacyProcessingStateIsBusy(
 }
 
 export function agentRuntimeActivityHasTurnWork(activity: unknown): boolean {
-  const projection = projectAgentRuntimeActivity(activity)
+  return agentRuntimeActivityProjectionHasTurnWork(projectAgentRuntimeActivity(activity))
+}
+
+export function agentRuntimeActivityProjectionHasTurnWork(
+  projection: AgentRuntimeActivityProjection,
+): boolean {
   if (
     projection.activeTurnPromptId
     || projection.activeTurnProviderRunId
