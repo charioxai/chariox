@@ -134,7 +134,13 @@ async function handlePublicationWebSocketMessage(
     const result = deps.invokeWorkflow
       ? await deps.invokeWorkflow(invocation)
       : await invokeKernelWorkflow({ ...publication, mode: "async" }, invocation)
-    sendWebSocketJson(webSocket, { type: "accepted", ...result })
+    sendWebSocketJson(webSocket, {
+      type: "accepted",
+      accepted: result.accepted,
+      queued: result.queued,
+      response: result.response ?? null,
+      workflow_run: result.workflow_run ? visibleWorkflowRun(publication, result.workflow_run) : null,
+    })
     sendWebSocketJson(webSocket, {
       type: "queued",
       invocation_id: invocation.request_id,

@@ -3737,6 +3737,23 @@ test("gateway accepts WebSocket publication invocations", async () => {
         workflow_run: {
           id: "run-ws",
           status: "Completed",
+          node_runs: [{
+            id: "node-run-ws",
+            node_id: "node-ws",
+            agent_id: "agent-ws",
+            status: "Completed",
+            summary: "TRACE_SUMMARY",
+            thinking_traces: [{ id: "thought-ws", message: "TRACE_THINKING", timestamp_ms: 1 }],
+            turn_envelope: {
+              runtime_tool_calls: [{
+                tool_name: "tool",
+                arguments_json: "{\"marker\":\"TRACE_TOOL\"}",
+                result_json: null,
+                ok: true,
+                timestamp_ms: 1,
+              }],
+            },
+          }],
           intermediate_outputs: [{
             id: "partial-ws",
             output: { message: "working" },
@@ -3784,6 +3801,7 @@ test("gateway accepts WebSocket publication invocations", async () => {
       const accepted = await reader.read() as { type?: string; workflow_run?: { id?: string } }
       assert.equal(accepted.type, "accepted")
       assert.equal(accepted.workflow_run?.id, "run-ws")
+      assert.doesNotMatch(JSON.stringify(accepted), /TRACE_SUMMARY|TRACE_THINKING|TRACE_TOOL|thinking_traces|runtime_tool_calls/)
       const queued = await reader.read() as { type?: string; invocation_id?: string }
       assert.equal(queued.type, "queued")
       assert.match(queued.invocation_id ?? "", /^ws_/)
