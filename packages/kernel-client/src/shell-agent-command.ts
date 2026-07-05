@@ -88,8 +88,6 @@ export async function executeAgentCommand(
           ownerUserId: session.owner_user_id ?? null,
           workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
           workspaceLiveSyncWorktree: session.worktree_id ?? null,
-          agentActivity: session.agent_activity ?? null,
-          promptStates: session.prompt_states ?? null,
         }),
         data: { agents, slices, session, providerRunContext },
       }
@@ -116,8 +114,6 @@ export async function executeAgentCommand(
           ownerUserId: session.owner_user_id ?? null,
           workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
           workspaceLiveSyncWorktree: session.worktree_id ?? null,
-          agentActivity: session.agent_activity ?? null,
-          promptStates: session.prompt_states ?? null,
         }),
         data: { agent, slices, session, providerRunContext },
       }

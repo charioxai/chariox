@@ -22,14 +22,18 @@ test("formatAgentListSummary uses projected idle activity over stale legacy work
   })
 
   const rendered = formatAgentListSummary([remoteAgent], [], {}, {
-    agentActivity: {
-      "agent-remote": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-        active_turn: null,
+    session: makeSession({
+      agents: [remoteAgent],
+      agent_activity: {
+        "agent-remote": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+          active_turn: null,
+        },
       },
-    },
+    }),
   })
 
   assert.match(rendered, /agent-remote \[Idle;/)
@@ -51,14 +55,18 @@ test("formatAgentInspectSummary uses projected idle activity over stale legacy w
   })
 
   const rendered = formatAgentInspectSummary(remoteAgent, [], null, {}, {
-    agentActivity: {
-      "agent-remote": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-        active_turn: null,
+    session: makeSession({
+      agents: [remoteAgent],
+      agent_activity: {
+        "agent-remote": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+          active_turn: null,
+        },
       },
-    },
+    }),
   })
 
   assert.match(rendered, /^agent-remote \[Idle\]/)
@@ -80,18 +88,22 @@ test("formatAgentInspectSummary uses projected busy activity for provider run re
   })
 
   const rendered = formatAgentInspectSummary(remoteAgent, [], null, {}, {
-    agentActivity: {
-      "agent-remote": {
-        status: "working",
-        prompt_status: "running",
-        busy: true,
-        active_turn: {
-          prompt_id: "prompt-1",
-          status: "running",
-          phase: "streaming",
+    session: makeSession({
+      agents: [remoteAgent],
+      agent_activity: {
+        "agent-remote": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "running",
+            phase: "streaming",
+          },
         },
       },
-    },
+    }),
   })
 
   assert.match(rendered, /provider run: none/)
@@ -125,13 +137,6 @@ test("formatAgentListSummary uses session-scoped runtime activity when session i
         },
       },
     }),
-    agentActivity: {
-      "agent-remote": {
-        status: "working",
-        prompt_status: "running",
-        busy: true,
-      },
-    },
   })
 
   assert.match(rendered, /agent-remote \[Idle;/)

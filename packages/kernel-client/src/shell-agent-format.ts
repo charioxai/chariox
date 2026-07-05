@@ -1,10 +1,8 @@
 import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
-  agentRuntimeStateFromProjection,
   sessionAgentRuntimeState,
-  type AgentRuntimeProjectionContext,
-  type AgentPromptStateLike,
 } from "./session-runtime-status.js"
+import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
@@ -38,8 +36,6 @@ export type ShellAgentSessionContext = {
   ownerUserId?: string | null
   workspaceLiveSyncMode?: "managed" | "tracked" | "unrestricted" | null
   workspaceLiveSyncWorktree?: string | null
-  agentActivity?: AgentRuntimeProjectionContext["agentActivity"]
-  promptStates?: Record<string, AgentPromptStateLike | null> | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -374,10 +370,7 @@ function agentRuntimeStateForSessionContext(
   if (sessionContext.session) {
     return sessionAgentRuntimeState(sessionContext.session, agent)
   }
-  return agentRuntimeStateFromProjection(agent, {
-    agentActivity: sessionContext.agentActivity,
-    promptStates: sessionContext.promptStates,
-  })
+  return agentLegacyProcessingStateIsBusy(agent) ? "Working" : agent.state
 }
 
 function agentProviderRunId(
