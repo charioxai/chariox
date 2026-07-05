@@ -97,7 +97,6 @@ function formatModel(model: string) {
   if (/^codex$/i.test(providerId)) {
     return formatKnownLabel(modelId)
   }
-  // Show provider first, then model name (e.g., "OpenAI GPT-5.4", "Zen Kimi 2.5")
   return `${formatKnownLabel(providerId)} ${formatKnownLabel(modelId)}`
 }
 

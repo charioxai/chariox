@@ -2,7 +2,7 @@ import type { RuntimeSession } from "./cli-types.js"
 import type { WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import type { PromptMetaPart } from "./prompt-meta.js"
+import type { PromptMetaPart } from "@arroba/kernel-client/prompt-meta"
 import {
   sessionAttachedFooterSummary,
 } from "@arroba/kernel-client/shell-session-footer"

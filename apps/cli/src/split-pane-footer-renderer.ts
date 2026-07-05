@@ -9,7 +9,7 @@ import type {
   MetaagentTask,
   RuntimeProviderRun,
 } from "./cli-types.js"
-import type { PromptMetaTone } from "./prompt-meta.js"
+import type { PromptMetaTone } from "@arroba/kernel-client/prompt-meta"
 import {
   formatSplitPaneFooterParts,
   type StatusBadgeTone,

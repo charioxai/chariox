@@ -6,7 +6,7 @@ import {
   formatPromptMetaParts,
   type PromptMetaPart,
   type PromptMetaTone,
-} from "./prompt-meta.js"
+} from "@arroba/kernel-client/prompt-meta"
 
 export type StatusBadgeTone = SessionStatusBadgeTone
 

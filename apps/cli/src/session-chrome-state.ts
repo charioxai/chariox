@@ -11,7 +11,7 @@ import {
   formatPromptUsageMeta,
   type PromptMetaPart,
   type PromptUsageMeta,
-} from "./prompt-meta.js"
+} from "@arroba/kernel-client/prompt-meta"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 type ProviderSelectionOptions = {

@@ -1,7 +1,7 @@
 import type {
   PromptMetaPart,
   PromptUsageMeta,
-} from "./prompt-meta.js"
+} from "@arroba/kernel-client/prompt-meta"
 import type { PromptMetaRenderableRefs } from "./prompt-meta-renderer.js"
 
 export type PromptMetaRenderableRefKey = keyof PromptMetaRenderableRefs

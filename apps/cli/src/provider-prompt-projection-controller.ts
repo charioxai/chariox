@@ -6,7 +6,7 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import type {
   PromptMetaPart,
   PromptUsageMeta,
-} from "./prompt-meta.js"
+} from "@arroba/kernel-client/prompt-meta"
 import {
   derivePromptMetaState,
   derivePromptUsageState,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { PromptMetaPart, PromptUsageMeta } from "./prompt-meta.js"
+import type { PromptMetaPart, PromptUsageMeta } from "@arroba/kernel-client/prompt-meta"
 import type { PromptMetaRenderableRefs } from "./prompt-meta-renderer.js"
 import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
 

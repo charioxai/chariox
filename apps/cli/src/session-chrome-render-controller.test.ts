@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import test from "node:test"
 
 import type { RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
-import type { PromptMetaPart } from "./prompt-meta.js"
+import type { PromptMetaPart } from "@arroba/kernel-client/prompt-meta"
 import {
   createSessionChromeRenderController,
   type SessionChromeRenderControllerDeps,
