@@ -175,6 +175,82 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   })
 })
 
+test("bootstrapSession uses kernel session agent defaults for newly created sessions", async () => {
+  const launched: Array<{ provider: string; model: string; effort: string; agentId: string | null | undefined }> = []
+  const createdSession = {
+    id: "session-created",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    agent_defaults: {
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+    },
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 8,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+
+  await bootstrapSession(
+    {} as never,
+    {
+      clientId: "cli-1",
+      createSession: true,
+      provider: "opencode",
+      model: "opencode/gpt-5.4",
+      accountProfile: "default",
+      effort: "high",
+    },
+    "/workspace",
+    "/workspace",
+    {},
+    {
+      listSessions: async () => [],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => createdSession,
+      resolveSession: async () => { throw new Error("should not resolve") },
+      attachToSession: async () => ({ id: "attachment-created", session_id: "session-created" }),
+      getSessionState: async () => createdSession,
+      launchProviderRun: async (_client, _sessionId, provider, _accountProfile, model, effort, agentId) => {
+        launched.push({ provider, model, effort, agentId })
+        return {
+          id: "run-created",
+          session_id: "session-created",
+          agent_instance_id: agentId ?? null,
+          adapter_key: provider,
+          provider,
+          account_profile: "default",
+          model,
+          variant: effort,
+          usage_tokens_total: null,
+          state: "Running",
+        }
+      },
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async () => undefined,
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => null,
+      prepareHistoryOutlineAgent: () => [],
+    },
+  )
+
+  assert.deepEqual(launched, [{
+    provider: "codex",
+    model: "codex/gpt-5.4-mini",
+    effort: "low",
+    agentId: null,
+  }])
+})
+
 test("bootstrapSession reattaches and hydrates missed output from history catch-up", async () => {
   const catalog = fallbackProviderCatalog()
   const session = {

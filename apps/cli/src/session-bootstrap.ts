@@ -5,7 +5,10 @@ import { extractPromptInputHistoryEntries } from "./prompt-history.js"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
-import { focusedAgentIdForSession } from "./session-state.js"
+import {
+  resolveLaunchTargetAgent,
+  resolveStoredAgentLaunch,
+} from "@arroba/kernel-client/session-lifecycle-state"
 
 import type {
   CliOptions,
@@ -254,35 +257,4 @@ async function loadSessionPromptHistory(
     return extractPromptInputHistoryEntries(history.entries)
   }
   return []
-}
-
-function resolveLaunchTargetAgent(session: RuntimeSession) {
-  const focusedAgentId = focusedAgentIdForSession(session)
-  return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
-}
-
-function resolveStoredAgentLaunch(
-  session: RuntimeSession,
-  fallback: { provider: string; model: string; effort: string },
-  createdSession: boolean,
-) {
-  if (createdSession) {
-    return fallback
-  }
-
-  const focusedAgentId = focusedAgentIdForSession(session)
-  const focusedAgent = focusedAgentId
-    ? session.agents.find((agent) => agent.id === focusedAgentId)
-    : null
-  if (!focusedAgent) {
-    return fallback
-  }
-
-  return {
-    provider: focusedAgent.provider && focusedAgent.provider !== "default"
-      ? focusedAgent.provider
-      : fallback.provider,
-    model: focusedAgent.model?.trim() || fallback.model,
-    effort: focusedAgent.effort?.trim() || fallback.effort,
-  }
 }
