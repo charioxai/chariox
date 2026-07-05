@@ -10,7 +10,7 @@ import {
 import {
   sessionAttachedFooterSummary,
   sessionFooterHint,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/shell-session-footer"
 import {
   sessionFocusedStatusBadge,
   sessionStatusMode,
