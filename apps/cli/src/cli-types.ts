@@ -8,6 +8,11 @@ import type {
 } from "@arroba/kernel-client/external-provider-sessions"
 import type {
   AgentPromptState as KernelAgentPromptState,
+  AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
+  AgentRuntimeActivity as KernelAgentRuntimeActivity,
+  CompletedGitTurnActionProjection as KernelCompletedGitTurnActionProjection,
+  PromptAttachmentPart as KernelPromptAttachmentPart,
+  PromptQueueItem as KernelPromptQueueItem,
   RuntimeSession as KernelRuntimeSession,
   SessionHistoryBlobContent as KernelSessionHistoryBlobContent,
   SessionHistoryEntry as KernelSessionHistoryEntry,
@@ -461,53 +466,13 @@ export type WorkspaceLiveSyncStatus = {
   }
 }
 
-export type AgentPromptState = {
-  active_prompt: PromptQueueItem | null
-  queued_prompts: PromptQueueItem[]
-}
+export type AgentPromptState = KernelAgentPromptState
 
-export type AgentRuntimeActivity = {
-  status: "idle" | "working" | "error"
-  prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
-  busy: boolean
-  active_prompt_count?: number
-  queued_prompt_count?: number
-  unread_idle_output?: boolean
-  queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
-  active_turn?: {
-    prompt_id: string
-    provider_run_id?: string | null
-    prompt_origin?: "arroba" | "external" | string | null
-    external_provider?: string | null
-    external_provider_session_id?: string | null
-    external_provider_turn_id?: string | null
-    status: "none" | "queued" | "running" | "cancelling" | "settling"
-    phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
-    started_at_ms?: number | null
-  } | null
-  last_completed_turn?: CompletedGitTurnActionProjection | null
-}
+export type AgentRuntimeActivity = KernelAgentRuntimeActivity
 
-export type AgentQueuedPromptControl = {
-  prompt_id: string
-  status: string
-  can_steer: boolean
-  can_cancel: boolean
-  steer_disabled_reason?: string | null
-  cancel_disabled_reason?: string | null
-}
+export type AgentQueuedPromptControl = KernelAgentQueuedPromptControl
 
-export type CompletedGitTurnActionProjection = {
-  turn_id: string
-  prompt_id: string
-  provider_run_id: string
-  agent_id: string
-  completed_at_ms: number
-  duration_ms?: number | null
-  changed_paths: string[]
-  undo_available: boolean
-  undo_unavailable_reason?: string | null
-}
+export type CompletedGitTurnActionProjection = KernelCompletedGitTurnActionProjection
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
 
@@ -814,18 +779,7 @@ export type AgentSubstitutionRecord = {
   activated_at_ms: number
 }
 
-export type PromptQueueItem = {
-  id: string
-  pending_prompt_id?: string | null
-  source_attachment_id: string
-  target_agent_id?: string | null
-  prompt: string
-  attachments?: PromptAttachmentPart[]
-  created_at_ms?: number
-  updated_at_ms?: number
-  status: string
-  prompt_origin?: "arroba" | "external" | string
-}
+export type PromptQueueItem = KernelPromptQueueItem
 
 export type RuntimeAttachment = {
   id: string
@@ -904,12 +858,7 @@ export type ProviderLogoutResult = {
   provider: string
 }
 
-export type PromptAttachmentPart = {
-  url: string
-  mime: string
-  filename: string | null
-  contents_base64?: string | null
-}
+export type PromptAttachmentPart = KernelPromptAttachmentPart
 
 export type StoredTransferArtifact = {
   artifact_id: string
