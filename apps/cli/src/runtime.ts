@@ -8,7 +8,7 @@ import {
 import {
   sessionStatusLabel,
   type SessionStatusMode,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-status"
 import {
   resolveSessionStreamingAgentId,
   sessionWorkingStateAfterPromptWork,

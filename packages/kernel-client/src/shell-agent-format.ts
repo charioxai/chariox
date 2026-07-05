@@ -3,7 +3,7 @@ import {
   agentRuntimeStateFromProjection,
   type AgentRuntimeProjectionContext,
   type AgentPromptStateLike,
-} from "./shell-agent-activity.js"
+} from "./session-runtime-status.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionAuthorityBoundaryDetail,

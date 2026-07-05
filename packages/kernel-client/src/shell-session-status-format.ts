@@ -17,7 +17,8 @@ import {
   sliceProviderAuthCoverage,
 } from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
-import { sessionAgentIsBusy, sessionAgentRuntimeDisplayState, sessionPromptWorkSummary } from "./shell-agent-activity.js"
+import { sessionAgentIsBusy, sessionPromptWorkSummary } from "./session-prompt-work.js"
+import { sessionAgentRuntimeDisplayState } from "./session-runtime-status.js"
 
 export type SessionRuntimeStatusFormatOptions = {
   readonly slices?: readonly SliceRecord[]

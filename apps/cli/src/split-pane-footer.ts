@@ -1,4 +1,4 @@
-import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/shell-agent-activity"
+import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import {
   formatPromptMetaParts,
   type PromptMetaPart,

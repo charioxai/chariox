@@ -10,13 +10,15 @@ import {
 import {
   sessionAttachedFooterSummary,
   sessionFooterHint,
+} from "@arroba/kernel-client/shell-agent-activity"
+import {
   sessionFocusedStatusBadge,
   sessionStatusMode,
   type SessionAgentBusyState,
   type SessionFocusedStatusBadge,
   type SessionStatusMode as KernelSessionStatusMode,
   type SessionStatusBadgePart,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-status"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
