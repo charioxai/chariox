@@ -597,8 +597,13 @@ function workflowCodeSource(provider, transport) {
   const toolMarker = markerNames.tool_use
   const finalMarker = markerNames.final
   const workflowAlias = JSON.stringify(`live-trace-${provider.provider}-${transport.id}`)
+  const scheduledInvocationPrompt = JSON.stringify([
+    "Run live publication trace validation for scheduled_publication.",
+    "Follow the workflow node instructions exactly and keep channel-specific marker text in the channel requested by each node.",
+    "The final workflow output should only contain the final-output marker requested by the finalizer node.",
+  ].join("\n"))
   const watchdog = transport.id === "schedule_only"
-    ? `workflow.watchdog(entry, { handle: "schedule", queue: "default", enabled: true, intervalSeconds: 1, invocationPrompt: "Scheduled live trace validation.", policy: "queue", maxWakeups: 1 });`
+    ? `workflow.watchdog(entry, { handle: "schedule", queue: "default", enabled: true, intervalSeconds: 1, invocationPrompt: ${scheduledInvocationPrompt}, policy: "queue", maxWakeups: 1 });`
     : ""
   return `
 workflow.define({ alias: ${workflowAlias}, maxConcurrent: 4 });
