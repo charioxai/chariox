@@ -426,14 +426,7 @@ async function stopRuntime(client, sessionId, matrixEntry, prefix) {
   const stop = activeRuntimeStops.pop()
   if (!stop) return
   try {
-    const stopped = await unwrap(
-      withTimeout(
-        client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId ?? sessionId, stop.publicationId, "stop")),
-        runtimeStartTimeoutMs,
-        `stopping publication runtime ${stop.publicationId}`,
-      ),
-      "WorkflowPublicationRuntimeControlled",
-    )
+    const stopped = await stopPublicationRuntime(client, stop.sessionId ?? sessionId, stop.publicationId)
     await writeArtifact(`${prefix}/runtime-stopped.json`, stopped)
     return stopped
   } catch (error) {
@@ -448,15 +441,34 @@ async function stopActiveRuntimes(client) {
   while (activeRuntimeStops.length > 0) {
     const stop = activeRuntimeStops.pop()
     try {
-      await withTimeout(
-        client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId, stop.publicationId, "stop")),
-        runtimeStartTimeoutMs,
-        `stopping publication runtime ${stop.publicationId}`,
-      )
+      const stopped = await stopPublicationRuntime(client, stop.sessionId, stop.publicationId)
+      const publication = stopped?.publication ?? null
+      const runId = latestRunIdFromStatus({ publication })
+      const runtimeSessionId = publication?.session_id ?? stop.sessionId
+      if (runId) {
+        const workflowRun = await workflowRunSnapshot(client, runtimeSessionId, runId).catch(() => null)
+        await cancelNonTerminalWorkflowRun(
+          client,
+          runtimeSessionId,
+          workflowRun,
+          `cleanup/${stop.publicationId}-workflow-run-cancelled.json`,
+        )
+      }
     } catch {
       // Best-effort cleanup during process shutdown.
     }
   }
+}
+
+async function stopPublicationRuntime(client, sessionId, publicationId) {
+  return await unwrap(
+    withTimeout(
+      client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "stop")),
+      runtimeStartTimeoutMs,
+      `stopping publication runtime ${publicationId}`,
+    ),
+    "WorkflowPublicationRuntimeControlled",
+  )
 }
 
 async function cleanupAndExit(exitCode) {
