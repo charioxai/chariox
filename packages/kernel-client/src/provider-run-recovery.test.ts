@@ -5,7 +5,14 @@ import {
   providerRunRecoveryActions,
   remoteWorkerProviderRunIsMissing,
   remoteWorkerProviderRunRecoveryAction,
+  sessionCanIgnoreMissingActiveProviderRun,
+  sessionNeedsAttachedRuntimeCatchUp,
+  sessionShouldRecoverMissingActiveProviderRun,
 } from "./provider-run-recovery.js"
+import {
+  makeAgent,
+  makeSession,
+} from "./shell-executor.test-support.js"
 
 test("providerRunRecoveryActions reports mismatched session provider runs", () => {
   assert.deepEqual(providerRunRecoveryActions({
@@ -119,4 +126,38 @@ test("remoteWorkerProviderRunRecoveryAction formats specific and fallback action
     remoteWorkerProviderRunRecoveryAction("<agent>", "<worker-machine>"),
     "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent",
   )
+})
+
+test("session provider run recovery policy catches up active or prompt-owned work", () => {
+  const idle = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const activeProviderRun = makeSession({
+    active_provider_run_id: "run-1",
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const activePromptWithoutProviderRun = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "run",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+  })
+
+  assert.equal(sessionNeedsAttachedRuntimeCatchUp(idle), false)
+  assert.equal(sessionNeedsAttachedRuntimeCatchUp(activeProviderRun), true)
+  assert.equal(sessionNeedsAttachedRuntimeCatchUp(activePromptWithoutProviderRun), true)
+
+  assert.equal(sessionShouldRecoverMissingActiveProviderRun(idle), false)
+  assert.equal(sessionCanIgnoreMissingActiveProviderRun(idle), true)
+  assert.equal(sessionShouldRecoverMissingActiveProviderRun(activePromptWithoutProviderRun), true)
+  assert.equal(sessionCanIgnoreMissingActiveProviderRun(activePromptWithoutProviderRun), false)
 })

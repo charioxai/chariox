@@ -1,6 +1,8 @@
 import {
   agentLegacyProcessingStateIsBusy,
 } from "./agent-activity.js"
+import type { RuntimeSession } from "./kernel-types.js"
+import { sessionHasPromptWork } from "./session-prompt-work.js"
 
 export type ProviderRunRecoveryAgent = {
   readonly id: string
@@ -45,6 +47,18 @@ export function remoteWorkerProviderRunIsMissing(context: Pick<ProviderRunRecove
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
   const busy = context.agentBusy ?? agentLegacyProcessingStateIsBusy(agent)
   return Boolean(agent.remote_execution && busy && !workerRunId)
+}
+
+export function sessionNeedsAttachedRuntimeCatchUp(session: RuntimeSession): boolean {
+  return Boolean(session.active_provider_run_id) || sessionHasPromptWork(session)
+}
+
+export function sessionShouldRecoverMissingActiveProviderRun(session: RuntimeSession): boolean {
+  return sessionHasPromptWork(session)
+}
+
+export function sessionCanIgnoreMissingActiveProviderRun(session: RuntimeSession): boolean {
+  return !sessionShouldRecoverMissingActiveProviderRun(session)
 }
 
 export function remoteWorkerProviderRunRecoveryAction(agentRef?: string | null, workerMachineId?: string | null): string {

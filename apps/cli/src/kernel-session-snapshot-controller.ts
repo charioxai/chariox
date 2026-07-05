@@ -3,9 +3,9 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import {
-  sessionHasPromptWork,
   sessionPromptWorkJustCompleted,
 } from "@arroba/kernel-client/session-prompt-work"
+import { sessionShouldRecoverMissingActiveProviderRun } from "@arroba/kernel-client/provider-run-recovery"
 
 type KernelSessionSnapshotControllerDeps = {
   getSession: () => RuntimeSession
@@ -59,7 +59,7 @@ export function createKernelSessionSnapshotController(
       })
       deps.setProviderRun(null)
       deps.updateSessionChrome()
-      if (!deps.supportsKernelEventStream() && sessionHasPromptWork(projectedSession)) {
+      if (!deps.supportsKernelEventStream() && sessionShouldRecoverMissingActiveProviderRun(projectedSession)) {
         void deps.recoverProviderRun("missing active provider run")
       }
     }

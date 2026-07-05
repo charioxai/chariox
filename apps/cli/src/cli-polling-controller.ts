@@ -9,9 +9,12 @@ import type {
 import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
-  sessionHasPromptWork,
   sessionPromptWorkJustCompleted,
 } from "@arroba/kernel-client/session-prompt-work"
+import {
+  sessionCanIgnoreMissingActiveProviderRun,
+  sessionShouldRecoverMissingActiveProviderRun,
+} from "@arroba/kernel-client/provider-run-recovery"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
 type PollLoop = typeof defaultRunPollingLoop
@@ -90,7 +93,10 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           records = await deps.pumpTerminalOutput(deps.getSession().id, attachment.id)
         } catch (error) {
           const message = deps.formatError(error)
-          if (/has no active provider run/i.test(message) && !sessionHasPromptWork(deps.getSession())) {
+          if (
+            /has no active provider run/i.test(message)
+            && sessionCanIgnoreMissingActiveProviderRun(deps.getSession())
+          ) {
             deps.setProviderRun(null)
             deps.updateSessionChrome()
             return
@@ -191,7 +197,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           })
           deps.setProviderRun(null)
           deps.updateSessionChrome()
-          if (sessionHasPromptWork(session)) {
+          if (sessionShouldRecoverMissingActiveProviderRun(session)) {
             void deps.recoverProviderRun("missing active provider run")
           }
         }

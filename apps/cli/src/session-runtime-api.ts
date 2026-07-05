@@ -14,7 +14,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { describeCliError } from "./runtime.js"
-import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
+import { sessionNeedsAttachedRuntimeCatchUp } from "@arroba/kernel-client/provider-run-recovery"
 
 export async function pumpTerminalOutput(
   client: LocalIpcClient,
@@ -43,7 +43,7 @@ export async function catchUpAttachedSession(
   session: RuntimeSession,
   logger?: ArrobaLogger | null,
 ): Promise<void> {
-  if (!session.active_provider_run_id && !sessionHasPromptWork(session)) {
+  if (!sessionNeedsAttachedRuntimeCatchUp(session)) {
     return
   }
 
