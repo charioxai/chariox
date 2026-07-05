@@ -1,4 +1,5 @@
 import {
+  waitingRoomSessionActivityBadgeState,
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
@@ -240,13 +241,16 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionStatus(session: SessionListEntry) {
-  if (sessionHasActiveWork(session)) {
-    return "Working"
+  switch (waitingRoomSessionActivityBadgeState(session.activity)) {
+    case "mixedWorkingDone":
+      return "Working+Done"
+    case "working":
+      return "Working"
+    case "done":
+      return "Done"
+    case "none":
+      return formatSessionStatus(session.status)
   }
-  if (sessionHasUnreadIdleOutput(session)) {
-    return "Done"
-  }
-  return formatSessionStatus(session.status)
 }
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
