@@ -9,6 +9,8 @@ import {
 import type { ExternalProviderObservedTranscriptIdentityFields } from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
+  sessionHasAgentActivityProjection,
+  sessionHasPromptStateProjection,
   sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
@@ -30,7 +32,7 @@ export type PromptLifecycleTransition = {
 }
 
 export function sessionActivePromptLifecycleRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
-  if (session.agent_activity) {
+  if (sessionHasAgentActivityProjection(session)) {
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, projection] of sessionProjectedPromptActivityEntriesForSessionAgents(session)) {
       const activeTurnRecord = activePromptLifecycleRecordFromProjectedTurn(agentId, projection)
@@ -48,7 +50,7 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
     }
     return records.sort(compareActivePromptLifecycleRecords)
   }
-  if (session.prompt_states) {
+  if (sessionHasPromptStateProjection(session)) {
     return sessionPromptStateEntriesForSessionAgents(session)
       .map(([, state]) => state.active_prompt)
       .map((stateActivePrompt) => stateActivePrompt

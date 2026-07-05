@@ -5,6 +5,8 @@ import {
   agentPromptStateHasWork,
   sessionAgentActivityRecordForAgent,
   sessionHasAgent,
+  sessionHasAgentActivityProjection,
+  sessionHasPromptStateProjection,
   sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
@@ -37,6 +39,22 @@ test("session agent prompt state distinguishes absent projection from projected 
     queued_prompts: [],
   })
   assert.equal(sessionPromptStateRecordForAgent(withProjection, "agent-2"), null)
+})
+
+test("session runtime projection presence helpers follow raw projection availability", () => {
+  const withoutProjection = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  assert.equal(sessionHasPromptStateProjection(withoutProjection), false)
+  assert.equal(sessionHasAgentActivityProjection(withoutProjection), false)
+
+  const withEmptyProjection = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {},
+    agent_activity: {},
+  })
+  assert.equal(sessionHasPromptStateProjection(withEmptyProjection), true)
+  assert.equal(sessionHasAgentActivityProjection(withEmptyProjection), true)
 })
 
 test("session agent prompt state scopes entries to session agents", () => {

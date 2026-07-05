@@ -28,6 +28,14 @@ export function sessionAgentIds(session: RuntimeSession): ReadonlySet<string> {
   return new Set(session.agents.map((agent) => agent.id))
 }
 
+export function sessionHasPromptStateProjection(session: RuntimeSession): boolean {
+  return Boolean(session.prompt_states)
+}
+
+export function sessionHasAgentActivityProjection(session: RuntimeSession): boolean {
+  return Boolean(session.agent_activity)
+}
+
 export function sessionPromptStateRecordForAgent(
   session: RuntimeSession,
   agentId: string,
@@ -62,16 +70,17 @@ export function sessionAgentActivityRecordForAgent(
   if (!sessionHasAgent(session, agentId)) {
     return null
   }
-  if (!session.agent_activity) {
+  if (!sessionHasAgentActivityProjection(session)) {
     return undefined
   }
-  return session.agent_activity[agentId] ?? null
+  const activityByAgent = session.agent_activity
+  return activityByAgent?.[agentId] ?? null
 }
 
 export function sessionProjectedPromptActivityEntriesForSessionAgents(
   session: RuntimeSession,
 ): readonly (readonly [string, AgentRuntimeActivityProjection])[] {
-  if (!session.agent_activity) {
+  if (!sessionHasAgentActivityProjection(session)) {
     return []
   }
   const entries: (readonly [string, AgentRuntimeActivityProjection])[] = []
@@ -96,7 +105,7 @@ export function sessionProjectedPromptActivityForAgent(
   if (!sessionHasAgent(session, agentId)) {
     return "not_found"
   }
-  if (!session.agent_activity) {
+  if (!sessionHasAgentActivityProjection(session)) {
     return null
   }
   const activity = sessionAgentActivityRecordForAgent(session, agentId)
