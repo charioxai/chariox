@@ -162,6 +162,16 @@ test("collapseLatestTranscriptTurn marks only completed non-trivial turns", () =
   )
 })
 
+test("collapseLatestTranscriptTurn skips active history turns", () => {
+  assert.deepEqual(
+    collapseLatestTranscriptTurn(baseTurnEntries().map((entry) => ({
+      ...entry,
+      historyTurnCompletedAtMs: null,
+    }))),
+    [],
+  )
+})
+
 test("setTranscriptBlobCollapsed preserves turn display state", () => {
   const expandedTurn = applyTranscriptDisplayState(baseTurnEntries())
   const entries = setTranscriptBlobCollapsed(expandedTurn, 3, [], false)

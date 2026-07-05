@@ -87,8 +87,7 @@ export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEnt
   }
 
   const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
-  const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
-  if (!finalSummary || !transcriptTurnHasCollapsibleBody(turnEntries, finalSummary.id)) {
+  if (!transcriptTurnIsCollapsible(turnEntries, inferredActiveHistoryTurnId(normalized))) {
     return sortedTurnIds(nextCollapsedTurnIds)
   }
 
