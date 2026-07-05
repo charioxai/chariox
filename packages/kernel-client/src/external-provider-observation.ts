@@ -312,6 +312,11 @@ export type ExternalProviderObservedMutableTranscriptFields =
   externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
 
+export type ExternalProviderObservedMutableTranscriptMetadataFields =
+  ExternalProviderObservedMutableTranscriptFields & {
+  source?: string | null | undefined
+}
+
 export type ExternalProviderObservedMutableTurnMetadataFields = {
   source?: string | null | undefined
 } & ExternalProviderObservedMutableTranscriptIdentityFields

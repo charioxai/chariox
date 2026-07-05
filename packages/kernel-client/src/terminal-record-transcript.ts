@@ -4,7 +4,9 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
+  type ExternalProviderObservedMutableTranscriptMetadataFields,
   type ExternalProviderObservedTranscriptMetadata,
+  type ExternalProviderObservedTranscriptFields,
 } from "./external-provider-observation.js"
 
 export type TerminalRecordTranscriptFields = {
@@ -27,15 +29,9 @@ export type TerminalRecordTranscriptRole =
   | "tool"
   | "user"
 
-export type TerminalRecordTranscriptMetadata = {
+export type TerminalRecordTranscriptMetadata = ExternalProviderObservedTranscriptFields & {
   readonly promptId?: string | null
   readonly sourceAttachmentId?: string | null
-  readonly source?: "external_provider_observed" | string | null
-  readonly externalProvider?: string | null
-  readonly externalProviderSessionId?: string | null
-  readonly externalProviderTurnId?: string | null
-  readonly observedAtMs?: number | null
-  readonly externalObservation?: ExternalProviderObservedTranscriptMetadata["externalObservation"] | null
 }
 
 export type TerminalRecordTranscriptProjection = {
@@ -153,13 +149,7 @@ function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRol
   }
 }
 
-type TerminalTranscriptMetadataTarget = {
+type TerminalTranscriptMetadataTarget = ExternalProviderObservedMutableTranscriptMetadataFields & {
   promptId?: string | null
   sourceAttachmentId?: string | null
-  source?: "external_provider_observed" | string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  observedAtMs?: number | null
-  externalObservation?: ExternalProviderObservedTranscriptMetadata["externalObservation"] | null
 }

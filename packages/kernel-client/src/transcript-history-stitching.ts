@@ -6,6 +6,7 @@ import {
 import {
   mergeExternalProviderObservedTranscriptFields,
   mergeExternalProviderObservedSource,
+  type ExternalProviderObservedMutableTranscriptMetadataFields,
 } from "./external-provider-observation.js"
 import {
   mergeSessionHistoryPromptAttachments,
@@ -16,22 +17,16 @@ import {
   transcriptHistoryFragmentsAreAdjacent,
 } from "./session-history-fragments.js"
 import type {
-  SessionHistoryExternalObservation,
   SessionHistoryPromptAttachment,
+  TranscriptEntry as KernelTranscriptEntry,
 } from "./kernel-types.js"
 
-export type TranscriptHistoryStitchEntry = {
-  id: number
+export type TranscriptHistoryStitchEntry = ExternalProviderObservedMutableTranscriptMetadataFields & {
+  id: KernelTranscriptEntry["id"]
   role: string
-  text: string
-  sourceText?: string
-  mergeKey?: string
-  source?: "external_provider_observed" | string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  observedAtMs?: number | null
-  externalObservation?: SessionHistoryExternalObservation | null
+  text: KernelTranscriptEntry["text"]
+  sourceText?: KernelTranscriptEntry["sourceText"]
+  mergeKey?: KernelTranscriptEntry["mergeKey"]
   promptId?: string | null
   sourceAttachmentId?: string | null
   attachments?: SessionHistoryPromptAttachment[]
