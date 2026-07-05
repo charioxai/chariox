@@ -39,6 +39,7 @@
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
     "./session-history-preview": "./dist/session-history-preview.js",
     "./session-config-projection": "./dist/session-config-projection.js",
+    "./session-lifecycle-state": "./dist/session-lifecycle-state.js",
     "./session-agent-resolver": "./dist/session-agent-resolver.js",
     "./session-bootstrap-policy": "./dist/session-bootstrap-policy.js",
     "./session-browser-policy": "./dist/session-browser-policy.js",

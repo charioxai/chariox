@@ -1,0 +1,223 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import {
+  isCompleteSessionSnapshot,
+  resolveLaunchTargetAgent,
+  resolveSessionAgentDefaults,
+  resolveStoredAgentLaunch,
+  sessionListEntryFromSession,
+  upsertSessionListEntry,
+} from "./session-lifecycle-state.js"
+
+function makeAgent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id,
+    agent_ref: id,
+    session_id: "session-1",
+    alias: null,
+    provider: "codex",
+    model: "codex/gpt-5",
+    effort: "medium",
+    worktree_id: "/tmp/workspace",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
+    ...overrides,
+  }
+}
+
+function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-1"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [makeAgent("agent-a")],
+    config_state: { version: 1, values: {} },
+    workflows: [],
+    workflow_runs: [],
+    workflow_schedules: [],
+    workflow_consoles: [],
+    ...overrides,
+  }
+}
+
+test("upsertSessionListEntry prepends new sessions and patches existing rows", () => {
+  const current = [
+    { id: "session-1", alias: "old", worktree_id: "/tmp/a", status: "Created" },
+    {
+      id: "session-2",
+      alias: "stale",
+      workspace_label: "Cached workspace",
+      worktree_id: "/tmp/b",
+      status: "Created",
+    },
+  ]
+
+  assert.deepEqual(
+    upsertSessionListEntry(current, { id: "session-3", alias: "new", worktree_id: "/tmp/c", status: "Active" }),
+    [
+      { id: "session-3", alias: "new", worktree_id: "/tmp/c", status: "Active" },
+      ...current,
+    ],
+  )
+
+  assert.deepEqual(
+    upsertSessionListEntry(current, { id: "session-2", alias: "updated", worktree_id: "/tmp/b", status: "Active" }),
+    [
+      current[0],
+      {
+        id: "session-2",
+        alias: "updated",
+        workspace_label: "Cached workspace",
+        worktree_id: "/tmp/b",
+        status: "Active",
+      },
+    ],
+  )
+})
+
+test("sessionListEntryFromSession preserves runtime row metadata when present", () => {
+  const entry = sessionListEntryFromSession({
+    id: "session-1",
+    alias: null,
+    workspace_id: "workspace-1",
+    workspace_label: "Workspace",
+    directory: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    worktree_label: "main",
+    workspace_live_sync_mode: "managed",
+    host_machine_id: "machine-1",
+    host_daemon_id: "kernel-1",
+    status: "Active",
+    created_at_ms: 10,
+    last_used_at_ms: 20,
+    last_activity_at_ms: 30,
+    last_prompt_sent_at_ms: 40,
+    attachment_ids: ["att-1"],
+  })
+
+  assert.deepEqual(entry, {
+    id: "session-1",
+    alias: null,
+    workspace_id: "workspace-1",
+    workspace_label: "Workspace",
+    directory: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    worktree_label: "main",
+    workspace_live_sync_mode: "managed",
+    host_machine_id: "machine-1",
+    host_daemon_id: "kernel-1",
+    kernel_id: "kernel-1",
+    status: "Active",
+    created_at_ms: 10,
+    last_used_at_ms: 20,
+    last_activity_at_ms: 30,
+    last_prompt_sent_at_ms: 40,
+    attachment_ids: ["att-1"],
+  })
+})
+
+test("isCompleteSessionSnapshot requires full hydrated runtime fields", () => {
+  const watchdogSession = makeSession()
+  delete watchdogSession.workflow_schedules
+  watchdogSession.workflow_watchdogs = []
+  const incompleteSession = makeSession()
+  delete (incompleteSession as Partial<RuntimeSession>).queued_prompts
+
+  assert.equal(isCompleteSessionSnapshot({ id: "session-1" }), false)
+  assert.equal(isCompleteSessionSnapshot(makeSession()), true)
+  assert.equal(isCompleteSessionSnapshot(watchdogSession), true)
+  assert.equal(isCompleteSessionSnapshot(incompleteSession), false)
+})
+
+test("resolveLaunchTargetAgent respects valid focus and rejects stale focus", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-b",
+    agents: [
+      makeAgent("agent-a"),
+      makeAgent("agent-b", { provider: "opencode" }),
+    ],
+  })
+
+  assert.equal(resolveLaunchTargetAgent(session)?.id, "agent-b")
+  assert.equal(resolveLaunchTargetAgent({ ...session, focused_agent_id: "missing-agent" }), null)
+  assert.equal(resolveLaunchTargetAgent({ ...session, focused_agent_id: null })?.id, "agent-a")
+})
+
+test("resolveStoredAgentLaunch uses focused agent profile for existing sessions", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-b",
+    agents: [
+      makeAgent("agent-a"),
+      makeAgent("agent-b", {
+        provider: "claude",
+        model: "claude/sonnet-4.6",
+        effort: "high",
+      }),
+    ],
+    agent_defaults: {
+      provider: "opencode",
+      model: "kimi/k2.6",
+      effort: "medium",
+    },
+  })
+
+  assert.deepEqual(
+    resolveStoredAgentLaunch(session, { provider: "codex", model: "codex/gpt-5", effort: "low" }, false),
+    { provider: "claude", model: "claude/sonnet-4.6", effort: "high" },
+  )
+})
+
+test("resolveStoredAgentLaunch falls back to session defaults for new or unfocused sessions", () => {
+  const fallback = { provider: "codex", model: "codex/gpt-5", effort: "low" }
+  const session = makeSession({
+    focused_agent_id: "agent-a",
+    agents: [makeAgent("agent-a", { provider: "default", model: "", effort: "" })],
+    agent_defaults: {
+      provider: "opencode",
+      model: "kimi/k2.6",
+      effort: "medium",
+    },
+  })
+
+  assert.deepEqual(resolveStoredAgentLaunch(session, fallback, false), {
+    provider: "opencode",
+    model: "kimi/k2.6",
+    effort: "medium",
+  })
+  assert.deepEqual(resolveStoredAgentLaunch(session, fallback, true), {
+    provider: "opencode",
+    model: "kimi/k2.6",
+    effort: "medium",
+  })
+})
+
+test("resolveSessionAgentDefaults ignores blank or default provider settings", () => {
+  assert.deepEqual(
+    resolveSessionAgentDefaults({
+      id: "session-1",
+      agent_defaults: {
+        provider: "default",
+        model: " ",
+        effort: null,
+      },
+    }, { provider: "codex", model: "codex/gpt-5", effort: "low" }),
+    { provider: "codex", model: "codex/gpt-5", effort: "low" },
+  )
+})

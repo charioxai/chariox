@@ -9,14 +9,22 @@ import type {
   AttachedCliTransitionState,
   DetachedCliTransitionState,
 } from "./session-state.js"
-import { focusedAgentIdForSession, sessionResponseLayout } from "./session-state.js"
+import { sessionResponseLayout } from "./session-state.js"
+import {
+  isCompleteSessionSnapshot,
+  resolveLaunchTargetAgent,
+  resolveStoredAgentLaunch,
+  sessionListEntryFromSession,
+  upsertSessionListEntry,
+  type SessionLifecycleLaunchSelection,
+} from "@arroba/kernel-client/session-lifecycle-state"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
 
 type ProviderCatalog = Record<string, unknown>
 type TerminalCommandCatalog = Record<string, unknown>
-type LaunchSelection = { provider: string; model: string; effort: string }
+type LaunchSelection = SessionLifecycleLaunchSelection
 
 type ProviderSelectionState = {
   provider: string
@@ -227,7 +235,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     try {
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
 
-      const provisionalSession = isCompleteSessionSnapshot(session)
+      const provisionalSession = isCompleteSessionSnapshot(session as Parameters<typeof isCompleteSessionSnapshot>[0])
         ? session
         : null
       if (provisionalSession) {
@@ -260,11 +268,17 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       if (!attachedSession.active_provider_run_id) {
-        const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, launch, createdSession)
+        const resolvedLaunch = resolveStoredAgentLaunch(
+          attachedSession,
+          launch,
+          createdSession,
+        )
         deps.cliOptions.provider = resolvedLaunch.provider
         deps.cliOptions.model = resolvedLaunch.model
         deps.cliOptions.effort = resolvedLaunch.effort
-        const launchTargetAgent = resolveLaunchTargetAgent(attachedSession)
+        const launchTargetAgent = resolveLaunchTargetAgent(
+          attachedSession,
+        )
         const launchTargetAgentId = launchTargetAgent?.id ?? null
         if (attachedSession.agents.length === 0 && !createdSession) {
           deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
@@ -368,7 +382,10 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
 
   const refreshAttachedSessionRow = async (session: RuntimeSession) => {
     if (deps.getAvailableSessions) {
-      deps.setAvailableSessions(upsertSessionListEntry(deps.getAvailableSessions(), sessionListEntryFromSession(session)))
+      deps.setAvailableSessions(upsertSessionListEntry(
+        deps.getAvailableSessions(),
+        sessionListEntryFromSession(session),
+      ))
       return
     }
     try {
@@ -385,113 +402,5 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     transitionToNoSession,
     detachCurrentAttachment,
     attachBinding,
-  }
-}
-
-function upsertSessionListEntry(
-  current: SessionListEntry[],
-  next: SessionListEntry,
-): SessionListEntry[] {
-  const index = current.findIndex((candidate) => candidate.id === next.id)
-  if (index === -1) {
-    return [next, ...current]
-  }
-  return current.map((candidate, candidateIndex) =>
-    candidateIndex === index ? { ...candidate, ...next } : candidate
-  )
-}
-
-function sessionListEntryFromSession(session: RuntimeSession): SessionListEntry {
-  const entry: SessionListEntry = {
-    id: session.id,
-    worktree_id: session.worktree_id,
-    status: session.status,
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "alias")) entry.alias = session.alias ?? null
-  if (Object.prototype.hasOwnProperty.call(session, "workspace_id")) {
-    entry.workspace_id = session.workspace_id
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "created_at_ms")) {
-    entry.created_at_ms = session.created_at_ms
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "attachment_ids")) {
-    entry.attachment_ids = session.attachment_ids
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "workspace_live_sync_mode")) {
-    entry.workspace_live_sync_mode = session.workspace_live_sync_mode ?? null
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "host_machine_id")) {
-    entry.host_machine_id = session.host_machine_id ?? null
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "host_daemon_id")) {
-    entry.host_daemon_id = session.host_daemon_id ?? null
-    entry.kernel_id = session.host_daemon_id ?? null
-  }
-  if (Object.prototype.hasOwnProperty.call(session, "last_used_at_ms")) {
-    entry.last_used_at_ms = session.last_used_at_ms ?? null
-  }
-  return entry
-}
-
-function isCompleteSessionSnapshot(
-  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
-): session is RuntimeSession {
-  return typeof session.workspace_id === "string"
-    && typeof session.worktree_id === "string"
-    && typeof session.created_at_ms === "number"
-    && typeof session.status === "string"
-    && Array.isArray(session.attachment_ids)
-    && Array.isArray(session.queued_prompts)
-    && Array.isArray(session.agents)
-    && Array.isArray(session.workflows)
-    && Array.isArray(session.workflow_runs)
-    && (Array.isArray(session.workflow_schedules) || Array.isArray(session.workflow_watchdogs))
-    && Array.isArray(session.workflow_consoles)
-    && typeof session.max_agents === "number"
-    && typeof session.config_state === "object"
-    && session.config_state !== null
-}
-
-function resolveLaunchTargetAgent(session: RuntimeSession): RuntimeSession["agents"][number] | null {
-  const focusedAgentId = focusedAgentIdForSession(session)
-  return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
-}
-
-function resolveStoredAgentLaunch(
-  session: RuntimeSession,
-  fallback: LaunchSelection,
-  createdSession: boolean,
-): LaunchSelection {
-  if (createdSession) {
-    return resolveSessionAgentDefaults(session, fallback)
-  }
-
-  const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
-  const focusedAgentId = focusedAgentIdForSession(session)
-  const focusedAgent = focusedAgentId
-    ? session.agents.find((agent) => agent.id === focusedAgentId)
-    : null
-  if (!focusedAgent) {
-    return sessionDefaults
-  }
-
-  return {
-    provider: focusedAgent.provider && focusedAgent.provider !== "default"
-      ? focusedAgent.provider
-      : sessionDefaults.provider,
-    model: focusedAgent.model?.trim() || sessionDefaults.model,
-    effort: focusedAgent.effort?.trim() || sessionDefaults.effort,
-  }
-}
-
-function resolveSessionAgentDefaults(
-  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
-  fallback: LaunchSelection,
-): LaunchSelection {
-  const defaults = session.agent_defaults
-  return {
-    provider: defaults?.provider?.trim() && defaults.provider !== "default" ? defaults.provider : fallback.provider,
-    model: defaults?.model?.trim() || fallback.model,
-    effort: defaults?.effort?.trim() || fallback.effort,
   }
 }
