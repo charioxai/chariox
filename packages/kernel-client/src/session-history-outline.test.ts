@@ -58,7 +58,8 @@ test("session history outline turn display id follows durable prompt sequence", 
 })
 
 test("session history outline completion distinguishes absent, open, and settled markers", () => {
-  assert.equal(sessionHistoryOutlineTurnCompletedAtMs(turn(1)), undefined)
+  assert.equal(sessionHistoryOutlineTurnCompletedAtMs({}), undefined)
+  assert.equal(sessionHistoryOutlineTurnCompletedAtMs(turn(1)), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: null }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: 123 }), 123)
 })
@@ -100,6 +101,7 @@ function turn(promptEntryIndex: number): SessionHistoryOutlineTurn {
   return {
     turn_id: `turn-${promptEntryIndex}`,
     started_at_ms: promptEntryIndex,
+    completed_at_ms: null,
     user_prompt: pageEntry(promptEntryIndex, "user_prompt", "prompt"),
     entries: [],
     summary: null,
