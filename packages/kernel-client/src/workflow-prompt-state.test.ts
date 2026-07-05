@@ -6,6 +6,8 @@ import {
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
+  resolveSelectedWorkflow,
+  resolveSelectedWorkflowNodeId,
   validateWorkflowPromptSubmit,
   type WorkflowPromptAgentLike,
   type WorkflowPromptRunLike,
@@ -58,6 +60,14 @@ test("deriveWorkflowPromptState targets the selected workflow node agent", () =>
 
   assert.equal(eligible.enabled, true)
   assert.equal(eligible.selectedAgent?.id, "agent-1")
+})
+
+test("workflow prompt selection falls back to available workflow and node", () => {
+  const selectedWorkflow = resolveSelectedWorkflow([workflow()], "missing")
+  assert.equal(selectedWorkflow?.id, "workflow-1")
+  assert.equal(resolveSelectedWorkflow([], "workflow-1"), null)
+  assert.equal(resolveSelectedWorkflowNodeId(selectedWorkflow, "missing"), "node-1")
+  assert.equal(resolveSelectedWorkflowNodeId(workflow({ nodes: [] }), "node-1"), null)
 })
 
 test("formatWorkflowPromptPlaceholder reflects workflow eligibility", () => {

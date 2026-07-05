@@ -1,33 +1,21 @@
 import type { WorkflowDefinition } from "../cli-types.js"
+import {
+  resolveSelectedWorkflow as sharedResolveSelectedWorkflow,
+  resolveSelectedWorkflowNodeId as sharedResolveSelectedWorkflowNodeId,
+} from "@arroba/kernel-client/workflow-prompt-state"
 
 export function resolveSelectedWorkflow(
   workflows: WorkflowDefinition[],
   selectedWorkflowId: string | null,
 ): WorkflowDefinition | null {
-  if (workflows.length === 0) {
-    return null
-  }
-  if (selectedWorkflowId) {
-    const exact = workflows.find((workflow) => workflow.id === selectedWorkflowId)
-    if (exact) {
-      return exact
-    }
-  }
-  return workflows[0] ?? null
+  return sharedResolveSelectedWorkflow(workflows, selectedWorkflowId)
 }
 
 export function resolveSelectedWorkflowNodeId(
   workflow: WorkflowDefinition | null,
   selectedNodeId: string | null,
 ): string | null {
-  const nodes = workflow?.nodes ?? []
-  if (nodes.length === 0) {
-    return null
-  }
-  if (selectedNodeId && nodes.some((node) => node.id === selectedNodeId)) {
-    return selectedNodeId
-  }
-  return nodes[0]?.id ?? null
+  return sharedResolveSelectedWorkflowNodeId(workflow, selectedNodeId)
 }
 
 export function cycleWorkflowNodeId(
