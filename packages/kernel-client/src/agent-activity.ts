@@ -10,6 +10,11 @@ export type AgentRuntimeActivityBusyInput = {
   readonly error?: boolean | null
 }
 
+export type LegacyAgentProcessingInput = {
+  readonly is_processing?: boolean | null
+  readonly state?: string | null
+}
+
 export type AgentRuntimeActivityStatus = "idle" | "working" | "error"
 export type AgentRuntimePromptStatus =
   | "none"
@@ -58,6 +63,12 @@ export function agentRuntimeActivityIsBusy(
   activity: AgentRuntimeActivityBusyInput | null | undefined,
 ): boolean {
   return projectAgentRuntimeActivity(activity).busy
+}
+
+export function agentLegacyProcessingStateIsBusy(
+  agent: LegacyAgentProcessingInput | null | undefined,
+): boolean {
+  return Boolean(agent?.is_processing === true || agent?.state === "Working")
 }
 
 export function agentRuntimeActivityHasTurnWork(activity: unknown): boolean {

@@ -3,6 +3,7 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
+  agentLegacyProcessingStateIsBusy,
   agentRuntimeActivityResolvedStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
@@ -144,7 +145,7 @@ export function sessionAgentPaneStatusBadge(options: {
   }
   const useLegacyAgentProcessingState = options.useLegacyAgentProcessingState ?? true
   const legacyAgentBusy = useLegacyAgentProcessingState
-    && (agent.is_processing === true || agent.state === "Working")
+    && agentLegacyProcessingStateIsBusy(agent)
   if (
     options.hasPromptWork === true
     || legacyAgentBusy

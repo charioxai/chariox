@@ -3,6 +3,9 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
+  agentLegacyProcessingStateIsBusy,
+} from "./agent-activity.js"
+import {
   sessionAgentIsBusy,
   sessionHasAgentRuntimeProjection,
   sessionHasProcessingAgent,
@@ -88,7 +91,7 @@ export function resolveSessionStreamingAgentId(
   useLegacyProcessingState = true,
 ): string | null {
   const processingAgentId = useLegacyProcessingState
-    ? agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
+    ? agents.find(agentLegacyProcessingStateIsBusy)?.id ?? null
     : null
   if (processingAgentId) {
     return processingAgentId
@@ -137,7 +140,7 @@ export function sessionRuntimeTransitionState(
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
     const legacyAgentBusy = !sessionHasAgentRuntimeProjection(options.nextSession)
-      && (agent.is_processing || agent.state === "Working")
+      && agentLegacyProcessingStateIsBusy(agent)
     nextAgentActivityLabels[agent.id] =
       legacyAgentBusy
         || agent.id === nextStreamingAgentId
@@ -206,7 +209,7 @@ export function shouldPreserveAgentActivityLabel(options: {
   return options.streamingAgentId === agentId
     || sessionAgentIsBusy(options.session, agentId)
     || (!sessionHasAgentRuntimeProjection(options.session)
-      && options.session.agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working")))
+      && options.session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent)))
 }
 
 export function nextAgentActivityLabels(
@@ -274,7 +277,7 @@ export function deriveFocusedAgentBusy(options: {
     || options.streamingAgentId === agentId
     || Boolean(options.focusedActivityLabel)
     || readAgentBusyLatch(options.agentBusyLatches, agentId)
-    || Boolean(allowLegacyProcessing && focused && (focused.is_processing || focused.state === "Working"))
+    || Boolean(allowLegacyProcessing && agentLegacyProcessingStateIsBusy(focused))
 }
 
 export function deriveAllAgentsBusyState(options: {
@@ -293,7 +296,7 @@ export function deriveAllAgentsBusyState(options: {
       || options.streamingAgentId === agentId
       || Boolean(options.agentActivityLabels[agentId])
       || readAgentBusyLatch(options.agentBusyLatches, agentId)
-      || (allowLegacyProcessing && (agent.is_processing || agent.state === "Working"))
+      || (allowLegacyProcessing && agentLegacyProcessingStateIsBusy(agent))
     return { id: agentId, busy: isBusy }
   })
 }

@@ -1,3 +1,7 @@
+import {
+  agentLegacyProcessingStateIsBusy,
+} from "./agent-activity.js"
+
 export type ProviderRunRecoveryAgent = {
   readonly id: string
   readonly agent_ref: string
@@ -39,7 +43,7 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
 export function remoteWorkerProviderRunIsMissing(context: Pick<ProviderRunRecoveryContext, "agent" | "agentBusy">): boolean {
   const agent = context.agent
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
-  const busy = context.agentBusy ?? (agent.state === "Working" || agent.is_processing)
+  const busy = context.agentBusy ?? agentLegacyProcessingStateIsBusy(agent)
   return Boolean(agent.remote_execution && busy && !workerRunId)
 }
 

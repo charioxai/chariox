@@ -3,6 +3,7 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
+  agentLegacyProcessingStateIsBusy,
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
@@ -198,5 +199,5 @@ function promptWorkCountFromProjectedActivities(
 }
 
 function legacyBusyAgentCount(session: RuntimeSession): number {
-  return session.agents.filter((agent: AgentInstance) => agent.is_processing || agent.state === "Working").length
+  return session.agents.filter((agent: AgentInstance) => agentLegacyProcessingStateIsBusy(agent)).length
 }

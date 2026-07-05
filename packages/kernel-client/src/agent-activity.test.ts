@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  agentLegacyProcessingStateIsBusy,
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
@@ -15,6 +16,15 @@ import {
   projectAgentRuntimeActivity,
   readAgentRuntimeCompletedTurn,
 } from "./agent-activity.js"
+
+test("legacy processing helper preserves old agent busy fallback semantics", () => {
+  assert.equal(agentLegacyProcessingStateIsBusy(null), false)
+  assert.equal(agentLegacyProcessingStateIsBusy(undefined), false)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Idle" }), false)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: true, state: "Idle" }), true)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Working" }), true)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Error" }), false)
+})
 
 test("agent activity busy helper follows kernel projected activity semantics", () => {
   assert.equal(agentRuntimeActivityIsBusy(null), false)
