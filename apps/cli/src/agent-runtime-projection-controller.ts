@@ -7,9 +7,9 @@ import {
   readAgentBusyLatch,
   resolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
+  type AgentToolActivityUpdate as ToolActivityUpdate,
   type AgentBusyState,
-  type ToolActivityUpdate,
-} from "./agent-activity-state.js"
+} from "@arroba/kernel-client/session-runtime-transition"
 import type {
   AgentInstance,
   RuntimeProviderRun,
