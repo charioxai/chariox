@@ -161,9 +161,9 @@ import {
   getWorkspaceLiveSyncStatus,
 } from "./workspace-link-api.js"
 import {
-  computeCurrentTurnId,
-  computeNextTurnId,
-} from "./transcript-preview.js"
+  computeCurrentTranscriptTurnId as computeCurrentTurnId,
+  computeNextTranscriptTurnId as computeNextTurnId,
+} from "@arroba/kernel-client/transcript-entry-state"
 import {
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,

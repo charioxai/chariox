@@ -12,7 +12,7 @@ import {
 import {
   hydrateSessionHistoryOutlineAgentEntries,
 } from "@arroba/kernel-client/session-history-transcript"
-import { formatTranscriptPreview } from "./transcript-preview.js"
+import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
 export type AttachedSessionPrimeControllerDeps = {

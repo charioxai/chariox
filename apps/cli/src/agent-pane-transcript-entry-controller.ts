@@ -1,8 +1,8 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import {
-  appendPreviewLine,
+  appendTranscriptPreviewLine as appendPreviewLine,
   formatTranscriptPreview,
-} from "./transcript-preview.js"
+} from "@arroba/kernel-client/session-history-preview"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 import {
   createNextTranscriptEntry,

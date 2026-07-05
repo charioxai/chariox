@@ -3,9 +3,9 @@ import { computeTranscriptRebuildScrollTop } from "./background-effects.js"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
 import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
 import {
-  computeCurrentTurnId,
-  computeNextTurnId,
-} from "./transcript-preview.js"
+  computeCurrentTranscriptTurnId as computeCurrentTurnId,
+  computeNextTranscriptTurnId as computeNextTurnId,
+} from "@arroba/kernel-client/transcript-entry-state"
 
 export type PrimaryTranscriptEntryScrollbox = {
   scrollTop: number

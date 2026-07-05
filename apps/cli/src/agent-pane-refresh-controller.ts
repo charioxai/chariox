@@ -15,7 +15,7 @@ import {
 } from "@arroba/kernel-client/response-pane-selection"
 import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
-import { formatTranscriptPreview } from "./transcript-preview.js"
+import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
 type AgentPaneRefreshControllerDeps = {

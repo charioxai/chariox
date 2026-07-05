@@ -6,7 +6,7 @@ import {
   syncQueuedPromptTranscriptEntriesByAgent as sharedSyncQueuedPromptTranscriptEntriesByAgent,
   syncQueuedPromptTranscriptEntriesForAgent as sharedSyncQueuedPromptTranscriptEntriesForAgent,
 } from "@arroba/kernel-client/queued-prompt-strip-state"
-import { formatTranscriptPreview } from "./transcript-preview.js"
+import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 
 export type QueuedPromptTranscriptSyncResult = {
   entries: TranscriptEntry[]

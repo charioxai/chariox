@@ -1,6 +1,6 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
-import { computeCurrentTurnId } from "./transcript-preview.js"
+import { computeCurrentTranscriptTurnId as computeCurrentTurnId } from "@arroba/kernel-client/transcript-entry-state"
 
 export type AssistantMessageCompletionControllerDeps = {
   entries: () => TranscriptEntry[]

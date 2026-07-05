@@ -26,11 +26,13 @@ import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { isSessionUnavailableError } from "./session-errors.js"
 import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import {
-  computeNextTurnId,
   previewLineForTerminalRecord,
-} from "./transcript-preview.js"
+} from "@arroba/kernel-client/session-history-preview"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
-import { trimSingleTrailingNewline } from "@arroba/kernel-client/transcript-entry-state"
+import {
+  computeNextTranscriptTurnId as computeNextTurnId,
+  trimSingleTrailingNewline,
+} from "@arroba/kernel-client/transcript-entry-state"
 import {
   shouldRenderProviderStatus,
 } from "./transcript.js"

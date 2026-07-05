@@ -9,7 +9,7 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
-import { formatTranscriptPreview } from "./transcript-preview.js"
+import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 
 export type AgentPaneStoreControllerDeps = {
   isAttached: () => boolean

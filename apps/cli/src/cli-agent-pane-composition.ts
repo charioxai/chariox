@@ -13,7 +13,7 @@ import {
   LIVE_TRANSCRIPT_MAX_CHARS,
 } from "./cli-runtime-tuning.js"
 import { clampScrollTop } from "./history-viewport.js"
-import { formatTranscriptPreview } from "./transcript-preview.js"
+import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import {
   getSessionHistoryBlobContent,
