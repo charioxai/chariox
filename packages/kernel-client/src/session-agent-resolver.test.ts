@@ -11,6 +11,7 @@ test("resolveSessionAgentReference returns the focused agent without an explicit
   ])
 
   assert.equal(resolveSessionAgentReference(session, "agent-2").agent?.id, "agent-2")
+  assert.equal(resolveSessionAgentReference(session, " agent-2 ").agent?.id, "agent-2")
 })
 
 test("resolveSessionAgentReference falls back to the first agent without focused identity", () => {
@@ -50,6 +51,15 @@ test("resolveSessionAgentReference reports ambiguous and missing references", ()
 
 test("resolveSessionAgentReference reports missing focus when the session has no agents", () => {
   assert.deepEqual(resolveSessionAgentReference(sessionWithAgents([]), null), {
+    agent: null,
+    error: "no focused agent available",
+  })
+})
+
+test("resolveSessionAgentReference rejects stale explicit focus instead of falling back", () => {
+  assert.deepEqual(resolveSessionAgentReference(sessionWithAgents([
+    agent({ id: "agent-1", agent_ref: "a1" }),
+  ]), "missing-agent"), {
     agent: null,
     error: "no focused agent available",
   })

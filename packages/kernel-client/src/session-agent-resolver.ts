@@ -1,4 +1,5 @@
 import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import { sessionFocusedAgentId } from "./session-runtime-transition.js"
 
 export type ResolvedAgentReference = {
   agent: AgentInstance | null
@@ -12,9 +13,13 @@ export function resolveSessionAgentReference(
 ): ResolvedAgentReference {
   const normalizedReference = reference?.trim() ?? ""
   if (!normalizedReference) {
-    const agent = focusedAgentId
-      ? session.agents.find((entry) => entry.id === focusedAgentId) ?? null
-      : session.agents[0] ?? null
+    const resolvedFocusedAgentId = sessionFocusedAgentId({
+      agents: session.agents,
+      focused_agent_id: focusedAgentId ?? null,
+    })
+    const agent = resolvedFocusedAgentId
+      ? session.agents.find((entry) => entry.id === resolvedFocusedAgentId) ?? null
+      : null
     return agent
       ? { agent, error: null }
       : { agent: null, error: "no focused agent available" }
