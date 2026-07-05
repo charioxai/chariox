@@ -1,8 +1,14 @@
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+
+type TranscriptEntryStateKernelFields = Pick<KernelTranscriptEntry, "id" | "text"> & {
+  readonly turnId?: KernelTranscriptEntry["turnId"] | null
+}
+
 export type TranscriptEntryStateEntry = {
-  readonly id: number
+  readonly id: TranscriptEntryStateKernelFields["id"]
   readonly role: string
-  readonly text: string
-  readonly turnId?: number | null
+  readonly text: TranscriptEntryStateKernelFields["text"]
+  readonly turnId?: TranscriptEntryStateKernelFields["turnId"]
   readonly promptId?: string | null
 }
 

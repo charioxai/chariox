@@ -8,20 +8,27 @@ import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
 } from "./transcript-entry-state.js"
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
 export {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
 } from "./transcript-entry-state.js"
 
+type TranscriptStreamKernelFields = Pick<KernelTranscriptEntry, "id" | "text"> & {
+  readonly turnId?: KernelTranscriptEntry["turnId"] | null
+  readonly mergeKey?: KernelTranscriptEntry["mergeKey"] | null
+  readonly sourceText?: KernelTranscriptEntry["sourceText"] | null
+}
+
 export type TranscriptStreamEntry = {
-  readonly id: number
+  readonly id: TranscriptStreamKernelFields["id"]
   readonly role: string
-  readonly text: string
-  readonly turnId?: number | null
+  readonly text: TranscriptStreamKernelFields["text"]
+  readonly turnId?: TranscriptStreamKernelFields["turnId"]
   readonly providerRunId?: string | null
-  readonly mergeKey?: string | null
-  readonly sourceText?: string | null
+  readonly mergeKey?: TranscriptStreamKernelFields["mergeKey"]
+  readonly sourceText?: TranscriptStreamKernelFields["sourceText"]
   readonly promptId?: string | null
   readonly sourceAttachmentId?: string | null
 }

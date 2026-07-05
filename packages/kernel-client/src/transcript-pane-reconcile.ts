@@ -1,17 +1,36 @@
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+
+type TranscriptPaneKernelFields = Pick<
+  KernelTranscriptEntry,
+  | "id"
+  | "text"
+  | "sourceText"
+  | "emphasis"
+  | "hidden"
+  | "historyDeferred"
+  | "toggleMode"
+  | "blobCollapsible"
+  | "blobCollapsed"
+  | "blobTitle"
+  | "blobSummary"
+> & {
+  readonly turnId?: KernelTranscriptEntry["turnId"] | null
+}
+
 export type TranscriptPaneEntry = {
-  readonly id: number
+  readonly id: TranscriptPaneKernelFields["id"]
   readonly role: string
-  readonly text: string
-  readonly sourceText?: string
-  readonly emphasis?: string
-  readonly hidden?: boolean
-  readonly historyDeferred?: boolean
-  readonly turnId?: number | null
-  readonly toggleMode?: "expand" | "collapse"
-  readonly blobCollapsible?: boolean
-  readonly blobCollapsed?: boolean
-  readonly blobTitle?: string
-  readonly blobSummary?: string
+  readonly text: TranscriptPaneKernelFields["text"]
+  readonly sourceText?: TranscriptPaneKernelFields["sourceText"]
+  readonly emphasis?: TranscriptPaneKernelFields["emphasis"]
+  readonly hidden?: TranscriptPaneKernelFields["hidden"]
+  readonly historyDeferred?: TranscriptPaneKernelFields["historyDeferred"]
+  readonly turnId?: TranscriptPaneKernelFields["turnId"]
+  readonly toggleMode?: TranscriptPaneKernelFields["toggleMode"]
+  readonly blobCollapsible?: TranscriptPaneKernelFields["blobCollapsible"]
+  readonly blobCollapsed?: TranscriptPaneKernelFields["blobCollapsed"]
+  readonly blobTitle?: TranscriptPaneKernelFields["blobTitle"]
+  readonly blobSummary?: TranscriptPaneKernelFields["blobSummary"]
 }
 
 export type TranscriptPaneRenderable<TEntry extends TranscriptPaneEntry> = {
