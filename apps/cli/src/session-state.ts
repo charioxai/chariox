@@ -9,19 +9,25 @@ import {
 } from "@arroba/kernel-client/session-config-projection"
 import {
   runtimeProviderRunForAgent as kernelRuntimeProviderRunForAgent,
-  sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent as kernelSessionActiveInteractionForAgent,
+} from "@arroba/kernel-client/shell-agent-activity"
+import {
+  sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
+  sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
+} from "@arroba/kernel-client/session-prompt-identity"
+import {
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
-  sessionFocusedAgentId as kernelSessionFocusedAgentId,
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionProjectedStreamingAgentId as kernelSessionProjectedStreamingAgentId,
-  sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
   sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
+} from "@arroba/kernel-client/session-prompt-work"
+import {
+  sessionFocusedAgentId as kernelSessionFocusedAgentId,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState as kernelSessionRuntimeTransitionState,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-transition"
 import type {
   PromptLifecycleTransition as KernelPromptLifecycleTransition,
 } from "@arroba/kernel-client/session-prompt-lifecycle"

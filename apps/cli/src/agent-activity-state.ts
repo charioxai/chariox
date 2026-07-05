@@ -8,7 +8,7 @@ import {
   resolveActiveToolLabelForAgent as kernelResolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel as kernelShouldPreserveAgentActivityLabel,
   type AgentBusyState,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-transition"
 import type { RuntimeSession } from "./cli-types.js"
 import { getToolActivityLabel } from "./runtime.js"
 

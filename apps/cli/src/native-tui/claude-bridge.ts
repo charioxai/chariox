@@ -9,7 +9,7 @@ import {
 } from "../cli-types.js"
 import {
   sessionActivePromptForAgent,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-prompt-identity"
 import { LocalIpcClient } from "../ipc.js"
 import {
   appendNativeProviderOutputRequest,

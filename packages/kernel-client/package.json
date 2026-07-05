@@ -47,6 +47,7 @@
     "./session-prompt-identity": "./dist/session-prompt-identity.js",
     "./session-prompt-lifecycle": "./dist/session-prompt-lifecycle.js",
     "./session-prompt-work": "./dist/session-prompt-work.js",
+    "./session-runtime-transition": "./dist/session-runtime-transition.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
     "./transcript-entry-state": "./dist/transcript-entry-state.js",

@@ -6,14 +6,16 @@ import {
   toProviderPresentParticiplePhrase,
 } from "@arroba/kernel-client/provider-status"
 import {
-  resolveSessionStreamingAgentId,
   sessionStatusLabel,
+  type SessionStatusMode,
+} from "@arroba/kernel-client/shell-agent-activity"
+import {
+  resolveSessionStreamingAgentId,
   sessionWorkingStateAfterPromptWork,
   turnCompletionDelayMs,
-  type SessionStatusMode,
   type SessionStreamingAgent,
   type TurnCompletionDelayInput,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-transition"
 
 export const DEFAULT_CONNECTED_STATUS = ""
 export const MAX_TRANSIENT_POLL_FAILURES = 5
