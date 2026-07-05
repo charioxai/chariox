@@ -1,9 +1,6 @@
 import process from "node:process"
 
 import {
-  agentRuntimeActivityIsBusy as kernelAgentRuntimeActivityIsBusy,
-} from "@arroba/kernel-client/agent-activity"
-import {
   sessionResponseLayout as kernelSessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "@arroba/kernel-client/session-config-projection"
@@ -238,12 +235,6 @@ export function projectedStreamingAgentIdForSession(session: RuntimeSession): st
   return kernelSessionProjectedStreamingAgentId(
     session as Parameters<typeof kernelSessionProjectedStreamingAgentId>[0],
   )
-}
-
-export function agentRuntimeActivityIsBusy(
-  activity: NonNullable<RuntimeSession["agent_activity"]>[string] | null | undefined,
-): boolean {
-  return kernelAgentRuntimeActivityIsBusy(activity)
 }
 
 export function deriveSessionTransitionState(
