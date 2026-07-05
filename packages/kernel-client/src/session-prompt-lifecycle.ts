@@ -73,16 +73,18 @@ export function sessionPromptLifecycleTransition(
   nextSession: RuntimeSession,
 ): PromptLifecycleTransition {
   const currentPromptRecords = sessionActivePromptLifecycleRecords(currentSession)
-  const previousPromptIds = currentPromptRecords.map((prompt) => prompt.id)
-  const nextPromptIds = activePromptLifecycleRecordIds(nextSession)
+  const previousPromptFingerprints = currentPromptRecords.map(activePromptLifecycleRecordFingerprint)
+  const nextPromptRecords = sessionActivePromptLifecycleRecords(nextSession)
+  const nextPromptIds = nextPromptRecords.map((prompt) => prompt.id)
+  const nextPromptFingerprints = nextPromptRecords.map(activePromptLifecycleRecordFingerprint)
   const nextPromptIdSet = new Set(nextPromptIds)
   const settledPromptRecords = currentPromptRecords
     .filter((prompt) => !nextPromptIdSet.has(prompt.id))
 
   return {
     activePromptChanged:
-      previousPromptIds.length !== nextPromptIds.length
-      || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
+      previousPromptFingerprints.length !== nextPromptFingerprints.length
+      || previousPromptFingerprints.some((fingerprint, index) => fingerprint !== nextPromptFingerprints[index]),
     settledPromptRecords,
     settledAgentIds: settledPromptRecords
       .map((prompt) => prompt.target_agent_id)
@@ -123,8 +125,17 @@ function activePromptLifecycleRecordFromProjectedTurn(
   }
 }
 
-function activePromptLifecycleRecordIds(session: RuntimeSession): string[] {
-  return sessionActivePromptLifecycleRecords(session).map((prompt) => prompt.id)
+function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {
+  return [
+    prompt.id,
+    prompt.status ?? "",
+    prompt.promptOrigin ?? "",
+    prompt.target_agent_id ?? "",
+    prompt.providerRunId ?? "",
+    prompt.externalProvider ?? "",
+    prompt.externalProviderSessionId ?? "",
+    prompt.externalProviderTurnId ?? "",
+  ].join("\u001f")
 }
 
 function compareActivePromptLifecycleRecords(

@@ -219,3 +219,96 @@ test("session prompt lifecycle transition settles external active turns", () => 
     settledAgentIds: ["agent-1"],
   })
 })
+
+test("session prompt lifecycle transition detects same prompt status changes", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "cancelling",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "cancelling",
+            phase: "settling",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: true,
+    cancelledPromptSettled: false,
+    settledPromptRecords: [],
+    settledAgentIds: [],
+  })
+})
+
+test("session prompt lifecycle transition detects same prompt external identity changes", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: true,
+    cancelledPromptSettled: false,
+    settledPromptRecords: [],
+    settledAgentIds: [],
+  })
+})
