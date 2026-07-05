@@ -1,8 +1,8 @@
 import {
   waitingRoomSessionActivityBadgeState,
-  waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
+  waitingRoomSessionRecencyMs,
 } from "@arroba/kernel-client/waiting-room-activity"
 
 import {
@@ -211,14 +211,7 @@ export function waitingRoomPreviewSessions(sessions: SessionListEntry[]) {
 }
 
 export function sessionLastActiveMs(session: SessionListEntry) {
-  return numberOrZero(session.last_prompt_sent_at_ms)
-    || numberOrZero(session.last_activity_at_ms)
-    || numberOrZero(session.last_used_at_ms)
-    || numberOrZero(session.created_at_ms)
-}
-
-function numberOrZero(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0
+  return waitingRoomSessionRecencyMs(session)
 }
 
 function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, start: number) {
@@ -263,10 +256,6 @@ function formatWaitingRoomSessionWork(session: SessionListEntry) {
 
 function sessionHasActiveWork(session: SessionListEntry) {
   return waitingRoomSessionActivityHasWork(session.activity)
-}
-
-function sessionHasUnreadIdleOutput(session: SessionListEntry) {
-  return waitingRoomSessionActivityHasUnreadIdleOutput(session.activity)
 }
 
 function formatSessionStatus(value: string) {

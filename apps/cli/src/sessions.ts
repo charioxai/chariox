@@ -2,6 +2,7 @@ import path from "node:path"
 
 import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
+import { waitingRoomSessionRecencyMs } from "@arroba/kernel-client/waiting-room-activity"
 
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
@@ -158,8 +159,13 @@ export function sessionBrowserTimestamp(value: number | null) {
   return `${year}-${month}-${day} ${hours}:${minutes} UTC`
 }
 
-export function sessionBrowserSortTime(session: { last_used_at_ms?: number | null; created_at_ms?: number | null }) {
-  return session.last_used_at_ms ?? session.created_at_ms ?? 0
+export function sessionBrowserSortTime(session: {
+  last_prompt_sent_at_ms?: number | null
+  last_activity_at_ms?: number | null
+  last_used_at_ms?: number | null
+  created_at_ms?: number | null
+}) {
+  return waitingRoomSessionRecencyMs(session)
 }
 
 export function selectAttachableSession(

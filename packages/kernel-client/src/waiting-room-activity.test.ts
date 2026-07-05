@@ -10,7 +10,41 @@ import {
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
+  waitingRoomSessionRecencyMs,
 } from "./waiting-room-activity.js"
+
+test("waiting room session recency prioritizes prompt, activity, last-used, then created timestamps", () => {
+  assert.equal(waitingRoomSessionRecencyMs({
+    last_prompt_sent_at_ms: 40,
+    last_activity_at_ms: 30,
+    last_used_at_ms: 10,
+    created_at_ms: 20,
+  }), 40)
+  assert.equal(waitingRoomSessionRecencyMs({
+    last_prompt_sent_at_ms: null,
+    last_activity_at_ms: 30,
+    last_used_at_ms: 10,
+    created_at_ms: 20,
+  }), 30)
+  assert.equal(waitingRoomSessionRecencyMs({
+    last_prompt_sent_at_ms: null,
+    last_activity_at_ms: null,
+    last_used_at_ms: 10,
+    created_at_ms: 20,
+  }), 10)
+  assert.equal(waitingRoomSessionRecencyMs({
+    last_prompt_sent_at_ms: null,
+    last_activity_at_ms: null,
+    last_used_at_ms: null,
+    created_at_ms: 20,
+  }), 20)
+  assert.equal(waitingRoomSessionRecencyMs({
+    last_prompt_sent_at_ms: Number.NaN,
+    last_activity_at_ms: null,
+    last_used_at_ms: null,
+    created_at_ms: 20,
+  }), 20)
+})
 
 test("waiting room session activity predicates derive work and unread output", () => {
   assert.equal(waitingRoomSessionActivityHasWork(null), false)

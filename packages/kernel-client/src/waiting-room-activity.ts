@@ -5,6 +5,20 @@ import type {
 
 export type WaitingRoomActivityBadgeState = "none" | "working" | "done" | "mixedWorkingDone"
 
+export function waitingRoomSessionRecencyMs(
+  session: {
+    readonly last_prompt_sent_at_ms?: number | null | undefined
+    readonly last_activity_at_ms?: number | null | undefined
+    readonly last_used_at_ms?: number | null | undefined
+    readonly created_at_ms?: number | null | undefined
+  },
+): number {
+  return numberOrZero(session.last_prompt_sent_at_ms)
+    || numberOrZero(session.last_activity_at_ms)
+    || numberOrZero(session.last_used_at_ms)
+    || numberOrZero(session.created_at_ms)
+}
+
 export function waitingRoomSessionActivityHasWork(
   activity: Pick<
     WaitingRoomSessionActivitySummary,
@@ -99,4 +113,8 @@ export function waitingRoomItemActivityWorkLabel(
     activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
     queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(", ") || fallback
+}
+
+function numberOrZero(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
 }
