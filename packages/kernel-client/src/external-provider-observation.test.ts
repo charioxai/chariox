@@ -28,6 +28,9 @@ test("external provider observed predicate requires kernel observed source", () 
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   }), true)
   assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `,
+  }), true)
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
     source: null,
   }), false)
 })
@@ -391,7 +394,15 @@ test("external provider observed source merge preserves observed source", () => 
     EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   )
   assert.equal(
+    mergeExternalProviderObservedSource("provider_output", ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
     mergeExternalProviderObservedSource(EXTERNAL_PROVIDER_OBSERVED_SOURCE, "provider_output"),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
+    mergeExternalProviderObservedSource(` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `, "provider_output"),
     EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   )
   assert.equal(mergeExternalProviderObservedSource(null, "provider_output"), "provider_output")
@@ -437,6 +448,18 @@ test("external provider observed history field merge preserves first stable meta
       passive_telemetry: true,
     },
   })
+})
+
+test("external provider observed history field merge canonicalizes observed source", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {}
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `,
+  })
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: "provider_output",
+  })
+
+  assert.equal(target.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
 })
 
 test("external provider observed history field merge lets settlement override passive telemetry", () => {

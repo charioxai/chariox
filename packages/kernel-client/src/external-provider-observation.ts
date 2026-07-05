@@ -39,7 +39,7 @@ export type ExternalProviderObservedTranscriptMetadata = {
 export function sessionHistoryEntryIsExternalProviderObserved(
   entry: { readonly source?: string | null | undefined },
 ): boolean {
-  return entry.source === EXTERNAL_PROVIDER_OBSERVED_SOURCE
+  return normalizeExternalProviderObservedSource(entry.source) === EXTERNAL_PROVIDER_OBSERVED_SOURCE
 }
 
 export function historyEntryExternalProviderObservedMetadata(
@@ -167,8 +167,11 @@ export function mergeExternalProviderObservedSource(
   existing: string | null | undefined,
   incoming: string | null | undefined,
 ): string | null | undefined {
-  if (incoming === EXTERNAL_PROVIDER_OBSERVED_SOURCE) {
-    return incoming
+  if (sessionHistoryEntryIsExternalProviderObserved({ source: incoming })) {
+    return EXTERNAL_PROVIDER_OBSERVED_SOURCE
+  }
+  if (sessionHistoryEntryIsExternalProviderObserved({ source: existing })) {
+    return EXTERNAL_PROVIDER_OBSERVED_SOURCE
   }
   return existing ?? incoming
 }
@@ -180,8 +183,11 @@ export function mergeExternalProviderObservedHistoryFields<T extends ExternalPro
   if (incoming.external_observation === undefined && incoming.source === undefined) {
     return target
   }
-  if (target.source === undefined && incoming.source !== undefined) {
-    target.source = incoming.source
+  if (incoming.source !== undefined) {
+    const source = mergeExternalProviderObservedSource(target.source, incoming.source)
+    if (source !== undefined) {
+      target.source = source
+    }
   }
   if (target.external_provider === undefined && incoming.external_provider !== undefined) {
     target.external_provider = incoming.external_provider
@@ -379,6 +385,10 @@ export function transcriptExternalProviderObservedTurnMarker(
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
+}
+
+function normalizeExternalProviderObservedSource(value: string | null | undefined): string | null {
+  return nonBlankString(value)?.toLowerCase() ?? null
 }
 
 function finiteNumber(value: number | null | undefined): number | null {
