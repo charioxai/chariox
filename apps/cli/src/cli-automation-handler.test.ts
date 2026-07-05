@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
-import type { CliOptions, ExternalProviderSessionRecord, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, CliOptions, ExternalProviderSessionRecord, RuntimeSession } from "./cli-types.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 
@@ -114,6 +114,89 @@ test("automation prompt submit does not relaunch when the session has an active 
 
   assert.deepEqual(result, { promptText: "hello", submitted: true })
 })
+
+test("automation prompt submit skips local provider launch for remote-backed focused agents", async () => {
+  let promptText = ""
+  let submitted = false
+  const remoteAgent = automationAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => true,
+    sessionState: () => automationSession({
+      focused_agent_id: remoteAgent.id,
+      agents: [remoteAgent],
+    }),
+    focusedAgentId: () => remoteAgent.id,
+    setPromptText: (value) => {
+      promptText = value
+    },
+    submitPrompt: async () => {
+      submitted = true
+    },
+    snapshot: () => ({ promptText, submitted }),
+  })
+
+  const result = await handler({ action: "submit_prompt", prompt: "hello remote" })
+
+  assert.deepEqual(result, { promptText: "hello remote", submitted: true })
+})
+
+function automationAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    worktree_id: "worktree-1",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function automationSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    alias: null,
+    workspace_id: "workspace-1",
+    worktree_id: "worktree-1",
+    created_at_ms: 0,
+    status: "Running",
+    active_provider_run_id: null,
+    attachment_ids: ["attachment-1"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 6,
+    agents: [automationAgent()],
+    workflows: [],
+    workflow_runs: [],
+    config_state: {
+      version: 0,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
 
 test("automation action handler requests waiting room through attached transition", async () => {
   let requested = false

@@ -22,6 +22,7 @@ import {
 import { submitPromptWithRecovery } from "./prompt-runtime-api.js"
 import { launchProviderRun } from "./provider-api.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
+import { resolveAttachTimeProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type CliAutomationActionDeps = {
@@ -124,17 +125,24 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           return deps.snapshot()
         }
         const session = deps.sessionState()
-        if (deps.isAttached() && !session.active_provider_run_id) {
-          await launchProviderRun(
-            deps.client,
-            session.id,
-            deps.options.provider ?? "opencode",
-            deps.options.accountProfile,
-            deps.options.model,
-            deps.options.effort,
-            deps.focusedAgentId(),
-          )
-          await resizeSessionTerminal(deps.client, session.id)
+        if (deps.isAttached()) {
+          const launchDecision = resolveAttachTimeProviderLaunch(session, {
+            provider: deps.options.provider ?? "opencode",
+            model: deps.options.model,
+            effort: deps.options.effort,
+          }, false)
+          if (launchDecision.action === "launch_provider_run") {
+            await launchProviderRun(
+              deps.client,
+              session.id,
+              launchDecision.launch.provider,
+              deps.options.accountProfile,
+              launchDecision.launch.model,
+              launchDecision.launch.effort,
+              launchDecision.targetAgentId,
+            )
+            await resizeSessionTerminal(deps.client, session.id)
+          }
         }
         deps.setPromptText(prompt)
         await deps.submitPrompt()
