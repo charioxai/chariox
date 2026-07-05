@@ -571,12 +571,18 @@ pub(crate) async fn execute_external_provider_session_request(
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
             let mut app = app.lock().await;
             mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            import_external_provider_session(&mut app, &store, request, caller_user_id)
+            import_external_provider_session(
+                &mut app,
+                runtime_state,
+                &store,
+                request,
+                caller_user_id,
+            )
         }
         LocalDaemonRequest::ImportExternalProviderAgent(request) => {
             let mut app = app.lock().await;
             mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            import_external_provider_agent(&mut app, &store, request, caller_user_id)
+            import_external_provider_agent(&mut app, runtime_state, &store, request, caller_user_id)
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "external provider session request",
@@ -652,11 +658,13 @@ async fn refresh_attached_external_provider_histories(
 
 fn import_external_provider_session(
     app: &mut DaemonApp,
+    runtime_state: Option<&KernelRuntimeState>,
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderSessionRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    let external =
+        external_session_or_refresh(app, runtime_state, store, &request.external_session_id)?;
     ensure_external_session_is_attachable(&external)?;
     let provider = request
         .provider
@@ -724,11 +732,13 @@ fn import_external_provider_session(
 
 fn import_external_provider_agent(
     app: &mut DaemonApp,
+    runtime_state: Option<&KernelRuntimeState>,
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderAgentRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    let external =
+        external_session_or_refresh(app, runtime_state, store, &request.external_session_id)?;
     ensure_external_session_is_attachable(&external)?;
     let session = app.sessions().get_session(&request.session_id)?;
     let provider = request
@@ -779,10 +789,12 @@ fn import_external_provider_agent(
 }
 
 fn external_session_or_refresh(
-    _app: &DaemonApp,
+    app: &DaemonApp,
+    runtime_state: Option<&KernelRuntimeState>,
     store: &crate::app::ExternalProviderSessionIndexStore,
     external_session_id: &str,
 ) -> Result<ExternalProviderSessionRecord, DaemonError> {
+    mark_attached_external_provider_sessions(app, runtime_state, store);
     if let Some(session) = store.get(external_session_id) {
         return Ok(session);
     }
@@ -792,6 +804,7 @@ fn external_session_or_refresh(
     for session in crate::app::discover_external_provider_sessions(provider) {
         store.upsert(session);
     }
+    mark_attached_external_provider_sessions(app, runtime_state, store);
     store
         .get(external_session_id)
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -1734,6 +1747,9 @@ mod tests {
         ExternalProviderSessionCapabilities, ImportExternalProviderAgentRequest,
         ImportExternalProviderSessionRequest,
     };
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn observer_target(agent_id: &str) -> AttachedExternalObserverTarget {
@@ -2129,6 +2145,82 @@ mod tests {
                 .expect("record should remain indexed")
                 .is_attached_to_arroba());
         });
+    }
+
+    #[test]
+    fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_resume_state() {
+        let _guard = crate::env_lock::lock();
+        let codex_home = temp_root("codex-owned-discovery");
+        let previous_codex_home = env::var_os("CODEX_HOME");
+        env::set_var("CODEX_HOME", &codex_home);
+        let session_dir = codex_home.join("archived_sessions");
+        fs::create_dir_all(&session_dir).expect("codex session dir should create");
+        fs::write(
+            session_dir.join("owned-discovered.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-owned-discovered\",\"cwd\":\"/tmp/owned-discovered\",\"model_provider\":\"openai\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"This thread was created by Arroba and should not be attachable.\"}]}}\n",
+            ),
+        )
+        .expect("codex session should write");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let (session_id, agent_id, store) = {
+                let mut app = app.lock().await;
+                let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                app.agents()
+                    .set_agent_runtime_profile(
+                        agent.id(),
+                        "codex",
+                        Some("gpt-test".to_string()),
+                        None,
+                        ProviderResumeState::from_codex_thread_id("thread-owned-discovered"),
+                    )
+                    .expect("agent runtime profile should update");
+                let store = app.external_provider_session_index_store();
+                (session.id().to_string(), agent.id().to_string(), store)
+            };
+            assert!(
+                store.get("codex:thread-owned-discovered").is_none(),
+                "test must start from an empty external session cache"
+            );
+
+            let error = execute_external_provider_session_request(
+                &app,
+                None,
+                LocalDaemonRequest::ImportExternalProviderSession(
+                    ImportExternalProviderSessionRequest {
+                        external_session_id: "codex:thread-owned-discovered".to_string(),
+                        alias: None,
+                        provider: None,
+                        model: None,
+                        effort: None,
+                        worktree_id: None,
+                    },
+                ),
+                "external-import-user",
+            )
+            .await
+            .expect_err("discovered Arroba-owned Codex thread should not import");
+
+            let message = error.to_string();
+            assert!(message.contains(&format!(
+                "already attached to Arroba session `{session_id}` agent `{agent_id}`"
+            )));
+            assert!(store
+                .get("codex:thread-owned-discovered")
+                .expect("discovered record should remain indexed")
+                .is_attached_to_arroba());
+        });
+
+        restore_env_var("CODEX_HOME", previous_codex_home);
+        let _ = fs::remove_dir_all(codex_home);
     }
 
     #[test]
@@ -4831,6 +4923,20 @@ mod tests {
             attached_to_arroba: false,
             attached_session_ids: Vec::new(),
             attached_agent_ids: Vec::new(),
+        }
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let path =
+            env::temp_dir().join(format!("arroba-{name}-{}", crate::session::unix_epoch_ms()));
+        fs::create_dir_all(&path).expect("temp root should create");
+        path
+    }
+
+    fn restore_env_var(key: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => env::set_var(key, value),
+            None => env::remove_var(key),
         }
     }
 }
