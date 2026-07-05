@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   agentPromptStateHasWork,
+  sessionAgentActivityRecordForAgent,
   sessionHasAgent,
   sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionProjectedPromptActivityForAgent,
@@ -127,6 +128,50 @@ test("session projected prompt activity scopes activity to session agents", () =
   if (projection && projection !== "idle" && projection !== "not_found") {
     assert.equal(projection.activeTurnPromptId, "prompt-1")
   }
+})
+
+test("session agent activity record distinguishes absent projection from missing session agents", () => {
+  const unprojected = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  assert.equal(sessionAgentActivityRecordForAgent(unprojected, "agent-1"), undefined)
+  assert.equal(sessionAgentActivityRecordForAgent(unprojected, "agent-outside"), null)
+
+  const projected = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        queued_prompt_controls: {
+          "queued-1": {
+            prompt_id: "queued-1",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: true,
+          },
+        },
+      },
+      "agent-outside": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentActivityRecordForAgent(projected, "agent-outside"), null)
+  assert.deepEqual(sessionAgentActivityRecordForAgent(projected, "agent-1")?.queued_prompt_controls, {
+    "queued-1": {
+      prompt_id: "queued-1",
+      status: "dispatching",
+      can_steer: false,
+      can_cancel: true,
+    },
+  })
 })
 
 test("session projected prompt activity entries keep active session agent projections only", () => {

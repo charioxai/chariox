@@ -1,4 +1,5 @@
 import type {
+  AgentRuntimeActivity,
   AgentPromptState,
   RuntimeSession,
 } from "./kernel-types.js"
@@ -54,6 +55,19 @@ export function sessionPromptStateEntriesForSessionAgents(
     .map(([agentId, state]) => [agentId, normalizeAgentPromptState(state)] as const)
 }
 
+export function sessionAgentActivityRecordForAgent(
+  session: RuntimeSession,
+  agentId: string,
+): AgentRuntimeActivity | null | undefined {
+  if (!sessionHasAgent(session, agentId)) {
+    return null
+  }
+  if (!session.agent_activity) {
+    return undefined
+  }
+  return session.agent_activity[agentId] ?? null
+}
+
 export function sessionProjectedPromptActivityEntriesForSessionAgents(
   session: RuntimeSession,
 ): readonly (readonly [string, AgentRuntimeActivityProjection])[] {
@@ -85,7 +99,7 @@ export function sessionProjectedPromptActivityForAgent(
   if (!session.agent_activity) {
     return null
   }
-  const activity = session.agent_activity[agentId]
+  const activity = sessionAgentActivityRecordForAgent(session, agentId)
   if (!activity) {
     return "not_found"
   }

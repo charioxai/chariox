@@ -2,6 +2,7 @@ import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { promptOriginIsExternal } from "./prompt-origin.js"
 import {
+  sessionAgentActivityRecordForAgent,
   sessionPromptStateRecordForAgent,
   sessionProjectedPromptActivityForAgent,
   type SessionProjectedPromptActivity,
@@ -150,7 +151,7 @@ export function queuedPromptProjectionForAgent(
   }
   const projectedActivity = sessionProjectedPromptActivityForAgent(session, agentId)
   const disableSteeringBehindExternalTurn = projectedActivityHasExternalActiveTurn(projectedActivity)
-  const controls = session.agent_activity?.[agentId]?.queued_prompt_controls
+  const controls = sessionAgentActivityRecordForAgent(session, agentId)?.queued_prompt_controls
   return {
     action: "replace",
     prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
