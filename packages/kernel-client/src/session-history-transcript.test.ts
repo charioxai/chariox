@@ -60,6 +60,33 @@ test("session history transcript hydration keeps repeated merge keys scoped to t
   assert.deepEqual(entries.map((entry) => entry.providerRunId), ["run-1", "run-1", "run-2", "run-2"])
 })
 
+test("session history transcript hydration keeps adjacent unkeyed assistant entries separate", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(1, "provider_output", "first blob\n", { provider_run_id: "run-1" }),
+    pageEntry(2, "provider_output", "second blob\n", { provider_run_id: "run-1" }),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.role), ["assistant", "assistant"])
+  assert.deepEqual(entries.map((entry) => entry.text), ["first blob\n", "second blob\n"])
+  assert.deepEqual(entries.map((entry) => entry.historyEntryIndex), [1, 2])
+})
+
+test("session history transcript hydration marks only head partial fragment deferred", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(5, "provider_output", "continued reply\n", {
+      merge_key: "reply-1",
+    }, {
+      fragmentStart: 120,
+      fragmentEnd: 240,
+      totalChars: 240,
+    }),
+    pageEntry(6, "notice", "reattached"),
+  ])
+
+  assert.equal(entries[0]?.historyDeferred, true)
+  assert.equal(entries[1]?.historyDeferred, undefined)
+})
+
 test("session history transcript hydration preserves external observed metadata", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(7, "provider_output", "native ", {

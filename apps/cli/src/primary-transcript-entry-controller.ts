@@ -1,7 +1,7 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { computeTranscriptRebuildScrollTop } from "./background-effects.js"
 import { applyTranscriptDisplayState } from "./transcript-display.js"
-import { stitchPrependedHistory } from "./transcript-history.js"
+import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
@@ -94,7 +94,7 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
     const nextCombinedEntries = applyTranscriptDisplayState(
-      stitchPrependedHistory(sanitizedEntries, currentEntries),
+      stitchPrependedHistoryTranscript(sanitizedEntries, currentEntries) as TranscriptEntry[],
       deps.expandedTurnIdsForAgent(deps.getVisibleTranscriptAgentId()),
     )
     applyEntries(nextCombinedEntries)

@@ -68,6 +68,48 @@ test("adjacent session history page entries preserve identity fields and richer 
   })
 })
 
+test("adjacent session history page entries upgrade matching attachments without dropping extra chips", () => {
+  const merged = mergeAdjacentSessionHistoryPageEntries([
+    pageEntry(0, 0, 3, {
+      kind: "user_prompt",
+      text: "hel",
+      attachments: [{
+        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+        mime: "image/png",
+        filename: "Screenshot.png",
+        preview_url: null,
+      }, {
+        url: "arroba-terminal://prompt-attachment/attachment-2/notes.txt",
+        mime: "text/plain",
+        filename: "notes.txt",
+        preview_url: null,
+      }],
+    }),
+    pageEntry(0, 3, 6, {
+      kind: "user_prompt",
+      text: "lo\n",
+      attachments: [{
+        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+        mime: "image/png",
+        filename: "Screenshot.png",
+        preview_url: "data:image/png;base64,aW1hZ2U=",
+      }],
+    }),
+  ])
+
+  assert.deepEqual(merged[0]?.entry.attachments, [{
+    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    mime: "image/png",
+    filename: "Screenshot.png",
+    preview_url: "data:image/png;base64,aW1hZ2U=",
+  }, {
+    url: "arroba-terminal://prompt-attachment/attachment-2/notes.txt",
+    mime: "text/plain",
+    filename: "notes.txt",
+    preview_url: null,
+  }])
+})
+
 test("adjacent session history page entries merge external observation settlement metadata", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
     pageEntry(3, 0, 4, {

@@ -5,16 +5,14 @@ import type {
 } from "./cli-types.js"
 import {
   previewLineForTranscriptEntry as sharedPreviewLineForTranscriptEntry,
+  previewLineForSessionHistoryEntry,
   transcriptEntryPreviewLabel,
 } from "@arroba/kernel-client/session-history-preview"
+import { mergeAdjacentSessionHistoryPageEntries } from "@arroba/kernel-client/session-history-page-entries"
 import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptTurnId,
 } from "@arroba/kernel-client/transcript-entry-state"
-import {
-  mergeAdjacentHistoryPageEntries,
-  previewLineForHistoryEntry,
-} from "./transcript-history.js"
 
 export function appendPreviewLine(current: string, line: string) {
   const combined = current ? `${current}\n${line}` : line
@@ -23,8 +21,8 @@ export function appendPreviewLine(current: string, line: string) {
 }
 
 export function formatHistoryPreview(historyEntries: SessionHistoryPageEntry[]) {
-  const lines = mergeAdjacentHistoryPageEntries(historyEntries)
-    .map((item) => previewLineForHistoryEntry(item.entry))
+  const lines = mergeAdjacentSessionHistoryPageEntries(historyEntries)
+    .map((item) => previewLineForSessionHistoryEntry(item.entry))
     .filter(Boolean) as string[]
   return lines.slice(-14).join("\n")
 }
