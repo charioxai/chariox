@@ -142,7 +142,7 @@ export function sessionPromptWorkByAgent(session: RuntimeSession): Record<string
 
 export function sessionProjectedStreamingAgentId(session: RuntimeSession): string | null {
   if (session.agent_activity) {
-    return session.agents.find((agent) => agentRuntimeActivityIsBusy(session.agent_activity?.[agent.id]))?.id ?? null
+    return session.agents.find((agent) => agentRuntimeActivityHasTurnWork(session.agent_activity?.[agent.id]))?.id ?? null
   }
   if (session.prompt_states) {
     const activeAgents = session.agents.filter((agent) => {

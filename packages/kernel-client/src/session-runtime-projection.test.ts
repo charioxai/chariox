@@ -1053,6 +1053,44 @@ test("sessionRuntimeTransitionState clears stale streaming when projected activi
   })
 })
 
+test("sessionRuntimeTransitionState does not stream queued-only projected activity", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: false,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "thinking" },
+  }), {
+    nextFocusedAgentId: "agent-1",
+    nextHasPromptWork: true,
+    nextStreamingAgentId: null,
+    nextFocusedActivityLabel: "thinking",
+    nextAgentActivityLabels: {
+      "agent-1": "thinking",
+    },
+    nextWorking: true,
+    previousAgentSignature: "agent-1",
+    nextAgentSignature: "agent-1",
+  })
+})
+
 test("sessionRuntimeTransitionState resolves streaming from prompt state before stale processing", () => {
   const currentSession = makeSession({
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
@@ -2318,7 +2356,7 @@ test("sessionActivePromptLifecycleRecords falls back to legacy active prompt wit
     prompt: "legacy",
     status: "running",
     prompt_origin: " External ",
-    promptOrigin: " External ",
+    promptOrigin: "external",
   }])
 })
 

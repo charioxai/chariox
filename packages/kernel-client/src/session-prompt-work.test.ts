@@ -219,3 +219,27 @@ test("session projected streaming agent follows projected activity before legacy
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
   })), "agent-2")
 })
+
+test("session projected streaming agent ignores queued-only projected activity", () => {
+  const session = makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.deepEqual(sessionPromptWorkSummary(session), {
+    active: 0,
+    queued: 1,
+    busyAgents: 1,
+  })
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
+  assert.equal(sessionProjectedStreamingAgentId(session), null)
+})
