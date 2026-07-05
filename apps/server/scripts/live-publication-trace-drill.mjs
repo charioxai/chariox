@@ -79,6 +79,7 @@ const markerNames = {
 
 await mkdir(artifactsDir, { recursive: true })
 const client = new LocalIpcClient(kernelUrl)
+let shuttingDown = false
 const report = {
   generated_at: new Date().toISOString(),
   kernel_url: kernelUrl,
@@ -87,6 +88,11 @@ const report = {
   preflight: null,
   matrix: [],
   screenshots: {},
+}
+for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.once(signal, () => {
+    void cleanupAndExit(exitCode)
+  })
 }
 
 try {
@@ -407,7 +413,7 @@ async function stopRuntime(client, sessionId, matrixEntry, prefix) {
   if (!stop) return
   try {
     const stopped = await unwrap(
-      client.send(controlWorkflowPublicationRuntimeRequest(sessionId, stop.publicationId, "stop")),
+      client.send(controlWorkflowPublicationRuntimeRequest(stop.sessionId ?? sessionId, stop.publicationId, "stop")),
       "WorkflowPublicationRuntimeControlled",
     )
     await writeArtifact(`${prefix}/runtime-stopped.json`, stopped)
@@ -429,6 +435,14 @@ async function stopActiveRuntimes(client) {
       // Best-effort cleanup during process shutdown.
     }
   }
+}
+
+async function cleanupAndExit(exitCode) {
+  if (shuttingDown) return
+  shuttingDown = true
+  await stopActiveRuntimes(client)
+  await client.close().catch(() => {})
+  process.exit(exitCode)
 }
 
 async function invokeTransport(localUrl, transport, provider, policy) {
