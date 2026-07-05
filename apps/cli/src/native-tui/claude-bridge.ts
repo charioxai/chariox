@@ -7,6 +7,9 @@ import {
   type PromptQueueItem,
   type RuntimeSession,
 } from "../cli-types.js"
+import {
+  sessionActivePromptForAgent,
+} from "@arroba/kernel-client/shell-agent-activity"
 import { LocalIpcClient } from "../ipc.js"
 import {
   appendNativeProviderOutputRequest,
@@ -15,7 +18,6 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
-import { agentRuntimeActivityIsBusy } from "../session-state.js"
 import {
   extractClaudeNativePromptAttachments,
   formatClaudeAttachmentContext,
@@ -192,26 +194,10 @@ function extractHiddenInstructions(prompt: string): string {
 }
 
 export function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  const projectedActivity = session.agent_activity?.[agentId]
-  if (session.agent_activity && !agentRuntimeActivityIsBusy(projectedActivity)) {
-    return null
-  }
-
-  const promptStates = session.prompt_states
-  const prompt = promptStates
-    ? Object.prototype.hasOwnProperty.call(promptStates, agentId)
-      ? promptStates[agentId]?.active_prompt ?? null
-      : null
-    : session.agent_activity
-      ? null
-    : session.active_prompt?.target_agent_id === agentId
-      ? session.active_prompt
-      : null
-  const activeTurnPromptId = projectedActivity?.active_turn?.prompt_id
-  if (activeTurnPromptId && prompt?.id !== activeTurnPromptId) {
-    return null
-  }
-  return prompt
+  return sessionActivePromptForAgent(
+    session as Parameters<typeof sessionActivePromptForAgent>[0],
+    agentId,
+  ) as PromptQueueItem | null
 }
 
 export function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {

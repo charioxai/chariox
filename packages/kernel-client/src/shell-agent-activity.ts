@@ -731,6 +731,28 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   return legacyPromptForAgent(session, agentId)
 }
 
+export function sessionActivePromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
+  if (!sessionHasAgent(session, agentId)) {
+    return null
+  }
+  if (session.agent_activity && !(agentId in session.agent_activity)) {
+    return null
+  }
+  const projected = session.agent_activity?.[agentId]
+  if (projected) {
+    const projection = projectAgentRuntimeActivity(projected)
+    const activeTurnPromptId = projection.activeTurnPromptId ?? null
+    if (activeTurnPromptId) {
+      const prompt = activePromptForAgent(session, agentId)
+      return prompt?.id === activeTurnPromptId ? prompt : null
+    }
+    if (!projection.busy) {
+      return null
+    }
+  }
+  return activePromptForAgent(session, agentId)
+}
+
 export function sessionActivePromptIdForAgent(
   session: RuntimeSession,
   agentId: string | null | undefined,

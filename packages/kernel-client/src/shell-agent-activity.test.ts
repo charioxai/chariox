@@ -15,6 +15,7 @@ import {
   agentRuntimeStateFromProjection,
   sessionActivePromptIdForAgent,
   sessionActiveInteractionForAgent,
+  sessionActivePromptForAgent,
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
@@ -1916,6 +1917,109 @@ test("sessionActivePromptIdForAgent prefers projected active turn and per-agent 
           status: "running",
         },
         queued_prompts: [],
+      },
+    },
+  }), "agent-1"), null)
+})
+
+test("sessionActivePromptForAgent returns only the active prompt under projected runtime state", () => {
+  assert.equal(sessionActivePromptForAgent(makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "queued",
+        }],
+      },
+    },
+  }), "agent-1"), null)
+
+  assert.equal(sessionActivePromptForAgent(makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "running",
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  }), "agent-1"), null)
+
+  const activePrompt = {
+    id: "prompt-active",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "active",
+    status: "running",
+  }
+  assert.equal(sessionActivePromptForAgent(makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "running",
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: activePrompt,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-active",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  }), "agent-1")?.id, "prompt-active")
+
+  assert.equal(sessionActivePromptForAgent(makeSession({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "stale",
+      status: "running",
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          ...activePrompt,
+          id: "prompt-other",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-active",
+          status: "running",
+          phase: "streaming",
+        },
       },
     },
   }), "agent-1"), null)

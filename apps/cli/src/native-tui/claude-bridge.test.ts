@@ -118,6 +118,17 @@ test("native Claude bridge prefers explicit prompt state over stale top-level pr
   }), "agent-1"), null)
 })
 
+test("native Claude bridge does not inject queued prompts as active work", () => {
+  assert.equal(promptForAgent(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [prompt("queued-1", "agent-1", "queued")],
+      },
+    },
+  }), "agent-1"), null)
+})
+
 test("native Claude bridge applies projected activity from prompt submission payloads", () => {
   const stalePrompt = prompt("prompt-stale", "agent-1")
 
@@ -229,12 +240,12 @@ function agent(id: string): AgentInstance {
   }
 }
 
-function prompt(id: string, targetAgentId: string): PromptQueueItem {
+function prompt(id: string, targetAgentId: string, status = "running"): PromptQueueItem {
   return {
     id,
     source_attachment_id: "attachment-1",
     target_agent_id: targetAgentId,
     prompt: "test prompt",
-    status: "running",
+    status,
   }
 }
