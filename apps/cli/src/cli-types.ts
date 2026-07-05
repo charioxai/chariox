@@ -7,13 +7,20 @@ import type {
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type {
+  CollaborationLevel as KernelCollaborationLevel,
   AgentPromptState as KernelAgentPromptState,
   AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
   AgentRuntimeActivity as KernelAgentRuntimeActivity,
   CompletedGitTurnActionProjection as KernelCompletedGitTurnActionProjection,
+  ExternalProviderImportMetadata as KernelExternalProviderImportMetadata,
+  ExternalProviderObservedCursor as KernelExternalProviderObservedCursor,
+  MetaagentTask as KernelMetaagentTask,
+  MetaagentTaskStatus as KernelMetaagentTaskStatus,
   PromptAttachmentPart as KernelPromptAttachmentPart,
   PromptQueueItem as KernelPromptQueueItem,
   RuntimeSession as KernelRuntimeSession,
+  SessionAgentDefaults as KernelSessionAgentDefaults,
+  SessionCollaborationAgentCounts as KernelSessionCollaborationAgentCounts,
   SessionHistoryBlobContent as KernelSessionHistoryBlobContent,
   SessionHistoryEntry as KernelSessionHistoryEntry,
   SessionHistoryExternalObservation as KernelSessionHistoryExternalObservation,
@@ -24,6 +31,8 @@ import type {
   SessionHistoryOutlineTurn as KernelSessionHistoryOutlineTurn,
   SessionHistoryPageEntry as KernelSessionHistoryPageEntry,
   SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
+  SessionInvite as KernelSessionInvite,
+  SessionMember as KernelSessionMember,
   TerminalCommandCatalog,
 } from "@arroba/kernel-client/kernel-types"
 import {
@@ -182,75 +191,23 @@ export type RuntimeSession = {
   external_provider_imports?: ExternalProviderImportMetadata[]
 }
 
-export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
+export type MetaagentTaskStatus = KernelMetaagentTaskStatus
 
-export type MetaagentTask = {
-  task_id: string
-  metaagent_id: string
-  status: MetaagentTaskStatus
-  task_markdown: string
-  plan_markdown: string
-  revision: number
-  created_at_ms: number
-  updated_at_ms: number
-  completed_at_ms?: number | null
-  blocked_reason?: string | null
-  aborted_reason?: string | null
-  completion_summary?: string | null
-}
+export type MetaagentTask = KernelMetaagentTask
 
-export type ExternalProviderObservedCursor = {
-  last_observed_turn_id?: string | null
-  last_observed_at_ms?: number | null
-  last_observed_merge_key?: string | null
-}
+export type ExternalProviderObservedCursor = KernelExternalProviderObservedCursor
 
-export type ExternalProviderImportMetadata = {
-  external_provider_session_id: string
-  external_provider: string
-  external_provider_session_provider_id: string
-  observed_cursor: ExternalProviderObservedCursor
-  last_observed_turn_id?: string | null
-  last_observed_at_ms?: number | null
-  imported_at_ms: number
-}
+export type ExternalProviderImportMetadata = KernelExternalProviderImportMetadata
 
-export type SessionCollaborationAgentCounts = {
-  owned_agent_count: number
-  other_user_agent_count: number
-  total_agent_count: number
-  collaborator_count: number
-}
+export type SessionCollaborationAgentCounts = KernelSessionCollaborationAgentCounts
 
-export type SessionMember = {
-  user_id: string
-  joined_at_ms: number
-  invited_by_user_id?: string | null
-  collaboration_level?: CollaborationLevel
-}
+export type SessionMember = KernelSessionMember
 
-export type SessionInvite = {
-  invite_id: string
-  session_id: string
-  created_by_user_id: string
-  created_at_ms: number
-  expires_at_ms?: number | null
-  max_uses?: number | null
-  used_count: number
-  revoked_at_ms?: number | null
-  collaboration_level?: CollaborationLevel
-}
+export type SessionInvite = KernelSessionInvite
 
-export type CollaborationLevel = "private" | "transparent" | "full"
+export type CollaborationLevel = KernelCollaborationLevel
 
-export type SessionAgentDefaults = {
-  provider: string
-  model?: string | null
-  effort?: string | null
-  account_profile?: string | null
-  execution_mode?: "build" | "plan" | null
-  permission_level?: "required" | "yolo" | null
-}
+export type SessionAgentDefaults = KernelSessionAgentDefaults
 
 export type WaitingRoomPublicSessionSummary = {
   id: string
