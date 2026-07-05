@@ -123,14 +123,17 @@ async function preflight(client) {
   const providers = []
   for (const spec of providerSpecs) {
     const providerCatalog = catalog?.all?.find((provider) => provider.id === spec.provider) ?? null
-    const model = resolveRequestedModel(providerCatalog, spec)
+    const modelResolution = resolveRequestedModel(providerCatalog, spec)
+    const model = modelResolution.model
     const auth = await providerAuth(client, spec)
     providers.push({
       provider: spec.provider,
       requested_model: spec.requestedModel,
+      requested_model_available: modelResolution.requestedAvailable,
       resolved_model: model?.id ?? null,
       resolved_model_name: model?.name ?? null,
       model_status: model?.status ?? null,
+      model_resolution: modelResolution.reason,
       catalog_provider_present: Boolean(providerCatalog),
       auth,
       ok: Boolean(providerCatalog && model && auth.ok),
@@ -165,9 +168,35 @@ async function providerAuth(client, spec) {
 
 function resolveRequestedModel(providerCatalog, spec) {
   const models = Object.values(providerCatalog?.models ?? {})
-  return models.find((model) => spec.acceptableModelIds.includes(model.id))
+  const requested = models.find((model) => spec.acceptableModelIds.includes(model.id))
     ?? models.find((model) => normalizeModelToken(model.name) === normalizeModelToken(spec.requestedModel))
+  if (requested) {
+    return { model: requested, requestedAvailable: true, reason: "requested" }
+  }
+  const fallback = models.find((model) => isUsableFallbackModel(model) && matchesRequestedModelFamily(model, spec))
+    ?? models.find(isUsableFallbackModel)
+    ?? models[0]
     ?? null
+  return {
+    model: fallback,
+    requestedAvailable: false,
+    reason: fallback
+      ? `fallback: requested model ${spec.requestedModel} was not found`
+      : `missing: requested model ${spec.requestedModel} was not found and provider has no catalog models`,
+  }
+}
+
+function isUsableFallbackModel(model) {
+  const status = String(model?.status ?? "").toLowerCase()
+  if (!status) return true
+  return !/(unavailable|disabled|deprecated|unauth|missing|error)/.test(status)
+}
+
+function matchesRequestedModelFamily(model, spec) {
+  const requested = normalizeModelToken(spec.requestedModel)
+  const candidate = normalizeModelToken(`${model?.id ?? ""} ${model?.name ?? ""}`)
+  const families = ["sonnet", "opus", "haiku", "fable", "gpt", "kimi"]
+  return families.some((family) => requested.includes(family) && candidate.includes(family))
 }
 
 function normalizeModelToken(value) {
@@ -944,9 +973,9 @@ async function writeReport() {
     "",
     "## Preflight",
     "",
-    "| Provider | Requested model | Resolved model | Auth | Status |",
-    "|---|---|---|---|---|",
-    ...(report.preflight?.providers ?? []).map((provider) => `| ${provider.provider} | ${provider.requested_model} | ${provider.resolved_model ?? "missing"} | ${provider.auth?.ok ? "ok" : "failed"} | ${provider.ok ? "ok" : provider.unavailable_reason} |`),
+    "| Provider | Requested model | Resolved model | Model resolution | Auth | Status |",
+    "|---|---|---|---|---|---|",
+    ...(report.preflight?.providers ?? []).map((provider) => `| ${provider.provider} | ${provider.requested_model} | ${provider.resolved_model ?? "missing"} | ${provider.model_resolution ?? ""} | ${provider.auth?.ok ? "ok" : "failed"} | ${provider.ok ? "ok" : provider.unavailable_reason} |`),
     "",
     "## Matrix",
     "",
