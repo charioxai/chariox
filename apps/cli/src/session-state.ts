@@ -15,7 +15,6 @@ import {
 import {
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
-  sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
   sessionProjectedStreamingAgentId as kernelSessionProjectedStreamingAgentId,
   sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
@@ -141,10 +140,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
   return kernelSessionHasPromptWork(session as Parameters<typeof kernelSessionHasPromptWork>[0])
-}
-
-export function sessionHasProjectedRuntimeState(session: RuntimeSession): boolean {
-  return kernelSessionHasAgentRuntimeProjection(session as Parameters<typeof kernelSessionHasAgentRuntimeProjection>[0])
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {

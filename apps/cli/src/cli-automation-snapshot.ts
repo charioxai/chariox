@@ -2,6 +2,9 @@ import type { ShellContext } from "@arroba/kernel-client/shell-core"
 import {
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
+import {
+  sessionHasAgentRuntimeProjection,
+} from "@arroba/kernel-client/session-prompt-work"
 
 import type {
   RuntimeSession,
@@ -20,7 +23,6 @@ import type {
   RemoteKernelView,
   RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
-import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import type { WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {
@@ -93,7 +95,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           deps.hasPromptWorkByAgent()[agent.id] ?? false,
           agent.id === deps.streamingAgentId(),
           deps.agentBusyLatch(agent.id),
-          !sessionHasProjectedRuntimeState(session),
+          !sessionHasAgentRuntimeProjection(session),
         )
         return {
           id: agent.id,

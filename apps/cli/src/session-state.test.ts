@@ -16,7 +16,6 @@ import {
   focusedProviderRunForAgent,
   projectedStreamingAgentIdForSession,
   promptWorkByAgent,
-  sessionHasProjectedRuntimeState,
   sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
@@ -365,16 +364,6 @@ test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across age
   assert.equal(sessionHasPromptWork(nextSession), true)
   assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
-})
-
-test("sessionHasProjectedRuntimeState treats prompt state as authoritative runtime projection", () => {
-  assert.equal(sessionHasProjectedRuntimeState(session()), false)
-  assert.equal(sessionHasProjectedRuntimeState(session({
-    prompt_states: {},
-  })), true)
-  assert.equal(sessionHasProjectedRuntimeState(session({
-    agent_activity: {},
-  })), true)
 })
 
 test("sessionHasPromptWork and agentHasPromptWork prefer kernel agent activity", () => {

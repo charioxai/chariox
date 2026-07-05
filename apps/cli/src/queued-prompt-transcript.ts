@@ -5,8 +5,10 @@ import type {
 import {
   queuedPromptProjectionForAgent,
 } from "@arroba/kernel-client/queued-prompt-controls"
+import {
+  sessionHasAgentRuntimeProjection,
+} from "@arroba/kernel-client/session-prompt-work"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
-import { sessionHasProjectedRuntimeState } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 
 export type QueuedPromptTranscriptSyncResult = {
@@ -58,7 +60,7 @@ export function syncQueuedPromptEntriesByAgent(
     ...Object.keys(session.prompt_states ?? {}),
     ...Object.keys(session.agent_activity ?? {}),
   ])
-  if (sessionHasProjectedRuntimeState(session)) {
+  if (sessionHasAgentRuntimeProjection(session)) {
     for (const [agentId, entries] of Object.entries(entriesByAgent)) {
       if (entries.some((entry) => entry.queuedPrompt)) {
         agentIds.add(agentId)

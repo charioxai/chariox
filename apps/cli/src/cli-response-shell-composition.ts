@@ -1,4 +1,7 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
+import {
+  sessionHasAgentRuntimeProjection,
+} from "@arroba/kernel-client/session-prompt-work"
 import { createEffect } from "solid-js"
 
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
@@ -18,7 +21,7 @@ import {
 import {
   createSessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
-import { agentHasPromptWork, sessionHasProjectedRuntimeState } from "./session-state.js"
+import { agentHasPromptWork } from "./session-state.js"
 import { createSplitPaneFooterRenderController } from "./split-pane-footer-render-controller.js"
 import {
   renderSplitPaneFooters as renderSplitPaneFootersView,
@@ -151,7 +154,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
-    hasProjectedRuntimeState: () => sessionHasProjectedRuntimeState(deps.sessionState()),
+    hasProjectedRuntimeState: () => sessionHasAgentRuntimeProjection(deps.sessionState()),
     sessionConfigValues: () => deps.sessionState().config_state?.values,
     agentLocationLabel: deps.agentLocationLabel,
     badgeWidth: STATUS_BADGE_WIDTH,
