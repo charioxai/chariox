@@ -16,7 +16,7 @@ import {
   formatSliceProviderList,
   formatSliceScope,
   sliceProviderAuthCoverage,
-} from "../slice-format.js"
+} from "@arroba/kernel-client/slice-format"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
 import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"

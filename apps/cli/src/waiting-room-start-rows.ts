@@ -6,7 +6,7 @@ import {
 import {
   formatProviderAccountForBackend,
   formatSliceBackendProviderAccount,
-} from "./slice-format.js"
+} from "@arroba/kernel-client/slice-format"
 import type { SliceRecord } from "./cli-types.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {

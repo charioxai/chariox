@@ -16,7 +16,7 @@ import {
   formatSliceRelayLabel,
   formatSliceScope,
   sliceProviderAuthCoverage,
-} from "./slice-format.js"
+} from "@arroba/kernel-client/slice-format"
 
 type FooterTone = "info" | "error"
 

@@ -4,7 +4,7 @@ import {
   formatSliceProviderList,
   formatSliceRelayLabel,
   sliceProviderAuthCoverage,
-} from "./slice-format.js"
+} from "@arroba/kernel-client/slice-format"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 
