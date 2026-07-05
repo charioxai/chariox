@@ -19,6 +19,7 @@ import {
   type SessionStatusMode as KernelSessionStatusMode,
   type SessionStatusBadgePart,
 } from "@arroba/kernel-client/session-runtime-status"
+import { deriveVisibleActivityLabel as sharedDeriveVisibleActivityLabel } from "@arroba/kernel-client/provider-status"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -27,7 +28,6 @@ import {
   type PromptMetaPart,
   type PromptUsageMeta,
 } from "./prompt-meta.js"
-import { chooseVisibleActivityLabel } from "./runtime.js"
 import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
@@ -105,8 +105,7 @@ export function deriveVisibleActivityLabel(options: {
   providerActivityLabel: string | null
   activeToolLabels: Iterable<string>
 }) {
-  const latestActiveToolLabel = Array.from(options.activeToolLabels).at(-1) ?? null
-  return chooseVisibleActivityLabel(options.providerActivityLabel, latestActiveToolLabel)
+  return sharedDeriveVisibleActivityLabel(options)
 }
 
 export type AgentBusyState = SessionAgentBusyState

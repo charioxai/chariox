@@ -8,6 +8,7 @@ import {
   normalizeProviderActivityLabel,
   shouldRenderProviderStatus,
   chooseVisibleActivityLabel,
+  deriveVisibleActivityLabel,
   toProviderPresentParticiplePhrase,
 } from "./provider-status.js"
 
@@ -54,4 +55,28 @@ test("provider status helpers prefer visible tool activity over provider activit
   assert.equal(chooseVisibleActivityLabel("reconnecting", null), "reconnecting")
   assert.equal(chooseVisibleActivityLabel(null, "writing"), "writing")
   assert.equal(chooseVisibleActivityLabel(null, null), null)
+})
+
+test("provider status helpers derive visible activity from active tool labels", () => {
+  assert.equal(
+    deriveVisibleActivityLabel({
+      providerActivityLabel: "thinking",
+      activeToolLabels: ["reading", "patching"],
+    }),
+    "patching",
+  )
+  assert.equal(
+    deriveVisibleActivityLabel({
+      providerActivityLabel: "reconnecting",
+      activeToolLabels: [],
+    }),
+    "reconnecting",
+  )
+  assert.equal(
+    deriveVisibleActivityLabel({
+      providerActivityLabel: null,
+      activeToolLabels: [],
+    }),
+    null,
+  )
 })

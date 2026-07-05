@@ -35,3 +35,11 @@ export function chooseVisibleActivityLabel(
 ): string | null {
   return activeToolActivity ?? providerActivity
 }
+
+export function deriveVisibleActivityLabel(options: {
+  readonly providerActivityLabel: string | null
+  readonly activeToolLabels: Iterable<string>
+}): string | null {
+  const latestActiveToolLabel = Array.from(options.activeToolLabels).at(-1) ?? null
+  return chooseVisibleActivityLabel(options.providerActivityLabel, latestActiveToolLabel)
+}
