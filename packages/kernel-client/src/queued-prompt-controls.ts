@@ -176,6 +176,21 @@ export function queuedPromptMetaLabel(
   return `${queuedPromptStatusLabel(item.status)}${queuedPromptAttachmentLabel(item.attachmentCount)}`
 }
 
+export function queuedPromptTitleLabel(count: number, focused: boolean): string {
+  const normalizedCount = Math.max(0, Math.trunc(count))
+  const countLabel = `QUEUE • ${normalizedCount} prompt${normalizedCount === 1 ? "" : "s"}`
+  return focused
+    ? `${countLabel} • J/K select • S steer • C cancel`
+    : countLabel
+}
+
+export function queuedPromptActionLabel(action: "steer" | "cancel", focusedPrimary: boolean): string {
+  if (!focusedPrimary) {
+    return action
+  }
+  return action === "steer" ? "S" : "C"
+}
+
 export function queuedPromptStatusIsQueued(status: string): boolean {
   return normalizeQueuedPromptStatus(status) === "queued"
 }

@@ -15,7 +15,7 @@ import {
   queuedPromptActionLabel,
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
-} from "./queued-prompt-strip-labels.js"
+} from "@arroba/kernel-client/queued-prompt-controls"
 import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
 import { theme } from "./theme.js"
 
