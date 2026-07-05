@@ -2,8 +2,12 @@ import {
   backendProviderLabel,
   type BackendProviderId,
 } from "./provider-catalog.js"
-
-const PROVIDER_NAMESPACE_COMMAND_IDS = ["opencode", "codex"] as const
+import {
+  parseProviderNamespaceCommand as parseSharedProviderNamespaceCommand,
+  providerNamespace,
+  providerSupportsNamespaceCommands,
+  type ParsedProviderNamespaceCommand as SharedParsedProviderNamespaceCommand,
+} from "@arroba/kernel-client/provider-namespace-command"
 
 export type ProviderCommandDescriptor = {
   id: string
@@ -60,12 +64,9 @@ const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
   },
 }
 
-export function providerNamespace(provider: BackendProviderId) {
-  return `/${provider}`
-}
-
-export function providerSupportsNamespaceCommands(provider: BackendProviderId) {
-  return (PROVIDER_NAMESPACE_COMMAND_IDS as readonly BackendProviderId[]).includes(provider)
+export {
+  providerNamespace,
+  providerSupportsNamespaceCommands,
 }
 
 export function fallbackProviderCommandCatalogs(
@@ -118,36 +119,13 @@ export function providerNamespaceDescription(
   return `Forward ${providerLabel} native commands to the focused agent${suffix}`
 }
 
-export type ParsedProviderNamespaceCommand = {
-  raw: string
+export type ParsedProviderNamespaceCommand = SharedParsedProviderNamespaceCommand & {
   provider: BackendProviderId
-  forwardedCommand: string
 }
 
 export function parseProviderNamespaceCommand(
   input: string,
-  focusedProvider: BackendProviderId | null | undefined,
+  _focusedProvider: BackendProviderId | null | undefined,
 ): ParsedProviderNamespaceCommand | null {
-  const trimmed = input.trim()
-  const matchedProvider = PROVIDER_NAMESPACE_COMMAND_IDS.find((provider) => {
-    const namespace = providerNamespace(provider)
-    return trimmed === namespace || trimmed.startsWith(`${namespace} `)
-  })
-  if (!matchedProvider) {
-    return null
-  }
-  const namespace = providerNamespace(matchedProvider)
-  const forwardedBody = trimmed.slice(namespace.length).trim()
-  if (!forwardedBody) {
-    return {
-      raw: trimmed,
-      provider: matchedProvider,
-      forwardedCommand: "",
-    }
-  }
-  return {
-    raw: trimmed,
-    provider: matchedProvider,
-    forwardedCommand: forwardedBody.startsWith("/") ? forwardedBody : `/${forwardedBody}`,
-  }
+  return parseSharedProviderNamespaceCommand(input)
 }
