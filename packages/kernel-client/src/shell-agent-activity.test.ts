@@ -39,6 +39,7 @@ import {
   sessionPromptWorkSummary,
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
+  sessionStatusLabel,
   sessionStatusMode,
   sessionVisibleAgentSummary,
   sessionWorkingStateAfterPromptWork,
@@ -353,6 +354,13 @@ test("session status mode and footer hint reflect prompt and queue work", () => 
     queueDepth: 0,
     statusLine: "Connected.",
   }), "Connected.")
+})
+
+test("sessionStatusLabel formats exact badge labels", () => {
+  assert.equal(sessionStatusLabel("idle", "grepping"), "IDLE")
+  assert.equal(sessionStatusLabel("disconnected", "grepping"), "DISCONNECTED")
+  assert.equal(sessionStatusLabel("working", null), "THINKING")
+  assert.equal(sessionStatusLabel("working", "grepping"), "GREPPING")
 })
 
 test("session attached footer summary projects visible agents, collaboration, prompt state, and sync", () => {

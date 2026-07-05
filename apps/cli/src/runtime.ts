@@ -1,6 +1,5 @@
 import { LocalIpcError } from "./ipc.js"
 import {
-  ACTIVE_STATUS_FALLBACK,
   getProviderActivityLabel,
   isProviderIdleStatus,
   normalizeProviderActivityLabel,
@@ -8,7 +7,9 @@ import {
 } from "@arroba/kernel-client/provider-status"
 import {
   resolveSessionStreamingAgentId,
+  sessionStatusLabel,
   sessionWorkingStateAfterPromptWork,
+  type SessionStatusMode,
   type SessionStreamingAgent,
 } from "@arroba/kernel-client/shell-agent-activity"
 
@@ -50,16 +51,10 @@ export function reconcileWorkingStateFromSession(currentWorking: boolean, sessio
 }
 
 export function getSessionStatusLabel(
-  mode: "idle" | "working" | "disconnected",
+  mode: SessionStatusMode,
   activity: string | null,
 ) {
-  if (mode === "disconnected") {
-    return "DISCONNECTED"
-  }
-  if (mode === "idle") {
-    return "IDLE"
-  }
-  return formatBadgeLabel(normalizeActivityLabel(activity) ?? ACTIVE_STATUS_FALLBACK)
+  return sessionStatusLabel(mode, activity)
 }
 
 export { getProviderActivityLabel, isProviderIdleStatus }
@@ -178,10 +173,6 @@ export function getExitCleanupDecision(
 
 function normalizeActivityLabel(value?: string | null) {
   return normalizeProviderActivityLabel(value)
-}
-
-function formatBadgeLabel(value: string) {
-  return value.trim().toUpperCase()
 }
 
 function toPresentParticiplePhrase(value: string) {
