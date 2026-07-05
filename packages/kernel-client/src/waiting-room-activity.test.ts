@@ -11,6 +11,7 @@ import {
   waitingRoomSessionActivityBadgeState,
   waitingRoomSessionActivityHasUnreadIdleOutput,
   waitingRoomSessionActivityHasWork,
+  waitingRoomSessionActivityNextAction,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
@@ -124,6 +125,20 @@ test("waiting room status labels normalize lifecycle state and activity override
       unread_idle_agent_count: 1,
     },
   }), "Working+Done")
+})
+
+test("waiting room session activity next action surfaces recovery policy", () => {
+  assert.equal(waitingRoomSessionActivityNextAction(null), null)
+  assert.equal(waitingRoomSessionActivityNextAction({ activity: {
+    missing_worker_provider_run_count: 1,
+    remote_extension_sync_issue_count: 1,
+    remote_extension_pending_revoke_count: 0,
+  } }), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
+  assert.equal(waitingRoomSessionActivityNextAction({ activity: {
+    missing_worker_provider_run_count: 0,
+    remote_extension_sync_issue_count: 1,
+    remote_extension_pending_revoke_count: 1,
+  } }), "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects")
 })
 
 test("waiting room item activity predicates derive work and unread output", () => {

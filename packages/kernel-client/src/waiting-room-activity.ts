@@ -2,6 +2,8 @@ import type {
   WaitingRoomPublicItemActivitySummary,
   WaitingRoomSessionActivitySummary,
 } from "./kernel-types.js"
+import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
+import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 
 export type WaitingRoomActivityBadgeState = "none" | "working" | "done" | "mixedWorkingDone"
 
@@ -126,6 +128,27 @@ export function waitingRoomSessionActivityWorkLabel(
     activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
     queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(", ") || fallback
+}
+
+export function waitingRoomSessionActivityNextAction(
+  session: {
+    readonly activity?: Pick<
+      WaitingRoomSessionActivitySummary,
+      "missing_worker_provider_run_count" | "remote_extension_sync_issue_count" | "remote_extension_pending_revoke_count"
+    > | null | undefined
+  } | null | undefined,
+): string | null {
+  const activity = session?.activity
+  if (!activity) {
+    return null
+  }
+  if ((activity.missing_worker_provider_run_count ?? 0) > 0) {
+    return remoteWorkerProviderRunRecoveryAction(null, null)
+  }
+  if ((activity.remote_extension_sync_issue_count ?? 0) > 0) {
+    return remoteExtensionAggregateNextAction(activity)
+  }
+  return null
 }
 
 export function waitingRoomItemActivityHasWork(

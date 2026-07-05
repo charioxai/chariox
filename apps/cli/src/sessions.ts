@@ -1,10 +1,9 @@
 import path from "node:path"
 
-import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
-import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
 import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
 import { formatWorkspaceLiveSyncModeCompactLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import {
+  waitingRoomSessionActivityNextAction,
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
@@ -129,17 +128,7 @@ function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">):
 }
 
 export function formatSessionActivityNextAction(session: Pick<SessionListEntry, "activity">): string | null {
-  const activity = session.activity
-  if (!activity) {
-    return null
-  }
-  if ((activity.missing_worker_provider_run_count ?? 0) > 0) {
-    return remoteWorkerProviderRunRecoveryAction(null, null)
-  }
-  if ((activity.remote_extension_sync_issue_count ?? 0) > 0) {
-    return remoteExtensionAggregateNextAction(activity)
-  }
-  return null
+  return waitingRoomSessionActivityNextAction(session)
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
