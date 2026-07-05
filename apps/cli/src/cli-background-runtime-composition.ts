@@ -312,7 +312,6 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     sameProviderRun,
     projectSession: applyProviderRunProfileToSession,
     shouldRefreshAgentPanesForSessionChange: deps.shouldRefreshAgentPanesForSessionChange,
-    sessionHasPromptWork,
     applySession: deps.applySessionState,
     applyProviderRun: deps.setProviderRunState,
     refreshAgentPanes: deps.refreshAgentPanes,

@@ -1,28 +1,33 @@
+import type {
+  RuntimeProviderRun,
+  RuntimeSession,
+} from "./cli-types.js"
+import { sessionPromptWorkJustCompleted } from "@arroba/kernel-client/session-prompt-work"
+
 type KernelResyncAttachment = {
   id: string
 }
 
-type KernelResyncControllerOptions<TSession, TProviderRun> = {
+type KernelResyncControllerOptions = {
   getAttachment: () => KernelResyncAttachment | null
   isAttached: () => boolean
   getSessionId: () => string
-  getSessionStateSnapshot: () => TSession
-  catchUpAttachedSession: (sessionId: string, attachmentId: string, session: TSession) => Promise<void>
-  getSessionState: (sessionId: string) => Promise<TSession>
-  getActiveProviderRunId: (session: TSession) => string | null
-  getProviderRunState: () => TProviderRun | null
-  tryGetProviderRun: (providerRunId: string) => Promise<TProviderRun | null>
-  sameProviderRun: (currentRun: TProviderRun, nextRun: TProviderRun) => boolean
-  projectSession: (session: TSession, providerRun: TProviderRun | null) => TSession
-  shouldRefreshAgentPanesForSessionChange: (session: TSession) => boolean
-  sessionHasPromptWork: (session: TSession) => boolean
-  applySession: (session: TSession) => void
-  applyProviderRun: (providerRun: TProviderRun | null) => void
-  refreshAgentPanes: (session: TSession) => Promise<void>
-  clearLocalBusyStateForAuthoritativeIdle: (session: TSession) => void
-  onProviderRunCleared: (run: TProviderRun, sessionId: string, reason: string) => void
+  getSessionStateSnapshot: () => RuntimeSession
+  catchUpAttachedSession: (sessionId: string, attachmentId: string, session: RuntimeSession) => Promise<void>
+  getSessionState: (sessionId: string) => Promise<RuntimeSession>
+  getActiveProviderRunId: (session: RuntimeSession) => string | null
+  getProviderRunState: () => RuntimeProviderRun | null
+  tryGetProviderRun: (providerRunId: string) => Promise<RuntimeProviderRun | null>
+  sameProviderRun: (currentRun: RuntimeProviderRun, nextRun: RuntimeProviderRun) => boolean
+  projectSession: (session: RuntimeSession, providerRun: RuntimeProviderRun | null) => RuntimeSession
+  shouldRefreshAgentPanesForSessionChange: (session: RuntimeSession) => boolean
+  applySession: (session: RuntimeSession) => void
+  applyProviderRun: (providerRun: RuntimeProviderRun | null) => void
+  refreshAgentPanes: (session: RuntimeSession) => Promise<void>
+  clearLocalBusyStateForAuthoritativeIdle: (session: RuntimeSession) => void
+  onProviderRunCleared: (run: RuntimeProviderRun, sessionId: string, reason: string) => void
   onProviderRunRefreshed: (
-    run: TProviderRun,
+    run: RuntimeProviderRun,
     sessionId: string,
     previousProviderRunId: string | null,
     reason: string,
@@ -37,9 +42,7 @@ export type KernelResyncController = {
   isInFlight(): boolean
 }
 
-export function createKernelResyncController<TSession, TProviderRun extends { id?: string | null }>(
-  options: KernelResyncControllerOptions<TSession, TProviderRun>,
-): KernelResyncController {
+export function createKernelResyncController(options: KernelResyncControllerOptions): KernelResyncController {
   let inFlight: Promise<void> | null = null
 
   return {
@@ -63,10 +66,7 @@ export function createKernelResyncController<TSession, TProviderRun extends { id
 
         const projectedSession = options.projectSession(nextSession, options.getProviderRunState())
         const shouldRefreshPanes = options.shouldRefreshAgentPanesForSessionChange(projectedSession)
-        const promptJustCompleted = (
-          options.sessionHasPromptWork(previousSession)
-          && !options.sessionHasPromptWork(projectedSession)
-        )
+        const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
         options.applySession(projectedSession)
 
         const nextProviderRunId = options.getActiveProviderRunId(nextSession)

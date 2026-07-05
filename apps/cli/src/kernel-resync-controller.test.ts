@@ -1,18 +1,37 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import type {
+  PromptQueueItem,
+  RuntimeProviderRun,
+  RuntimeSession,
+} from "./cli-types.js"
 import { createKernelResyncController } from "./kernel-resync-controller.js"
+import { makeSession } from "./command-actions-test-support.js"
 
-type TestSession = {
-  id: string
-  active_provider_run_id?: string | null
-  hasPromptWork?: boolean
-  projectedRunId?: string | null
-  refreshKey?: string
+function activePrompt(): PromptQueueItem {
+  return {
+    id: "prompt-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "run",
+    status: "Running",
+  }
 }
 
-type TestProviderRun = {
-  id: string
+function makeProviderRun(id = "run-1"): RuntimeProviderRun {
+  return {
+    id,
+    session_id: "session-1",
+    agent_instance_id: "agent-1",
+    adapter_key: "codex",
+    provider: "codex",
+    account_profile: "default",
+    model: "gpt-5",
+    variant: null,
+    usage_tokens_total: null,
+    state: "Running",
+  }
 }
 
 function createDeferred<T>() {
@@ -24,9 +43,9 @@ function createDeferred<T>() {
 }
 
 test("resync catches up, applies the projected session, refreshes panes, and marks connected", async () => {
-  let currentSession: TestSession = { id: "session-1", hasPromptWork: true }
+  let currentSession: RuntimeSession = makeSession({ active_prompt: activePrompt() })
   const events: string[] = []
-  const controller = createKernelResyncController<TestSession, TestProviderRun>({
+  const controller = createKernelResyncController({
     getAttachment: () => ({ id: "attachment-1" }),
     isAttached: () => true,
     getSessionId: () => currentSession.id,
@@ -37,21 +56,20 @@ test("resync catches up, applies the projected session, refreshes panes, and mar
       assert.equal(session.id, "session-1")
       events.push("catch-up")
     },
-    getSessionState: async () => ({ id: "session-1", hasPromptWork: false, refreshKey: "next" }),
+    getSessionState: async () => makeSession({ alias: "next" }),
     getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
     getProviderRunState: () => null,
     tryGetProviderRun: async () => null,
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
-    projectSession: (session, providerRun) => ({ ...session, projectedRunId: providerRun?.id ?? null }),
-    shouldRefreshAgentPanesForSessionChange: (session) => session.refreshKey === "next",
-    sessionHasPromptWork: (session) => Boolean(session.hasPromptWork),
+    projectSession: (session, providerRun) => ({ ...session, workspace_label: providerRun?.id ?? null }),
+    shouldRefreshAgentPanesForSessionChange: (session) => session.alias === "next",
     applySession: (session) => {
       currentSession = session
       events.push("apply-session")
     },
     applyProviderRun: () => {},
     refreshAgentPanes: async (session) => {
-      assert.equal(session.refreshKey, "next")
+      assert.equal(session.alias, "next")
       events.push("refresh-panes")
     },
     clearLocalBusyStateForAuthoritativeIdle: (session) => {
@@ -82,23 +100,20 @@ test("resync catches up, applies the projected session, refreshes panes, and mar
     "complete",
   ])
   assert.equal(controller.isInFlight(), false)
-  assert.deepEqual(currentSession, {
-    id: "session-1",
-    hasPromptWork: false,
-    refreshKey: "next",
-    projectedRunId: null,
-  })
+  assert.equal(currentSession.alias, "next")
+  assert.equal(currentSession.workspace_label, null)
+  assert.equal(currentSession.active_prompt, null)
 })
 
 test("resync is idle without an attached session and returns the current in-flight operation", async () => {
-  const deferred = createDeferred<TestSession>()
+  const deferred = createDeferred<RuntimeSession>()
   let attached = false
   let sessionFetches = 0
-  const controller = createKernelResyncController<TestSession, TestProviderRun>({
+  const controller = createKernelResyncController({
     getAttachment: () => attached ? ({ id: "attachment-1" }) : null,
     isAttached: () => attached,
     getSessionId: () => "session-1",
-    getSessionStateSnapshot: () => ({ id: "session-1" }),
+    getSessionStateSnapshot: () => makeSession(),
     catchUpAttachedSession: async () => {},
     getSessionState: async () => {
       sessionFetches += 1
@@ -110,7 +125,6 @@ test("resync is idle without an attached session and returns the current in-flig
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
     projectSession: (session) => session,
     shouldRefreshAgentPanesForSessionChange: () => false,
-    sessionHasPromptWork: () => false,
     applySession: () => {},
     applyProviderRun: () => {},
     refreshAgentPanes: async () => {},
@@ -127,29 +141,28 @@ test("resync is idle without an attached session and returns the current in-flig
   const firstResync = controller.resync("transport_resumed")
   const secondResync = controller.resync("duplicate")
   assert.equal(firstResync, secondResync)
-  deferred.resolve({ id: "session-1" })
+  deferred.resolve(makeSession())
   await firstResync
 
   assert.equal(sessionFetches, 1)
 })
 
 test("resync clears missing provider runs", async () => {
-  let providerRun: TestProviderRun | null = { id: "run-1" }
+  let providerRun: RuntimeProviderRun | null = makeProviderRun("run-1")
   const cleared: string[] = []
-  const controller = createKernelResyncController<TestSession, TestProviderRun>({
+  const controller = createKernelResyncController({
     getAttachment: () => ({ id: "attachment-1" }),
     isAttached: () => true,
     getSessionId: () => "session-1",
-    getSessionStateSnapshot: () => ({ id: "session-1" }),
+    getSessionStateSnapshot: () => makeSession(),
     catchUpAttachedSession: async () => {},
-    getSessionState: async () => ({ id: "session-1", active_provider_run_id: null }),
+    getSessionState: async () => makeSession({ active_provider_run_id: null }),
     getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
     getProviderRunState: () => providerRun,
     tryGetProviderRun: async () => null,
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
     projectSession: (session) => session,
     shouldRefreshAgentPanesForSessionChange: () => false,
-    sessionHasPromptWork: () => false,
     applySession: () => {},
     applyProviderRun: (run) => {
       providerRun = run
@@ -172,23 +185,22 @@ test("resync clears missing provider runs", async () => {
 })
 
 test("resync refreshes changed provider runs and reapplies the current session", async () => {
-  let providerRun: TestProviderRun | null = { id: "run-1" }
-  let currentSession: TestSession = { id: "session-1" }
+  let providerRun: RuntimeProviderRun | null = makeProviderRun("run-1")
+  let currentSession: RuntimeSession = makeSession()
   const refreshed: string[] = []
-  const controller = createKernelResyncController<TestSession, TestProviderRun>({
+  const controller = createKernelResyncController({
     getAttachment: () => ({ id: "attachment-1" }),
     isAttached: () => true,
     getSessionId: () => "session-1",
     getSessionStateSnapshot: () => currentSession,
     catchUpAttachedSession: async () => {},
-    getSessionState: async () => ({ id: "session-1", active_provider_run_id: "run-2" }),
+    getSessionState: async () => makeSession({ active_provider_run_id: "run-2" }),
     getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
     getProviderRunState: () => providerRun,
-    tryGetProviderRun: async () => ({ id: "run-2" }),
+    tryGetProviderRun: async () => makeProviderRun("run-2"),
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
-    projectSession: (session, run) => ({ ...session, projectedRunId: run?.id ?? null }),
+    projectSession: (session, run) => ({ ...session, workspace_label: run?.id ?? null }),
     shouldRefreshAgentPanesForSessionChange: () => false,
-    sessionHasPromptWork: () => false,
     applySession: (session) => {
       currentSession = session
     },
@@ -209,28 +221,27 @@ test("resync refreshes changed provider runs and reapplies the current session",
   await controller.resync("manual")
 
   assert.deepEqual(refreshed, ["run-2:session-1:run-1:manual"])
-  assert.deepEqual(providerRun, { id: "run-2" })
-  assert.equal(currentSession.projectedRunId, "run-2")
+  assert.equal(providerRun?.id, "run-2")
+  assert.equal(currentSession.workspace_label, "run-2")
 })
 
 test("resync reports failures and clears the in-flight state", async () => {
   let failure: unknown
-  const controller = createKernelResyncController<TestSession, TestProviderRun>({
+  const controller = createKernelResyncController({
     getAttachment: () => ({ id: "attachment-1" }),
     isAttached: () => true,
     getSessionId: () => "session-1",
-    getSessionStateSnapshot: () => ({ id: "session-1" }),
+    getSessionStateSnapshot: () => makeSession(),
     catchUpAttachedSession: async () => {
       throw new Error("catch-up failed")
     },
-    getSessionState: async () => ({ id: "session-1" }),
+    getSessionState: async () => makeSession(),
     getActiveProviderRunId: (session) => session.active_provider_run_id ?? null,
     getProviderRunState: () => null,
     tryGetProviderRun: async () => null,
     sameProviderRun: (currentRun, nextRun) => currentRun.id === nextRun.id,
     projectSession: (session) => session,
     shouldRefreshAgentPanesForSessionChange: () => false,
-    sessionHasPromptWork: () => false,
     applySession: () => {},
     applyProviderRun: () => {},
     refreshAgentPanes: async () => {},
