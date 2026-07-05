@@ -1,23 +1,18 @@
 import {
-  externalProviderObservedEntryBelongsToImport,
-} from "@arroba/kernel-client/external-provider-observation"
-import {
-  prependTranscriptEntriesWithoutDuplicateRenderableLineage,
-  stripTranscriptDisplayOnlyEntries,
-  transcriptEntriesContainRenderableLineage,
-  transcriptEntriesShareRenderableLineage,
-} from "@arroba/kernel-client/transcript-entry-lineage"
+  countRenderablePaneEntries,
+  entryBelongsToAgent,
+  focusedAgentIdForAgentPaneSession,
+  preserveLoadedHistoryBlobs,
+  prependHistoryEntriesWithoutDuplicates,
+  selectCurrentAgentPaneEntries as sharedSelectCurrentAgentPaneEntries,
+  shouldPreferCurrentPaneEntries,
+  shouldRefreshAgentPanesForSessionChange as sharedShouldRefreshAgentPanesForSessionChange,
+  trimAgentPaneEntries as sharedTrimAgentPaneEntries,
+  type AgentPaneExternalProviderImport,
+  type AgentPaneSession,
+} from "@arroba/kernel-client/agent-pane-state"
 
-export type AgentPaneExternalProviderImport = {
-  external_provider_session_id: string
-  external_provider: string
-  external_provider_session_provider_id: string
-}
-
-export type AgentPaneSession<TAgent extends { id: string }> = {
-  agents: TAgent[]
-  focused_agent_id: string | null
-}
+export type { AgentPaneExternalProviderImport, AgentPaneSession }
 
 export type AgentPaneRefreshResult<TEntry, TCursor> = {
   paneEntries: Record<string, TEntry[]>
@@ -34,10 +29,7 @@ export function selectCurrentAgentPaneEntries<TEntry extends object>(options: {
   visibleEntries: readonly TEntry[]
   paneEntriesByAgent: Record<string, TEntry[]>
 }) {
-  if (options.agentId === options.visibleAgentId) {
-    return options.visibleEntries.map((entry) => ({ ...entry }))
-  }
-  return (options.paneEntriesByAgent[options.agentId] ?? []).map((entry) => ({ ...entry }))
+  return sharedSelectCurrentAgentPaneEntries(options)
 }
 
 export function shouldRefreshAgentPanesForSessionChange<TAgent extends { id: string }>(options: {
@@ -47,111 +39,7 @@ export function shouldRefreshAgentPanesForSessionChange<TAgent extends { id: str
   currentFocusedAgentId: string | null
   nextFocusedAgentId: string | null
 }): boolean {
-  const previousAgentSignature = options.previousAgents.map((agent) => agent.id).join(",")
-  const nextAgentSignature = options.nextAgents.map((agent) => agent.id).join(",")
-  if (nextAgentSignature !== previousAgentSignature) {
-    return true
-  }
-  if (options.splitAgentResponseMode) {
-    return false
-  }
-  return options.nextFocusedAgentId !== options.currentFocusedAgentId
-}
-
-function countRenderablePaneEntries<TEntry extends { role: string }>(entries: readonly TEntry[]) {
-  return stripTranscriptDisplayOnlyEntries(entries).length
-}
-
-function historyCursorKey(cursor: unknown): string {
-  return JSON.stringify(cursor)
-}
-
-function totalPaneTextLength<TEntry extends { text: string }>(entries: readonly TEntry[]) {
-  return entries.reduce((sum, entry) => sum + entry.text.length, 0)
-}
-
-function shouldPreferCurrentPaneEntries<TEntry extends { role: string; text: string }>(
-  currentEntries: readonly TEntry[],
-  refreshedEntries: readonly TEntry[],
-) {
-  if (currentEntries.length === 0) {
-    return false
-  }
-  if (!entriesShareLineage(currentEntries, refreshedEntries)) {
-    return false
-  }
-  if (!refreshedEntriesAreContainedInCurrent(currentEntries, refreshedEntries)) {
-    return false
-  }
-
-  const currentRenderableCount = countRenderablePaneEntries(currentEntries)
-  const refreshedRenderableCount = countRenderablePaneEntries(refreshedEntries)
-  if (currentRenderableCount > refreshedRenderableCount) {
-    return true
-  }
-
-  if (currentRenderableCount < refreshedRenderableCount) {
-    return false
-  }
-
-  return totalPaneTextLength(currentEntries) > totalPaneTextLength(refreshedEntries)
-}
-
-function refreshedEntriesAreContainedInCurrent<TEntry extends {
-  role: string
-  text: string
-  turnId?: number
-  source?: string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-}>(
-  currentEntries: readonly TEntry[],
-  refreshedEntries: readonly TEntry[],
-) {
-  return transcriptEntriesContainRenderableLineage(currentEntries, refreshedEntries)
-}
-
-function entriesShareLineage<TEntry extends {
-  role: string
-  text: string
-  turnId?: number
-  source?: string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-}>(
-  currentEntries: readonly TEntry[],
-  refreshedEntries: readonly TEntry[],
-) {
-  return transcriptEntriesShareRenderableLineage(currentEntries, refreshedEntries)
-}
-
-function prependHistoryEntriesWithoutDuplicates<TEntry extends {
-  role: string
-  text: string
-  turnId?: number
-  source?: string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-}>(
-  olderEntries: readonly TEntry[],
-  currentEntries: readonly TEntry[],
-): TEntry[] {
-  return prependTranscriptEntriesWithoutDuplicateRenderableLineage(olderEntries, currentEntries)
+  return sharedShouldRefreshAgentPanesForSessionChange(options)
 }
 
 export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: string }>(options: {
@@ -160,29 +48,11 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
   maxChars: number
   onTrimmedMergeKey?: (mergeKey: string) => void
 }) {
-  const { entries, maxEntries, maxChars, onTrimmedMergeKey } = options
-  let totalChars = entries.reduce((sum, entry) => sum + entry.text.length, 0)
-  let removeCount = 0
+  return sharedTrimAgentPaneEntries(options)
+}
 
-  while (
-    entries.length - removeCount > maxEntries
-    || (totalChars > maxChars && removeCount < entries.length - 1)
-  ) {
-    totalChars -= entries[removeCount]?.text.length ?? 0
-    removeCount += 1
-  }
-
-  if (removeCount === 0) {
-    return entries
-  }
-
-  for (const entry of entries.slice(0, removeCount)) {
-    if (entry.mergeKey) {
-      onTrimmedMergeKey?.(entry.mergeKey)
-    }
-  }
-
-  return entries.slice(removeCount)
+function historyCursorKey(cursor: unknown): string {
+  return JSON.stringify(cursor)
 }
 
 export async function refreshAgentPaneState<
@@ -301,80 +171,4 @@ export async function refreshAgentPaneState<
     visibleEntries,
     visibleCursor,
   }
-}
-
-function preserveLoadedHistoryBlobs<TEntry extends {
-  text: string
-  role: string
-  turnId?: number
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-  historyBlobLoaded?: boolean
-}>(options: {
-  refreshedEntries: TEntry[]
-  currentEntries: readonly TEntry[]
-  expandedTurnIds: readonly number[]
-  applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
-  reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
-}) {
-  const loadedByBlob = new Map<string, TEntry[]>()
-  for (const entry of options.currentEntries) {
-    if (!entry.historyBlobLoaded || !entry.historyBlobSourceId) {
-      continue
-    }
-    const key = historyBlobSourceKey(entry.historyBlobSourceAgentId, entry.historyBlobSourceId, entry.turnId)
-    const entries = loadedByBlob.get(key) ?? []
-    entries.push({ ...entry })
-    loadedByBlob.set(key, entries)
-  }
-  if (loadedByBlob.size === 0) {
-    return options.refreshedEntries
-  }
-
-  let replaced = false
-  const nextEntries = options.refreshedEntries.flatMap((entry) => {
-    if (!entry.historyBlobId) {
-      return [entry]
-    }
-    const loadedEntries = loadedByBlob.get(historyBlobSourceKey(entry.historyBlobAgentId, entry.historyBlobId, entry.turnId))
-    if (!loadedEntries?.length) {
-      return [entry]
-    }
-    replaced = true
-    return loadedEntries.map((loadedEntry) => ({ ...loadedEntry }))
-  })
-  if (!replaced) {
-    return options.refreshedEntries
-  }
-  return options.reindexEntries(
-    options.applyExpandedTurns(nextEntries, options.expandedTurnIds),
-    0,
-  )
-}
-
-function entryBelongsToAgent(
-  agent: { external_provider_import?: AgentPaneExternalProviderImport | null },
-  entry: {
-    source?: string | null
-    externalProvider?: string | null
-    externalProviderSessionId?: string | null
-  },
-) {
-  return externalProviderObservedEntryBelongsToImport(agent.external_provider_import, entry)
-}
-
-function historyBlobSourceKey(agentId: string | null | undefined, blobId: string, turnId: number | undefined) {
-  return `${agentId ?? ""}:${blobId}:${turnId ?? ""}`
-}
-
-function focusedAgentIdForAgentPaneSession<TAgent extends { id: string }>(
-  session: AgentPaneSession<TAgent>,
-): string | null {
-  const focusedAgentId = session.focused_agent_id
-  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
-    return focusedAgentId
-  }
-  return session.agents[0]?.id ?? null
 }
