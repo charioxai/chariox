@@ -38,7 +38,8 @@ export async function publicationStatusPayload(
 }
 
 function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
-  return {
+  const transport = publication.transport ?? "human_http"
+  const payload: Record<string, unknown> = {
     status: "running",
     publication_id: publication.publication_id,
     runtime_session_id: publication.session_id,
@@ -47,11 +48,14 @@ function basePublicationStatusPayload(publication: WorkflowPublicationConfig) {
     endpoint_ref: publication.endpoint_ref,
     hook_id: publication.hook_id ?? null,
     queue_ref: publication.queue_ref ?? "default",
-    transport: publication.transport ?? "human_http",
-    mode: publication.mode ?? "sync",
-    route: publication.route ?? "/*",
-    methods: publication.methods ?? ["GET", "POST"],
+    transport,
   }
+  if (transport !== "schedule_only") {
+    payload.mode = publication.mode ?? "sync"
+    payload.route = publication.route ?? "/*"
+    payload.methods = publication.methods ?? ["GET", "POST"]
+  }
+  return payload
 }
 
 async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationConfig) {

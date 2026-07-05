@@ -647,7 +647,11 @@ test("schedule-only publication exposes status without ingress routes", async ()
       url: "/.well-known/arroba/publication/status",
     })
     assert.equal(status.statusCode, 200)
-    assert.equal(status.json().transport, "schedule_only")
+    const statusPayload = status.json()
+    assert.equal(statusPayload.transport, "schedule_only")
+    assert.equal(statusPayload.route, undefined)
+    assert.equal(statusPayload.methods, undefined)
+    assert.equal(statusPayload.mode, undefined)
 
     const root = await app.inject({ method: "GET", url: "/" })
     assert.equal(root.statusCode, 404)
