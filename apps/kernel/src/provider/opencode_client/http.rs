@@ -247,7 +247,7 @@ fn retry_delay_for_attempt(attempt: usize) -> Duration {
 
 fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
     if method == "POST" && is_mcp_connect_path(path) {
-        return 1;
+        return 6;
     }
     OpenCodeClient::REQUEST_RETRY_ATTEMPTS
 }
@@ -485,7 +485,7 @@ mod tests {
             read_timeout_for_request("POST", "/mcp/arroba/connect"),
             Duration::from_secs(12)
         );
-        assert_eq!(retry_attempts_for_request("POST", "/mcp/arroba/connect"), 1);
+        assert_eq!(retry_attempts_for_request("POST", "/mcp/arroba/connect"), 6);
     }
 
     #[test]

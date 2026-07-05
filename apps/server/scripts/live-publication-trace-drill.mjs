@@ -18,6 +18,8 @@ import {
   getProviderCatalogRequest,
   getWorkflowPublicationRequest,
   getWorkflowRunRequest,
+  listWorkflowRunsRequest,
+  listWorkflowWatchdogsRequest,
 } from "@arroba/kernel-client/ipc-requests"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
@@ -27,6 +29,7 @@ const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").
 const artifactsDir = resolve(process.env.ARROBA_TRACE_DRILL_ARTIFACTS_DIR ?? join(repoRoot, ".artifacts", `live-publication-traces-${stamp}`))
 const preflightOnly = process.argv.includes("--preflight-only")
 const continueOnPreflightFailure = process.argv.includes("--continue-on-preflight-failure")
+const skipPreflight = process.env.ARROBA_TRACE_DRILL_SKIP_PREFLIGHT === "1"
 const requestedProviders = csvArg("--providers")
 const requestedTransports = csvArg("--transports")
 const requestedPolicies = csvArg("--policies")
@@ -100,7 +103,7 @@ for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
 }
 
 try {
-  report.preflight = await preflight(client)
+  report.preflight = skipPreflight ? skippedPreflight() : await preflight(client)
   await writeArtifact("preflight.json", report.preflight)
   if (preflightOnly) {
     await writeReport()
@@ -166,6 +169,31 @@ async function preflight(client) {
   }
 }
 
+function skippedPreflight() {
+  const providers = providerSpecs
+    .filter((spec) => selected(requestedProviders, spec.provider))
+    .map((spec) => ({
+      provider: spec.provider,
+      requested_model: spec.requestedModel,
+      requested_model_available: true,
+      resolved_model: spec.acceptableModelIds[0] ?? spec.requestedModel,
+      resolved_model_name: spec.requestedModel,
+      model_status: "skipped_preflight",
+      model_resolution: "skipped_preflight",
+      catalog_provider_present: true,
+      auth: { ok: true, mode: "skipped_preflight", reason: null },
+      ok: true,
+      unavailable_reason: null,
+      available_models: [],
+    }))
+  return {
+    ok: true,
+    skipped: true,
+    cli: {},
+    providers,
+  }
+}
+
 async function providerAuth(client, spec) {
   if (spec.authMode === "cli_catalog") {
     return { ok: true, mode: "cli_catalog", reason: null }
@@ -226,7 +254,11 @@ async function runProviderMatrix(client, provider) {
   const sessionAlias = `trace-${provider.provider}-${Date.now()}`
   const workspaceRoot = await mkdtemp(join(tmpdir(), `${sessionAlias}-`))
   const session = await unwrap(
-    client.send(createSessionRequest(workspaceRoot, workspaceRoot, sessionAlias)),
+    withTimeout(
+      client.send(createSessionRequest(workspaceRoot, workspaceRoot, sessionAlias)),
+      runtimeStartTimeoutMs,
+      `creating session for ${provider.provider}`,
+    ),
     "SessionCreated",
   )
   const sessionId = session.session.id
@@ -252,8 +284,12 @@ async function runProviderMatrix(client, provider) {
       try {
         const publication = await createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix)
         await writeArtifact(`${prefix}/publication.json`, publication)
-        const runtime = await startPublicationRuntime(client, sessionId, publication.id, transport, prefix)
-        activeRuntimeStops.push({ sessionId, publicationId: publication.id })
+        const runtime = transport.id === "schedule_only"
+          ? scheduleOnlyObservationRuntime(publication)
+          : await startPublicationRuntime(client, sessionId, publication.id, transport, prefix)
+        if (transport.id !== "schedule_only") {
+          activeRuntimeStops.push({ sessionId, publicationId: publication.id })
+        }
         await writeArtifact(`${prefix}/runtime.json`, runtime)
         const raw = await withTimeout(
           invokeTransport(runtime.local_url ?? runtime.open_url ?? runtime.viewer_url, transport, provider, policy),
@@ -324,7 +360,11 @@ async function workflowForTransport(client, sessionId, provider, transport, appl
   if (cached) return cached
   const workflowSource = workflowCodeSource(provider, transport)
   const applied = await unwrap(
-    client.send(applyWorkflowCodeRequest(sessionId, workflowCodeNodePath, workflowSource)),
+    withTimeout(
+      client.send(applyWorkflowCodeRequest(sessionId, workflowCodeNodePath, workflowSource)),
+      runtimeStartTimeoutMs,
+      `applying ${transport.id} workflow code for ${provider.provider}`,
+    ),
     "WorkflowCodeApplied",
   )
   await writeArtifact(`${provider.provider}/${transport.id}/workflow-applied.json`, applied)
@@ -353,10 +393,27 @@ async function createPublication(client, sessionId, workflowId, endpointId, node
   }
   if (transport.id !== "schedule_only") publicationOptions.mode = transport.mode
   const response = await unwrap(
-    client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, publicationOptions)),
+    withTimeout(
+      client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, publicationOptions)),
+      runtimeStartTimeoutMs,
+      `creating ${transport.id} publication for ${prefix}`,
+    ),
     "WorkflowPublicationCreated",
   )
   return response.publication
+}
+
+function scheduleOnlyObservationRuntime(publication) {
+  return {
+    action: "observe",
+    local_url: null,
+    open_url: null,
+    viewer_url: null,
+    process_id: null,
+    publication,
+    status: "observing",
+    message: "schedule-only publication has no ingress runtime; observing kernel-owned schedules",
+  }
 }
 
 function traceExposureForPolicy(policy, nodeIds) {
@@ -551,32 +608,123 @@ async function waitForPublicationStatus(localUrl, transport) {
 async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicationId) {
   const deadline = Date.now() + scheduleOnlyObservationTimeoutMs
   let last = null
+  let lastError = null
   while (Date.now() < deadline) {
-    const inspect = await unwrap(
-      client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "inspect")),
-      "WorkflowPublicationRuntimeControlled",
-    )
-    const publicationResponse = await unwrap(
-      client.send(getWorkflowPublicationRequest(sessionId, publicationId)),
-      "WorkflowPublication",
-    )
-    last = {
-      inspect,
-      publication: publicationResponse.publication,
-      latest_run: publicationResponse.publication?.latest_run ?? inspect.publication?.latest_run ?? null,
-      last_run: publicationResponse.publication?.last_run ?? inspect.publication?.last_run ?? null,
-      latest_output: publicationResponse.publication?.latest_output ?? inspect.publication?.latest_output ?? null,
-      runtime_session_id: inspect.publication?.session_id ?? sessionId,
-    }
-    const latestRunId = latestRunIdFromStatus(last)
-    if (latestRunId) {
-      const workflowRun = await workflowRunSnapshot(client, last.runtime_session_id, latestRunId).catch(() => null)
-      last.workflow_run = workflowRun
-      if (workflowRun?.status && isTerminalStatus(workflowRun.status)) return last
+    try {
+      const publicationResponse = await unwrap(
+        withTimeout(
+          client.send(getWorkflowPublicationRequest(sessionId, publicationId)),
+          Math.min(runtimeStartTimeoutMs, 10_000),
+          `loading schedule-only publication ${publicationId}`,
+        ),
+        "WorkflowPublication",
+      )
+      const publication = publicationResponse.publication
+      const observed = await scheduleOnlyObservedRun(client, sessionId, publication)
+      last = {
+        publication,
+        watchdogs: observed.watchdogs,
+        recent_runs: observed.runs,
+        latest_run: publication?.latest_run ?? observed.latestRun ?? null,
+        last_run: publication?.last_run ?? observed.latestRun ?? null,
+        latest_output: publication?.latest_output ?? observed.latestOutput ?? null,
+        runtime_session_id: publication?.session_id ?? sessionId,
+      }
+      const latestRunId = latestRunIdFromStatus(last)
+      if (latestRunId) {
+        const workflowRun = await workflowRunSnapshot(client, last.runtime_session_id, latestRunId).catch(() => null)
+        last.workflow_run = workflowRun
+        if (workflowRun?.status && isTerminalStatus(workflowRun.status)) return last
+      }
+    } catch (error) {
+      lastError = error
     }
     await sleep(1_000)
   }
+  if (last) last.observation_error = lastError instanceof Error ? lastError.message : lastError ? String(lastError) : null
   return last
+}
+
+async function scheduleOnlyObservedRun(client, sessionId, publication) {
+  if (!publication?.workflow_id || !publication?.endpoint_id) {
+    return { watchdogs: [], runs: [], latestRun: null, latestOutput: null }
+  }
+  const watchdogResponse = await unwrap(
+    withTimeout(
+      client.send(listWorkflowWatchdogsRequest(sessionId, publication.workflow_id)),
+      Math.min(runtimeStartTimeoutMs, 10_000),
+      `listing schedule-only watchdogs for ${publication.id}`,
+    ),
+    "WorkflowWatchdogsListed",
+  )
+  const runResponse = await unwrap(
+    withTimeout(
+      client.send(listWorkflowRunsRequest(sessionId, publication.workflow_id)),
+      Math.min(runtimeStartTimeoutMs, 10_000),
+      `listing schedule-only workflow runs for ${publication.id}`,
+    ),
+    "WorkflowRunsListed",
+  )
+  const watchdogRunIds = new Set(
+    (watchdogResponse.watchdogs ?? [])
+      .filter((watchdog) => watchdog.endpoint_id === publication.endpoint_id)
+      .map((watchdog) => watchdog.last_workflow_run_id)
+      .filter(Boolean),
+  )
+  const runs = (runResponse.workflow_runs ?? [])
+    .filter((run) => run.endpoint_id === publication.endpoint_id || watchdogRunIds.has(run.id))
+    .sort((left, right) => (right.created_at_ms ?? 0) - (left.created_at_ms ?? 0))
+  const latestRun = runs.find((run) => run.status === "Completed") ?? runs[0] ?? null
+  const visibleRuns = runs.map((run) => visibleWorkflowRunForPublication(publication, run))
+  const visibleLatestRun = latestRun ? visibleWorkflowRunForPublication(publication, latestRun) : null
+  return {
+    watchdogs: watchdogResponse.watchdogs ?? [],
+    runs: visibleRuns,
+    latestRun: visibleLatestRun,
+    latestOutput: latestRun?.final_output
+      ? { kind: "final", message: latestRun.final_output.message, artifacts: latestRun.final_output.artifacts ?? [] }
+      : null,
+  }
+}
+
+function visibleWorkflowRunForPublication(publication, workflowRun) {
+  const policy = publication?.trace_exposure?.nodes ?? {}
+  const visible = {
+    id: workflowRun.id,
+    status: workflowRun.status,
+    workflow_id: workflowRun.workflow_id ?? null,
+    endpoint_id: workflowRun.endpoint_id ?? null,
+    created_at_ms: workflowRun.created_at_ms ?? null,
+    completed_at_ms: workflowRun.completed_at_ms ?? null,
+    final_output: workflowRun.final_output ?? null,
+  }
+  visible.node_runs = (workflowRun.node_runs ?? []).map((nodeRun) => {
+    const levels = new Set(policy[nodeRun.node_id] ?? [])
+    const entry = {
+      id: nodeRun.id,
+      node_id: nodeRun.node_id,
+      agent_id: nodeRun.agent_id,
+      status: nodeRun.status,
+      completed_at_ms: nodeRun.completed_at_ms ?? null,
+    }
+    if (levels.has("output_summary")) {
+      if (nodeRun.summary !== undefined) entry.summary = nodeRun.summary
+      if (nodeRun.completion?.summary !== undefined) {
+        entry.completion = { ...(entry.completion ?? {}), summary: nodeRun.completion.summary }
+      }
+    }
+    if (levels.has("assistant_messages") && nodeRun.completion?.output !== undefined) {
+      entry.completion = { ...(entry.completion ?? {}), output: nodeRun.completion.output }
+    }
+    if (levels.has("thinking") && nodeRun.thinking_traces !== undefined) {
+      entry.thinking_traces = nodeRun.thinking_traces
+    }
+    if (levels.has("tool_use") && nodeRun.turn_envelope?.runtime_tool_calls !== undefined) {
+      entry.turn_envelope = { runtime_tool_calls: nodeRun.turn_envelope.runtime_tool_calls }
+    }
+    return entry
+  })
+  return visible
 }
 
 function isTerminalStatus(status) {
@@ -802,7 +950,11 @@ function protocolFailures(raw, statusPayload, workflowRun, transport) {
 }
 
 async function workflowRunSnapshot(client, sessionId, runId) {
-  const response = await client.send(getWorkflowRunRequest(sessionId, runId))
+  const response = await withTimeout(
+    client.send(getWorkflowRunRequest(sessionId, runId)),
+    runtimeStartTimeoutMs,
+    `loading workflow run ${runId}`,
+  )
   return response?.WorkflowRun?.workflow_run ?? response
 }
 
