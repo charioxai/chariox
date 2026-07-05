@@ -14,6 +14,10 @@ import {
   type WorkspaceLiveSyncProviderReloadSummary,
 } from "@arroba/kernel-client/workspace-live-sync-mode"
 import {
+  workspaceLiveSyncHealthLabel,
+  workspaceLiveSyncProblems,
+} from "@arroba/kernel-client/shell-workspace-format"
+import {
   prepareLocalGitWorktree,
   suggestNamedWorktreePath,
   worktreeAliasConfigPath,
@@ -536,37 +540,6 @@ function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {
     return "wait for sync to settle, or inspect /workspace sync targets"
   }
   return ""
-}
-
-function workspaceLiveSyncHealthLabel(status: WorkspaceLiveSyncStatus): string {
-  if (status.conflicts.length > 0 || status.footer_state === "conflict") return "conflict"
-  if (status.sync_groups.some((group) => group.degraded_targets > 0) || status.targets.some((target) => target.status === "degraded")) return "degraded"
-  if (status.mode === "unrestricted" || status.footer_state === "off") return "off"
-  if (status.targets.length === 0) return "no-targets"
-  if (status.footer_state === "syncing") return "syncing"
-  return "healthy"
-}
-
-function workspaceLiveSyncProblems(status: WorkspaceLiveSyncStatus): string[] {
-  const problems: string[] = []
-  if (status.mode === "unrestricted" || status.footer_state === "off") {
-    problems.push("live sync is off for this session")
-  }
-  if (status.targets.length === 0 && status.mode !== "unrestricted") {
-    problems.push("no synced worktrees or remote attachments are linked")
-  }
-  for (const group of status.sync_groups) {
-    if (group.degraded_targets > 0) {
-      problems.push(`${group.group_name} has ${group.degraded_targets} degraded target${group.degraded_targets === 1 ? "" : "s"}`)
-    }
-    if (group.conflicted_targets > 0) {
-      problems.push(`${group.group_name} has ${group.conflicted_targets} conflicted target${group.conflicted_targets === 1 ? "" : "s"}`)
-    }
-  }
-  for (const conflict of status.conflicts) {
-    problems.push(`${conflict.path} from ${conflict.source_agent_id} blocked on ${conflict.target_user_id}:${conflict.target_repo_root}`)
-  }
-  return problems
 }
 
 async function attachWorkspaceLink(

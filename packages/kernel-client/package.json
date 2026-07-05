@@ -32,6 +32,7 @@
     "./shell-core": "./dist/shell-core.js",
     "./shell-executor": "./dist/shell-executor.js",
     "./shell-script": "./dist/shell-script.js",
+    "./shell-workspace-format": "./dist/shell-workspace-format.js",
     "./slice-format": "./dist/slice-format.js",
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js"
   },

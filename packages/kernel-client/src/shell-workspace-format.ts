@@ -158,7 +158,7 @@ function metadataString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null
 }
 
-function workspaceLiveSyncHealthLabel(status: WorkspaceLiveSyncStatus): string {
+export function workspaceLiveSyncHealthLabel(status: WorkspaceLiveSyncStatus): string {
   if (status.conflicts.length > 0 || status.footer_state === "conflict") return "conflict"
   if (status.sync_groups.some((group) => group.degraded_targets > 0) || status.targets.some((target) => target.status === "degraded")) return "degraded"
   if (status.mode === "unrestricted" || status.footer_state === "off") return "off"
@@ -167,7 +167,7 @@ function workspaceLiveSyncHealthLabel(status: WorkspaceLiveSyncStatus): string {
   return "healthy"
 }
 
-function workspaceLiveSyncProblems(status: WorkspaceLiveSyncStatus): string[] {
+export function workspaceLiveSyncProblems(status: WorkspaceLiveSyncStatus): string[] {
   const problems: string[] = []
   if (status.mode === "unrestricted" || status.footer_state === "off") {
     problems.push("live sync is off for this session")
