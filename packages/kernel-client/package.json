@@ -45,6 +45,7 @@
     "./session-bootstrap-policy": "./dist/session-bootstrap-policy.js",
     "./session-browser-policy": "./dist/session-browser-policy.js",
     "./session-prompt-lifecycle": "./dist/session-prompt-lifecycle.js",
+    "./session-prompt-work": "./dist/session-prompt-work.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
     "./transcript-entry-state": "./dist/transcript-entry-state.js",
