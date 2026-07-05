@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   terminalRecordIsPassiveExternalProviderTelemetry,
   terminalRecordProviderStatusShouldRender,
+  terminalRecordTranscriptProjection,
   terminalRecordTranscriptMetadata,
   transcriptEntryWithTerminalMetadata,
 } from "./terminal-record-transcript.js"
@@ -119,4 +120,81 @@ test("terminalRecordIsPassiveExternalProviderTelemetry follows observed metadata
       passive_telemetry: false,
     },
   }), false)
+})
+
+test("terminalRecordTranscriptProjection classifies external history refresh without transcript work", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    source: "external_provider_observed",
+  }, "external_provider_history_updated", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.historyRefreshSignal, true)
+  assert.equal(projection.passiveExternalTelemetry, false)
+  assert.equal(projection.startsStreaming, false)
+  assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.transcriptRole, "status")
+  assert.equal(projection.statusMergeKey, "__provider_status__")
+})
+
+test("terminalRecordTranscriptProjection suppresses passive external telemetry", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "token-count",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }, "codex token_count", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.passiveExternalTelemetry, true)
+  assert.equal(projection.startsStreaming, false)
+  assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.renderProviderStatus, false)
+  assert.equal(projection.metadata.externalProvider, "codex")
+})
+
+test("terminalRecordTranscriptProjection keeps idle provider status from marking a turn busy", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+  }, "OpenCode is idle.", {
+    isProviderIdleStatus: () => true,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.providerStatusIdle, true)
+  assert.equal(projection.startsStreaming, true)
+  assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.renderProviderStatus, true)
+})
+
+test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {
+  const assistant = terminalRecordTranscriptProjection({
+    kind: "provider_output",
+    merge_key: "reply-1",
+  }, "hello", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+  assert.equal(assistant.transcriptRole, "assistant")
+  assert.equal(assistant.mergeKey, "reply-1")
+  assert.equal(assistant.startsStreaming, true)
+  assert.equal(assistant.marksAgentBusy, true)
+
+  const error = terminalRecordTranscriptProjection({
+    kind: "provider_error",
+  }, "failed\r\n", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+  assert.equal(error.transcriptRole, "error")
+  assert.equal(error.transcriptText, "failed")
 })

@@ -1,11 +1,6 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
-  externalProviderObservedHistoryRefreshSignal,
-} from "@arroba/kernel-client/external-provider-observation"
-import {
-  terminalRecordIsPassiveExternalProviderTelemetry,
-  terminalRecordProviderStatusShouldRender,
-  terminalRecordTranscriptMetadata,
+  terminalRecordTranscriptProjection,
   transcriptEntryWithTerminalMetadata,
   type TerminalRecordTranscriptMetadata,
 } from "@arroba/kernel-client/terminal-record-transcript"
@@ -76,25 +71,27 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     if (!recordAgentId) {
       return
     }
-    if (
-      externalProviderObservedHistoryRefreshSignal(record, text)
-    ) {
+    const projection = terminalRecordTranscriptProjection(record, text, {
+      isProviderIdleStatus,
+      shouldRenderProviderStatus: deps.shouldRenderProviderStatus,
+    })
+    if (projection.historyRefreshSignal) {
       deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
       return
     }
-    if (terminalRecordIsPassiveExternalProviderTelemetry(record)) {
+    if (projection.passiveExternalTelemetry) {
       return
     }
-    if (record.kind !== "prompt_echo") {
+    if (projection.startsStreaming) {
       deps.setStreamingAgentId(recordAgentId)
-      if (record.kind !== "provider_status" || !isProviderIdleStatus(text)) {
+      if (projection.marksAgentBusy) {
         deps.markAgentBusy(recordAgentId)
       }
     }
     if (deps.splitAgentResponseMode() && recordAgentId) {
-      const metadata = terminalRecordTranscriptMetadata(record)
+      const metadata = projection.metadata
       if (record.kind === "provider_status") {
-        if (isProviderIdleStatus(text)) {
+        if (projection.providerStatusIdle) {
           return
         }
         const activityLabel = deps.getProviderActivityLabel(text)
@@ -122,25 +119,25 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           break
         }
         case "provider_reasoning":
-          deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key, undefined, metadata)
+          deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, projection.mergeKey ?? undefined, undefined, metadata)
           break
         case "provider_tool":
           deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
           break
         case "provider_error": {
-          const normalized = normalize(text).trim()
+          const normalized = projection.transcriptText
           if (normalized) {
             deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({ role: "error", text: normalized, emphasis: "error" }, metadata))
           }
           break
         }
         case "provider_status":
-          if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
-            deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
+          if (projection.renderProviderStatus) {
+            deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, projection.statusMergeKey ?? undefined, undefined, metadata)
           }
           break
         default:
-          deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key, undefined, metadata)
+          deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, projection.mergeKey ?? undefined, undefined, metadata)
           break
       }
       return
@@ -150,7 +147,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const isVisibleRecord = recordAgentId === mainTranscriptAgentId
     if (!isVisibleRecord) {
       if (recordAgentId) {
-        const metadata = terminalRecordTranscriptMetadata(record)
+        const metadata = projection.metadata
         switch (record.kind) {
           case "prompt_echo": {
             if (deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
@@ -165,29 +162,29 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
             break
           }
           case "provider_reasoning":
-            deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key, undefined, metadata)
+            deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, projection.mergeKey ?? undefined, undefined, metadata)
             break
           case "provider_tool":
             deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
             break
           case "provider_error": {
-            const normalized = normalize(text).trim()
+            const normalized = projection.transcriptText
             if (normalized) {
               deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata({ role: "error", text: normalized, emphasis: "error" }, metadata))
             }
             break
           }
           case "provider_status":
-            if (isProviderIdleStatus(text)) {
+            if (projection.providerStatusIdle) {
               break
             }
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
-            if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
-              deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
+            if (projection.renderProviderStatus) {
+              deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, projection.statusMergeKey ?? undefined, undefined, metadata)
             }
             break
           default:
-            deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key, undefined, metadata)
+            deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, projection.mergeKey ?? undefined, undefined, metadata)
             break
         }
       }
@@ -195,7 +192,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       return
     }
 
-    const metadata = terminalRecordTranscriptMetadata(record)
+    const metadata = projection.metadata
     switch (record.kind) {
       case "prompt_echo":
         if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
@@ -205,7 +202,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_reasoning":
-        deps.appendProviderChunk("reasoning", text, record.merge_key, undefined, metadata)
+        deps.appendProviderChunk("reasoning", text, projection.mergeKey ?? undefined, undefined, metadata)
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_tool":
@@ -213,11 +210,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_error":
-        deps.appendProviderError(text)
+        deps.appendProviderError(projection.transcriptText)
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_status": {
-        if (isProviderIdleStatus(text)) {
+        if (projection.providerStatusIdle) {
           break
         }
         const activityLabel = deps.getProviderActivityLabel(text)
@@ -228,14 +225,14 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         if (activityLabel !== null) {
           deps.syncVisibleActivityLabel()
         }
-        if (terminalRecordProviderStatusShouldRender(record, text, deps.shouldRenderProviderStatus)) {
-          deps.appendProviderChunk("status", text, "__provider_status__", undefined, metadata)
+        if (projection.renderProviderStatus) {
+          deps.appendProviderChunk("status", text, projection.statusMergeKey ?? undefined, undefined, metadata)
           deps.syncVisibleTranscriptPreview()
         }
         break
       }
       default:
-        deps.appendProviderChunk("assistant", text, record.merge_key, undefined, metadata)
+        deps.appendProviderChunk("assistant", text, projection.mergeKey ?? undefined, undefined, metadata)
         deps.syncVisibleTranscriptPreview()
         break
     }
@@ -289,8 +286,4 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     applyTransportResumed,
     applyAssistantMessageCompleted,
   }
-}
-
-function normalize(text: string) {
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
 }
