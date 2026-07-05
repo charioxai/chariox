@@ -16,7 +16,6 @@ import {
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasAgentRuntimeProjection as kernelSessionHasAgentRuntimeProjection,
   sessionHasPromptWork as kernelSessionHasPromptWork,
-  sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
   sessionProjectedStreamingAgentId as kernelSessionProjectedStreamingAgentId,
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
   sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
@@ -25,7 +24,10 @@ import {
 } from "@arroba/kernel-client/shell-agent-activity"
 import type {
   PromptLifecycleTransition as KernelPromptLifecycleTransition,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-prompt-lifecycle"
+import {
+  sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
+} from "@arroba/kernel-client/session-prompt-lifecycle"
 import {
   type AgentPromptState,
   type CliOptions,
