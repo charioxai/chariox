@@ -5,10 +5,6 @@ import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "@arroba/kernel-client/session-config-projection"
 import {
-  sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
-  sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
-} from "@arroba/kernel-client/session-prompt-identity"
-import {
   sessionAgentIsBusy as kernelSessionAgentIsBusy,
   sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasPromptWork as kernelSessionHasPromptWork,
@@ -27,7 +23,6 @@ import {
   sessionPromptLifecycleTransition as kernelSessionPromptLifecycleTransition,
 } from "@arroba/kernel-client/session-prompt-lifecycle"
 import {
-  type AgentPromptState,
   type CliOptions,
   type RuntimeSession,
   type SessionHistoryCursorState,
@@ -144,16 +139,6 @@ export function focusedAgentIdForSession(session: RuntimeSession): string | null
   return kernelSessionFocusedAgentId(session as Parameters<typeof kernelSessionFocusedAgentId>[0])
 }
 
-export function activePromptIdForAgent(
-  session: RuntimeSession,
-  agentId: string | null | undefined,
-): string | null {
-  return kernelSessionActivePromptIdForAgent(
-    session as Parameters<typeof kernelSessionActivePromptIdForAgent>[0],
-    agentId,
-  )
-}
-
 export function shouldConfirmIdleTurnCompletion(options: {
   nextSession: RuntimeSession
   currentWorking: boolean
@@ -167,16 +152,6 @@ export function shouldConfirmIdleTurnCompletion(options: {
     ...options,
     nextSession: options.nextSession as Parameters<typeof kernelSessionShouldConfirmIdleTurnCompletion>[0]["nextSession"],
   })
-}
-
-export function agentPromptState(
-  session: RuntimeSession,
-  agentId: string | null | undefined,
-): AgentPromptState | null {
-  return kernelSessionPromptStateForAgent(
-    session as Parameters<typeof kernelSessionPromptStateForAgent>[0],
-    agentId,
-  ) as AgentPromptState | null
 }
 
 export function agentHasPromptWork(

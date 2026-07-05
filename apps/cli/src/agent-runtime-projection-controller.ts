@@ -13,13 +13,15 @@ import {
 import {
   runtimeProviderRunForAgent,
 } from "@arroba/kernel-client/session-runtime-lookup"
+import {
+  sessionPromptStateForAgent,
+} from "@arroba/kernel-client/session-prompt-identity"
 import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
 import {
-  agentPromptState,
   promptWorkByAgent,
   sessionHasPromptWork,
 } from "./session-state.js"
@@ -75,7 +77,7 @@ export function createAgentRuntimeProjectionController(
   const resolveSessionAgent = (reference?: string | null): ResolvedAgentReference =>
     resolveSessionAgentReference(deps.getSession(), deps.getFocusedAgentId(), reference)
   const promptStateForAgent = (agentId: string | null | undefined) =>
-    agentPromptState(deps.getSession(), agentId)
+    sessionPromptStateForAgent(deps.getSession(), agentId)
   const agentQueuedDepth = (agentId: string | null | undefined) =>
     promptStateForAgent(agentId)?.queued_prompts.length ?? 0
   const agentActivePrompt = (agentId: string | null | undefined) =>
