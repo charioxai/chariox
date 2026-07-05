@@ -1,7 +1,6 @@
 import type { RuntimeSession } from "./cli-types.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
-  sessionHasProcessingAgent,
   sessionHasPromptWork,
 } from "@arroba/kernel-client/session-prompt-work"
 
@@ -27,7 +26,7 @@ export function createAuthoritativeIdleController(
   deps: AuthoritativeIdleControllerDeps,
 ) {
   const clear = (nextSession: RuntimeSession) => {
-    if (sessionHasPromptWork(nextSession) || sessionHasProcessingAgent(nextSession)) {
+    if (sessionHasPromptWork(nextSession)) {
       return false
     }
 

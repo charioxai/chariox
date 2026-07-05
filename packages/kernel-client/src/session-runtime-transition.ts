@@ -8,7 +8,6 @@ import {
 import {
   sessionAllowsLegacyAgentProcessingState,
   sessionAgentIsBusy,
-  sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
@@ -312,7 +311,7 @@ export function deriveAllAgentsBusyState(options: {
 }
 
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
-  if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
+  if (sessionHasPromptWork(options.nextSession)) {
     return false
   }
   return options.currentWorking
