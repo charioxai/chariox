@@ -1236,14 +1236,11 @@ test("focused activity and busy state derive from labels, latches, prompt work, 
 })
 
 test("active tool labels prefer visible transcript tools and ignore completed pane tools", () => {
-  const label = (tool?: string | null) => tool ? `${tool}ing` : null
-
   assert.equal(resolveActiveToolLabelForAgent({
     agentId: "agent-1",
     visibleTranscriptAgentId: "agent-1",
     activeToolLabels: ["reading", "patching"],
     agentPaneToolUpdates: null,
-    toolActivityLabel: label,
   }), "patching")
   assert.equal(resolveActiveToolLabelForAgent({
     agentId: "agent-2",
@@ -1255,15 +1252,20 @@ test("active tool labels prefer visible transcript tools and ignore completed pa
       { tool: "edit", status: "error" },
       { tool: "grep", status: "cancelled" },
     ],
-    toolActivityLabel: label,
   }), "bashing")
   assert.equal(resolveActiveToolLabelForAgent({
     agentId: null,
     visibleTranscriptAgentId: "agent-1",
     activeToolLabels: ["reading"],
     agentPaneToolUpdates: null,
-    toolActivityLabel: label,
   }), null)
+  assert.equal(resolveActiveToolLabelForAgent({
+    agentId: "agent-2",
+    visibleTranscriptAgentId: "agent-1",
+    activeToolLabels: [],
+    agentPaneToolUpdates: [{ tool: "custom_tool", status: "running" }],
+    toolActivityLabel: (tool?: string | null) => tool ? `custom ${tool}` : null,
+  }), "custom custom_tool")
 })
 
 test("all agent busy state is derived per agent", () => {

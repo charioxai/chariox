@@ -10,7 +10,6 @@ import {
   type AgentBusyState,
 } from "@arroba/kernel-client/session-runtime-transition"
 import type { RuntimeSession } from "./cli-types.js"
-import { getToolActivityLabel } from "./runtime.js"
 
 export type ToolActivityUpdate = {
   tool?: string | null
@@ -61,10 +60,7 @@ export function resolveActiveToolLabelForAgent(options: {
   activeToolLabels: Iterable<string>
   agentPaneToolUpdates: Iterable<ToolActivityUpdate> | null | undefined
 }): string | null {
-  return kernelResolveActiveToolLabelForAgent({
-    ...options,
-    toolActivityLabel: getToolActivityLabel,
-  })
+  return kernelResolveActiveToolLabelForAgent(options)
 }
 
 export function deriveFocusedActivityLabel(options: {

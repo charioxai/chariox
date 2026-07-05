@@ -9,6 +9,9 @@ import {
   sessionHasPromptWork,
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
+import {
+  getToolActivityLabel,
+} from "./provider-status.js"
 
 export type SessionIdleTurnCompletionInput = {
   readonly nextSession: RuntimeSession
@@ -223,7 +226,7 @@ export function resolveActiveToolLabelForAgent(options: {
   readonly visibleTranscriptAgentId: string | null
   readonly activeToolLabels: Iterable<string>
   readonly agentPaneToolUpdates: Iterable<AgentToolActivityUpdate> | null | undefined
-  readonly toolActivityLabel: (tool?: string | null) => string | null
+  readonly toolActivityLabel?: (tool?: string | null) => string | null
 }): string | null {
   const agentId = options.agentId
   if (!agentId) {
@@ -232,9 +235,10 @@ export function resolveActiveToolLabelForAgent(options: {
   if (agentId === options.visibleTranscriptAgentId) {
     return Array.from(options.activeToolLabels).at(-1) ?? null
   }
+  const toolActivityLabel = options.toolActivityLabel ?? getToolActivityLabel
   const labels = Array.from(options.agentPaneToolUpdates ?? [])
     .filter((update) => update.status !== "completed" && update.status !== "error" && update.status !== "cancelled")
-    .map((update) => options.toolActivityLabel(update.tool))
+    .map((update) => toolActivityLabel(update.tool))
     .filter((label): label is string => Boolean(label))
   return labels.at(-1) ?? null
 }
