@@ -11,7 +11,6 @@ import type { TerminalOutputRecord } from "./cli-types.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import { turnCompletionDelayMs } from "@arroba/kernel-client/session-runtime-transition"
 import { getSessionHistoryBlobContent } from "./session-history-api.js"
-import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalOutputRecordQueue } from "./terminal-output-record-queue.js"
 import { createTranscriptEventController } from "./transcript-event-controller.js"
@@ -133,7 +132,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     clearTimer: deps.clearTimer,
     hasActivePrompt: () => Boolean(deps.activePrompt()),
     getDelayMs: (lastTurnActivityAt) => turnCompletionDelayMs({
-      sessionHasPromptWork: sessionHasPromptWork(deps.sessionState()),
+      session: deps.sessionState(),
       pendingTerminalRecordCount: terminalOutputRecordQueue.pendingCount(),
       pendingTerminalRecordFlush: terminalOutputRecordQueue.hasPendingFlush(),
       lastTurnActivityAt,

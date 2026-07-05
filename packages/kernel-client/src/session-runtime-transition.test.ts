@@ -208,8 +208,22 @@ test("session idle turn completion waits only for idle snapshots", () => {
 })
 
 test("turn completion delay waits for prompt work and record flushes", () => {
+  const activeSession = makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "running",
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: true,
+    session: activeSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,
@@ -217,7 +231,7 @@ test("turn completion delay waits for prompt work and record flushes", () => {
     quietWindowMs: 1_500,
   }), null)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 1,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,
@@ -225,7 +239,7 @@ test("turn completion delay waits for prompt work and record flushes", () => {
     quietWindowMs: 1_500,
   }), null)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,

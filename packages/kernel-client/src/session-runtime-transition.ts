@@ -62,7 +62,7 @@ export type AgentToolActivityUpdate = {
 export type SessionStreamingAgent = Pick<AgentInstance, "id" | "is_processing" | "state">
 
 export type TurnCompletionDelayInput = {
-  readonly sessionHasPromptWork: boolean
+  readonly session: RuntimeSession
   readonly pendingTerminalRecordCount: number
   readonly pendingTerminalRecordFlush: boolean
   readonly lastTurnActivityAt: number
@@ -325,7 +325,7 @@ export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnC
 
 export function turnCompletionDelayMs(options: TurnCompletionDelayInput): number | null {
   if (
-    options.sessionHasPromptWork
+    sessionHasPromptWork(options.session)
     || options.pendingTerminalRecordCount > 0
     || options.pendingTerminalRecordFlush
   ) {

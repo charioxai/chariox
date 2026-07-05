@@ -1458,8 +1458,36 @@ test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or 
 })
 
 test("turnCompletionDelayMs waits for prompt work and terminal record flushes", () => {
+  const activeSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: true,
+    session: activeSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,
@@ -1467,7 +1495,7 @@ test("turnCompletionDelayMs waits for prompt work and terminal record flushes", 
     quietWindowMs: 1_500,
   }), null)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 1,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,
@@ -1475,7 +1503,7 @@ test("turnCompletionDelayMs waits for prompt work and terminal record flushes", 
     quietWindowMs: 1_500,
   }), null)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: true,
     lastTurnActivityAt: 900,
@@ -1485,8 +1513,20 @@ test("turnCompletionDelayMs waits for prompt work and terminal record flushes", 
 })
 
 test("turnCompletionDelayMs returns the remaining quiet window after last turn activity", () => {
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 900,
@@ -1494,7 +1534,7 @@ test("turnCompletionDelayMs returns the remaining quiet window after last turn a
     quietWindowMs: 1_500,
   }), 1_400)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 0,
@@ -1502,7 +1542,7 @@ test("turnCompletionDelayMs returns the remaining quiet window after last turn a
     quietWindowMs: 1_500,
   }), 0)
   assert.equal(turnCompletionDelayMs({
-    sessionHasPromptWork: false,
+    session: idleSession,
     pendingTerminalRecordCount: 0,
     pendingTerminalRecordFlush: false,
     lastTurnActivityAt: 2_000,
