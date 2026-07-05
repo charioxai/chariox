@@ -629,11 +629,35 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     if (providerEmitted.assistant_messages && !plannerAssistantVisible) {
       failures.push("mixed per-node policy hid planner assistant_messages")
     }
-    const finalizerId = nodeIds.finalizer
-    const finalizerLeak = visible.includes(finalizerId) && (visible.includes(markerNames.thinking) || visible.includes(markerNames.tool_use))
-    if (finalizerLeak) failures.push("mixed per-node policy leaked hidden finalizer detail")
+    if (nodeDetailLeaks([raw, statusPayload], nodeIds.worker, ["assistant_messages", "thinking", "tool_use"])) {
+      failures.push("mixed per-node policy leaked worker detail beyond output_summary")
+    }
+    if (nodeDetailLeaks([raw, statusPayload], nodeIds.finalizer, ["output_summary", "assistant_messages", "thinking", "tool_use"])) {
+      failures.push("mixed per-node policy leaked hidden finalizer detail")
+    }
   }
   return { ok: failures.length === 0, failures, provider_emitted: providerEmitted }
+}
+
+function nodeDetailLeaks(value, nodeId, disallowedLevels) {
+  if (!nodeId || value == null) return false
+  if (Array.isArray(value)) return value.some((entry) => nodeDetailLeaks(entry, nodeId, disallowedLevels))
+  if (typeof value !== "object") return false
+  const record = value
+  if (record.node_id === nodeId) {
+    if (typeof record.level === "string" && disallowedLevels.includes(record.level)) return true
+    if (disallowedLevels.includes("output_summary")) {
+      if (record.summary !== undefined || record.completion_summary !== undefined) return true
+      if (record.completion && typeof record.completion === "object" && record.completion.summary !== undefined) return true
+    }
+    if (disallowedLevels.includes("assistant_messages")) {
+      if (record.handoff_payload !== undefined || record.message_type === "handoff") return true
+      if (record.completion && typeof record.completion === "object" && record.completion.output !== undefined) return true
+    }
+    if (disallowedLevels.includes("thinking") && record.thinking_traces !== undefined) return true
+    if (disallowedLevels.includes("tool_use") && record.turn_envelope !== undefined) return true
+  }
+  return Object.values(record).some((entry) => nodeDetailLeaks(entry, nodeId, disallowedLevels))
 }
 
 function structurallyExposesLevel(visible, level) {
