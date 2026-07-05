@@ -529,7 +529,7 @@ const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "trace-planner", provider: ${providerId}, model: ${model} }),
   publicLabel: "Planner",
-  instructions: "Create a concise plan. Put ${outputSummaryMarker} only in your node summary. Put ${assistantMarker} only in the JSON handoff message to Worker. Do not put ${toolMarker} or ${finalMarker} in this node output.",
+  instructions: "Create a concise plan. Set your node summary to exactly ${outputSummaryMarker}. Send the Worker a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 0, y: 120 },
@@ -538,7 +538,7 @@ const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "trace-worker", provider: ${providerId}, model: ${model} }),
   publicLabel: "Worker",
-  instructions: "Do the work. Call workflow_console_write exactly once with content ${toolMarker}. Then hand off to Finalizer with a compact JSON message that does not contain ${outputSummaryMarker}, ${assistantMarker}, ${toolMarker}, or ${finalMarker}. Do not put ${toolMarker} in your final fenced JSON output.",
+  instructions: "Call workflow_console_write exactly once with content ${toolMarker}. Set your node summary to exactly worker_done. Then send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"worker_done\\\"}. Do not include any TRACE_ marker text in your summary or handoff message.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 320, y: 120 },
@@ -547,7 +547,7 @@ const finalizer = workflow.node({
   handle: "finalizer",
   agent: workflow.newAgent({ alias: "trace-finalizer", provider: ${providerId}, model: ${model} }),
   publicLabel: "Finalizer",
-  instructions: "Complete the workflow with a compact JSON-compatible final output containing ${finalMarker}. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
+  instructions: "Set your node summary to exactly final_done. Complete the workflow with compact JSON exactly {\\\"message\\\":\\\"${finalMarker}\\\"}. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
   canCompleteWorkflowRun: true,
   maxTurns: 2,
   canvas: { x: 640, y: 120 },
@@ -562,7 +562,7 @@ ${watchdog}
 function assertExposure({ raw, statusPayload, visible, workflowRun, policy, transport, nodeIds }) {
   const serializedRun = JSON.stringify(workflowRun ?? {})
   const providerEmitted = {
-    output_summary: serializedRun.includes(markerNames.output_summary) || /summary/i.test(serializedRun),
+    output_summary: serializedRun.includes(markerNames.output_summary),
     assistant_messages: serializedRun.includes(markerNames.assistant_messages),
     thinking: /thinking_traces":\s*\[/.test(serializedRun) && !/thinking_traces":\s*\[\s*\]/.test(serializedRun),
     tool_use: /runtime_tool_calls":\s*\[/.test(serializedRun) && !/runtime_tool_calls":\s*\[\s*\]/.test(serializedRun),
@@ -574,15 +574,19 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
   }
   for (const level of ["output_summary", "assistant_messages", "thinking", "tool_use"]) {
     const marker = markerNames[level]
-    const present = visible.includes(marker)
-      || (level === "thinking" && visible.includes("thinking_traces"))
-      || (level === "thinking" && visible.includes('"level":"thinking"'))
-      || (level === "tool_use" && visible.includes("runtime_tool_calls"))
-      || (level === "tool_use" && visible.includes('"level":"tool_use"'))
+    const structuralPresent = structurallyExposesLevel(visible, level)
+    const markerPresent = visible.includes(marker)
+    const present = markerPresent || structuralPresent
     if (!policy.mixed && enabled.has(level) && providerEmitted[level] && !present) {
       failures.push(`${level} was emitted by provider but absent from exposed output`)
     }
-    if (!policy.mixed && !enabled.has(level) && present) failures.push(`${level} marker leaked while disabled`)
+    if (!policy.mixed && !enabled.has(level)) {
+      if (structuralPresent) {
+        failures.push(`${level} structural data leaked while disabled`)
+      } else if (!(enabled.has("thinking") && level !== "thinking") && markerPresent) {
+        failures.push(`${level} marker leaked while disabled`)
+      }
+    }
   }
   if (policy.mixed) {
     const plannerSummaryVisible = visible.includes(markerNames.output_summary)
@@ -598,6 +602,25 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     if (finalizerLeak) failures.push("mixed per-node policy leaked hidden finalizer detail")
   }
   return { ok: failures.length === 0, failures, provider_emitted: providerEmitted }
+}
+
+function structurallyExposesLevel(visible, level) {
+  if (level === "output_summary") {
+    return visible.includes('"level":"output_summary"')
+      || visible.includes('"completion_summary"')
+  }
+  if (level === "assistant_messages") {
+    return visible.includes('"level":"assistant_messages"')
+      || visible.includes('"handoff_payload"')
+      || visible.includes('"message_type":"handoff"')
+  }
+  if (level === "thinking") {
+    return visible.includes("thinking_traces") || visible.includes('"level":"thinking"')
+  }
+  if (level === "tool_use") {
+    return visible.includes("runtime_tool_calls") || visible.includes('"level":"tool_use"')
+  }
+  return false
 }
 
 function protocolFailures(raw, statusPayload, workflowRun, transport) {
