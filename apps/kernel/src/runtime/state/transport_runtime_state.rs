@@ -416,7 +416,7 @@ fn transport_runtime_pump_interval_for_state(
         return fallback_interval_ms;
     };
     if next_due_at_ms <= now_ms {
-        return 0;
+        return minimum_interval_ms;
     }
     next_due_at_ms
         .saturating_sub(now_ms)
@@ -469,7 +469,7 @@ mod tests {
         );
         assert_eq!(
             transport_runtime_pump_interval_for_state(Some(9_999), None, 10_000, 500, 5_000),
-            0,
+            500,
         );
     }
 }
