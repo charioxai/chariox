@@ -5,7 +5,9 @@ import type {
   TranscriptEntry,
 } from "./kernel-types.js"
 import { externalProviderObservedProviderStatusShouldRender } from "./external-provider-observation.js"
+import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
+import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export const DEFAULT_TRANSCRIPT_PREVIEW_LINE_LIMIT = 14
 
@@ -78,22 +80,7 @@ export function previewLineForTerminalRecord(
 }
 
 export function sessionHistoryEntryPreviewLabel(kind: SessionHistoryEntry["kind"]): string {
-  switch (kind) {
-    case "user_prompt":
-      return "You"
-    case "provider_reasoning":
-      return "Think"
-    case "provider_tool":
-      return "Tool"
-    case "provider_error":
-      return "Err"
-    case "provider_status":
-      return "Stat"
-    case "notice":
-      return "Note"
-    case "provider_output":
-      return "Asst"
-  }
+  return transcriptEntryPreviewLabel(sessionHistoryEntryKindTranscriptRole(kind))
 }
 
 export function transcriptEntryPreviewLabel(role: TranscriptEntry["role"]): string {
@@ -123,20 +110,10 @@ function firstNormalizedLine(text: string): string | null {
 }
 
 function terminalRecordPreviewRole(kind: TerminalOutputRecord["kind"]): TranscriptEntry["role"] {
-  switch (kind) {
-    case "provider_reasoning":
-      return "reasoning"
-    case "provider_tool":
-      return "tool"
-    case "provider_error":
-      return "error"
-    case "provider_status":
-      return "status"
-    case "prompt_echo":
-      return "user"
-    case "provider_output":
-      return "assistant"
+  if (kind === "prompt_echo") {
+    return "user"
   }
+  return providerTranscriptRoleForKind(kind)
 }
 
 function trimPreviewLines(lines: readonly string[], limit: number): string[] {
