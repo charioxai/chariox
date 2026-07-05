@@ -7,6 +7,9 @@ import type {
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type {
+  AgentInstance as KernelAgentInstance,
+  AgentSubstituteProfile as KernelAgentSubstituteProfile,
+  AgentSubstitutionRecord as KernelAgentSubstitutionRecord,
   ArrobaUserConfig as KernelArrobaUserConfig,
   ArrobaUserConfigPayload as KernelArrobaUserConfigPayload,
   ArrobaUserConfigSchemaPayload as KernelArrobaUserConfigSchemaPayload,
@@ -21,10 +24,17 @@ import type {
   MetaagentTaskStatus as KernelMetaagentTaskStatus,
   PromptAttachmentPart as KernelPromptAttachmentPart,
   PromptQueueItem as KernelPromptQueueItem,
+  ProviderAuthStatus as KernelProviderAuthStatus,
+  ProviderLoginStart as KernelProviderLoginStart,
+  ProviderLogoutResult as KernelProviderLogoutResult,
+  ProviderProcessInfo as KernelProviderProcessInfo,
+  RemoteExtensionManifestSyncStatus as KernelRemoteExtensionManifestSyncStatus,
+  RuntimeAttachment as KernelRuntimeAttachment,
   RuntimeSession as KernelRuntimeSession,
   RuntimeInteraction as KernelRuntimeInteraction,
   RuntimeInteractionChoice as KernelRuntimeInteractionChoice,
   RuntimeInteractionCustomChoice as KernelRuntimeInteractionCustomChoice,
+  RuntimeProviderRun as KernelRuntimeProviderRun,
   SessionAgentDefaults as KernelSessionAgentDefaults,
   SessionCollaborationAgentCounts as KernelSessionCollaborationAgentCounts,
   SessionConfigState as KernelSessionConfigState,
@@ -431,154 +441,27 @@ export type SliceLogEntry = {
   truncated?: boolean
 }
 
-export type AgentInstance = {
-  id: string
-  agent_ref: string
-  session_id: string
-  role?: "standard" | "meta" | string
-  meta_mode?: {
-    task_id?: string | null
-    activated_at_ms: number
-    baseline_execution_mode_override?: "build" | "plan" | null
-    baseline_permission_level_override?: "required" | "yolo" | null
-  } | null
-  alias: string | null
-  provider: string
-  model: string | null
-  effort?: string | null
-  account_profile?: string | null
-  primary_provider?: string | null
-  primary_model?: string | null
-  primary_effort?: string | null
-  execution_mode_override?: "build" | "plan" | null
-  permission_level_override?: "required" | "yolo" | null
-  workspace_id?: string | null
-  worktree_id: string | null
-  remote_execution?: {
-    worker_kernel_id: string
-    worker_machine_id: string
-    execution_lease_id: string
-    leased_agent_id: string
-    active_worker_provider_run_id?: string | null
-  } | null
-  extension_grants?: ExtensionGrant[]
-  remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
-  substitutes?: AgentSubstituteProfile[]
-  active_substitute_index?: number | null
-  last_substitution?: AgentSubstitutionRecord | null
-  substitution_timeout_ms?: number | null
-  external_provider_import?: ExternalProviderImportMetadata | null
-  state: "Idle" | "Working" | "Focused" | "Error"
-  is_processing: boolean
-  grid_row: number
-  grid_col: number
-  grid_row_span: number
-  grid_col_span: number
-  created_at_ms: number
-  last_activity_at_ms: number
-}
+export type AgentInstance = KernelAgentInstance
 
-export type RemoteExtensionManifestSyncStatus = {
-  state: "synced" | "syncing" | "pending" | "failed" | "stale"
-  manifest_hash?: string | null
-  last_attempted_at_ms?: number | null
-  last_synced_at_ms?: number | null
-  last_error?: string | null
-  pending_revoke?: boolean | null
-}
+export type RemoteExtensionManifestSyncStatus = KernelRemoteExtensionManifestSyncStatus
 
-export type AgentSubstituteProfile = {
-  provider: string
-  model: string
-  variant?: string | null
-  kernel_id?: string | null
-  worktree_id?: string | null
-}
+export type AgentSubstituteProfile = KernelAgentSubstituteProfile
 
-export type AgentSubstitutionRecord = {
-  substitute_index: number
-  reason: string
-  activated_at_ms: number
-}
+export type AgentSubstitutionRecord = KernelAgentSubstitutionRecord
 
 export type PromptQueueItem = KernelPromptQueueItem
 
-export type RuntimeAttachment = {
-  id: string
-  session_id: string
-}
+export type RuntimeAttachment = KernelRuntimeAttachment
 
-export type RuntimeProviderRun = {
-  id: string
-  session_id: string
-  agent_instance_id: string | null
-  adapter_key: string
-  provider: string
-  account_profile: string
-  model: string
-  variant: string | null
-  usage_tokens_total: number | null
-  usage?: {
-    total_tokens?: number | null
-    last_tokens?: number | null
-    context_tokens?: number | null
-    context_window?: number | null
-  }
-  state: string
-  endpoint_mode?: string
-  client_interface?: "arroba" | "native_tui" | string
-  process_label?: string
-  structured_endpoint?: string | null
-  provider_session_id?: string | null
-  working_directory?: string | null
-  started_at_ms?: number
-  last_activity_at_ms?: number
-  control_capabilities?: {
-    operation: string
-    mode: string
-  }[]
-  external_provider_import?: ExternalProviderImportMetadata | null
-}
+export type RuntimeProviderRun = KernelRuntimeProviderRun
 
-export type ProviderProcessInfo = {
-  process_id: string
-  provider: string
-  process_label: string
-  pid?: number | null
-  resident_set_bytes?: number | null
-  endpoint_mode: string
-  status: "active" | "idle"
-  started_at_ms: number
-  last_activity_at_ms: number
-  provider_session_ids: string[]
-  owner_session_ids: string[]
-  owner_provider_run_ids: string[]
-  attached_session_ids: string[]
-  active_workflow_run_ids: string[]
-  teardown_safe: boolean
-  teardown_blockers: string[]
-}
+export type ProviderProcessInfo = KernelProviderProcessInfo
 
-export type ProviderAuthStatus = {
-  provider: string
-  auth_state: string
-  account_profile: string | null
-  login_hint: string | null
-  detected_version: string | null
-}
+export type ProviderAuthStatus = KernelProviderAuthStatus
 
-export type ProviderLoginStart = {
-  provider: string
-  login_kind: string
-  login_id: string | null
-  auth_url: string | null
-  verification_url: string | null
-  user_code: string | null
-}
+export type ProviderLoginStart = KernelProviderLoginStart
 
-export type ProviderLogoutResult = {
-  provider: string
-}
+export type ProviderLogoutResult = KernelProviderLogoutResult
 
 export type PromptAttachmentPart = KernelPromptAttachmentPart
 
