@@ -6,6 +6,7 @@ import type {
   ExternalProviderSessionCapabilities,
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
+import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@arroba/kernel-client/session-history-transcript"
 import type {
   AgentInstance as KernelAgentInstance,
   AgentSubstituteProfile as KernelAgentSubstituteProfile,
@@ -346,13 +347,7 @@ export type PromptInputHistoryEntry = KernelPromptInputHistoryEntry
 
 export type PromptInputHistoryPage = KernelPromptInputHistoryPage
 
-export type TranscriptEntry = {
-  id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
-  text: string
-  promptId?: string | null
-  sourceAttachmentId?: string | null
-  attachments?: SessionHistoryPromptAttachment[]
+export type TranscriptEntry = KernelSessionHistoryTranscriptEntry & {
   queuedPrompt?: {
     promptId: string
     agentId: string
@@ -364,37 +359,7 @@ export type TranscriptEntry = {
     steerDisabledReason: string | null
     cancelDisabledReason: string | null
   }
-  sourceText?: string
-  mergeKey?: string
-  providerRunId?: string | null
-  source?: "external_provider_observed" | string | null
-  externalProvider?: string | null
-  externalProviderSessionId?: string | null
-  externalProviderTurnId?: string | null
-  observedAtMs?: number | null
-  externalObservation?: SessionHistoryExternalObservation | null
-  emphasis?: "muted" | "warning" | "error"
   turnTracking?: "none"
-  turnId?: number
-  hidden?: boolean
-  toggleMode?: "expand" | "collapse"
-  blobCollapsible?: boolean
-  blobCollapsed?: boolean
-  blobTitle?: string
-  blobSummary?: string
-  historyBlobId?: string
-  historyBlobAgentId?: string
-  historyBlobSourceId?: string
-  historyBlobSourceAgentId?: string
-  historyBlobLoaded?: boolean
-  historyBlobLoading?: boolean
-  historyBlobError?: string
-  historyDeferred?: boolean
-  historyTurnCompletedAtMs?: number | null
-  historyEntryIndex?: number
-  historyFragmentStart?: number
-  historyFragmentEnd?: number
-  historyTotalChars?: number
 }
 
 export type WorkflowDefinition = KernelWorkflowDefinition
