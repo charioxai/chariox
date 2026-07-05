@@ -76,6 +76,8 @@ export function agentRuntimeActivityHasTurnWork(activity: unknown): boolean {
   if (
     projection.activeTurnPromptId
     || projection.activeTurnProviderRunId
+    || projection.activeTurnExternalProviderSessionId
+    || projection.activeTurnExternalProviderTurnId
     || projection.activeTurnStatus
     || projection.activeTurnPhase
     || projection.activeTurnStartedAtMs !== undefined

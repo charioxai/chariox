@@ -185,6 +185,18 @@ test("agent activity turn-work helper distinguishes active turns from queued-onl
     prompt_status: "none",
     busy: false,
     active_turn: {
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
       prompt_id: "prompt-1",
       status: "cancelled",
       phase: "settled",
