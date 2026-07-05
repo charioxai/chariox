@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
+import { transcriptRetentionSlice } from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptRenderableHandle = {
   wrapper: {
@@ -34,31 +35,21 @@ export function createTranscriptRetentionController<TRenderable extends Transcri
   }
 
   const enforce = () => {
-    const currentEntries = deps.entries().slice()
-    let totalChars = currentEntries.reduce((sum, entry) => sum + entry.text.length, 0)
-    let removeCount = 0
-
-    while (
-      currentEntries.length - removeCount > deps.maxEntries
-      || (totalChars > deps.maxChars && removeCount < currentEntries.length - 1)
-    ) {
-      totalChars -= currentEntries[removeCount]?.text.length ?? 0
-      removeCount += 1
-    }
-
-    if (removeCount === 0) {
+    const retention = transcriptRetentionSlice(deps.entries(), {
+      maxEntries: deps.maxEntries,
+      maxChars: deps.maxChars,
+    })
+    if (!retention.changed) {
       return
     }
 
-    const removed = currentEntries.slice(0, removeCount)
-    const kept = currentEntries.slice(removeCount)
-    for (const entry of removed) {
+    for (const entry of retention.removed) {
       removeRenderable(entry.id)
       if (entry.mergeKey) {
         deps.deleteTool(entry.mergeKey)
       }
     }
-    deps.setEntries(kept)
+    deps.setEntries(retention.kept)
     deps.requestScrollboxRender()
   }
 

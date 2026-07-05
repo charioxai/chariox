@@ -8,6 +8,7 @@ import {
   createNextTranscriptEntry,
   reindexTranscriptEntries,
   transcriptHasTrailingUserPrompt,
+  transcriptRetentionSlice,
   trimSingleTrailingNewline,
   type TranscriptEntryStateEntry,
 } from "./transcript-entry-state.js"
@@ -84,6 +85,42 @@ test("createNextTranscriptEntry preserves explicit turn ids", () => {
   })
 
   assert.deepEqual(next, entry(5, "assistant", "reply", { turnId: 12 }))
+})
+
+test("transcriptRetentionSlice trims old entries by count", () => {
+  const entries = [
+    entry(1, "assistant", "one"),
+    entry(2, "assistant", "two"),
+    entry(3, "assistant", "three"),
+  ]
+
+  const slice = transcriptRetentionSlice(entries, { maxEntries: 2, maxChars: 1_000 })
+
+  assert.equal(slice.changed, true)
+  assert.deepEqual(slice.removed.map((item) => item.id), [1])
+  assert.deepEqual(slice.kept.map((item) => item.id), [2, 3])
+  assert.deepEqual(entries.map((item) => item.id), [1, 2, 3])
+})
+
+test("transcriptRetentionSlice trims by characters while keeping the latest entry", () => {
+  const slice = transcriptRetentionSlice([
+    entry(1, "assistant", "older"),
+    entry(2, "assistant", "large-current-entry"),
+  ], { maxEntries: 10, maxChars: 4 })
+
+  assert.equal(slice.changed, true)
+  assert.deepEqual(slice.removed.map((item) => item.id), [1])
+  assert.deepEqual(slice.kept.map((item) => item.id), [2])
+})
+
+test("transcriptRetentionSlice reports unchanged entries", () => {
+  const slice = transcriptRetentionSlice([
+    entry(1, "assistant", "one"),
+  ], { maxEntries: 2, maxChars: 10 })
+
+  assert.equal(slice.changed, false)
+  assert.deepEqual(slice.removed, [])
+  assert.deepEqual(slice.kept.map((item) => item.id), [1])
 })
 
 function entry(
