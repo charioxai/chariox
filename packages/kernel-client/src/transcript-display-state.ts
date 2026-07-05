@@ -12,18 +12,23 @@ import {
   type TranscriptRoleEntry,
   type TranscriptTurnDisplayEntry,
 } from "./transcript-entry-lineage.js"
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
-export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRoleEntry & {
-  readonly text: string
-  readonly sourceText?: string | null
+type TranscriptDisplayKernelFields = Pick<
+  KernelTranscriptEntry,
+  | "text"
+  | "hidden"
+  | "blobCollapsible"
+  | "blobCollapsed"
+  | "blobTitle"
+  | "blobSummary"
+  | "toggleMode"
+>
+
+export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRoleEntry & TranscriptDisplayKernelFields & {
+  readonly sourceText?: KernelTranscriptEntry["sourceText"] | null
   readonly historyTurnCompletedAtMs?: number | null
   readonly turnTracking?: "none" | string | null
-  readonly hidden?: boolean
-  readonly blobCollapsible?: boolean
-  readonly blobCollapsed?: boolean
-  readonly blobTitle?: string
-  readonly blobSummary?: string
-  readonly toggleMode?: "expand" | "collapse"
 }
 
 export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription

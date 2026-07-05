@@ -1,13 +1,20 @@
 import { sessionHistoryEntryIsExternalProviderObserved } from "./external-provider-observation.js"
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
-export type TranscriptLineageEntry = {
-  readonly role: string
-  readonly text: string
-  readonly turnId?: number | null | undefined
-  readonly source?: string | null | undefined
-  readonly externalProvider?: string | null | undefined
-  readonly externalProviderSessionId?: string | null | undefined
-  readonly externalProviderTurnId?: string | null | undefined
+type TranscriptEntryRole = KernelTranscriptEntry["role"] | string
+
+type TranscriptLineageKernelFields = Pick<
+  KernelTranscriptEntry,
+  | "text"
+  | "turnId"
+  | "source"
+  | "externalProvider"
+  | "externalProviderSessionId"
+  | "externalProviderTurnId"
+>
+
+export type TranscriptLineageEntry = TranscriptLineageKernelFields & {
+  readonly role: TranscriptEntryRole
   readonly historyBlobId?: string | null | undefined
   readonly historyBlobAgentId?: string | null | undefined
   readonly historyBlobSourceId?: string | null | undefined
@@ -15,13 +22,13 @@ export type TranscriptLineageEntry = {
 }
 
 export type TranscriptRoleEntry = {
-  readonly role: string
+  readonly role: TranscriptEntryRole
 }
 
 export type TranscriptTurnDisplayEntry = TranscriptRoleEntry & {
-  readonly id: number
-  readonly text?: string
-  readonly turnId?: number | null | undefined
+  readonly id: KernelTranscriptEntry["id"]
+  readonly text?: KernelTranscriptEntry["text"]
+  readonly turnId?: KernelTranscriptEntry["turnId"] | null | undefined
   readonly historyBlobId?: string | null | undefined
 }
 
