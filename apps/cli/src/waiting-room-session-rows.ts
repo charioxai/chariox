@@ -1,10 +1,13 @@
 import {
+  waitingRoomSessionActivityNextAction,
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
 } from "@arroba/kernel-client/waiting-room-activity"
+import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
+import { formatWorkspaceLiveSyncModeCompactLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import {
   DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
   sessionBrowserPreviewSessions,
@@ -12,9 +15,6 @@ import {
 } from "@arroba/kernel-client/session-browser-policy"
 
 import {
-  formatSessionActivityNextAction,
-  formatSessionHomeLabel,
-  formatSessionLiveSyncLabel,
   type SessionListEntry,
 } from "./sessions.js"
 import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
@@ -49,11 +49,13 @@ export function waitingRoomSessionRows(
   )
   const homeWidth = Math.max(
     WAITING_ROOM_HOME_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionHomeLabel(session).length),
+    ...visibleSessions.map((session) => formatSessionHomeKernelLabel(session).length),
   )
   const syncWidth = Math.max(
     WAITING_ROOM_SYNC_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionLiveSyncLabel(session).length),
+    ...visibleSessions.map((session) =>
+      formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode).length
+    ),
   )
   const workWidth = Math.max(
     WAITING_ROOM_WORK_MIN_WIDTH,
@@ -128,8 +130,11 @@ export function waitingRoomSessionRows(
       titleWidth: options.titleWidth,
       columns: [
         formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
-        formatWaitingRoomColumn(formatSessionHomeLabel(session), homeWidth),
-        formatWaitingRoomColumn(formatSessionLiveSyncLabel(session), syncWidth),
+        formatWaitingRoomColumn(formatSessionHomeKernelLabel(session), homeWidth),
+        formatWaitingRoomColumn(
+          formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode),
+          syncWidth,
+        ),
         formatWaitingRoomColumn(formatWaitingRoomSessionWork(session), workWidth),
         formatWaitingRoomColumn(formatWaitingRoomSessionNext(session), nextWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
@@ -161,11 +166,13 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
   )
   const homeWidth = Math.max(
     WAITING_ROOM_HOME_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionHomeLabel(session).length),
+    ...visibleSessions.map((session) => formatSessionHomeKernelLabel(session).length),
   )
   const syncWidth = Math.max(
     WAITING_ROOM_SYNC_MIN_WIDTH,
-    ...visibleSessions.map((session) => formatSessionLiveSyncLabel(session).length),
+    ...visibleSessions.map((session) =>
+      formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode).length
+    ),
   )
   const workWidth = Math.max(
     WAITING_ROOM_WORK_MIN_WIDTH,
@@ -241,7 +248,7 @@ function formatWaitingRoomSessionStatus(session: SessionListEntry) {
 }
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
-  return formatSessionActivityNextAction(session) ?? "-"
+  return waitingRoomSessionActivityNextAction(session) ?? "-"
 }
 
 function formatWaitingRoomSessionWork(session: SessionListEntry) {

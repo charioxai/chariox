@@ -3,9 +3,7 @@ import test from "node:test"
 
 import {
   decideBootstrapAction,
-  formatSessionHomeLabel,
   formatSessionList,
-  formatSessionLiveSyncLabel,
   sessionBrowserStatus,
   sessionBrowserTimestamp,
   selectAttachableSession,
@@ -121,20 +119,6 @@ test("formatSessionList routes aggregate stale home-proxy blockers through remot
       "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync tracked - 1 remote/slice agent, 1 home-proxy agent, 1 extension sync issue - next: home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy",
     ].join("\n"),
   )
-})
-
-test("formatSessionHomeLabel keeps home kernel and machine visible", () => {
-  assert.equal(formatSessionHomeLabel({ host_daemon_id: "home-kernel", host_machine_id: "home-machine" }), "home-kernel@home-machine")
-  assert.equal(formatSessionHomeLabel({ kernel_id: "kernel", host_machine_id: "machine" }), "kernel@machine")
-  assert.equal(formatSessionHomeLabel({ host_machine_id: "machine" }), "machine")
-  assert.equal(formatSessionHomeLabel({}), "-")
-})
-
-test("formatSessionLiveSyncLabel keeps session sync mode visible", () => {
-  assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: "managed" }), "managed")
-  assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: "tracked" }), "tracked")
-  assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: "unrestricted" }), "off")
-  assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: null }), "off")
 })
 
 test("sessionBrowserTimestamp uses shared waiting-room timestamp labels", () => {

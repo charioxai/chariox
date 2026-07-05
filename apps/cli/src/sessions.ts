@@ -85,7 +85,7 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const attachmentCount = session.attachment_ids?.length ?? session.connected_cli_count ?? 0
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
-      const liveSync = formatSessionLiveSyncLabel(session)
+      const liveSync = formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode)
       const remote = formatSessionRemoteActivity(session)
       const next = formatSessionActivityNext(session)
       const current = session.id === currentSessionId ? " - current" : ""
@@ -95,16 +95,8 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
 }
 
 function formatSessionHomeKernel(session: SessionListEntry): string {
-  const home = formatSessionHomeLabel(session)
+  const home = formatSessionHomeKernelLabel(session)
   return home === "-" ? "" : ` - home ${home}`
-}
-
-export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_daemon_id" | "host_machine_id" | "kernel_id">): string {
-  return formatSessionHomeKernelLabel(session)
-}
-
-export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {
-  return formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode)
 }
 
 function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">): string {
@@ -113,12 +105,8 @@ function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">
 }
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
-  const action = formatSessionActivityNextAction(session)
+  const action = waitingRoomSessionActivityNextAction(session)
   return action ? ` - next: ${action}` : ""
-}
-
-export function formatSessionActivityNextAction(session: Pick<SessionListEntry, "activity">): string | null {
-  return waitingRoomSessionActivityNextAction(session)
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
