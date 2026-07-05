@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
+import { reconcileMountedTranscriptPane } from "@arroba/kernel-client/transcript-pane-reconcile"
 
 export type PrimaryTranscriptChild = {
   id: string
