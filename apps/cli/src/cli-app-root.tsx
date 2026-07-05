@@ -79,12 +79,10 @@ import {
   steerQueuedPrompt,
 } from "./prompt-runtime-api.js"
 import {
-  syncQueuedPromptEntriesByAgent,
-  syncQueuedPromptEntriesForAgent,
-} from "./queued-prompt-transcript.js"
-import {
   queuedPromptStripItemsForAgent,
   queuedPromptStripItemToTranscriptEntry,
+  syncQueuedPromptTranscriptEntriesByAgentWithPreviews as syncQueuedPromptEntriesByAgent,
+  syncQueuedPromptTranscriptEntriesForAgent as syncQueuedPromptEntriesForAgent,
   type QueuedPromptStripItem,
   type QueuedPromptStripStatusOverride,
 } from "@arroba/kernel-client/queued-prompt-strip-state"

@@ -2,7 +2,8 @@ import {
   queuedPromptProjectionForAgent,
   type ProjectedQueuedPrompt,
 } from "./queued-prompt-controls.js"
-import type { RuntimeSession } from "./kernel-types.js"
+import type { RuntimeSession, TranscriptEntry } from "./kernel-types.js"
+import { formatTranscriptPreview } from "./session-history-preview.js"
 import {
   reindexTranscriptEntries,
   trimSingleTrailingNewline,
@@ -82,6 +83,15 @@ export type QueuedPromptTranscriptSyncResult<TEntry extends QueuedPromptTranscri
 export type QueuedPromptTranscriptByAgentSyncResult<TEntry extends QueuedPromptTranscriptSyncEntry> = {
   entriesByAgent: Record<string, TEntry[]>
   changedAgentIds: string[]
+  changed: boolean
+}
+
+export type QueuedPromptTranscriptPreviewEntry = QueuedPromptTranscriptSyncEntry
+  & Pick<TranscriptEntry, "role" | "text" | "hidden">
+
+export type QueuedPromptTranscriptByAgentPreviewSyncResult<TEntry extends QueuedPromptTranscriptPreviewEntry> = {
+  entriesByAgent: Record<string, TEntry[]>
+  previews: Record<string, string>
   changed: boolean
 }
 
@@ -190,6 +200,22 @@ export function syncQueuedPromptTranscriptEntriesByAgent<TEntry extends QueuedPr
     entriesByAgent: entriesByAgentNext,
     changedAgentIds,
     changed: changedAgentIds.length > 0,
+  }
+}
+
+export function syncQueuedPromptTranscriptEntriesByAgentWithPreviews<TEntry extends QueuedPromptTranscriptPreviewEntry>(
+  entriesByAgent: Record<string, TEntry[]>,
+  session: RuntimeSession,
+): QueuedPromptTranscriptByAgentPreviewSyncResult<TEntry> {
+  const synced = syncQueuedPromptTranscriptEntriesByAgent(entriesByAgent, session)
+  const previews: Record<string, string> = {}
+  for (const agentId of synced.changedAgentIds) {
+    previews[agentId] = formatTranscriptPreview(synced.entriesByAgent[agentId] ?? [])
+  }
+  return {
+    entriesByAgent: synced.entriesByAgent,
+    previews,
+    changed: synced.changed,
   }
 }
 
