@@ -1,11 +1,13 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   appendPreviewLine,
-  computeCurrentTurnId,
   formatTranscriptPreview,
 } from "./transcript-preview.js"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
-import { trimSingleTrailingNewline } from "./transcript-text.js"
+import {
+  createNextTranscriptEntry,
+  transcriptHasTrailingUserPrompt,
+} from "@arroba/kernel-client/transcript-entry-state"
 
 export type AgentPaneTranscriptEntryControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
@@ -52,14 +54,7 @@ export function createAgentPaneTranscriptEntryController(
   }
 
   const hasTrailingUserPrompt = (agentId: string, text: string, promptId?: string | null) => {
-    const lastEntry = deps.currentAgentPaneEntries(agentId).at(-1)
-    if (lastEntry?.role !== "user") {
-      return false
-    }
-    if (lastEntry.promptId && promptId) {
-      return lastEntry.promptId === promptId
-    }
-    return trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
+    return transcriptHasTrailingUserPrompt(deps.currentAgentPaneEntries(agentId), text, promptId)
   }
 
   const appendEntry = (
@@ -72,7 +67,7 @@ export function createAgentPaneTranscriptEntryController(
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
       return
     }
-    const nextEntry = createNextTranscriptEntry(currentEntries, entry)
+    const nextEntry = createNextTranscriptEntry<TranscriptEntry, Omit<TranscriptEntry, "id">>(currentEntries, entry)
     deps.setAgentTranscriptEntries(
       agentId,
       deps.trimLiveAgentPaneEntries(agentId, [...currentEntries, nextEntry]),
@@ -90,21 +85,4 @@ export function createAgentPaneTranscriptEntryController(
 
 function normalizePreviewLine(line: string) {
   return line.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-}
-
-function createNextTranscriptEntry(
-  currentEntries: TranscriptEntry[],
-  entry: Omit<TranscriptEntry, "id">,
-) {
-  const nextEntry: TranscriptEntry = {
-    id: currentEntries.reduce((max, current) => Math.max(max, current.id), 0) + 1,
-    ...entry,
-  }
-  if (nextEntry.turnId === undefined) {
-    const activeTurnId = computeCurrentTurnId(currentEntries)
-    if (activeTurnId !== null) {
-      nextEntry.turnId = activeTurnId
-    }
-  }
-  return nextEntry
 }

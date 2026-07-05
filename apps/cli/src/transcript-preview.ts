@@ -8,6 +8,10 @@ import {
   transcriptEntryPreviewLabel,
 } from "@arroba/kernel-client/session-history-preview"
 import {
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptTurnId,
+} from "@arroba/kernel-client/transcript-entry-state"
+import {
   mergeAdjacentHistoryPageEntries,
   previewLineForHistoryEntry,
 } from "./transcript-history.js"
@@ -57,14 +61,9 @@ export function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"],
 }
 
 export function computeCurrentTurnId(entries: TranscriptEntry[]) {
-  return entries.reduce<number | null>((latest, entry) => {
-    if (!entry || entry.role !== "user" || entry.turnId === undefined) {
-      return latest
-    }
-    return entry.turnId
-  }, null)
+  return computeCurrentTranscriptTurnId(entries)
 }
 
 export function computeNextTurnId(entries: TranscriptEntry[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry?.turnId ?? 0), 0) + 1
+  return computeNextTranscriptTurnId(entries)
 }

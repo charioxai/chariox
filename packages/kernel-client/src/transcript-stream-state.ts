@@ -4,6 +4,15 @@ import {
   parseToolTranscriptUpdate,
   type ToolTranscriptUpdate,
 } from "@arroba/tool-display"
+import {
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptEntryId,
+} from "./transcript-entry-state.js"
+
+export {
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptEntryId,
+} from "./transcript-entry-state.js"
 
 export type TranscriptStreamEntry = {
   readonly id: number
@@ -53,23 +62,6 @@ type MutableTranscriptStreamEntry =
 
 export function normalizeTranscriptProviderChunk(chunk: string): string {
   return chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-}
-
-export function computeCurrentTranscriptTurnId<TEntry extends TranscriptStreamEntry>(
-  entries: readonly TEntry[],
-): number | null {
-  return entries.reduce<number | null>((latest, entry) => {
-    if (!entry || entry.role !== "user" || entry.turnId === undefined || entry.turnId === null) {
-      return latest
-    }
-    return entry.turnId
-  }, null)
-}
-
-export function computeNextTranscriptEntryId<TEntry extends TranscriptStreamEntry>(
-  entries: readonly TEntry[],
-): number {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0) + 1
 }
 
 export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntry>(

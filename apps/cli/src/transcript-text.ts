@@ -1,12 +1,13 @@
 import type { TranscriptEntry } from "./cli-types.js"
+import {
+  reindexTranscriptEntries as sharedReindexTranscriptEntries,
+  trimSingleTrailingNewline as sharedTrimSingleTrailingNewline,
+} from "@arroba/kernel-client/transcript-entry-state"
 
 export function trimSingleTrailingNewline(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text
+  return sharedTrimSingleTrailingNewline(text)
 }
 
 export function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {
-  return entries.map((entry, index) => ({
-    ...entry,
-    id: startingId + index + 1,
-  }))
+  return sharedReindexTranscriptEntries(entries, startingId)
 }
