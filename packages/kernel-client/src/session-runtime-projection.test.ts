@@ -1177,10 +1177,41 @@ test("sessionRuntimeTransitionState treats empty prompt states as authoritative 
 })
 
 test("sessionWorkingStateAfterPromptWork keeps working latched until completion is confirmed", () => {
-  assert.equal(sessionWorkingStateAfterPromptWork(true, false), true)
-  assert.equal(sessionWorkingStateAfterPromptWork(true, true), true)
-  assert.equal(sessionWorkingStateAfterPromptWork(false, true), true)
-  assert.equal(sessionWorkingStateAfterPromptWork(false, false), false)
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const activeSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "run",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  })
+
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: true,
+    nextSession: idleSession,
+  }), true)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: true,
+    nextSession: activeSession,
+  }), true)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: false,
+    nextSession: activeSession,
+  }), true)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: false,
+    nextSession: idleSession,
+  }), false)
 })
 
 test("agent busy latches set, clear, and preserve unchanged records", () => {

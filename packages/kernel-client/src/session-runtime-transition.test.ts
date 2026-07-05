@@ -136,10 +136,38 @@ test("session streaming resolution can ignore legacy processing for projected se
 test("session working and busy latches stay latched until completion is confirmed", () => {
   const empty: Record<string, boolean> = {}
   const busy = nextAgentBusyLatches(empty, "agent-1", true)
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const activeSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
 
-  assert.equal(sessionWorkingStateAfterPromptWork(true, false), true)
-  assert.equal(sessionWorkingStateAfterPromptWork(false, true), true)
-  assert.equal(sessionWorkingStateAfterPromptWork(false, false), false)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: true,
+    nextSession: idleSession,
+  }), true)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: false,
+    nextSession: activeSession,
+  }), true)
+  assert.equal(sessionWorkingStateAfterPromptWork({
+    currentWorking: false,
+    nextSession: idleSession,
+  }), false)
   assert.equal(readAgentBusyLatch(busy, "agent-1"), true)
   assert.deepEqual(nextAgentBusyLatches(busy, "agent-1", false), {})
 })

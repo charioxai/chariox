@@ -165,17 +165,20 @@ export function sessionRuntimeTransitionState(
     nextStreamingAgentId,
     nextFocusedActivityLabel,
     nextAgentActivityLabels,
-    nextWorking: sessionWorkingStateAfterPromptWork(options.currentWorking, nextHasPromptWork),
+    nextWorking: sessionWorkingStateAfterPromptWork({
+      currentWorking: options.currentWorking,
+      nextSession: options.nextSession,
+    }),
     previousAgentSignature,
     nextAgentSignature,
   }
 }
 
-export function sessionWorkingStateAfterPromptWork(
-  currentWorking: boolean,
-  sessionHasPromptWork: boolean,
-): boolean {
-  return sessionHasPromptWork ? true : currentWorking
+export function sessionWorkingStateAfterPromptWork(options: {
+  readonly currentWorking: boolean
+  readonly nextSession: RuntimeSession
+}): boolean {
+  return sessionHasPromptWork(options.nextSession) ? true : options.currentWorking
 }
 
 export function readAgentBusyLatch(
