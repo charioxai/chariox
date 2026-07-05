@@ -107,6 +107,22 @@ export function terminalRecordTranscriptProjection(
   }
 }
 
+export function terminalRecordPromptHistoryText(
+  record: TerminalRecordTranscriptFields,
+  text: string,
+): string | null {
+  if (terminalRecordTranscriptRole(record.kind) !== "user") {
+    return null
+  }
+  if (externalProviderObservedHistoryRefreshSignal(record, text)) {
+    return null
+  }
+  if (terminalRecordIsPassiveExternalProviderTelemetry(record)) {
+    return null
+  }
+  return text
+}
+
 export function terminalRecordProviderStatusShouldRender(
   record: TerminalRecordTranscriptFields,
   text: string,

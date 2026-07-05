@@ -27,6 +27,22 @@ test("terminal output record processor forwards non-prompt records without histo
   assert.equal(harness.records[0], record)
 })
 
+test("terminal output record processor follows shared prompt history projection", () => {
+  const harness = processorHarness()
+  const record = terminalRecord("prompt_echo", "token count", {
+    source: "external_provider_observed",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+
+  harness.processor.process(record)
+
+  assert.deepEqual(harness.calls, ["kernel:prompt_echo"])
+  assert.equal(harness.records[0], record)
+})
+
 function processorHarness() {
   const harness = {
     calls: [] as string[],
@@ -50,9 +66,11 @@ function processorHarness() {
 function terminalRecord(
   kind: TerminalOutputRecord["kind"],
   text: string,
+  fields: Partial<TerminalOutputRecord> = {},
 ): TerminalOutputRecord {
   return {
     kind,
     bytes: [...Buffer.from(text, "utf8")],
+    ...fields,
   }
 }

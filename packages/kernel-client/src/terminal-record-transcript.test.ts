@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   terminalRecordIsPassiveExternalProviderTelemetry,
+  terminalRecordPromptHistoryText,
   terminalRecordProviderStatusShouldRender,
   terminalRecordTranscriptProjection,
   terminalRecordTranscriptMetadata,
@@ -224,4 +225,25 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   })
   assert.equal(error.transcriptRole, "error")
   assert.equal(error.transcriptText, "failed")
+})
+
+test("terminalRecordPromptHistoryText only accepts user prompt terminal records", () => {
+  assert.equal(terminalRecordPromptHistoryText({
+    kind: "prompt_echo",
+  }, "hello"), "hello")
+  assert.equal(terminalRecordPromptHistoryText({
+    kind: "provider_output",
+  }, "hello"), null)
+  assert.equal(terminalRecordPromptHistoryText({
+    kind: "provider_status",
+    source: "external_provider_observed",
+  }, "external_provider_history_updated"), null)
+  assert.equal(terminalRecordPromptHistoryText({
+    kind: "prompt_echo",
+    source: "external_provider_observed",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }, "token count"), null)
 })
