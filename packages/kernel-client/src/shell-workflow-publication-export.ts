@@ -32,7 +32,7 @@ export async function writeWorkflowPublicationExportPackage(
     "run.sh": workflowPublicationLauncherScript(),
     "README.md": workflowPublicationReadme(publication, publicationPackage, config),
     "public/index.html": workflowPublicationIndexHtml(publication),
-    "public/app.js": workflowPublicationAppJs(),
+    "public/app.js": workflowPublicationAppJs(publication),
     "public/styles.css": workflowPublicationStylesCss(),
   }
   const paths: string[] = []
@@ -330,17 +330,30 @@ function workflowPublicationIndexHtml(publication: WorkflowPublicationDefinition
   ].join("\n")
 }
 
-function workflowPublicationAppJs() {
+function workflowPublicationAppJs(publication: WorkflowPublicationDefinition) {
+  const route = publication.route ?? "/*"
   return [
+    `const routePattern = ${JSON.stringify(route)}`,
     "const form = document.querySelector('#invoke-form')",
     "const output = document.querySelector('#output')",
+    "function invocationUrl(prompt) {",
+    "  const encoded = encodeURIComponent(prompt)",
+    "  const wildcardIndex = routePattern.indexOf('*')",
+    "  if (wildcardIndex >= 0) {",
+    "    const path = routePattern.slice(0, wildcardIndex) + encoded + routePattern.slice(wildcardIndex + 1)",
+    "    return new URL(path.startsWith('/') ? path : `/${path}`, window.location.origin).toString()",
+    "  }",
+    "  const url = new URL(routePattern.startsWith('/') ? routePattern : `/${routePattern}`, window.location.origin)",
+    "  url.searchParams.set('prompt', prompt)",
+    "  return url.toString()",
+    "}",
     "form?.addEventListener('submit', (event) => {",
     "  event.preventDefault()",
     "  const data = new FormData(form)",
     "  const prompt = String(data.get('prompt') ?? '').trim()",
     "  if (!prompt) return",
     "  output.textContent = 'Opening workflow invocation...'",
-    "  window.location.href = `/${encodeURIComponent(prompt)}`",
+    "  window.location.href = invocationUrl(prompt)",
     "})",
     "",
   ].join("\n")

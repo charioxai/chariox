@@ -4,7 +4,7 @@
 //! administration stay in `workflow_admin`.
 
 use base64::Engine;
-use flate2::{Compression, write::GzEncoder};
+use flate2::{write::GzEncoder, Compression};
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -510,7 +510,11 @@ fn workflow_publication_package_files(
             workflow_publication_index_html(publication),
             false,
         ),
-        package_file("public/app.js", workflow_publication_app_js(), false),
+        package_file(
+            "public/app.js",
+            workflow_publication_app_js(&publication_value),
+            false,
+        ),
         package_file(
             "public/styles.css",
             workflow_publication_styles_css(),
@@ -978,17 +982,32 @@ fn workflow_publication_index_html(
     )
 }
 
-fn workflow_publication_app_js() -> String {
+fn workflow_publication_app_js(publication_value: &serde_json::Value) -> String {
+    let route = string_field(publication_value, "route")
+        .map(str::to_string)
+        .unwrap_or_else(|| default_publication_route(publication_value).to_string());
     [
+        &format!("const routePattern = {}", serde_json::to_string(&route).unwrap_or_else(|_| "\"/*\"".to_string())),
         "const form = document.querySelector('#invoke-form')",
         "const output = document.querySelector('#output')",
+        "function invocationUrl(prompt) {",
+        "  const encoded = encodeURIComponent(prompt)",
+        "  const wildcardIndex = routePattern.indexOf('*')",
+        "  if (wildcardIndex >= 0) {",
+        "    const path = routePattern.slice(0, wildcardIndex) + encoded + routePattern.slice(wildcardIndex + 1)",
+        "    return new URL(path.startsWith('/') ? path : `/${path}`, window.location.origin).toString()",
+        "  }",
+        "  const url = new URL(routePattern.startsWith('/') ? routePattern : `/${routePattern}`, window.location.origin)",
+        "  url.searchParams.set('prompt', prompt)",
+        "  return url.toString()",
+        "}",
         "form?.addEventListener('submit', (event) => {",
         "  event.preventDefault()",
         "  const data = new FormData(form)",
         "  const prompt = String(data.get('prompt') ?? '').trim()",
         "  if (!prompt) return",
         "  output.textContent = 'Opening workflow invocation...'",
-        "  window.location.href = `/${encodeURIComponent(prompt)}`",
+        "  window.location.href = invocationUrl(prompt)",
         "})",
         "",
     ]

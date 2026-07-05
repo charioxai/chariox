@@ -3097,6 +3097,11 @@ fn local_request_api_validates_publication_transport_options() {
         serde_json::json!({"kind": "path_template", "template": "/prompt/:prompt"})
     );
     assert_eq!(human_json["hooks"][0]["mode"], serde_json::json!("async"));
+    let human_app_js = package_text_file(&exported_human, "public/app.js");
+    assert!(human_app_js.contains("const routePattern = \"/prompt/*\""));
+    assert!(human_app_js.contains("routePattern.indexOf('*')"));
+    assert!(human_app_js.contains("window.location.href = invocationUrl(prompt)"));
+    assert!(!human_app_js.contains("window.location.href = `/${encodeURIComponent(prompt)}`"));
 
     let api_publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
