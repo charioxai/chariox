@@ -2,6 +2,7 @@ import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { promptOriginIsExternal } from "./prompt-origin.js"
 import {
+  sessionPromptStateRecordForAgent,
   sessionProjectedPromptActivityForAgent,
   type SessionProjectedPromptActivity,
 } from "./session-agent-prompt-state.js"
@@ -129,9 +130,9 @@ export function queuedPromptsForAgent(
   if (projectedActivity && !projectedActivityAllowsPromptQueue(projectedActivity)) {
     return []
   }
-  const promptStates = session.prompt_states
-  if (promptStates) {
-    return promptStates[agentId]?.queued_prompts ?? []
+  const promptState = sessionPromptStateRecordForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptState?.queued_prompts ?? []
   }
   if (projectedActivity) {
     return null

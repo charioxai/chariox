@@ -206,6 +206,21 @@ test("queued prompts for agent prefer authoritative prompt states", () => {
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [promptStatePrompt])
 })
 
+test("queued prompts for agent clear stale top-level queues when prompt state is empty", () => {
+  const staleTopLevel = prompt("stale-top-level")
+  const session = sessionWith({
+    queued_prompts: [staleTopLevel],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
+})
+
 test("queued prompt projection returns display prompts with actionability", () => {
   const session = sessionWith({
     prompt_states: {
