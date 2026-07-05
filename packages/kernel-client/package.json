@@ -11,6 +11,7 @@
     "./agent-activity": "./dist/agent-activity.js",
     "./external-provider-sessions": "./dist/external-provider-sessions.js",
     "./external-provider-observation": "./dist/external-provider-observation.js",
+    "./interaction-choice": "./dist/interaction-choice.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
