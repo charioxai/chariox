@@ -246,6 +246,42 @@ export function mergeExternalProviderObservedTranscriptFields<T extends External
   return target
 }
 
+export function applyExternalProviderObservedTranscriptMetadata<
+  T extends ExternalProviderObservedMutableTranscriptMetadataFields,
+>(
+  target: T,
+  metadata: ExternalProviderObservedTranscriptFields,
+): T {
+  if (metadata.source !== undefined) {
+    const source = mergeExternalProviderObservedSource(target.source, metadata.source)
+    if (source !== undefined) {
+      target.source = source
+    }
+  }
+  if (metadata.externalProvider !== undefined) {
+    target.externalProvider = metadata.externalProvider
+  }
+  if (metadata.externalProviderSessionId !== undefined) {
+    target.externalProviderSessionId = metadata.externalProviderSessionId
+  }
+  if (metadata.externalProviderTurnId !== undefined) {
+    target.externalProviderTurnId = metadata.externalProviderTurnId
+  }
+  if (metadata.observedAtMs !== undefined) {
+    target.observedAtMs = metadata.observedAtMs
+  }
+  if (metadata.externalObservation !== undefined) {
+    const externalObservation = mergeExternalProviderObservation(
+      target.externalObservation,
+      metadata.externalObservation,
+    )
+    if (externalObservation !== undefined) {
+      target.externalObservation = externalObservation
+    }
+  }
+  return target
+}
+
 export function applyExternalProviderObservedTurnMetadata<T extends ExternalProviderObservedMutableTurnMetadataFields>(
   target: T,
   metadata: ExternalProviderObservedTurnMetadata | null | undefined,

@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  applyExternalProviderObservedTranscriptMetadata,
   applyExternalProviderObservedTurnMetadata,
   externalProviderObservedCompletionAtMs,
   externalProviderObservedEntryBelongsToImport,
@@ -544,6 +545,47 @@ test("external provider observed transcript field merge preserves identity and s
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
     observedAtMs: 100,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+})
+
+test("external provider observed transcript metadata application shares live and history policy", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+    externalObservation?: { settles_active_prompt: boolean; passive_telemetry: boolean }
+  } = {
+    source: "provider_output",
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }
+
+  applyExternalProviderObservedTranscriptMetadata(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 1_000,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 1_000,
     externalObservation: {
       settles_active_prompt: true,
       passive_telemetry: false,

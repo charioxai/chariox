@@ -5,10 +5,10 @@ import {
   type ToolTranscriptUpdate,
 } from "@arroba/tool-display"
 import {
+  applyExternalProviderObservedTranscriptMetadata,
   applyExternalProviderObservedTurnMetadata,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
-  mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTurnMetadata,
@@ -361,18 +361,7 @@ function applySessionHistoryTranscriptMetadata(
   options: SessionHistoryTranscriptMetadataOptions,
 ) {
   if (options.providerRunId !== undefined) entry.providerRunId = options.providerRunId
-  if (options.source !== undefined) entry.source = options.source
-  if (options.externalProvider !== undefined) entry.externalProvider = options.externalProvider
-  if (options.externalProviderSessionId !== undefined) entry.externalProviderSessionId = options.externalProviderSessionId
-  if (options.externalProviderTurnId !== undefined) entry.externalProviderTurnId = options.externalProviderTurnId
-  if (options.observedAtMs !== undefined) entry.observedAtMs = options.observedAtMs
-  if (options.externalObservation !== undefined) {
-    const externalObservation = mergeExternalProviderObservation(
-      entry.externalObservation,
-      options.externalObservation,
-    )
-    if (externalObservation !== undefined) entry.externalObservation = externalObservation
-  }
+  applyExternalProviderObservedTranscriptMetadata(entry, options)
   if (options.promptId !== undefined) entry.promptId = options.promptId
   if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
   if (options.attachments !== undefined) {

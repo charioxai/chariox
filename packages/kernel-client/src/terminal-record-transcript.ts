@@ -1,4 +1,5 @@
 import {
+  applyExternalProviderObservedTranscriptMetadata,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedProviderStatusShouldRender,
@@ -66,12 +67,7 @@ export function transcriptEntryWithTerminalMetadata<TEntry extends TerminalTrans
   const next = { ...entry }
   if (metadata.promptId !== undefined) next.promptId = metadata.promptId
   if (metadata.sourceAttachmentId !== undefined) next.sourceAttachmentId = metadata.sourceAttachmentId
-  if (metadata.source !== undefined) next.source = metadata.source
-  if (metadata.externalProvider !== undefined) next.externalProvider = metadata.externalProvider
-  if (metadata.externalProviderSessionId !== undefined) next.externalProviderSessionId = metadata.externalProviderSessionId
-  if (metadata.externalProviderTurnId !== undefined) next.externalProviderTurnId = metadata.externalProviderTurnId
-  if (metadata.observedAtMs !== undefined) next.observedAtMs = metadata.observedAtMs
-  if (metadata.externalObservation !== undefined) next.externalObservation = metadata.externalObservation
+  applyExternalProviderObservedTranscriptMetadata(next, metadata)
   return next
 }
 
