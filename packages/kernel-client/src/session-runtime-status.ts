@@ -12,6 +12,7 @@ import {
   ACTIVE_STATUS_FALLBACK,
   normalizeProviderActivityLabel,
 } from "./provider-status.js"
+import { sessionProjectedPromptActivityForAgent } from "./session-agent-prompt-state.js"
 
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
@@ -228,8 +229,11 @@ export function sessionAgentHasUnreadIdleOutput(
   if (!session || !agentId || session.focused_agent_id === agentId) {
     return false
   }
-  const activity = session.agent_activity?.[agentId]
-  return projectAgentRuntimeActivity(activity).unreadIdleOutput
+  const projection = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (!projection || projection === "idle" || projection === "not_found") {
+    return false
+  }
+  return projection.unreadIdleOutput
 }
 
 function sessionStatusBadge(parts: SessionStatusBadgePart[]): SessionFocusedStatusBadge {

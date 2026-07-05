@@ -90,7 +90,12 @@ export function sessionProjectedPromptActivityForAgent(
     return "not_found"
   }
   const projection = projectAgentRuntimeActivity(activity)
-  if (!projection.activeTurnPromptId && !projection.busy) {
+  if (
+    !projection.activeTurnPromptId
+    && !projection.busy
+    && !projection.error
+    && !projection.unreadIdleOutput
+  ) {
     return "idle"
   }
   return projection

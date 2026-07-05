@@ -166,3 +166,45 @@ test("session projected prompt activity entries keep active session agent projec
   assert.deepEqual(entries.map(([agentId]) => agentId), ["agent-1"])
   assert.equal(entries[0]?.[1].activeTurnPromptId, "prompt-1")
 })
+
+test("session projected prompt activity preserves notable idle projections", () => {
+  const session = makeSession({
+    agents: [
+      makeAgent({ id: "agent-unread" }),
+      makeAgent({ id: "agent-error" }),
+      makeAgent({ id: "agent-plain" }),
+    ],
+    agent_activity: {
+      "agent-unread": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+      "agent-error": {
+        status: "error",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-plain": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const unread = sessionProjectedPromptActivityForAgent(session, "agent-unread")
+  assert.notEqual(unread, "idle")
+  assert.notEqual(unread, "not_found")
+  assert.equal(typeof unread === "object" && unread !== null ? unread.unreadIdleOutput : false, true)
+
+  const error = sessionProjectedPromptActivityForAgent(session, "agent-error")
+  assert.notEqual(error, "idle")
+  assert.notEqual(error, "not_found")
+  assert.equal(typeof error === "object" && error !== null ? error.error : false, true)
+
+  assert.equal(sessionProjectedPromptActivityForAgent(session, "agent-plain"), "idle")
+})

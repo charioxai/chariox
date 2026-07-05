@@ -188,3 +188,19 @@ test("session runtime display marks unfocused unread idle output as done", () =>
   assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-focused"), false)
   assert.equal(sessionAgentRuntimeDisplayState(session, makeAgent({ id: "agent-focused" })), "Idle")
 })
+
+test("session runtime display ignores unread activity outside session agents", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-ghost": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: true,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentHasUnreadIdleOutput(session, "agent-ghost"), false)
+})
