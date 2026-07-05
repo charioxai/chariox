@@ -1,7 +1,8 @@
 import {
   externalProviderSessionModifiedLabel,
   externalProviderSessionModeLabel,
-  externalProviderSessionsSorted,
+  externalProviderSessionPageHasMore,
+  externalProviderSessionPageSessions,
   externalProviderSessionTitle,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
@@ -76,7 +77,7 @@ export function waitingRoomExternalProviderSessionRows(
       scrollbar: "",
     })
   }
-  if (remote.externalProviderSessionsHasMore) {
+  if (externalProviderSessionPageHasMore(remote)) {
     rows.push({
       id: "external-provider-session-more",
       title: "Load older unattached agents",
@@ -99,7 +100,7 @@ export function waitingRoomExternalProviderSessionTitleWidth(remote: WaitingRoom
 }
 
 export function waitingRoomExternalProviderSessions(remote: WaitingRoomRemoteState = {}) {
-  return externalProviderSessionsSorted(remote.externalProviderSessions)
+  return externalProviderSessionPageSessions(remote)
 }
 
 function column(value: string, width: number) {

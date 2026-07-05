@@ -2,6 +2,11 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  externalProviderSessionPage,
+  externalProviderSessionPageHasMore,
+  externalProviderSessionPageNextCursor,
+  externalProviderSessionPageSessions,
+  externalProviderSessionPageState,
   externalProviderSessionAtSelection,
   externalProviderSessionModifiedLabel,
   externalProviderSessionModeLabel,
@@ -78,6 +83,39 @@ test("external provider session labels normalize mode and modification time", ()
     ...externalSession("codex:invalid", 100),
     last_modified_at_ms: Number.NaN,
   }), "-")
+})
+
+test("external provider session page projection accepts kernel and client page shapes", () => {
+  const older = externalSession("codex:older", 100)
+  const newer = externalSession("codex:newer", 200)
+
+  assert.deepEqual(externalProviderSessionPage({
+    sessions: [older, newer],
+    has_more: true,
+    next_cursor: "kernel-cursor",
+  }), {
+    sessions: [newer, older],
+    hasMore: true,
+    nextCursor: "kernel-cursor",
+  })
+
+  assert.deepEqual(externalProviderSessionPageSessions({
+    externalProviderSessions: [older, newer],
+  }).map((session) => session.external_session_id), ["codex:newer", "codex:older"])
+  assert.deepEqual(externalProviderSessionPageSessions({
+    sessions: [newer],
+    externalProviderSessions: [older],
+  }).map((session) => session.external_session_id), ["codex:older"])
+  assert.deepEqual(externalProviderSessionPageState({
+    hasMore: true,
+    nextCursor: "client-cursor",
+  }), { hasMore: true, nextCursor: "client-cursor" })
+  assert.deepEqual(externalProviderSessionPageState({
+    externalProviderSessionsHasMore: true,
+    externalProviderSessionsNextCursor: "remote-cursor",
+  }), { hasMore: true, nextCursor: "remote-cursor" })
+  assert.equal(externalProviderSessionPageHasMore(null), false)
+  assert.equal(externalProviderSessionPageNextCursor({}), null)
 })
 
 test("external provider session merge dedupes by external session id with newest metadata winning", () => {

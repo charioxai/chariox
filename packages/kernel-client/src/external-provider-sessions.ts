@@ -21,10 +21,67 @@ export type ExternalProviderSessionSelection = {
   readonly selectedExternalProviderSessionIndex?: number | null
 }
 
+export type ExternalProviderSessionPageLike<T extends ExternalProviderSessionRecord = ExternalProviderSessionRecord> = {
+  readonly sessions?: readonly T[] | null
+  readonly externalProviderSessions?: readonly T[] | null
+  readonly hasMore?: boolean | null
+  readonly has_more?: boolean | null
+  readonly externalProviderSessionsHasMore?: boolean | null
+  readonly nextCursor?: string | null
+  readonly next_cursor?: string | null
+  readonly externalProviderSessionsNextCursor?: string | null
+}
+
+export type ExternalProviderSessionPageState = {
+  readonly hasMore: boolean
+  readonly nextCursor: string | null
+}
+
+export type ExternalProviderSessionPage<T extends ExternalProviderSessionRecord = ExternalProviderSessionRecord> =
+  ExternalProviderSessionPageState & {
+    readonly sessions: T[]
+  }
+
 export function externalProviderSessionsSorted<T extends ExternalProviderSessionRecord>(
   sessions: readonly T[] | null | undefined,
 ): T[] {
   return [...(sessions ?? [])].sort(compareExternalProviderSessions)
+}
+
+export function externalProviderSessionPage<T extends ExternalProviderSessionRecord>(
+  page: ExternalProviderSessionPageLike<T> | null | undefined,
+): ExternalProviderSessionPage<T> {
+  return {
+    sessions: externalProviderSessionPageSessions(page),
+    ...externalProviderSessionPageState(page),
+  }
+}
+
+export function externalProviderSessionPageSessions<T extends ExternalProviderSessionRecord>(
+  page: ExternalProviderSessionPageLike<T> | null | undefined,
+): T[] {
+  return externalProviderSessionsSorted(page?.externalProviderSessions ?? page?.sessions)
+}
+
+export function externalProviderSessionPageState(
+  page: ExternalProviderSessionPageLike | null | undefined,
+): ExternalProviderSessionPageState {
+  return {
+    hasMore: externalProviderSessionPageHasMore(page),
+    nextCursor: externalProviderSessionPageNextCursor(page),
+  }
+}
+
+export function externalProviderSessionPageHasMore(
+  page: ExternalProviderSessionPageLike | null | undefined,
+): boolean {
+  return page?.hasMore ?? page?.has_more ?? page?.externalProviderSessionsHasMore ?? false
+}
+
+export function externalProviderSessionPageNextCursor(
+  page: ExternalProviderSessionPageLike | null | undefined,
+): string | null {
+  return page?.nextCursor ?? page?.next_cursor ?? page?.externalProviderSessionsNextCursor ?? null
 }
 
 export function mergeExternalProviderSessions<T extends ExternalProviderSessionRecord>(

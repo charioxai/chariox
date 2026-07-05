@@ -1,4 +1,4 @@
-import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
+import { externalProviderSessionPageSessions } from "@arroba/kernel-client/external-provider-sessions"
 import {
   catalogModelOptions,
   providerCatalogIsLocalFallback,
@@ -44,7 +44,7 @@ export function waitingRoomChoice(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
-  const externalProviderSessions = externalProviderSessionsSorted(remote.externalProviderSessions)
+  const externalProviderSessions = externalProviderSessionPageSessions(remote)
   const placement = waitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,

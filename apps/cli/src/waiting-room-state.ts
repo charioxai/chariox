@@ -1,4 +1,8 @@
 import {
+  externalProviderSessionPageHasMore,
+  externalProviderSessionPageSessions,
+} from "@arroba/kernel-client/external-provider-sessions"
+import {
   normalizeBackendProviderId,
   selectConfiguredModel,
   selectConfiguredVariant,
@@ -81,7 +85,7 @@ export function normalizeWaitingRoomState(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
-  const externalSessions = remote.externalProviderSessions ?? []
+  const externalSessions = externalProviderSessionPageSessions(remote)
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
@@ -102,7 +106,7 @@ export function normalizeWaitingRoomState(
       ? "join-sessions"
     : externalSessions.length === 0 && state.focus === "external-session"
       ? visibleSessions.length > 0 ? "join-sessions" : "new"
-    : state.focus === "external-session-more" && !remote.externalProviderSessionsHasMore
+    : state.focus === "external-session-more" && !externalProviderSessionPageHasMore(remote)
       ? externalSessions.length > 0 ? "external-session" : visibleSessions.length > 0 ? "join-sessions" : "new"
     : remoteMachines.length === 0 && state.focus === "machine"
       ? "relay"

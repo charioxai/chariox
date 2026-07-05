@@ -1,3 +1,7 @@
+import {
+  externalProviderSessionPageHasMore,
+  externalProviderSessionPageSessions,
+} from "@arroba/kernel-client/external-provider-sessions"
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomRemoteKernels, waitingRoomRemoteMachines } from "./waiting-room-remote-rows.js"
 import { waitingRoomPreviewSessions, waitingRoomSessions } from "./waiting-room-session-rows.js"
@@ -63,7 +67,7 @@ export function waitingRoomFocusTargets(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const slices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
-  const externalSessions = remote.externalProviderSessions ?? []
+  const externalSessions = externalProviderSessionPageSessions(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
@@ -86,7 +90,7 @@ export function waitingRoomFocusTargets(
       sessionIndex: 0,
       externalSessionIndex,
     })),
-    ...(remote.externalProviderSessionsHasMore
+    ...(externalProviderSessionPageHasMore(remote)
       ? [{ focus: "external-session-more" as const, sessionIndex: 0 }]
       : []),
     { focus: "relay" as const, sessionIndex: 0 },

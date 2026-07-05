@@ -1,4 +1,4 @@
-import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
+import { externalProviderSessionPage } from "@arroba/kernel-client/external-provider-sessions"
 import type {
   SliceRecord,
   ExternalProviderSessionRecord,
@@ -55,6 +55,11 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     snapshot: WaitingRoomPublicSnapshot
   }>(response, "WaitingRoomPublicSnapshot").snapshot
   const slices = await listSlices(client).catch(() => [])
+  const externalProviderSessions = externalProviderSessionPage({
+    sessions: payload.external_provider_sessions,
+    has_more: payload.external_provider_sessions_has_more,
+    next_cursor: payload.external_provider_sessions_next_cursor,
+  })
   return {
     inventoryVersion: payload.inventory_version,
     sessions: (payload.sessions ?? []).slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
@@ -63,8 +68,8 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     remoteKernels: payload.remote_kernels ?? [],
     terminals: payload.terminals ?? [],
     slices,
-    externalProviderSessions: externalProviderSessionsSorted(payload.external_provider_sessions),
-    externalProviderSessionsHasMore: payload.external_provider_sessions_has_more ?? false,
-    externalProviderSessionsNextCursor: payload.external_provider_sessions_next_cursor ?? null,
+    externalProviderSessions: externalProviderSessions.sessions,
+    externalProviderSessionsHasMore: externalProviderSessions.hasMore,
+    externalProviderSessionsNextCursor: externalProviderSessions.nextCursor,
   }
 }
