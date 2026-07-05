@@ -3,7 +3,11 @@ import {
   type ProjectedQueuedPrompt,
 } from "./queued-prompt-controls.js"
 import type { RuntimeSession } from "./kernel-types.js"
-import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
+import {
+  reindexTranscriptEntries,
+  trimSingleTrailingNewline,
+} from "./transcript-entry-state.js"
+import { sessionHasAgentRuntimeProjection } from "./session-prompt-work.js"
 
 export type QueuedPromptStripItem = {
   promptId: string
@@ -66,6 +70,21 @@ export type QueuedPromptStripSourceEntry = {
   }
 }
 
+export type QueuedPromptTranscriptSyncEntry = QueuedPromptStripSourceEntry & {
+  readonly id: number
+}
+
+export type QueuedPromptTranscriptSyncResult<TEntry extends QueuedPromptTranscriptSyncEntry> = {
+  entries: TEntry[]
+  changed: boolean
+}
+
+export type QueuedPromptTranscriptByAgentSyncResult<TEntry extends QueuedPromptTranscriptSyncEntry> = {
+  entriesByAgent: Record<string, TEntry[]>
+  changedAgentIds: string[]
+  changed: boolean
+}
+
 export function queuedPromptStripItemsForAgent(
   session: RuntimeSession,
   entries: readonly QueuedPromptStripSourceEntry[],
@@ -110,6 +129,67 @@ export function queuedPromptStripItemToTranscriptEntry(
       steerDisabledReason: item.steerDisabledReason,
       cancelDisabledReason: item.cancelDisabledReason,
     },
+  }
+}
+
+export function syncQueuedPromptTranscriptEntriesForAgent<TEntry extends QueuedPromptTranscriptSyncEntry>(
+  entries: readonly TEntry[],
+  session: RuntimeSession,
+  agentId: string,
+): QueuedPromptTranscriptSyncResult<TEntry> {
+  const projection = queuedPromptProjectionForAgent(session, agentId)
+  if (projection.action === "preserve") {
+    return { entries: entries.map((entry) => ({ ...entry })) as TEntry[], changed: false }
+  }
+  let changed = false
+  const retained = entries.flatMap((entry) => {
+    if (!entry.queuedPrompt) {
+      return [entry]
+    }
+    if (entry.queuedPrompt.agentId === agentId) {
+      changed = true
+      return []
+    }
+    return [entry]
+  })
+  if (!changed) {
+    return { entries: entries.map((entry) => ({ ...entry })) as TEntry[], changed: false }
+  }
+  return {
+    entries: reindexTranscriptEntries(retained.map((entry) => ({ ...entry })), 0) as TEntry[],
+    changed: true,
+  }
+}
+
+export function syncQueuedPromptTranscriptEntriesByAgent<TEntry extends QueuedPromptTranscriptSyncEntry>(
+  entriesByAgent: Record<string, TEntry[]>,
+  session: RuntimeSession,
+): QueuedPromptTranscriptByAgentSyncResult<TEntry> {
+  const entriesByAgentNext: Record<string, TEntry[]> = { ...entriesByAgent }
+  const changedAgentIds: string[] = []
+  const agentIds = new Set([
+    ...session.agents.map((agent) => agent.id),
+    ...Object.keys(session.prompt_states ?? {}),
+    ...Object.keys(session.agent_activity ?? {}),
+  ])
+  if (sessionHasAgentRuntimeProjection(session)) {
+    for (const [agentId, entries] of Object.entries(entriesByAgent)) {
+      if (entries.some((entry) => entry.queuedPrompt)) {
+        agentIds.add(agentId)
+      }
+    }
+  }
+  for (const agentId of agentIds) {
+    const synced = syncQueuedPromptTranscriptEntriesForAgent(entriesByAgentNext[agentId] ?? [], session, agentId)
+    if (synced.changed) {
+      entriesByAgentNext[agentId] = synced.entries
+      changedAgentIds.push(agentId)
+    }
+  }
+  return {
+    entriesByAgent: entriesByAgentNext,
+    changedAgentIds,
+    changed: changedAgentIds.length > 0,
   }
 }
 

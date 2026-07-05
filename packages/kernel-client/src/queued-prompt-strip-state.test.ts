@@ -5,6 +5,8 @@ import type { RuntimeSession } from "./kernel-types.js"
 import {
   queuedPromptStripItemsForAgent,
   queuedPromptStripItemToTranscriptEntry,
+  syncQueuedPromptTranscriptEntriesByAgent,
+  syncQueuedPromptTranscriptEntriesForAgent,
   type QueuedPromptStripSourceEntry,
 } from "./queued-prompt-strip-state.js"
 
@@ -228,6 +230,98 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
     cancelDisabledReason: null,
   })
 })
+
+test("syncQueuedPromptTranscriptEntriesForAgent removes stale queued rows when projection is authoritative", () => {
+  const existing = [
+    { id: 7, role: "assistant", text: "ready" },
+    {
+      id: 8,
+      role: "user",
+      text: "legacy queued",
+      queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
+    },
+    { id: 9, role: "assistant", text: "still here" },
+  ]
+
+  const synced = syncQueuedPromptTranscriptEntriesForAgent(existing, session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued prompt",
+          status: "queued",
+        }],
+      },
+    },
+  }), "agent-1")
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries, [
+    { id: 1, role: "assistant", text: "ready" },
+    { id: 2, role: "assistant", text: "still here" },
+  ])
+})
+
+test("syncQueuedPromptTranscriptEntriesForAgent preserves legacy queued rows when projection is unavailable", () => {
+  const existing = [{
+    id: 1,
+    role: "user",
+    text: "preserved queued",
+    queuedPrompt: queuedPrompt("agent-1", "prompt-preserved"),
+  }]
+
+  const synced = syncQueuedPromptTranscriptEntriesForAgent(existing, session({
+    prompt_states: undefined,
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+      },
+    },
+  }), "agent-1")
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(synced.entries, existing)
+})
+
+test("syncQueuedPromptTranscriptEntriesByAgent reports changed agent ids", () => {
+  const synced = syncQueuedPromptTranscriptEntriesByAgent({
+    "agent-1": [{
+      id: 1,
+      role: "user",
+      text: "legacy queued",
+      queuedPrompt: queuedPrompt("agent-1", "prompt-1"),
+    }],
+  }, session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+  }))
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.changedAgentIds, ["agent-1"])
+  assert.deepEqual(synced.entriesByAgent["agent-1"], [])
+})
+
+function queuedPrompt(agentId: string, promptId: string): NonNullable<QueuedPromptStripSourceEntry["queuedPrompt"]> {
+  return {
+    promptId,
+    agentId,
+    status: "queued",
+    attachmentCount: 0,
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  }
+}
 
 function session(overrides: Record<string, unknown> = {}): RuntimeSession {
   return {
