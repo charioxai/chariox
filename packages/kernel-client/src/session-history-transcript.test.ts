@@ -155,6 +155,51 @@ test("session history transcript hydration renders only non-passive external pro
   assert.equal(entries[0]?.source, "external_provider_observed")
 })
 
+test("session history transcript hydration keeps multiple external provider statuses", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(0, "user_prompt", "external prompt\n", {
+      source: "external_provider_observed",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+    }),
+    pageEntry(1, "provider_status", "codex turn started", {
+      source: "external_provider_observed",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "status-started",
+      external_observation: {
+        settles_active_prompt: false,
+        passive_telemetry: false,
+      },
+    }),
+    pageEntry(2, "provider_status", "codex turn aborted", {
+      source: "external_provider_observed",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "status-aborted",
+      external_observation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+    }),
+  ])
+
+  const statuses = entries.filter((entry) => entry.role === "status")
+  assert.deepEqual(statuses.map((entry) => entry.text), [
+    "codex turn started",
+    "codex turn aborted",
+  ])
+  assert.deepEqual(statuses.map((entry) => entry.externalProviderTurnId), [
+    "status-started",
+    "status-aborted",
+  ])
+  assert.deepEqual(statuses.map((entry) => entry.externalObservation), [
+    { settles_active_prompt: false, passive_telemetry: false },
+    { settles_active_prompt: true, passive_telemetry: false },
+  ])
+})
+
 test("session history transcript hydration preserves prompt attachment and prompt identity", () => {
   const attachments = [{
     url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",

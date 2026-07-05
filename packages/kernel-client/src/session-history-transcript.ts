@@ -248,7 +248,6 @@ export function hydrateSessionHistoryTranscriptEntries(
             ...entryOptions,
             ...observedOptions,
             ...identityOptions,
-            mergeKey: "__provider_status__",
           })
         }
         break

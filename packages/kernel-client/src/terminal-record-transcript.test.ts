@@ -136,7 +136,7 @@ test("terminalRecordTranscriptProjection classifies external history refresh wit
   assert.equal(projection.startsStreaming, false)
   assert.equal(projection.marksAgentBusy, false)
   assert.equal(projection.transcriptRole, "status")
-  assert.equal(projection.statusMergeKey, "__provider_status__")
+  assert.equal(projection.statusMergeKey, null)
 })
 
 test("terminalRecordTranscriptProjection suppresses passive external telemetry", () => {
@@ -174,6 +174,32 @@ test("terminalRecordTranscriptProjection keeps idle provider status from marking
   assert.equal(projection.startsStreaming, true)
   assert.equal(projection.marksAgentBusy, false)
   assert.equal(projection.renderProviderStatus, true)
+})
+
+test("terminalRecordTranscriptProjection keeps ordinary status merge separate from external statuses", () => {
+  const ordinary = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+  }, "OpenCode is thinking", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+  const external = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "status-1",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: false,
+    },
+  }, "codex event status", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(ordinary.statusMergeKey, "__provider_status__")
+  assert.equal(external.statusMergeKey, null)
 })
 
 test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {

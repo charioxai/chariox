@@ -245,7 +245,7 @@ test("external observed provider status rendering uses shared observed policy", 
     "agent-activity:agent-a:null",
     "provider-activity:null",
     "provider-active:false",
-    "chunk:status:OpenCode status: reconnecting:__provider_status__",
+    "chunk:status:OpenCode status: reconnecting:",
     "sync-visible-preview",
   ])
 })

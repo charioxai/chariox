@@ -108,7 +108,9 @@ export function terminalRecordTranscriptProjection(
     transcriptRole: terminalRecordTranscriptRole(record.kind),
     transcriptText: record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text,
     mergeKey: record.merge_key ?? null,
-    statusMergeKey: record.kind === "provider_status" ? "__provider_status__" : null,
+    statusMergeKey: record.kind === "provider_status" && metadata.source !== "external_provider_observed"
+      ? "__provider_status__"
+      : null,
   }
 }
 
