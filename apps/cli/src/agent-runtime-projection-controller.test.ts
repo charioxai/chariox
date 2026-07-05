@@ -53,6 +53,50 @@ test("agent runtime projection resolves focused agent, prompt work, and tool act
   assert.equal(controller.focusedAgentBusy(), true)
 })
 
+test("agent runtime projection queue depth follows shared runtime projection", () => {
+  const session = runtimeSession({
+    focused_agent_id: "agent-a",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [
+          prompt({ id: "stale-1", target_agent_id: "agent-a" }),
+          prompt({ id: "stale-2", target_agent_id: "agent-a" }),
+        ],
+      },
+    },
+    agent_activity: {
+      "agent-a": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+  const controller = createAgentRuntimeProjectionController({
+    getSession: () => session,
+    getFocusedAgentId: () => "agent-a",
+    getProviderRun: () => null,
+    getVisibleTranscriptAgentId: () => "agent-a",
+    getActiveToolLabels: () => [],
+    getAgentPaneToolUpdates: () => [],
+    getAgentPanePreviews: () => ({}),
+    getAgentActivityLabels: () => ({}),
+    updateAgentActivityLabels: () => {},
+    getAgentBusyLatches: () => ({}),
+    updateAgentBusyLatches: () => {},
+    getSubmitting: () => false,
+    getSubmittingAgentId: () => null,
+    getStreamingAgentId: () => null,
+  })
+
+  assert.equal(controller.focusedQueueDepth(), 0)
+  assert.equal(controller.agentQueuedDepth("agent-a"), 0)
+})
+
 test("agent runtime projection updates busy latches and preserves active labels", () => {
   let latches: Record<string, boolean> = {}
   let labels: Record<string, string | null> = { "agent-a": "running" }
