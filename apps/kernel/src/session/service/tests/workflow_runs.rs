@@ -950,7 +950,11 @@ fn publication_runtime_observability_applies_trace_exposure() {
     assert!(exposed_text.contains("TRACE_SUMMARY"));
     assert!(exposed_text.contains("TRACE_ASSISTANT"));
     assert!(exposed_text.contains("TRACE_THINKING"));
-    assert!(exposed_text.contains("TRACE_TOOL"));
+    assert!(exposed_text.contains("runtime_tool_calls"));
+    assert!(exposed_text.contains("workflow_console_write"));
+    assert!(!exposed_text.contains("arguments_json"));
+    assert!(!exposed_text.contains("result_json"));
+    assert!(!exposed_text.contains("TRACE_TOOL"));
 }
 
 #[test]

@@ -1485,13 +1485,31 @@ fn visible_node_run_value(
         let runtime_tool_calls = node_run
             .get("turn_envelope")
             .and_then(|envelope| envelope.get("runtime_tool_calls"))
-            .cloned()
+            .and_then(Value::as_array)
+            .map(|tool_calls| {
+                Value::Array(
+                    tool_calls
+                        .iter()
+                        .map(visible_runtime_tool_call_value)
+                        .collect(),
+                )
+            })
             .unwrap_or_else(|| Value::Array(Vec::new()));
         let mut turn_envelope = serde_json::Map::new();
         turn_envelope.insert("runtime_tool_calls".to_string(), runtime_tool_calls);
         visible.insert("turn_envelope".to_string(), Value::Object(turn_envelope));
     }
     Some(Value::Object(visible))
+}
+
+fn visible_runtime_tool_call_value(tool_call: &Value) -> Value {
+    let mut visible = serde_json::Map::new();
+    copy_json_fields(
+        &mut visible,
+        tool_call,
+        &["tool_name", "ok", "timestamp_ms", "error"],
+    );
+    Value::Object(visible)
 }
 
 fn trace_level_visible(
