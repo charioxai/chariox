@@ -104,3 +104,41 @@ test("session prompt identity suppresses stale legacy prompts under idle project
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
   assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
 })
+
+test("session prompt identity ignores prompt state and activity outside session agents", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: {
+          id: "state-ghost",
+          source_attachment_id: "attach-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "live-ghost",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionPromptStateForAgent(session, "agent-ghost"), null)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-ghost"), null)
+  assert.equal(sessionActivePromptForAgent(session, "agent-ghost"), null)
+  assert.equal(sessionPromptForAgent(session, "agent-ghost"), null)
+  assert.equal(sessionHasActivePrompt(session, "agent-ghost", "live-ghost"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-ghost", "state-ghost"), false)
+})

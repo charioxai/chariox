@@ -18,7 +18,7 @@ export function sessionPromptStateForAgent(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): AgentPromptState | null {
-  if (!agentId) {
+  if (!agentId || !sessionHasAgent(session, agentId)) {
     return null
   }
   const projectedPromptState = sessionPromptStateRecordForAgent(session, agentId)
@@ -108,6 +108,9 @@ export function sessionActivePromptIdForAgent(
   agentId: string | null | undefined,
 ): string | null {
   if (agentId) {
+    if (!sessionHasAgent(session, agentId)) {
+      return null
+    }
     const projected = session.agent_activity?.[agentId]
     const projection = projectAgentRuntimeActivity(projected)
     const projectedPromptId = projection.activeTurnPromptId ?? null
