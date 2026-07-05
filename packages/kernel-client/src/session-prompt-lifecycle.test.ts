@@ -103,6 +103,41 @@ test("session prompt lifecycle records ignore activity and prompt states outside
   assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
 })
 
+test("session prompt lifecycle falls back to prompt state for sparse active activity", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "state-prompt",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    promptOrigin: null,
+  }])
+})
+
 test("session prompt lifecycle records external active turn metadata", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],

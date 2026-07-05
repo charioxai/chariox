@@ -104,12 +104,11 @@ function activePromptLifecycleRecordFromProjectedTurn(
   agentId: string,
   projection: AgentRuntimeActivityProjection,
 ): ActivePromptLifecycleRecord | null {
-  const id = projection.activeTurnPromptId ?? externalActiveTurnLifecycleId(projection)
-  if (!id) {
+  if (!projection.activeTurnPromptId) {
     return null
   }
   return {
-    id,
+    id: projection.activeTurnPromptId,
     status: projection.activeTurnStatus ?? projection.promptStatus,
     promptOrigin: projection.activeTurnPromptOrigin ?? null,
     target_agent_id: agentId,
@@ -122,18 +121,6 @@ function activePromptLifecycleRecordFromProjectedTurn(
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
       : {}),
   }
-}
-
-function externalActiveTurnLifecycleId(projection: AgentRuntimeActivityProjection): string | null {
-  if (!projection.activeTurnExternalProviderSessionId && !projection.activeTurnExternalProviderTurnId) {
-    return null
-  }
-  return [
-    "external",
-    projection.activeTurnExternalProvider ?? "",
-    projection.activeTurnExternalProviderSessionId ?? "",
-    projection.activeTurnExternalProviderTurnId ?? "",
-  ].join(":")
 }
 
 function activePromptLifecycleRecordIds(session: RuntimeSession): string[] {
