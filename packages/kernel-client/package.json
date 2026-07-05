@@ -16,6 +16,7 @@
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
     "./prompt-origin": "./dist/prompt-origin.js",
+    "./prompt-history": "./dist/prompt-history.js",
     "./prompt-submission": "./dist/prompt-submission.js",
     "./provider-namespace-command": "./dist/provider-namespace-command.js",
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
