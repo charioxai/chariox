@@ -5,6 +5,24 @@ import type {
 
 export type WaitingRoomActivityBadgeState = "none" | "working" | "done" | "mixedWorkingDone"
 
+export function waitingRoomTimestampLabel(
+  value: number | null | undefined,
+  options: {
+    readonly missingLabel?: string
+    readonly utcSuffix?: boolean
+  } = {},
+): string {
+  if (!isFiniteNumber(value)) {
+    return options.missingLabel ?? "-"
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return options.missingLabel ?? "-"
+  }
+  const label = date.toISOString().replace("T", " ").slice(0, 16)
+  return options.utcSuffix === false ? label : `${label} UTC`
+}
+
 export function waitingRoomSessionRecencyMs(
   session: {
     readonly last_prompt_sent_at_ms?: number | null | undefined
@@ -116,5 +134,9 @@ export function waitingRoomItemActivityWorkLabel(
 }
 
 function numberOrZero(value: number | null | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0
+  return isFiniteNumber(value) ? value : 0
+}
+
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value)
 }

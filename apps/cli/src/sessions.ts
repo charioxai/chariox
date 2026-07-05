@@ -2,7 +2,10 @@ import path from "node:path"
 
 import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
-import { waitingRoomSessionRecencyMs } from "@arroba/kernel-client/waiting-room-activity"
+import {
+  waitingRoomSessionRecencyMs,
+  waitingRoomTimestampLabel,
+} from "@arroba/kernel-client/waiting-room-activity"
 
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
@@ -147,16 +150,7 @@ export function sessionBrowserStatus(session: { status: string }) {
 }
 
 export function sessionBrowserTimestamp(value: number | null) {
-  if (value === null) {
-    return "-"
-  }
-  const date = new Date(value)
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
-  const day = String(date.getUTCDate()).padStart(2, "0")
-  const hours = String(date.getUTCHours()).padStart(2, "0")
-  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
-  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
+  return waitingRoomTimestampLabel(value)
 }
 
 export function sessionBrowserSortTime(session: {

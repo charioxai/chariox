@@ -11,7 +11,16 @@ import {
   waitingRoomSessionActivityHasWork,
   waitingRoomSessionActivityWorkLabel,
   waitingRoomSessionRecencyMs,
+  waitingRoomTimestampLabel,
 } from "./waiting-room-activity.js"
+
+test("waiting room timestamp label formats UTC labels with stable missing fallback", () => {
+  const timestamp = Date.UTC(2026, 0, 2, 10, 30)
+  assert.equal(waitingRoomTimestampLabel(timestamp), "2026-01-02 10:30 UTC")
+  assert.equal(waitingRoomTimestampLabel(timestamp, { utcSuffix: false }), "2026-01-02 10:30")
+  assert.equal(waitingRoomTimestampLabel(null), "-")
+  assert.equal(waitingRoomTimestampLabel(Number.NaN, { missingLabel: "missing" }), "missing")
+})
 
 test("waiting room session recency prioritizes prompt, activity, last-used, then created timestamps", () => {
   assert.equal(waitingRoomSessionRecencyMs({

@@ -6,6 +6,7 @@ import {
   formatSessionHomeLabel,
   formatSessionList,
   formatSessionLiveSyncLabel,
+  sessionBrowserTimestamp,
   selectAttachableSession,
 } from "./sessions.js"
 
@@ -133,6 +134,11 @@ test("formatSessionLiveSyncLabel keeps session sync mode visible", () => {
   assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: "tracked" }), "tracked")
   assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: "unrestricted" }), "off")
   assert.equal(formatSessionLiveSyncLabel({ workspace_live_sync_mode: null }), "off")
+})
+
+test("sessionBrowserTimestamp uses shared waiting-room timestamp labels", () => {
+  assert.equal(sessionBrowserTimestamp(Date.UTC(2026, 0, 2, 10, 30)), "2026-01-02 10:30 UTC")
+  assert.equal(sessionBrowserTimestamp(null), "-")
 })
 
 test("selectAttachableSession ignores ended sessions and prefers the newest workspace match", () => {
