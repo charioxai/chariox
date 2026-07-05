@@ -3,9 +3,11 @@ import test from "node:test"
 
 import {
   getProviderActivityLabel,
+  getToolActivityLabel,
   isProviderIdleStatus,
   normalizeProviderActivityLabel,
   shouldRenderProviderStatus,
+  chooseVisibleActivityLabel,
   toProviderPresentParticiplePhrase,
 } from "./provider-status.js"
 
@@ -35,4 +37,21 @@ test("provider status helpers normalize activity label vocabulary", () => {
   assert.equal(toProviderPresentParticiplePhrase("run"), "running")
   assert.equal(toProviderPresentParticiplePhrase("die"), "dying")
   assert.equal(toProviderPresentParticiplePhrase("compile"), "compiling")
+})
+
+test("provider status helpers derive tool activity labels", () => {
+  assert.equal(getToolActivityLabel("bash"), "bashing")
+  assert.equal(getToolActivityLabel("grep"), "grepping")
+  assert.equal(getToolActivityLabel("glob"), "globbing")
+  assert.equal(getToolActivityLabel("read"), "reading")
+  assert.equal(getToolActivityLabel("apply_patch"), "patching")
+  assert.equal(getToolActivityLabel("webfetch"), "webfetching")
+  assert.equal(getToolActivityLabel("todowrite"), "todowriting")
+})
+
+test("provider status helpers prefer visible tool activity over provider activity", () => {
+  assert.equal(chooseVisibleActivityLabel("reading", "grepping"), "grepping")
+  assert.equal(chooseVisibleActivityLabel("reconnecting", null), "reconnecting")
+  assert.equal(chooseVisibleActivityLabel(null, "writing"), "writing")
+  assert.equal(chooseVisibleActivityLabel(null, null), null)
 })

@@ -1,9 +1,9 @@
 import { LocalIpcError } from "./ipc.js"
 import {
   getProviderActivityLabel,
+  getToolActivityLabel,
   isProviderIdleStatus,
-  normalizeProviderActivityLabel,
-  toProviderPresentParticiplePhrase,
+  chooseVisibleActivityLabel,
 } from "@arroba/kernel-client/provider-status"
 import {
   sessionStatusLabel,
@@ -23,11 +23,6 @@ export const SILENT_POLL_THRESHOLD = 8
 export const STATUS_BADGE_WIDTH = Math.max("DISCONNECTED".length, "SCREENSHOTTING".length)
 const POLL_RETRY_BASE_MS = 250
 const POLL_RETRY_MAX_MS = 2_000
-
-const TOOL_ACTIVITY_LABELS: Record<string, string> = {
-  apply_patch: "patching",
-  read: "reading",
-}
 
 export type PollRecoveryDecision = {
   retry: boolean
@@ -54,22 +49,7 @@ export function getSessionStatusLabel(
   return sessionStatusLabel(mode, activity)
 }
 
-export { getProviderActivityLabel, isProviderIdleStatus }
-
-export function getToolActivityLabel(tool?: string | null) {
-  const normalized = normalizeActivityLabel(tool)
-  if (!normalized) {
-    return null
-  }
-  return TOOL_ACTIVITY_LABELS[normalized] ?? toPresentParticiplePhrase(normalized)
-}
-
-export function chooseVisibleActivityLabel(
-  providerActivity: string | null,
-  activeToolActivity: string | null,
-) {
-  return activeToolActivity ?? providerActivity
-}
+export { getProviderActivityLabel, getToolActivityLabel, isProviderIdleStatus, chooseVisibleActivityLabel }
 
 export function resolveVisibleTranscriptAgentId(
   splitMode: boolean,
@@ -159,12 +139,4 @@ export function getExitCleanupDecision(
     exitCode: 1,
     message: `Exit cleanup failed: ${message}. Run /exit or press Ctrl+C again to force quit.`,
   }
-}
-
-function normalizeActivityLabel(value?: string | null) {
-  return normalizeProviderActivityLabel(value)
-}
-
-function toPresentParticiplePhrase(value: string) {
-  return toProviderPresentParticiplePhrase(value)
 }
