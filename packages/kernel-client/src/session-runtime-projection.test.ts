@@ -526,6 +526,7 @@ test("runtimeProviderRunForAgent returns provider run only for matching agent", 
 
 test("sessionPromptWorkSummary counts projected active turns and prompt state queues", () => {
   const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
     active_prompt: {
       id: "prompt-stale",
       source_attachment_id: "attach-1",
@@ -633,6 +634,11 @@ test("sessionPromptWorkSummary prefers projected prompt counts", () => {
 
 test("sessionPromptWorkSummary ignores settled active turn statuses", () => {
   const session = makeSession({
+    agents: [
+      makeAgent({ id: "agent-1" }),
+      makeAgent({ id: "agent-2" }),
+      makeAgent({ id: "agent-3" }),
+    ],
     agent_activity: {
       "agent-1": {
         status: "idle",

@@ -6,6 +6,7 @@ import {
   sessionPromptLifecycleTransition,
 } from "./session-prompt-lifecycle.js"
 import {
+  makeAgent,
   makeSession,
 } from "./shell-executor.test-support.js"
 
@@ -45,4 +46,49 @@ test("session prompt lifecycle transition settles normalized cancelling prompts"
     cancelledPromptSettled: true,
     settledAgentIds: ["agent-1"],
   })
+})
+
+test("session prompt lifecycle records ignore activity and prompt states outside session agents", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+      "agent-ghost": {
+        active_prompt: {
+          id: "prompt-ghost-state",
+          source_attachment_id: "attachment-ghost",
+          target_agent_id: "agent-ghost",
+          prompt: "ghost",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-ghost-live",
+          provider_run_id: "run-ghost",
+          prompt_origin: "external",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
 })

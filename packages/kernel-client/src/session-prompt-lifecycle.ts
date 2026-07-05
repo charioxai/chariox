@@ -6,6 +6,10 @@ import {
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
+import {
+  sessionHasAgent,
+  sessionPromptStateEntriesForSessionAgents,
+} from "./session-agent-prompt-state.js"
 
 export type ActivePromptLifecycleRecord = {
   readonly id: string
@@ -24,6 +28,9 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
   if (session.agent_activity) {
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, activity] of Object.entries(session.agent_activity)) {
+      if (!sessionHasAgent(session, agentId)) {
+        continue
+      }
       const projection = projectAgentRuntimeActivity(activity)
       if (projection.activeTurnPromptId) {
         records.push({
@@ -45,8 +52,8 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
     return records.sort(compareActivePromptLifecycleRecords)
   }
   if (session.prompt_states) {
-    return Object.values(session.prompt_states)
-      .map((state) => state.active_prompt)
+    return sessionPromptStateEntriesForSessionAgents(session)
+      .map(([, state]) => state.active_prompt)
       .map((stateActivePrompt) => stateActivePrompt
         ? activePromptLifecycleRecordFromPrompt(stateActivePrompt)
         : null)
