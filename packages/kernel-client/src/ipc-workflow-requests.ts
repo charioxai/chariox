@@ -1002,6 +1002,7 @@ export function removeWorkflowEdgeRequest(sessionId: string, workflowRef: string
 export type WorkflowCanvasLayoutPatch =
   | { kind: "node_position"; node_id: string; x: number; y: number }
   | { kind: "endpoint_position"; endpoint_id: string; x: number; y: number }
+  | { kind: "exit_position"; node_id: string; x: number; y: number }
   | { kind: "edge_waypoints"; edge_id: string; waypoints: readonly { readonly x: number; readonly y: number }[] }
 
 export function updateWorkflowCanvasLayoutRequest(

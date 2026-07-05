@@ -3871,6 +3871,11 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                         x: 180,
                         y: 36,
                     },
+                    crate::session::WorkflowCanvasLayoutPatch::ExitPosition {
+                        node_id: node_b.id().to_string(),
+                        x: 500,
+                        y: 96,
+                    },
                 ],
             },
         ))
@@ -3890,6 +3895,13 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                     .and_then(|stored| stored.endpoints.get(endpoint.id()))
                     .map(|point| point.y),
                 Some(36)
+            );
+            assert_eq!(
+                workflow
+                    .canvas_layout()
+                    .and_then(|stored| stored.exits.get(node_b.id()))
+                    .map(|point| point.x),
+                Some(500)
             );
         }
         _ => panic!("unexpected local response"),

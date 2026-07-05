@@ -294,6 +294,7 @@ impl WorkflowDefinition {
             .retain(|endpoint| endpoint.entry_node_id() != node_id);
         if let Some(layout) = self.canvas_layout.as_mut() {
             layout.nodes.remove(node_id);
+            layout.exits.remove(node_id);
             for edge_id in removed_edge_ids {
                 layout.edges.remove(&edge_id);
             }
@@ -437,6 +438,15 @@ impl WorkflowDefinition {
                             .is_none_or(|existing| existing.x != x || existing.y != y);
                     }
                 }
+                WorkflowCanvasLayoutPatch::ExitPosition { node_id, x, y } => {
+                    if node_ids.contains(&node_id) {
+                        changed |= layout
+                            .exits
+                            .insert(node_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
                 WorkflowCanvasLayoutPatch::EdgeWaypoints { edge_id, waypoints } => {
                     if edge_ids.contains(&edge_id) {
                         let next = WorkflowCanvasEdgeLayout { waypoints };
@@ -447,6 +457,7 @@ impl WorkflowDefinition {
             }
         }
         layout.nodes.retain(|node_id, _| node_ids.contains(node_id));
+        layout.exits.retain(|node_id, _| node_ids.contains(node_id));
         layout.edges.retain(|edge_id, _| edge_ids.contains(edge_id));
         layout
             .endpoints

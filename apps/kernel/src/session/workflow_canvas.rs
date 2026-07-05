@@ -24,6 +24,8 @@ pub struct WorkflowCanvasLayout {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: BTreeMap<String, WorkflowCanvasPoint>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exits: BTreeMap<String, WorkflowCanvasPoint>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub edges: BTreeMap<String, WorkflowCanvasEdgeLayout>,
 }
 
@@ -35,6 +37,7 @@ impl WorkflowCanvasLayout {
             coordinate_space: "workflow-canvas-v1".to_string(),
             nodes: BTreeMap::new(),
             endpoints: BTreeMap::new(),
+            exits: BTreeMap::new(),
             edges: BTreeMap::new(),
         }
     }
@@ -60,6 +63,11 @@ pub enum WorkflowCanvasLayoutPatch {
     },
     EndpointPosition {
         endpoint_id: String,
+        x: i32,
+        y: i32,
+    },
+    ExitPosition {
+        node_id: String,
         x: i32,
         y: i32,
     },

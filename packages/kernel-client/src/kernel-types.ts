@@ -1515,7 +1515,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 226
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 227
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -2422,6 +2422,7 @@ export type WorkflowCanvasLayout = {
   coordinate_space: string
   nodes?: Record<string, WorkflowCanvasPoint>
   endpoints?: Record<string, WorkflowCanvasPoint>
+  exits?: Record<string, WorkflowCanvasPoint>
   edges?: Record<string, { waypoints?: WorkflowCanvasPoint[] }>
 }
 
