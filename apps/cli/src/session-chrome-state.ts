@@ -1,5 +1,6 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import {
+  sessionAttachedFooterSummary,
   sessionFooterHint,
   sessionFocusedStatusBadge,
   sessionStatusMode,
@@ -8,7 +9,6 @@ import {
   type SessionStatusMode as KernelSessionStatusMode,
   type SessionStatusBadgePart,
 } from "@arroba/kernel-client/shell-agent-activity"
-import { workspaceLiveSyncFooterSummary } from "@arroba/kernel-client/shell-workspace-format"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -172,31 +172,7 @@ export function deriveAttachedFooterSummary(options: {
   focusedHasPromptWork?: boolean
   workspaceLiveSyncStatus?: WorkspaceLiveSyncStatus | null
 }): string {
-  const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
-  const agentInfo = formatVisibleAgentSummary(options.session)
-  const workspaceLiveSyncInfo = options.workspaceLiveSyncStatus
-    ? ` • ${workspaceLiveSyncFooterSummary(options.workspaceLiveSyncStatus)}`
-    : ""
-
-  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${agentInfo}${workspaceLiveSyncInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
-}
-
-function formatVisibleAgentSummary(session: RuntimeSession): string {
-  const counts = session.collaboration_agent_counts
-  const visibleCount = counts?.owned_agent_count ?? session.agents.length
-  const otherCount = counts?.other_user_agent_count ?? 0
-  const collaboratorCount = counts?.collaborator_count ?? 0
-  const ownLabel = `${visibleCount} visible ${visibleCount === 1 ? "agent" : "agents"}`
-  const parts = [ownLabel]
-
-  if (otherCount > 0) {
-    parts.push(`${otherCount} collaborator ${otherCount === 1 ? "agent" : "agents"}`)
-  }
-  if (collaboratorCount > 0) {
-    parts.push(`${collaboratorCount} ${collaboratorCount === 1 ? "collaborator" : "collaborators"}`)
-  }
-
-  return parts.join(" • ")
+  return sessionAttachedFooterSummary(options)
 }
 
 function resolveProviderModelContextLimit(

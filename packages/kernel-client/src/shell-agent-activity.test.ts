@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentPromptState } from "./kernel-types.js"
+import type { AgentPromptState, WorkspaceLiveSyncStatus } from "./kernel-types.js"
 import {
   deriveAllAgentsBusyState,
   deriveFocusedActivityLabel,
@@ -18,6 +18,7 @@ import {
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionAttachedFooterSummary,
   sessionFooterHint,
   sessionFocusedStatusBadge,
   sessionAgentRuntimeActivityProjection,
@@ -37,6 +38,7 @@ import {
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
   sessionStatusMode,
+  sessionVisibleAgentSummary,
   sessionWorkingStateAfterPromptWork,
   shouldPreserveAgentActivityLabel,
 } from "./shell-agent-activity.js"
@@ -313,6 +315,61 @@ test("session status mode and footer hint reflect prompt and queue work", () => 
     queueDepth: 0,
     statusLine: "Connected.",
   }), "Connected.")
+})
+
+test("session attached footer summary projects visible agents, collaboration, prompt state, and sync", () => {
+  assert.equal(sessionAttachedFooterSummary({
+    session: makeSession({
+      alias: "feature-refactor",
+      agents: [
+        makeAgent({ id: "agent-a", agent_ref: "main" }),
+        makeAgent({ id: "agent-b", agent_ref: "review", alias: "QA", is_processing: true }),
+      ],
+    }),
+    connectedClientCount: 2,
+    multiAgentMode: true,
+    sessionStatusMode: "working",
+    hotkeyToggleLabel: "Ctrl+T",
+  }), "Session feature-refactor • 2 CLIs connected • 2 visible agents • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys")
+
+  const sharedSession = makeSession({
+    alias: "shared-review",
+    agents: [makeAgent({ id: "agent-a" })],
+    collaboration_agent_counts: {
+      owned_agent_count: 1,
+      other_user_agent_count: 3,
+      total_agent_count: 4,
+      collaborator_count: 2,
+    },
+  })
+  const sharedSummary = sessionAttachedFooterSummary({
+    session: sharedSession,
+    connectedClientCount: 3,
+    multiAgentMode: false,
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+  })
+  assert.equal(sharedSummary, "Session shared-review • 3 CLIs connected • 1 visible agent • 3 collaborator agents • 2 collaborators • Ctrl+T hotkeys")
+  assert.equal(sessionVisibleAgentSummary(sharedSession), "1 visible agent • 3 collaborator agents • 2 collaborators")
+  assert.doesNotMatch(sharedSummary, /user-|agent-a|owner/)
+
+  assert.equal(sessionAttachedFooterSummary({
+    session: makeSession({ alias: "sync-review", agents: [makeAgent({ id: "agent-a" })] }),
+    connectedClientCount: 1,
+    multiAgentMode: false,
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+    workspaceLiveSyncStatus: workspaceLiveSyncStatus("conflict"),
+  }), "Session sync-review • 1 CLI connected • 1 visible agent • sync managed conflict • Ctrl+T hotkeys")
+
+  assert.equal(sessionAttachedFooterSummary({
+    session: makeSession({ alias: "sync-off", agents: [makeAgent({ id: "agent-a" })] }),
+    connectedClientCount: 1,
+    multiAgentMode: false,
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+    workspaceLiveSyncStatus: workspaceLiveSyncStatus("off"),
+  }), "Session sync-off • 1 CLI connected • 1 visible agent • sync off • Ctrl+T hotkeys")
 })
 
 test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done", () => {
@@ -2203,4 +2260,21 @@ function badge(parts: Array<{ label: string; tone: "idle" | "working" | "disconn
 
 function malformedRuntimeValue<T>(value: string): T {
   return value as unknown as T
+}
+
+function workspaceLiveSyncStatus(
+  footerState: WorkspaceLiveSyncStatus["footer_state"],
+): WorkspaceLiveSyncStatus {
+  return {
+    session_id: "session-1",
+    mode: footerState === "off" ? "unrestricted" : "managed",
+    footer_state: footerState,
+    sync_groups: [],
+    targets: [],
+    conflicts: [],
+    ignore: {
+      rules: [],
+      force_excludes: [],
+    },
+  }
 }
