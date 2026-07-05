@@ -4,6 +4,7 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
+import { visibleAssistantWorkflowMessage } from "./publication-workflow-message-visibility.js"
 
 export type PublicationTraceStreamState = {
   traceKeys: Set<string>
@@ -38,15 +39,16 @@ export function collectPublicationTraceEvents(
     if (levels.has("assistant_messages")) {
       for (const message of workflowRun.messages ?? []) {
         if (message.source_node_run_id !== nodeRun.id) continue
+        const visibleMessage = visibleAssistantWorkflowMessage(message)
         pushTraceEvent(events, state, publication, workflowRun, nodeRun, "assistant_messages", {
-          key: `message:${message.id}`,
-          timestampMs: message.created_at_ms,
-          message: message.summary || message.handoff_payload,
+          key: `message:${visibleMessage.id}`,
+          timestampMs: visibleMessage.created_at_ms,
+          message: visibleMessage.summary || visibleMessage.handoff_payload,
           data: {
-            message_id: message.id,
-            message_type: message.message_type,
-            summary: message.summary,
-            handoff_payload: message.handoff_payload,
+            message_id: visibleMessage.id,
+            message_type: visibleMessage.message_type,
+            summary: visibleMessage.summary,
+            handoff_payload: visibleMessage.handoff_payload,
           },
         })
       }

@@ -567,9 +567,7 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
     thinking: /thinking_traces":\s*\[/.test(serializedRun) && !/thinking_traces":\s*\[\s*\]/.test(serializedRun),
     tool_use: /runtime_tool_calls":\s*\[/.test(serializedRun) && !/runtime_tool_calls":\s*\[\s*\]/.test(serializedRun),
   }
-  const enabled = policy.mixed
-    ? new Set(["output_summary", "assistant_messages", "thinking", "tool_use"])
-    : new Set(policy.levels ?? [])
+  const enabled = new Set(policy.levels ?? [])
   const failures = []
   for (const failure of protocolFailures(raw, statusPayload, workflowRun, transport)) {
     failures.push(failure)
@@ -581,10 +579,20 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
       || (level === "thinking" && visible.includes('"level":"thinking"'))
       || (level === "tool_use" && visible.includes("runtime_tool_calls"))
       || (level === "tool_use" && visible.includes('"level":"tool_use"'))
-    if (enabled.has(level) && providerEmitted[level] && !present) failures.push(`${level} was emitted by provider but absent from exposed output`)
-    if (!enabled.has(level) && present) failures.push(`${level} marker leaked while disabled`)
+    if (!policy.mixed && enabled.has(level) && providerEmitted[level] && !present) {
+      failures.push(`${level} was emitted by provider but absent from exposed output`)
+    }
+    if (!policy.mixed && !enabled.has(level) && present) failures.push(`${level} marker leaked while disabled`)
   }
   if (policy.mixed) {
+    const plannerSummaryVisible = visible.includes(markerNames.output_summary)
+    const plannerAssistantVisible = visible.includes(markerNames.assistant_messages)
+    if (providerEmitted.output_summary && !plannerSummaryVisible) {
+      failures.push("mixed per-node policy hid planner output_summary")
+    }
+    if (providerEmitted.assistant_messages && !plannerAssistantVisible) {
+      failures.push("mixed per-node policy hid planner assistant_messages")
+    }
     const finalizerId = nodeIds.finalizer
     const finalizerLeak = visible.includes(finalizerId) && (visible.includes(markerNames.thinking) || visible.includes(markerNames.tool_use))
     if (finalizerLeak) failures.push("mixed per-node policy leaked hidden finalizer detail")

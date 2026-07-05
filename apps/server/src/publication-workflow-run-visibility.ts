@@ -3,6 +3,7 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
+import { visibleAssistantWorkflowMessage } from "./publication-workflow-message-visibility.js"
 
 export function visibleWorkflowInvocationResult(
   publication: WorkflowPublicationConfig,
@@ -57,11 +58,13 @@ export function visibleWorkflowRun(
     })
   }
   if (workflowRun.messages !== undefined) {
-    visibleRun.messages = workflowRun.messages.filter((message) => {
-      if (!message.source_node_run_id) return false
-      const nodeRun = workflowRun.node_runs?.find((candidate) => candidate.id === message.source_node_run_id)
-      return Boolean(nodeRun && (policy[nodeRun.node_id] ?? []).includes("assistant_messages"))
-    })
+    visibleRun.messages = workflowRun.messages
+      .filter((message) => {
+        if (!message.source_node_run_id) return false
+        const nodeRun = workflowRun.node_runs?.find((candidate) => candidate.id === message.source_node_run_id)
+        return Boolean(nodeRun && (policy[nodeRun.node_id] ?? []).includes("assistant_messages"))
+      })
+      .map(visibleAssistantWorkflowMessage)
   }
   return visibleRun
 }

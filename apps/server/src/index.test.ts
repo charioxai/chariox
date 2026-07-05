@@ -339,7 +339,7 @@ test("publication trace events honor per-node level policy", () => {
         target_node_id: "node-c",
         message_type: "handoff",
         summary: "B handoff",
-        handoff_payload: "{\"summary\":\"B handoff\"}",
+        handoff_payload: "{\"completion\":{\"summary\":\"TRACE_SUMMARY B hidden\",\"output\":{\"message\":\"B assistant output\"}}}",
         created_at_ms: 25,
       },
       {
@@ -385,6 +385,8 @@ test("publication trace events honor per-node level policy", () => {
     ["node-d", "builder", "tool_use", "lookup ok"],
   ])
   assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
+  assert.equal(JSON.stringify(firstPass).includes("TRACE_SUMMARY B hidden"), false)
+  assert.match(JSON.stringify(firstPass), /B assistant output/)
   assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   assert.deepEqual(secondPass, [])
 })
@@ -420,7 +422,7 @@ test("visible workflow run hides unexposed trace levels", () => {
       target_node_id: "node-2",
       message_type: "handoff",
       summary: "TRACE_ASSISTANT hidden message",
-      handoff_payload: "{\"TRACE_ASSISTANT\":\"hidden\"}",
+      handoff_payload: "{\"completion\":{\"summary\":\"TRACE_SUMMARY hidden handoff\",\"output\":{\"message\":\"TRACE_ASSISTANT hidden\"}}}",
       created_at_ms: 13,
     }],
   }
@@ -440,6 +442,8 @@ test("visible workflow run hides unexposed trace levels", () => {
   assert.match(exposedText, /TRACE_ASSISTANT hidden output/)
   assert.match(exposedText, /hidden thinking/)
   assert.match(exposedText, /TRACE_TOOL/)
+  assert.doesNotMatch(exposedText, /TRACE_SUMMARY hidden handoff/)
+  assert.match(exposedText, /TRACE_ASSISTANT hidden/)
 })
 
 function setOptionalEnv(name: string, value: string | undefined) {
