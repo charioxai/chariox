@@ -7,21 +7,19 @@ import {
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
+import type { ExternalProviderObservedTranscriptIdentityFields } from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   sessionHasAgent,
   sessionPromptStateEntriesForSessionAgents,
 } from "./session-agent-prompt-state.js"
 
-export type ActivePromptLifecycleRecord = {
+export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIdentityFields & {
   readonly id: string
   readonly status?: string
   readonly promptOrigin?: string | null
   readonly target_agent_id?: string | null
   readonly providerRunId?: string | null
-  readonly externalProvider?: string | null
-  readonly externalProviderSessionId?: string | null
-  readonly externalProviderTurnId?: string | null
 }
 
 export type PromptLifecycleTransition = {

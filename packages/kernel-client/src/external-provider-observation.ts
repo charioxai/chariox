@@ -290,27 +290,31 @@ export type ExternalProviderObservedMutableKernelFields = {
 
 export type ExternalProviderObservedTranscriptFields = {
   readonly source?: string | null | undefined
+  readonly observedAtMs?: number | null | undefined
+  readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
+} & ExternalProviderObservedTranscriptIdentityFields
+
+export type ExternalProviderObservedTranscriptIdentityFields = {
   readonly externalProvider?: string | null | undefined
   readonly externalProviderSessionId?: string | null | undefined
   readonly externalProviderTurnId?: string | null | undefined
-  readonly observedAtMs?: number | null | undefined
-  readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
 
-export type ExternalProviderObservedMutableTranscriptFields = {
+export type ExternalProviderObservedMutableTranscriptIdentityFields = {
   externalProvider?: string | null | undefined
   externalProviderSessionId?: string | null | undefined
   externalProviderTurnId?: string | null | undefined
+}
+
+export type ExternalProviderObservedMutableTranscriptFields =
+  ExternalProviderObservedMutableTranscriptIdentityFields & {
   observedAtMs?: number | null | undefined
   externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
 
 export type ExternalProviderObservedMutableTurnMetadataFields = {
   source?: string | null | undefined
-  externalProvider?: string | null | undefined
-  externalProviderSessionId?: string | null | undefined
-  externalProviderTurnId?: string | null | undefined
-}
+} & ExternalProviderObservedMutableTranscriptIdentityFields
 
 export type ExternalProviderObservedStatusSignalFields = Pick<
   ExternalProviderObservedKernelFields,
@@ -340,21 +344,20 @@ export type ExternalProviderObservedCompletionTimeFields = {
   readonly createdAtMs?: number | null | undefined
 }
 
-export type ExternalProviderObservedImportScopedEntryFields = {
+export type ExternalProviderObservedImportScopedEntryFields = Pick<
+  ExternalProviderObservedTranscriptIdentityFields,
+  "externalProvider" | "externalProviderSessionId"
+> & {
   readonly source?: string | null | undefined
-  readonly externalProvider?: string | null | undefined
-  readonly externalProviderSessionId?: string | null | undefined
 }
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
   readonly external_provider_turn_id?: string | null | undefined
 }
 
-export type ExternalProviderObservedTranscriptTurnFields = {
+export type ExternalProviderObservedTranscriptTurnFields =
+  ExternalProviderObservedTranscriptIdentityFields & {
   readonly source?: string | null | undefined
-  readonly externalProvider?: string | null | undefined
-  readonly externalProviderSessionId?: string | null | undefined
-  readonly externalProviderTurnId?: string | null | undefined
 }
 
 export function transcriptExternalProviderObservedTurnMetadata(
