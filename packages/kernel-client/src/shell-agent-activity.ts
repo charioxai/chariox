@@ -946,6 +946,7 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   return {
     ...prompt,
+    status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
     promptOrigin: prompt.prompt_origin ?? null,
   }
 }

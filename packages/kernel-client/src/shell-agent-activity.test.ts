@@ -1946,7 +1946,7 @@ test("sessionActivePromptLifecycleRecords uses projected active turns and determ
     source_attachment_id: "attach-b",
     target_agent_id: "agent-b",
     prompt: "running",
-    status: "Running",
+    status: "running",
     prompt_origin: "external",
     promptOrigin: "external",
   }])
@@ -2295,7 +2295,7 @@ test("sessionActivePromptLifecycleRecords falls back to legacy active prompt wit
     source_attachment_id: "attach-1",
     target_agent_id: "agent-1",
     prompt: "legacy",
-    status: "Running",
+    status: "running",
     prompt_origin: " External ",
     promptOrigin: " External ",
   }])
@@ -2310,6 +2310,25 @@ test("sessionPromptLifecycleTransition detects when a cancelling prompt settles"
         target_agent_id: "agent-1",
         prompt: "hello",
         status: "cancelling",
+      },
+    }),
+    makeSession(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+})
+
+test("sessionPromptLifecycleTransition normalizes cancelling prompt status", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
+        prompt: "hello",
+        status: " Cancelling ",
       },
     }),
     makeSession(),
