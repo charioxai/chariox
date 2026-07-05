@@ -10,6 +10,7 @@ import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
   sessionHasPromptWork,
+  sessionPromptWorkJustCompleted,
 } from "@arroba/kernel-client/session-prompt-work"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
@@ -140,8 +141,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         deps.recordDaemonActivity("session_state_poll")
         const projectedSession = deps.projectSession(session, deps.getProviderRun())
         const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-        const promptJustCompleted = sessionHasPromptWork(previousSession)
-          && !sessionHasPromptWork(projectedSession)
+        const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
         deps.applySessionState(projectedSession)
         if (shouldRefreshPanes || promptJustCompleted) {
           await deps.refreshAgentPanes(projectedSession)

@@ -4,6 +4,7 @@ import type {
 } from "./cli-types.js"
 import {
   sessionHasPromptWork,
+  sessionPromptWorkJustCompleted,
 } from "@arroba/kernel-client/session-prompt-work"
 
 type KernelSessionSnapshotControllerDeps = {
@@ -38,8 +39,7 @@ export function createKernelSessionSnapshotController(
     const previousSession = deps.getSession()
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
     const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-    const promptJustCompleted = sessionHasPromptWork(previousSession)
-      && !sessionHasPromptWork(projectedSession)
+    const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
 
     deps.applySessionState(projectedSession)
 
