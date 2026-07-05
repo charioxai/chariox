@@ -1,10 +1,13 @@
 import {
-  stripTranscriptDisplayOnlyEntries,
-  transcriptEntryIsBlobCollapsible,
-  transcriptTurnFinalAssistantEntry,
-  transcriptTurnHasCollapsibleBody,
-  transcriptTurnIsCollapsible,
-} from "@arroba/kernel-client/transcript-entry-lineage"
+  applyTranscriptDisplayState as sharedApplyTranscriptDisplayState,
+  collapseLatestTranscriptTurn as sharedCollapseLatestTranscriptTurn,
+  findVisibleTurnToggle as sharedFindVisibleTurnToggle,
+  normalizeTranscriptTurnIds as sharedNormalizeTranscriptTurnIds,
+  resolveVisibleTurnToggle as sharedResolveVisibleTurnToggle,
+  setTranscriptBlobCollapsed as sharedSetTranscriptBlobCollapsed,
+  setTranscriptTurnExpanded as sharedSetTranscriptTurnExpanded,
+  stripTranscriptDisplayEntries as sharedStripTranscriptDisplayEntries,
+} from "@arroba/kernel-client/transcript-display-state"
 import type { TranscriptEntry } from "./cli-types.js"
 import { roleBlobTitle } from "./transcript-collapsed-blob.js"
 import {
@@ -21,52 +24,18 @@ const TOOL_STATUS_LABELS: Record<string, string> = {
 }
 
 export function normalizeTranscriptTurnIds(entries: TranscriptEntry[]) {
-  let activeTurnId: number | undefined
-  let nextTurnId = 1
-
-  return entries.map((entry) => {
-    const next: TranscriptEntry = { ...entry }
-    if (entry.turnTracking === "none") {
-      delete next.turnId
-      return next
-    }
-    if (entry.role === "user") {
-      activeTurnId = entry.turnId ?? nextTurnId
-      next.turnId = activeTurnId
-      nextTurnId = Math.max(nextTurnId, activeTurnId + 1)
-      return next
-    }
-    if (activeTurnId !== undefined) {
-      next.turnId = activeTurnId
-    }
-    return next
-  })
+  return sharedNormalizeTranscriptTurnIds(entries) as TranscriptEntry[]
 }
 
 export function stripTranscriptDisplayEntries(entries: TranscriptEntry[]) {
-  return stripTranscriptDisplayOnlyEntries(entries)
+  return sharedStripTranscriptDisplayEntries(entries)
 }
 
 export function collapseLatestTranscriptTurn(
   entries: TranscriptEntry[],
   collapsedTurnIds: readonly number[] = [],
 ) {
-  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
-  const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries))
-  const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
-  const latestTurnId = turnIds.at(-1)
-  if (latestTurnId === undefined) {
-    return sortedTurnIds(nextCollapsedTurnIds)
-  }
-
-  const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
-  const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
-  if (!finalSummary || !transcriptTurnHasCollapsibleBody(turnEntries, finalSummary.id)) {
-    return sortedTurnIds(nextCollapsedTurnIds)
-  }
-
-  nextCollapsedTurnIds.add(latestTurnId)
-  return sortedTurnIds(nextCollapsedTurnIds)
+  return sharedCollapseLatestTranscriptTurn(entries, collapsedTurnIds)
 }
 
 export function applyTranscriptDisplayState(
@@ -74,67 +43,9 @@ export function applyTranscriptDisplayState(
   collapsedTurnIds: readonly number[] = [],
   activeTurnId: number | null = null,
 ) {
-  const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries)).map((entry) => ({
-    ...entry,
-    hidden: false,
-  }))
-  const collapsedTurnIdSet = new Set(collapsedTurnIds)
-  let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
-  const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
-
-  for (const turnId of turnIds) {
-    const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
-    const finalSummary = transcriptTurnFinalAssistantEntry(turnEntries)
-    const collapsibleTurn = transcriptTurnIsCollapsible(turnEntries, activeTurnId)
-    const expanded = collapsibleTurn ? !collapsedTurnIdSet.has(turnId) : false
-
-    for (const entry of turnEntries) {
-      const blobCollapsible = computeBlobCollapsible(entry, finalSummary?.id ?? null)
-      if (blobCollapsible) {
-        entry.blobCollapsible = true
-        entry.blobCollapsed = entry.blobCollapsed ?? true
-        if (!entry.historyBlobId) {
-          const preview = describeCollapsedBlob(entry)
-          entry.blobTitle = preview.title
-          entry.blobSummary = preview.summary
-        }
-      } else {
-        entry.blobCollapsible = false
-        delete entry.blobCollapsed
-        delete entry.blobTitle
-        delete entry.blobSummary
-      }
-      if (!collapsibleTurn || expanded) {
-        entry.hidden = false
-        continue
-      }
-      entry.hidden = !(entry.role === "user" || entry.id === finalSummary!.id)
-    }
-
-    if (!collapsibleTurn) {
-      continue
-    }
-
-    const promptIndex = normalized.findIndex((entry) => entry.turnId === turnId && entry.role === "user")
-    const anchorIndex = promptIndex >= 0
-      ? promptIndex
-      : normalized.findIndex((entry) => entry.turnId === turnId)
-    if (anchorIndex === -1) {
-      continue
-    }
-
-    normalized.splice(anchorIndex + 1, 0, {
-      id: ++nextId,
-      role: "turn_toggle",
-      text: expanded ? "click to collapse" : "click to expand",
-      turnId,
-      hidden: false,
-      toggleMode: expanded ? "collapse" : "expand",
-      blobCollapsible: false,
-    })
-  }
-
-  return normalized
+  return sharedApplyTranscriptDisplayState(entries, collapsedTurnIds, activeTurnId, {
+    describeCollapsedBlob,
+  }) as TranscriptEntry[]
 }
 
 export function setTranscriptTurnExpanded(
@@ -144,13 +55,9 @@ export function setTranscriptTurnExpanded(
   expanded: boolean,
   activeTurnId: number | null = null,
 ) {
-  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
-  if (expanded) {
-    nextCollapsedTurnIds.delete(turnId)
-  } else {
-    nextCollapsedTurnIds.add(turnId)
-  }
-  return applyTranscriptDisplayState(entries, [...nextCollapsedTurnIds].sort((left, right) => left - right), activeTurnId)
+  return sharedSetTranscriptTurnExpanded(entries, turnId, collapsedTurnIds, expanded, activeTurnId, {
+    describeCollapsedBlob,
+  }) as TranscriptEntry[]
 }
 
 export function setTranscriptBlobCollapsed(
@@ -160,16 +67,9 @@ export function setTranscriptBlobCollapsed(
   collapsed: boolean,
   activeTurnId: number | null = null,
 ) {
-  const updated = stripTranscriptDisplayEntries(entries).map((entry) => {
-    if (entry.id !== entryId) {
-      return { ...entry }
-    }
-    return {
-      ...entry,
-      blobCollapsed: collapsed,
-    }
-  })
-  return applyTranscriptDisplayState(updated, collapsedTurnIds, activeTurnId)
+  return sharedSetTranscriptBlobCollapsed(entries, entryId, collapsedTurnIds, collapsed, activeTurnId, {
+    describeCollapsedBlob,
+  }) as TranscriptEntry[]
 }
 
 export function findVisibleTurnToggle(
@@ -177,15 +77,7 @@ export function findVisibleTurnToggle(
   turnId: number | null | undefined,
   toggleEntryId?: number,
 ) {
-  if (!turnId) {
-    return undefined
-  }
-  return entries.find((entry) => {
-    if (!entry || entry.turnId !== turnId || entry.role !== "turn_toggle" || entry.hidden) {
-      return false
-    }
-    return toggleEntryId === undefined || entry.id === toggleEntryId
-  })
+  return sharedFindVisibleTurnToggle(entries, turnId, toggleEntryId)
 }
 
 export function resolveVisibleTurnToggle(
@@ -193,16 +85,7 @@ export function resolveVisibleTurnToggle(
   turnId: number | null | undefined,
   preferredToggleEntryId?: number,
 ) {
-  return findVisibleTurnToggle(entries, turnId, preferredToggleEntryId)
-    ?? findVisibleTurnToggle(entries, turnId)
-}
-
-function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number | null) {
-  return transcriptEntryIsBlobCollapsible(entry)
-}
-
-function sortedTurnIds(turnIds: Iterable<number>) {
-  return [...turnIds].sort((left, right) => left - right)
+  return sharedResolveVisibleTurnToggle(entries, turnId, preferredToggleEntryId)
 }
 
 function describeCollapsedBlob(entry: TranscriptEntry) {

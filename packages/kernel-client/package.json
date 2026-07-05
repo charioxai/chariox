@@ -39,6 +39,7 @@
     "./session-bootstrap-policy": "./dist/session-bootstrap-policy.js",
     "./session-browser-policy": "./dist/session-browser-policy.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
+    "./transcript-display-state": "./dist/transcript-display-state.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
     "./provider-run-recovery": "./dist/provider-run-recovery.js",
     "./shell-capability-format": "./dist/shell-capability-format.js",
