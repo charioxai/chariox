@@ -10,6 +10,7 @@ import { WebSocket } from "ws"
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import {
   applyWorkflowCodeRequest,
+  cancelWorkflowRunRequest,
   controlWorkflowPublicationRuntimeRequest,
   createSessionRequest,
   createWorkflowPublicationRequest,
@@ -273,6 +274,7 @@ async function runProviderMatrix(client, provider) {
           nodeIds,
         })
         await writeArtifact(`${prefix}/assertions.json`, assertions)
+        await cancelNonTerminalWorkflowRun(client, workflowRunSessionId, workflowRun, `${prefix}/workflow-run-cancelled.json`)
         matrixEntry.thinking_emitted = assertions.provider_emitted.thinking
         matrixEntry.tool_use_emitted = assertions.provider_emitted.tool_use
         matrixEntry.artifacts = {
@@ -766,6 +768,24 @@ function protocolFailures(raw, statusPayload, workflowRun, transport) {
 async function workflowRunSnapshot(client, sessionId, runId) {
   const response = await client.send(getWorkflowRunRequest(sessionId, runId))
   return response?.WorkflowRun?.workflow_run ?? response
+}
+
+async function cancelNonTerminalWorkflowRun(client, sessionId, workflowRun, artifactPath) {
+  if (!workflowRun?.id || isTerminalStatus(workflowRun.status)) return
+  try {
+    const response = await unwrap(
+      withTimeout(
+        client.send(cancelWorkflowRunRequest(sessionId, workflowRun.id)),
+        runtimeStartTimeoutMs,
+        `cancelling workflow run ${workflowRun.id}`,
+      ),
+      "WorkflowRunCancelled",
+    )
+    await writeArtifact(artifactPath, response.workflow_run ?? response)
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error)
+    await writeArtifact(artifactPath.replace(/\.json$/, "-error.txt"), message)
+  }
 }
 
 async function fetchJson(url) {
