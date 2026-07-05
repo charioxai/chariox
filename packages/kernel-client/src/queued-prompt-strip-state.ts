@@ -3,6 +3,7 @@ import {
   type ProjectedQueuedPrompt,
 } from "./queued-prompt-controls.js"
 import type { RuntimeSession, TranscriptEntry } from "./kernel-types.js"
+import type { SessionHistoryTranscriptEntry } from "./session-history-transcript.js"
 import { formatTranscriptPreview } from "./session-history-preview.js"
 import {
   reindexTranscriptEntries,
@@ -48,18 +49,18 @@ export type QueuedPromptTranscriptMetadata = {
 }
 
 export type QueuedPromptStripTranscriptEntry = {
-  id: number
-  role: "user"
-  text: string
-  sourceAttachmentId?: string | null
+  id: TranscriptEntry["id"]
+  role: Extract<TranscriptEntry["role"], "user">
+  text: TranscriptEntry["text"]
+  sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
   queuedPrompt?: QueuedPromptTranscriptMetadata
 }
 
 export type QueuedPromptStripSourceEntry = {
-  readonly id?: number
-  readonly role?: string
-  readonly text: string
-  readonly sourceAttachmentId?: string | null
+  readonly id?: TranscriptEntry["id"]
+  readonly role?: TranscriptEntry["role"] | string
+  readonly text: TranscriptEntry["text"]
+  readonly sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
   readonly queuedPrompt?: Readonly<QueuedPromptTranscriptMetadata>
 }
 
