@@ -1,7 +1,9 @@
+import type { WorkflowPromptState } from "./workflow-prompt-state.js"
 import {
-  formatWorkflowPromptPlaceholder,
-  type WorkflowPromptState,
-} from "./workflow-prompt-state.js"
+  derivePromptAreaBackground as sharedDerivePromptAreaBackground,
+  derivePromptInputMaxHeight as sharedDerivePromptInputMaxHeight,
+  derivePromptPlaceholder as sharedDerivePromptPlaceholder,
+} from "@arroba/kernel-client/prompt-surface-state"
 
 export type PromptInputPlaceholderTarget = {
   placeholder: unknown
@@ -14,15 +16,7 @@ export function derivePromptPlaceholder(options: {
   attachedPlaceholder: string
   detachedPlaceholder: string
 }) {
-  if (!options.attached) {
-    return options.detachedPlaceholder
-  }
-  return formatWorkflowPromptPlaceholder({
-    workflowScreenActive: options.workflowScreenActive,
-    state: options.workflowPromptState,
-    attachedPlaceholder: options.attachedPlaceholder,
-    detachedPlaceholder: options.detachedPlaceholder,
-  })
+  return sharedDerivePromptPlaceholder(options)
 }
 
 export function derivePromptAreaBackground<Color>(options: {
@@ -32,21 +26,14 @@ export function derivePromptAreaBackground<Color>(options: {
   detachedBackground: Color
   workflowBackground: Color
 }) {
-  if (!options.attached) {
-    return options.detachedBackground
-  }
-  return options.workflowScreenActive
-    ? options.workflowBackground
-    : options.attachedBackground
+  return sharedDerivePromptAreaBackground(options)
 }
 
 export function derivePromptInputMaxHeight(options: {
   attached: boolean
   terminalHeight: number
 }) {
-  return options.attached
-    ? Math.max(6, options.terminalHeight - 11)
-    : 6
+  return sharedDerivePromptInputMaxHeight(options)
 }
 
 export function createPromptPlaceholderSyncController(deps: {
