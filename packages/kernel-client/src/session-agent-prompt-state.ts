@@ -2,6 +2,7 @@ import type {
   AgentPromptState,
   RuntimeSession,
 } from "./kernel-types.js"
+import { normalizeAgentPromptState } from "./runtime-session-normalization.js"
 
 export type SessionAgentPromptStateLike = {
   readonly active_prompt?: unknown | null
@@ -45,11 +46,4 @@ export function sessionPromptStateEntriesForSessionAgents(
 
 export function agentPromptStateHasWork(state: SessionAgentPromptStateLike | null | undefined): boolean {
   return Boolean(state?.active_prompt) || Boolean(state?.queued_prompts?.length)
-}
-
-function normalizeAgentPromptState(state: Partial<AgentPromptState> | null | undefined): AgentPromptState {
-  return {
-    active_prompt: state?.active_prompt ?? null,
-    queued_prompts: Array.isArray(state?.queued_prompts) ? state.queued_prompts : [],
-  }
 }

@@ -6,7 +6,17 @@ import type {
   ExternalProviderSessionCapabilities,
   ExternalProviderSessionRecord,
 } from "@arroba/kernel-client/external-provider-sessions"
-import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
+import type {
+  AgentPromptState as KernelAgentPromptState,
+  RuntimeSession as KernelRuntimeSession,
+  TerminalCommandCatalog,
+} from "@arroba/kernel-client/kernel-types"
+import {
+  normalizeAgentPromptState as normalizeKernelAgentPromptState,
+  normalizeRuntimeSession as normalizeKernelRuntimeSession,
+  normalizeRuntimeSessions as normalizeKernelRuntimeSessions,
+  normalizeRuntimeSessionWithAgentActivity as normalizeKernelRuntimeSessionWithAgentActivity,
+} from "@arroba/kernel-client/runtime-session-normalization"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
@@ -1374,32 +1384,13 @@ export type BootstrapState = {
 export function normalizeAgentPromptState(
   state: Partial<AgentPromptState> | null | undefined,
 ): AgentPromptState {
-  return {
-    active_prompt: state?.active_prompt ?? null,
-    queued_prompts: Array.isArray(state?.queued_prompts) ? state.queued_prompts : [],
-  }
+  return normalizeKernelAgentPromptState(
+    state as Partial<KernelAgentPromptState> | null | undefined,
+  ) as unknown as AgentPromptState
 }
 
 export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
-  const promptStates = session.prompt_states
-    ? Object.fromEntries(
-      Object.entries(session.prompt_states).map(([agentId, state]) => [
-        agentId,
-        normalizeAgentPromptState(state),
-      ]),
-    )
-    : undefined
-
-  const normalized: RuntimeSession = {
-    ...session,
-    queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
-    active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
-    metaagent_tasks: Array.isArray(session.metaagent_tasks) ? session.metaagent_tasks : [],
-  }
-  if (promptStates) {
-    normalized.prompt_states = promptStates
-  }
-  return normalized
+  return normalizeKernelRuntimeSession(session as unknown as KernelRuntimeSession) as unknown as RuntimeSession
 }
 
 export function normalizeRuntimeSessionWithAgentActivity(payload: {
@@ -1407,19 +1398,15 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
   agent_activity?: RuntimeSession["agent_activity"] | null | undefined
   agent_activity_revision?: number | null | undefined
 }): RuntimeSession {
-  const normalized = normalizeRuntimeSession(payload.session)
-  if (!payload.agent_activity) {
-    return normalized
-  }
-  return {
-    ...normalized,
-    agent_activity: payload.agent_activity,
-    ...(typeof payload.agent_activity_revision === "number"
-      ? { agent_activity_revision: payload.agent_activity_revision }
-      : {}),
-  }
+  return normalizeKernelRuntimeSessionWithAgentActivity(
+    payload as unknown as {
+      session: KernelRuntimeSession
+      agent_activity?: KernelRuntimeSession["agent_activity"] | null | undefined
+      agent_activity_revision?: number | null | undefined
+    },
+  ) as unknown as RuntimeSession
 }
 
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
-  return sessions.map((session) => normalizeRuntimeSession(session))
+  return normalizeKernelRuntimeSessions(sessions as unknown as KernelRuntimeSession[]) as unknown as RuntimeSession[]
 }
