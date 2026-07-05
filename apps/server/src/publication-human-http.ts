@@ -25,6 +25,10 @@ import {
   publicationViewerResultPage,
 } from "./publication-viewer.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
+import {
+  visibleWorkflowInvocationResult,
+  visibleWorkflowRun,
+} from "./publication-workflow-run-visibility.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type HumanHttpApp = {
@@ -90,6 +94,7 @@ export function forwardHumanHttpResult(
   invocationRequestId?: string,
 ) {
   registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocationRequestId)
+  result = visibleWorkflowInvocationResult(publication, result)
   reply.code(200).type("text/html; charset=utf-8")
   return publicationViewerResultPage(publication, result, invocationRequestId)
 }
@@ -120,14 +125,14 @@ async function streamInvocationEvents(
       return
     }
     const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
-    writeSse(reply, "status", { workflow_run: workflowRun })
+    writeSse(reply, "status", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
     const state: HumanHttpStreamState = { partialIds: new Set(), traces: createPublicationTraceStreamState() }
     emitPartialOutputs(reply, workflowRun, state)
     emitTraceOutputs(reply, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       registerAgentAppWorkflowRunEffects(runtimePublication, workflowRun, requestId)
       releaseAgentAppReplicaInvocation(publication, requestId)
-      writeSse(reply, "final", { workflow_run: workflowRun })
+      writeSse(reply, "final", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
       return
     }
     await streamWorkflowRunEventsWithClient(reply, runtimePublication, workflowRun.id, client, state, requestId)
@@ -184,7 +189,7 @@ async function streamWorkflowRunEventsWithClient(
     const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
     if (workflowRun && workflowRun.status !== lastStatus) {
       lastStatus = workflowRun.status
-      writeSse(reply, "status", { workflow_run: workflowRun })
+      writeSse(reply, "status", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
     }
     if (workflowRun) {
       emitPartialOutputs(reply, workflowRun, state)
@@ -193,7 +198,7 @@ async function streamWorkflowRunEventsWithClient(
     if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
       registerAgentAppWorkflowRunEffects(publication, workflowRun, invocationRequestId)
       releaseAgentAppReplicaInvocation(publication, invocationRequestId)
-      writeSse(reply, "final", { workflow_run: workflowRun })
+      writeSse(reply, "final", { workflow_run: visibleWorkflowRun(publication, workflowRun) })
       return
     }
     await sleep(pollMs)

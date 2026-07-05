@@ -19,6 +19,7 @@ import {
   type PublicationTraceStreamState,
 } from "./publication-trace-events.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
+import { visibleWorkflowRun } from "./publication-workflow-run-visibility.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -140,10 +141,10 @@ async function handlePublicationWebSocketMessage(
       result: result.queued ? result.response ?? null : null,
     })
     if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
-      sendStarted(webSocket, result.workflow_run, state)
+      sendStarted(webSocket, publication, result.workflow_run, state)
       sendPartialOutputs(webSocket, result.workflow_run, state)
       sendTraceOutputs(webSocket, publication, result.workflow_run, state)
-      sendWebSocketJson(webSocket, { type: "final", workflow_run: result.workflow_run })
+      sendWebSocketJson(webSocket, { type: "final", workflow_run: visibleWorkflowRun(publication, result.workflow_run) })
     } else if (!deps.invokeWorkflow && result.workflow_run?.id) {
       await streamWorkflowRun(webSocket, publication, result.workflow_run.id, state)
     } else if (!deps.invokeWorkflow && result.queued) {
@@ -169,12 +170,12 @@ async function streamQueuedWorkflowRun(
       sendWebSocketJson(webSocket, { type: "timeout", invocation_id: requestId })
       return
     }
-    sendStarted(webSocket, workflowRun, state)
-    sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
+    sendStarted(webSocket, publication, workflowRun, state)
+    sendWebSocketJson(webSocket, { type: "status", workflow_run: visibleWorkflowRun(publication, workflowRun) })
     sendPartialOutputs(webSocket, workflowRun, state)
     sendTraceOutputs(webSocket, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
-      sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
+      sendWebSocketJson(webSocket, { type: "final", workflow_run: visibleWorkflowRun(publication, workflowRun) })
       return
     }
     await streamWorkflowRun(webSocket, publication, workflowRun.id, state)
@@ -202,18 +203,18 @@ async function streamWorkflowRun(
       )
       const workflowRun = (response.WorkflowRun as { workflow_run: WorkflowRun } | undefined)?.workflow_run ?? null
       if (workflowRun) {
-        sendStarted(webSocket, workflowRun, state)
+        sendStarted(webSocket, publication, workflowRun, state)
       }
       if (workflowRun && workflowRun.status !== lastStatus) {
         lastStatus = workflowRun.status
-        sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
+        sendWebSocketJson(webSocket, { type: "status", workflow_run: visibleWorkflowRun(publication, workflowRun) })
       }
       if (workflowRun) {
         sendPartialOutputs(webSocket, workflowRun, state)
         sendTraceOutputs(webSocket, publication, workflowRun, state)
       }
       if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
-        sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
+        sendWebSocketJson(webSocket, { type: "final", workflow_run: visibleWorkflowRun(publication, workflowRun) })
         return
       }
       await sleep(pollMs)
@@ -237,6 +238,7 @@ function sendTraceOutputs(
 
 function sendStarted(
   webSocket: WsSocket,
+  publication: WorkflowPublicationConfig,
   workflowRun: WorkflowRun,
   state: WebSocketConnectionState,
 ) {
@@ -245,7 +247,7 @@ function sendStarted(
   sendWebSocketJson(webSocket, {
     type: "started",
     workflow_run_id: workflowRun.id,
-    workflow_run: workflowRun,
+    workflow_run: visibleWorkflowRun(publication, workflowRun),
   })
 }
 

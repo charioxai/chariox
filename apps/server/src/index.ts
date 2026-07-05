@@ -160,7 +160,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           if (shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)) {
             return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
           }
-          return forwardWorkflowResult(reply, result)
+          return forwardWorkflowResult(reply, publication, result)
         },
       })
     }

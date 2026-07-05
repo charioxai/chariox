@@ -15,6 +15,7 @@ import {
   type PublicationTraceStreamState,
 } from "./publication-trace-events.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
+import { visibleWorkflowRun } from "./publication-workflow-run-visibility.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -216,7 +217,7 @@ function emitWorkflowRunEvents(
 ) {
   if (!state.started) {
     state.started = true
-    writeSse(reply, "started", { workflow_run_id: workflowRun.id, workflow_run: workflowRun })
+    writeSse(reply, "started", { workflow_run_id: workflowRun.id, workflow_run: visibleWorkflowRun(publication, workflowRun) })
   }
   for (const output of workflowRun.intermediate_outputs ?? []) {
     if (state.partialIds.has(output.id)) continue
@@ -238,7 +239,7 @@ function emitWorkflowRunEvents(
       workflow_run_id: workflowRun.id,
       message: finalOutput.message,
       artifacts: finalOutput.artifacts,
-      workflow_run: workflowRun,
+      workflow_run: visibleWorkflowRun(publication, workflowRun),
     })
   }
 }

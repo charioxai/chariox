@@ -1,7 +1,9 @@
 import type {
   WorkflowInvocationResult,
+  WorkflowPublicationConfig,
 } from "./publication-types.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
+import { visibleWorkflowInvocationResult } from "./publication-workflow-run-visibility.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type GatewayReply = {
@@ -9,7 +11,12 @@ type GatewayReply = {
   headers: (headers: Record<string, string>) => unknown
 }
 
-export function forwardWorkflowResult(reply: GatewayReply, result: WorkflowInvocationResult) {
+export function forwardWorkflowResult(
+  reply: GatewayReply,
+  publication: WorkflowPublicationConfig,
+  result: WorkflowInvocationResult,
+) {
+  result = visibleWorkflowInvocationResult(publication, result)
   const workflowRun = result.workflow_run
   const finalMessage = workflowRun?.final_output ? normalizeFinalOutput(workflowRun.final_output).text : ""
   const transportResponse = parseTransportResponse(finalMessage)

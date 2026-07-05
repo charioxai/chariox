@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json",
     "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
+    "drill:live-publication-traces": "pnpm run build && node scripts/live-publication-trace-drill.mjs",
     "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {

@@ -34,6 +34,7 @@ import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
 } from "./publication-trace-events.js"
+import { visibleWorkflowRun } from "./publication-workflow-run-visibility.js"
 import { WebSocket } from "ws"
 
 const baseConfig: WorkflowPublicationConfig = {
@@ -386,6 +387,59 @@ test("publication trace events honor per-node level policy", () => {
   assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
   assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   assert.deepEqual(secondPass, [])
+})
+
+test("visible workflow run hides unexposed trace levels", () => {
+  const workflowRun = {
+    id: "run-visibility",
+    status: "Completed",
+    final_output: { message: "TRACE_FINAL visible" },
+    intermediate_outputs: [{ id: "partial-1", output: { message: "partial visible" }, valid: true }],
+    node_runs: [{
+      id: "run-node-1",
+      node_id: "node-1",
+      agent_id: "agent-1",
+      status: "Completed",
+      summary: "TRACE_SUMMARY hidden summary",
+      completion: { summary: "TRACE_SUMMARY hidden completion", output: { message: "TRACE_ASSISTANT hidden output" } },
+      thinking_traces: [{ id: "thinking-1", message: "hidden thinking", timestamp_ms: 10 }],
+      turn_envelope: {
+        runtime_tool_calls: [{
+          tool_name: "lookup",
+          arguments_json: "{\"secret\":true}",
+          result_json: "{\"TRACE_TOOL\":\"hidden\"}",
+          ok: true,
+          timestamp_ms: 11,
+        }],
+      },
+      completed_at_ms: 12,
+    }],
+    messages: [{
+      id: "message-1",
+      source_node_run_id: "run-node-1",
+      target_node_id: "node-2",
+      message_type: "handoff",
+      summary: "TRACE_ASSISTANT hidden message",
+      handoff_payload: "{\"TRACE_ASSISTANT\":\"hidden\"}",
+      created_at_ms: 13,
+    }],
+  }
+
+  const hidden = visibleWorkflowRun(baseConfig, workflowRun)
+  const hiddenText = JSON.stringify(hidden)
+  assert.match(hiddenText, /TRACE_FINAL visible/)
+  assert.match(hiddenText, /partial visible/)
+  assert.doesNotMatch(hiddenText, /TRACE_SUMMARY|TRACE_ASSISTANT|TRACE_TOOL|thinking_traces|runtime_tool_calls/)
+
+  const exposed = visibleWorkflowRun({
+    ...baseConfig,
+    trace_exposure: { nodes: { "node-1": ["output_summary", "assistant_messages", "thinking", "tool_use"] } },
+  }, workflowRun)
+  const exposedText = JSON.stringify(exposed)
+  assert.match(exposedText, /TRACE_SUMMARY hidden summary/)
+  assert.match(exposedText, /TRACE_ASSISTANT hidden output/)
+  assert.match(exposedText, /hidden thinking/)
+  assert.match(exposedText, /TRACE_TOOL/)
 })
 
 function setOptionalEnv(name: string, value: string | undefined) {
