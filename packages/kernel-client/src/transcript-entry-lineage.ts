@@ -129,6 +129,33 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
   return keys
 }
 
+export function transcriptEntryDeduplicationKeys(entry: TranscriptLineageEntry): string[] {
+  const keys: string[] = []
+  const blobAgentId = entry.historyBlobSourceAgentId ?? entry.historyBlobAgentId
+  const blobId = entry.historyBlobSourceId ?? entry.historyBlobId
+  if (blobAgentId || blobId) {
+    keys.push([
+      "blob",
+      blobAgentId ?? "",
+      blobId ?? "",
+      entry.turnId ?? "",
+      entry.role,
+    ].join(":"))
+  }
+
+  const text = entry.text.trim()
+  if (text) {
+    keys.push([
+      "text",
+      entry.source ?? "",
+      entry.turnId ?? "",
+      entry.role,
+      text,
+    ].join(":"))
+  }
+  return keys
+}
+
 export function transcriptEntriesShareRenderableLineage<TEntry extends TranscriptLineageEntry>(
   currentEntries: readonly TEntry[],
   refreshedEntries: readonly TEntry[],
@@ -154,11 +181,11 @@ export function prependTranscriptEntriesWithoutDuplicateRenderableLineage<TEntry
   olderEntries: readonly TEntry[],
   currentEntries: readonly TEntry[],
 ): TEntry[] {
-  const admittedKeys = new Set(renderableLineageKeys(currentEntries))
+  const admittedKeys = new Set(renderableDeduplicationKeys(currentEntries))
   const prepend: TEntry[] = []
   for (const entry of olderEntries) {
     if (transcriptEntryIsRenderable(entry)) {
-      const keys = transcriptEntryLineageKeys(entry)
+      const keys = transcriptEntryDeduplicationKeys(entry)
       if (keys.some((key) => admittedKeys.has(key))) {
         continue
       }
@@ -175,6 +202,12 @@ function renderableLineageKeys<TEntry extends TranscriptLineageEntry>(
   entries: readonly TEntry[],
 ): string[] {
   return renderableEntries(entries).flatMap(transcriptEntryLineageKeys)
+}
+
+function renderableDeduplicationKeys<TEntry extends TranscriptLineageEntry>(
+  entries: readonly TEntry[],
+): string[] {
+  return renderableEntries(entries).flatMap(transcriptEntryDeduplicationKeys)
 }
 
 function renderableEntries<TEntry extends TranscriptLineageEntry>(

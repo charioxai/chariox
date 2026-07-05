@@ -6,6 +6,7 @@ import {
   stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
+  transcriptEntryDeduplicationKeys,
   transcriptEntryIsBlobCollapsible,
   transcriptEntryIsDisplayOnly,
   transcriptEntryIsRenderable,
@@ -74,6 +75,30 @@ test("transcript entry lineage keys include durable history blob identity", () =
     "blob:agent-a:blob-1:3:assistant",
     "turn::3:assistant",
     "text::3:assistant:expanded blob",
+  ])
+})
+
+test("transcript entry deduplication keys avoid broad turn-only identity", () => {
+  assert.deepEqual(transcriptEntryDeduplicationKeys({
+    role: "assistant",
+    text: "hello",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }), [
+    "text:external_provider_observed::assistant:hello",
+  ])
+
+  assert.deepEqual(transcriptEntryDeduplicationKeys({
+    role: "tool",
+    text: "expanded blob",
+    turnId: 3,
+    historyBlobSourceAgentId: "agent-a",
+    historyBlobSourceId: "blob-1",
+  }), [
+    "blob:agent-a:blob-1:3:tool",
+    "text::3:tool:expanded blob",
   ])
 })
 
@@ -148,5 +173,56 @@ test("transcript entry lineage prepending skips duplicates without dropping uniq
     "older unique",
     "toggle",
     "current duplicate",
+  ])
+})
+
+test("transcript entry lineage prepending preserves distinct external blobs in the same turn", () => {
+  const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
+    role: "assistant",
+    text: "first assistant blob",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }, {
+    role: "assistant",
+    text: "second assistant blob",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }], [{
+    role: "assistant",
+    text: "second assistant blob",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }])
+
+  assert.deepEqual(entries.map((entry) => entry.text), [
+    "first assistant blob",
+    "second assistant blob",
+  ])
+})
+
+test("transcript entry lineage prepending preserves distinct ordinary blobs in the same turn", () => {
+  const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
+    role: "tool",
+    text: "first tool result",
+    turnId: 7,
+  }, {
+    role: "tool",
+    text: "second tool result",
+    turnId: 7,
+  }], [{
+    role: "tool",
+    text: "second tool result",
+    turnId: 7,
+  }])
+
+  assert.deepEqual(entries.map((entry) => entry.text), [
+    "first tool result",
+    "second tool result",
   ])
 })
