@@ -7,7 +7,7 @@ import {
   formatAgentSubstituteSummary as formatSharedAgentSubstituteSummary,
   type AgentInstance as SharedAgentInstance,
 } from "@arroba/kernel-client"
-import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
 
 type FooterTone = "info" | "error"
 

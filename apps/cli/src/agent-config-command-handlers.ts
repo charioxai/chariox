@@ -2,7 +2,7 @@ import type {
   AgentInstance,
   RuntimeSession,
 } from "./cli-types.js"
-import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"

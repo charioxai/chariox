@@ -12,7 +12,7 @@ import type {
   ExtensionKind,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
 import {
   formatAgentExtensionGrants as formatSharedAgentExtensionGrants,
   formatHomeExtensionAuditEvents,

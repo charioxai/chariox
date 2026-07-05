@@ -6,7 +6,7 @@ import type {
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
-import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
 import {
   formatAgentInspectSummary as formatSharedAgentInspectSummary,
   formatAgentListSummary as formatSharedAgentListSummary,

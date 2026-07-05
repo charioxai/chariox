@@ -24,7 +24,7 @@ import {
 import {
   resolveSessionAgentReference,
   type ResolvedAgentReference,
-} from "./session-agent-resolver.js"
+} from "@arroba/kernel-client/session-agent-resolver"
 import {
   isBackendProviderId,
   normalizeBackendProviderId,
