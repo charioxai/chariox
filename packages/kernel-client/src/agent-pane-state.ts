@@ -7,6 +7,8 @@ import {
   stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
   transcriptEntriesShareRenderableLineage,
+  type TranscriptLineageEntry,
+  type TranscriptRoleEntry,
 } from "./transcript-entry-lineage.js"
 import { transcriptRetentionSlice } from "./transcript-entry-state.js"
 
@@ -17,19 +19,7 @@ export type AgentPaneSession<TAgent extends { id: string }> = {
   readonly focused_agent_id: string | null
 }
 
-export type AgentPaneLineageEntry = {
-  readonly role: string
-  readonly text: string
-  readonly turnId?: number
-  readonly source?: string | null
-  readonly externalProvider?: string | null
-  readonly externalProviderSessionId?: string | null
-  readonly externalProviderTurnId?: string | null
-  readonly historyBlobId?: string
-  readonly historyBlobAgentId?: string
-  readonly historyBlobSourceId?: string
-  readonly historyBlobSourceAgentId?: string
-}
+export type AgentPaneLineageEntry = TranscriptLineageEntry
 
 export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly historyBlobLoaded?: boolean
@@ -74,7 +64,7 @@ export function shouldRefreshAgentPanesForSessionChange<TAgent extends { id: str
   return options.nextFocusedAgentId !== options.currentFocusedAgentId
 }
 
-export function countRenderablePaneEntries<TEntry extends { role: string }>(
+export function countRenderablePaneEntries<TEntry extends TranscriptRoleEntry>(
   entries: readonly TEntry[],
 ): number {
   return stripTranscriptDisplayOnlyEntries(entries).length
