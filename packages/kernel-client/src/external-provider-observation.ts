@@ -205,6 +205,38 @@ export function mergeExternalProviderObservedHistoryFields<T extends ExternalPro
   return target
 }
 
+export function mergeExternalProviderObservedTranscriptFields<T extends ExternalProviderObservedMutableTranscriptFields>(
+  target: T,
+  older: ExternalProviderObservedTranscriptFields,
+  newer: ExternalProviderObservedTranscriptFields = target,
+): T {
+  if (!sessionHistoryEntryIsExternalProviderObserved(older)) {
+    return target
+  }
+  if (target.externalProvider === undefined && older.externalProvider !== undefined) {
+    target.externalProvider = older.externalProvider
+  }
+  if (target.externalProviderSessionId === undefined && older.externalProviderSessionId !== undefined) {
+    target.externalProviderSessionId = older.externalProviderSessionId
+  }
+  if (target.externalProviderTurnId === undefined && older.externalProviderTurnId !== undefined) {
+    target.externalProviderTurnId = older.externalProviderTurnId
+  }
+  if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
+    target.observedAtMs = older.observedAtMs
+  }
+  if (older.externalObservation !== undefined || newer.externalObservation !== undefined) {
+    const externalObservation = mergeExternalProviderObservation(
+      older.externalObservation,
+      newer.externalObservation,
+    )
+    if (externalObservation !== undefined) {
+      target.externalObservation = externalObservation
+    }
+  }
+  return target
+}
+
 export type ExternalProviderObservedKernelFields = {
   readonly kind?: string | null | undefined
   readonly source?: string | null | undefined
@@ -222,6 +254,23 @@ export type ExternalProviderObservedMutableKernelFields = {
   external_provider_turn_id?: string | null | undefined
   observed_at_ms?: number | null | undefined
   external_observation?: SessionHistoryExternalObservation | null | undefined
+}
+
+export type ExternalProviderObservedTranscriptFields = {
+  readonly source?: string | null | undefined
+  readonly externalProvider?: string | null | undefined
+  readonly externalProviderSessionId?: string | null | undefined
+  readonly externalProviderTurnId?: string | null | undefined
+  readonly observedAtMs?: number | null | undefined
+  readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
+}
+
+export type ExternalProviderObservedMutableTranscriptFields = {
+  externalProvider?: string | null | undefined
+  externalProviderSessionId?: string | null | undefined
+  externalProviderTurnId?: string | null | undefined
+  observedAtMs?: number | null | undefined
+  externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
 
 export type ExternalProviderObservedStatusSignalFields = Pick<

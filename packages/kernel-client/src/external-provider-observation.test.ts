@@ -13,6 +13,7 @@ import {
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservedSource,
+  mergeExternalProviderObservedTranscriptFields,
   mergeExternalProviderObservation,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
@@ -456,6 +457,45 @@ test("external provider observed history field merge lets settlement override pa
   assert.deepEqual(target.external_observation, {
     settles_active_prompt: true,
     passive_telemetry: false,
+  })
+})
+
+test("external provider observed transcript field merge preserves identity and settlement metadata", () => {
+  const target: {
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+    externalObservation?: { settles_active_prompt: boolean; passive_telemetry: boolean }
+  } = {}
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+
+  assert.deepEqual(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
   })
 })
 
