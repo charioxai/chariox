@@ -13,7 +13,10 @@ import {
   ACTIVE_STATUS_FALLBACK,
   normalizeProviderActivityLabel,
 } from "./provider-status.js"
-import { sessionProjectedPromptActivityForAgent } from "./session-agent-prompt-state.js"
+import {
+  sessionProjectedPromptActivityForAgent,
+  sessionPromptStateRecordForAgent,
+} from "./session-agent-prompt-state.js"
 
 export type AgentPromptStateLike = {
   readonly active_prompt?: unknown | null
@@ -189,10 +192,27 @@ export function sessionAgentRuntimeState(
   if (!session) {
     return legacyAgentRuntimeState(agent)
   }
-  return agentRuntimeStateFromProjection(agent, {
-    agentActivity: session.agent_activity,
-    promptStates: session.prompt_states,
-  })
+  const projection = sessionProjectedPromptActivityForAgent(session, agent.id)
+  if (projection && projection !== "idle" && projection !== "not_found") {
+    const resolvedStatus = agentRuntimeActivityProjectionResolvedStatus(projection)
+    if (resolvedStatus === "error") {
+      return "Error"
+    }
+    return resolvedStatus === "working" ? "Working" : "Idle"
+  }
+  if (projection === "idle" || projection === "not_found") {
+    return agent.state === "Error" ? "Error" : "Idle"
+  }
+  const promptState = sessionPromptStateRecordForAgent(session, agent.id)
+  if (promptState !== undefined) {
+    if (agent.state === "Error") {
+      return "Error"
+    }
+    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+      ? "Working"
+      : "Idle"
+  }
+  return legacyAgentRuntimeState(agent)
 }
 
 export function sessionAgentRuntimeDisplayState(

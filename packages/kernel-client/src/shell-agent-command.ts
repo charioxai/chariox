@@ -82,6 +82,7 @@ export async function executeAgentCommand(
       return {
         ok: true,
         message: formatAgentListSummary(agents, slices, providerRunContext, {
+          session,
           homeKernelId: session.host_daemon_id ?? null,
           homeMachineId: session.host_machine_id ?? null,
           ownerUserId: session.owner_user_id ?? null,
@@ -109,6 +110,7 @@ export async function executeAgentCommand(
       return {
         ok: true,
         message: formatAgentInspectSummary(agent, slices, error, providerRunContext, {
+          session,
           homeKernelId: session.host_daemon_id ?? null,
           homeMachineId: session.host_machine_id ?? null,
           ownerUserId: session.owner_user_id ?? null,

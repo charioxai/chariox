@@ -93,6 +93,7 @@ export async function handleAgentSlashCommand(
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
       }, {
+        session,
         homeKernelId: session.host_daemon_id ?? null,
         homeMachineId: session.host_machine_id ?? null,
         ownerUserId: session.owner_user_id ?? null,
@@ -130,6 +131,7 @@ export async function handleAgentSlashCommand(
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
       }, {
+        session,
         homeKernelId: session.host_daemon_id ?? null,
         homeMachineId: session.host_machine_id ?? null,
         ownerUserId: session.owner_user_id ?? null,

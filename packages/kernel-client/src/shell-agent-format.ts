@@ -1,6 +1,7 @@
-import type { AgentInstance, SliceRecord } from "./kernel-types.js"
+import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
   agentRuntimeStateFromProjection,
+  sessionAgentRuntimeState,
   type AgentRuntimeProjectionContext,
   type AgentPromptStateLike,
 } from "./session-runtime-status.js"
@@ -22,6 +23,7 @@ import {
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"
 import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
+import { sessionAgentBusyForProviderRunRecovery } from "./session-prompt-work.js"
 
 export type ShellAgentProviderRunContext = {
   activeProviderRunId?: string | null
@@ -30,6 +32,7 @@ export type ShellAgentProviderRunContext = {
 }
 
 export type ShellAgentSessionContext = {
+  session?: RuntimeSession | null
   homeKernelId?: string | null
   homeMachineId?: string | null
   ownerUserId?: string | null
@@ -342,21 +345,35 @@ function formatAgentProviderRunNextAction(
     agent,
     activeProviderRunId: context.activeProviderRunId,
     activeProviderRunAgentId: context.activeProviderRunAgentId,
-    agentBusy: agentIsBusyForSessionContext(agent, sessionContext),
+    agentBusy: agentBusyForSessionContext(agent, sessionContext),
   }).map((action) => `provider run next: ${action}`)
+}
+
+function agentBusyForSessionContext(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): boolean | null {
+  if (sessionContext.session) {
+    return sessionAgentBusyForProviderRunRecovery(sessionContext.session, agent.id)
+  }
+  return agentRuntimeStateForSessionContext(agent, sessionContext) === "Working"
 }
 
 function agentIsBusyForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
 ): boolean {
-  return agentRuntimeStateForSessionContext(agent, sessionContext) === "Working"
+  return agentBusyForSessionContext(agent, sessionContext)
+    ?? (agentRuntimeStateForSessionContext(agent, sessionContext) === "Working")
 }
 
 function agentRuntimeStateForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
 ): AgentInstance["state"] {
+  if (sessionContext.session) {
+    return sessionAgentRuntimeState(sessionContext.session, agent)
+  }
   return agentRuntimeStateFromProjection(agent, {
     agentActivity: sessionContext.agentActivity,
     promptStates: sessionContext.promptStates,

@@ -163,6 +163,30 @@ test("session runtime state prefers projected activity over stale legacy state",
   }), "Error")
 })
 
+test("session runtime state ignores activity outside session agents", () => {
+  const session = makeSession({
+    agents: [makeAgent({
+      id: "agent-1",
+      state: "Working",
+      is_processing: true,
+    })],
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentRuntimeState(session, makeAgent({
+    id: "agent-1",
+    state: "Working",
+    is_processing: true,
+  })), "Idle")
+})
+
 test("session runtime display marks unfocused unread idle output as done", () => {
   const session = makeSession({
     focused_agent_id: "agent-focused",
