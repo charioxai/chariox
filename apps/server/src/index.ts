@@ -228,8 +228,8 @@ export async function invokePublicationInput(
 if (import.meta.url === `file://${process.argv[1]}`) {
   const config = await loadGatewayPublicationConfig()
   const { app, logger } = buildServer(config)
-  const host = process.env.HOST ?? "0.0.0.0"
-  const port = Number(process.env.PORT ?? 3000)
+  const host = process.env.HOST ?? process.env.ARROBA_PUBLICATION_HOST ?? "0.0.0.0"
+  const port = Number(process.env.PORT ?? process.env.ARROBA_PUBLICATION_PORT ?? 3000)
   logger.info("starting workflow gateway", { host, port })
 
   app

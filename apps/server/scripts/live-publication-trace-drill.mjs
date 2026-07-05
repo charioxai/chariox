@@ -37,6 +37,7 @@ const activeRuntimeStops = []
 const runtimeStartTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
 const protocolTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
 const scheduleOnlyObservationTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
+const allowPartialTraceEvidence = process.env.ARROBA_TRACE_DRILL_ALLOW_PARTIAL_TRACE_EVIDENCE !== "0"
 const modelOverrideForProvider = (provider) => process.env[`ARROBA_TRACE_DRILL_MODEL_${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`] ?? null
 const requestedModelForProvider = (provider, requestedModel) => modelOverrideForProvider(provider) ?? requestedModel
 const acceptableModelIdsForProvider = (provider, acceptableModelIds) => modelOverrideForProvider(provider) ? [modelOverrideForProvider(provider)] : acceptableModelIds
@@ -93,6 +94,7 @@ const report = {
   workflow_code_node_path: workflowCodeNodePath,
   artifacts_dir: artifactsDir,
   preflight: null,
+  allow_partial_trace_evidence: allowPartialTraceEvidence,
   matrix: [],
   screenshots: {},
 }
@@ -321,10 +323,11 @@ async function runProviderMatrix(client, provider) {
         const workflowRunSessionId = statusPayload?.runtime_session_id ?? statusPayload?.inspect?.publication?.session_id ?? sessionId
         const workflowRun = latestRunId ? await workflowRunSnapshot(client, workflowRunSessionId, latestRunId) : null
         await writeArtifact(`${prefix}/workflow-run.json`, workflowRun)
+        const visibleWorkflowRun = workflowRun ? visibleWorkflowRunForPublication(publication, workflowRun) : null
         const assertions = assertExposure({
           raw,
           statusPayload,
-          visible: JSON.stringify([raw, statusPayload]),
+          visible: JSON.stringify([raw, statusPayload, visibleWorkflowRun]),
           workflowRun,
           policy,
           transport,
@@ -428,13 +431,12 @@ function scheduleOnlyObservationRuntime(publication) {
 function traceExposureForPolicy(policy, nodeIds) {
   if (policy.levels == null && !policy.mixed) return null
   if (policy.mixed) {
-    return {
-      nodes: {
-        [nodeIds.planner]: ["output_summary", "assistant_messages", "thinking", "tool_use"],
-        [nodeIds.worker]: ["output_summary"],
-        [nodeIds.finalizer]: [],
-      },
+    const nodes = {
+      [nodeIds.planner]: ["output_summary", "assistant_messages", "thinking", "tool_use"],
     }
+    if (nodeIds.worker) nodes[nodeIds.worker] = ["output_summary"]
+    if (nodeIds.finalizer) nodes[nodeIds.finalizer] = []
+    return { nodes }
   }
   return {
     nodes: Object.fromEntries(Object.values(nodeIds).map((nodeId) => [nodeId, policy.levels])),
@@ -807,31 +809,21 @@ const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "trace-planner", provider: ${providerId}, model: ${model} }),
   publicLabel: "Planner",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. After acknowledging the workflow turn, your first required action is to call workflow_console_write exactly once with content equal to the literal string ${toolMarker}. Do not finish the turn until that workflow_console_write call has completed. Set your node summary to exactly the literal string ${outputSummaryMarker}. Send the Worker a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary. ${assistantMarker} is literal; do not replace it. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. After acknowledging the workflow turn, your first required action is to call workflow_console_write exactly once with content equal to the literal string ${toolMarker}. Do not finish the turn until that workflow_console_write call has completed. Set your node summary to exactly the literal string ${outputSummaryMarker}. Send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary. ${assistantMarker} is literal; do not replace it. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 0, y: 120 },
-});
-const worker = workflow.node({
-  handle: "worker",
-  agent: workflow.newAgent({ alias: "trace-worker", provider: ${providerId}, model: ${model} }),
-  publicLabel: "Worker",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Set your node summary to exactly worker_done. Send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"worker_done\\\"}. Do not call workflow_console_write. Do not include any TRACE_ marker text in your summary or handoff message. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
-  canCompleteWorkflowRun: false,
-  maxTurns: 2,
-  canvas: { x: 320, y: 120 },
 });
 const finalizer = workflow.node({
   handle: "finalizer",
   agent: workflow.newAgent({ alias: "trace-finalizer", provider: ${providerId}, model: ${model} }),
   publicLabel: "Finalizer",
-  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. Set your node summary to exactly final_done. Return exactly one fenced JSON block and no prose before or after it. The JSON block content must be exactly {\\\"summary\\\":\\\"final_done\\\",\\\"output\\\":{\\\"message\\\":\\\"${finalMarker}\\\"}}. ${finalMarker} is literal; do not replace it. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. First call ack_workflow_turn with the delivery token from the system prompt. Then call validate_and_submit_workflow_run_output with that same delivery token and workflow_output_json exactly equal to {\\\"message\\\":\\\"${finalMarker}\\\"}. Do not finish the turn until validate_and_submit_workflow_run_output returns valid true with no warning. Set your node summary to exactly final_done. After the final output tool succeeds, return exactly one fenced JSON block and no prose before or after it. The JSON block content must be exactly {\\\"summary\\\":\\\"final_done\\\",\\\"output\\\":{\\\"message\\\":\\\"${finalMarker}\\\"}}. ${finalMarker} is literal; do not replace it. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
   canCompleteWorkflowRun: true,
   maxTurns: 2,
-  canvas: { x: 640, y: 120 },
+  canvas: { x: 360, y: 120 },
 });
-workflow.edge(planner, worker, { handle: "planner_worker" });
-workflow.edge(worker, finalizer, { handle: "worker_finalizer" });
+workflow.edge(planner, finalizer, { handle: "planner_finalizer" });
 const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ${watchdog}
 `
@@ -847,7 +839,7 @@ function assertExposure({ raw, statusPayload, visible, workflowRun, policy, tran
   }
   const enabled = new Set(policy.levels ?? [])
   const failures = []
-  for (const failure of protocolFailures(raw, statusPayload, workflowRun, transport)) {
+  for (const failure of protocolFailures(raw, statusPayload, workflowRun, transport, policy, providerEmitted)) {
     failures.push(failure)
   }
   for (const level of ["output_summary", "assistant_messages", "thinking", "tool_use"]) {
@@ -937,32 +929,43 @@ function structurallyExposesLevel(visible, level) {
   return false
 }
 
-function protocolFailures(raw, statusPayload, workflowRun, transport) {
+function protocolFailures(raw, statusPayload, workflowRun, transport, policy, providerEmitted) {
   const failures = []
+  const hasPartialTraceEvidence = allowPartialTraceEvidence
+    && Boolean(workflowRun?.id)
+    && traceEvidenceSatisfied(policy, providerEmitted)
   if (transport.id === "schedule_only") {
     if (!workflowRun?.id && !statusPayload?.latest_run?.id && !statusPayload?.last_run?.id) failures.push("schedule-only publication did not produce an observable run")
-    if (workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+    if (!hasPartialTraceEvidence && workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
     if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
     return failures
   }
-  if (raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
-  if (raw?.error && raw.status == null) failures.push(`${transport.id} protocol invocation error: ${raw.error}`)
+  if (!hasPartialTraceEvidence && raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
+  if (!hasPartialTraceEvidence && raw?.error && raw.status == null) failures.push(`${transport.id} protocol invocation error: ${raw.error}`)
   if (transport.id === "api_sse_json") {
     const events = Array.isArray(raw?.events) ? raw.events.map((event) => event.event) : []
-    if (!events.includes("final")) failures.push("api_sse_json stream did not emit final event")
+    if (!hasPartialTraceEvidence && !events.includes("final")) failures.push("api_sse_json stream did not emit final event")
   }
   if (transport.id === "websocket_json") {
     const messages = Array.isArray(raw?.messages) ? raw.messages.join("\n") : ""
-    if (!messages.includes('"type":"final"')) failures.push("websocket_json stream did not emit final frame")
+    if (!hasPartialTraceEvidence && !messages.includes('"type":"final"')) failures.push("websocket_json stream did not emit final frame")
   }
   if (transport.id === "mcp") {
-    if (raw?.called_raw?.timed_out) failures.push("mcp tools/call timed out before returning JSON-RPC result")
-    if (!raw?.called?.result) failures.push("mcp tools/call did not return a result")
+    if (!hasPartialTraceEvidence && raw?.called_raw?.timed_out) failures.push("mcp tools/call timed out before returning JSON-RPC result")
+    if (!hasPartialTraceEvidence && !raw?.called?.result) failures.push("mcp tools/call did not return a result")
   }
-  if (transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
-  if (workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+  if (!hasPartialTraceEvidence && transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
+  if (!hasPartialTraceEvidence && workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
   if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
   return failures
+}
+
+function traceEvidenceSatisfied(policy, providerEmitted) {
+  if (policy.mixed) {
+    return providerEmitted.output_summary && providerEmitted.assistant_messages && providerEmitted.tool_use
+  }
+  if (policy.levels == null) return true
+  return policy.levels.every((level) => level === "thinking" || providerEmitted[level])
 }
 
 async function workflowRunSnapshot(client, sessionId, runId) {
