@@ -53,6 +53,7 @@ test("cli polling controller keeps provider run on terminal-output miss while pr
   const harness = createHarness({
     providerRun: run,
     sessionState: session({
+      agents: [agent()],
       agent_activity: {
         "agent-1": {
           status: "working",
@@ -309,6 +310,29 @@ function providerRun(
     variant: null,
     usage_tokens_total: null,
     state: "running",
+    ...overrides,
+  }
+}
+
+function agent(
+  overrides: Partial<RuntimeSession["agents"][number]> = {},
+): RuntimeSession["agents"][number] {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "model",
+    worktree_id: "/workspace",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
     ...overrides,
   }
 }

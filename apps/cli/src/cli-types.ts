@@ -25,6 +25,7 @@ import type {
   AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
   AgentRuntimeActivity as KernelAgentRuntimeActivity,
   CompletedGitTurnActionProjection as KernelCompletedGitTurnActionProjection,
+  CaptureScreenshotResult as KernelCaptureScreenshotResult,
   ExternalProviderImportMetadata as KernelExternalProviderImportMetadata,
   ExternalProviderObservedCursor as KernelExternalProviderObservedCursor,
   MetaagentTask as KernelMetaagentTask,
@@ -45,6 +46,7 @@ import type {
   RuntimeInteraction as KernelRuntimeInteraction,
   RuntimeInteractionChoice as KernelRuntimeInteractionChoice,
   RuntimeInteractionCustomChoice as KernelRuntimeInteractionCustomChoice,
+  RuntimeNoticeRecord as KernelRuntimeNoticeRecord,
   RuntimeProviderRun as KernelRuntimeProviderRun,
   ExtensionGrant as KernelExtensionGrant,
   ExtensionKind as KernelExtensionKind,
@@ -63,6 +65,7 @@ import type {
   SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
   SessionInvite as KernelSessionInvite,
   SessionMember as KernelSessionMember,
+  StoredTransferArtifact as KernelStoredTransferArtifact,
   SliceBackupRecord as KernelSliceBackupRecord,
   SliceDisplayEndpoint as KernelSliceDisplayEndpoint,
   SliceLocalDockerPorts as KernelSliceLocalDockerPorts,
@@ -335,21 +338,11 @@ export type ProviderLogoutResult = KernelProviderLogoutResult
 
 export type PromptAttachmentPart = KernelPromptAttachmentPart
 
-export type StoredTransferArtifact = {
-  artifact_id: string
-  stored_path: string
-  display_name: string
-}
+export type StoredTransferArtifact = KernelStoredTransferArtifact
 
-export type CaptureScreenshotResult = {
-  status: string
-  artifact_path: string | null
-  message: string
-}
+export type CaptureScreenshotResult = KernelCaptureScreenshotResult
 
-export type RuntimeNoticeRecord = {
-  message: string
-}
+export type RuntimeNoticeRecord = KernelRuntimeNoticeRecord
 
 export type TerminalOutputRecord = KernelTerminalOutputRecord
 
