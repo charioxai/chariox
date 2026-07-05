@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
-import type { AgentBusyState } from "./session-chrome-state.js"
+import type { SessionAgentBusyState } from "@arroba/kernel-client/session-runtime-status"
 
 test("focused status badge controller projects attached busy state", () => {
   let busy = false
@@ -23,7 +23,7 @@ test("focused status badge controller projects attached busy state", () => {
 
 test("focused status badge controller projects disconnected and multi-agent states", () => {
   let disconnected = true
-  let agents: AgentBusyState[] = [
+  let agents: SessionAgentBusyState[] = [
     { id: "a", busy: true },
     { id: "b", busy: false },
   ]

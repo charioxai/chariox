@@ -2,7 +2,7 @@ import type {
   RuntimeProviderRun,
   TranscriptEntry,
 } from "./cli-types.js"
-import type { FocusedStatusBadge } from "./session-chrome-state.js"
+import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 
 type RuntimeDebugLogSink = {
   debug?: (message: string, fields?: Record<string, unknown>) => void
@@ -77,7 +77,7 @@ export function createCliRuntimeDebugLogger(deps: CliRuntimeDebugLoggerDeps) {
     })
   }
 
-  const logFocusedBadgeChange = (badge: FocusedStatusBadge) => {
+  const logFocusedBadgeChange = (badge: SessionFocusedStatusBadge) => {
     const nextState = `${badge.label}:${badge.parts.map((part) => `${part.label}:${part.tone}`).join("|")}`
     if (lastFocusedBadgeState === nextState) {
       return

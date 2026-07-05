@@ -21,7 +21,7 @@ import {
 import { getProviderActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyProviderRunProfileToSession,
-} from "./session-chrome-state.js"
+} from "@arroba/kernel-client/prompt-provider-selection"
 import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { isSessionUnavailableError } from "./session-errors.js"
 import { createTerminalResizeController } from "./terminal-resize-controller.js"

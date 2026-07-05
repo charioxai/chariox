@@ -1,137 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
+import type { AgentInstance, RuntimeProviderRun } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
-  applyProviderRunProfileToSession,
-  deriveAttachedFooterSummary,
-  deriveCurrentProviderSelection,
   derivePromptMetaState,
   derivePromptUsageState,
-  deriveVisibleActivityLabel,
 } from "./session-chrome-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-
-test("applyProviderRunProfileToSession overlays accepted run profile onto the matching agent", () => {
-  const projected = applyProviderRunProfileToSession(
-    session({
-      agents: [
-        agent("agent-1", { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" }),
-        agent("agent-2", { provider: "codex", model: "gpt-5.4", effort: "medium" }),
-      ],
-    }),
-    providerRun({
-      agent_instance_id: "agent-1",
-      provider: "opencode",
-      model: "opencode/gpt-5.4",
-      variant: "low",
-    }),
-  )
-
-  assert.equal(projected.agents[0]?.effort, "low")
-  assert.equal(projected.agents[0]?.model, "opencode/gpt-5.4")
-  assert.equal(projected.agents[1]?.effort, "medium")
-})
-
-test("deriveCurrentProviderSelection prefers provider run and falls back to waiting-room values", () => {
-  assert.deepEqual(
-    deriveCurrentProviderSelection({
-      providerRun: providerRun({
-        provider: "openai",
-        model: "opencode/gpt-5.4",
-        variant: "low",
-      }),
-      waitingRoomState: waitingRoomState({
-        modelId: "anthropic/claude-sonnet-4",
-        effort: "medium",
-      }),
-      defaultModel: "default",
-      defaultEffort: "high",
-    }),
-    {
-      provider: "openai",
-      model: "opencode/gpt-5.4",
-      effort: "low",
-    },
-  )
-
-  assert.deepEqual(
-    deriveCurrentProviderSelection({
-      providerRun: null,
-      focusedAgent: agent("agent-a", {
-        provider: "codex",
-        model: "openai/gpt-5.3-codex",
-        effort: "medium",
-      }),
-      waitingRoomState: waitingRoomState({
-        modelId: "anthropic/claude-sonnet-4",
-        effort: "medium",
-      }),
-      defaultModel: "default",
-      defaultEffort: "high",
-    }),
-    {
-      provider: "codex",
-      model: "openai/gpt-5.3-codex",
-      effort: "medium",
-    },
-  )
-})
-
-test("deriveCurrentProviderSelection does not infer focused agent ownership from provider run", () => {
-  assert.deepEqual(
-    deriveCurrentProviderSelection({
-      providerRun: providerRun({
-        agent_instance_id: null,
-        provider: "openai",
-        model: "opencode/gpt-5.4",
-        variant: "low",
-      }),
-      focusedAgent: agent("agent-a", {
-        provider: "codex",
-        model: "openai/gpt-5.3-codex",
-        effort: "medium",
-      }),
-      waitingRoomState: waitingRoomState({
-        providerId: "claude-p",
-        modelId: "anthropic/claude-sonnet-4",
-        effort: "high",
-      }),
-      defaultModel: "default",
-      defaultEffort: "normal",
-    }),
-    {
-      provider: "codex",
-      model: "openai/gpt-5.3-codex",
-      effort: "medium",
-    },
-  )
-
-  assert.deepEqual(
-    deriveCurrentProviderSelection({
-      providerRun: providerRun({
-        agent_instance_id: "agent-b",
-        provider: "openai",
-        model: "opencode/gpt-5.4",
-        variant: "low",
-      }),
-      focusedAgent: agent("agent-a", {
-        provider: "codex",
-        model: "openai/gpt-5.3-codex",
-        effort: "medium",
-      }),
-      waitingRoomState: waitingRoomState(),
-      defaultModel: "default",
-      defaultEffort: "normal",
-    }),
-    {
-      provider: "codex",
-      model: "openai/gpt-5.3-codex",
-      effort: "medium",
-    },
-  )
-})
 
 test("derivePromptMetaState formats provider, model, and effort from the current selection", () => {
   const parts = derivePromptMetaState({
@@ -191,111 +67,6 @@ test("derivePromptUsageState resolves usage metadata from the provider catalog",
   assert.equal(otherAgentUsage, null)
 })
 
-test("deriveAttachedFooterSummary includes view mode and hotkey hint without focused agent details", () => {
-  const summary = deriveAttachedFooterSummary({
-    session: session({
-      alias: "feature-refactor",
-      attachment_ids: ["cli-1", "cli-2"],
-      focused_agent_id: "agent-b",
-      agents: [
-        agent("agent-a", { agent_ref: "main" }),
-        agent("agent-b", {
-          agent_ref: "review",
-          alias: "QA",
-          is_processing: true,
-        }),
-      ],
-    }),
-    connectedClientCount: 2,
-    multiAgentMode: true,
-    responseLayout: "split",
-    sessionStatusMode: "working",
-    hotkeyToggleLabel: "Ctrl+T",
-  })
-
-  assert.equal(
-    summary,
-    "Session feature-refactor • 2 CLIs connected • 2 visible agents • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys",
-  )
-})
-
-test("deriveAttachedFooterSummary shows aggregate collaborator agents without identities", () => {
-  const summary = deriveAttachedFooterSummary({
-    session: session({
-      alias: "shared-review",
-      agents: [agent("agent-a")],
-      collaboration_agent_counts: {
-        owned_agent_count: 1,
-        other_user_agent_count: 3,
-        total_agent_count: 4,
-        collaborator_count: 2,
-      },
-    }),
-    connectedClientCount: 3,
-    multiAgentMode: false,
-    responseLayout: "individual",
-    sessionStatusMode: "idle",
-    hotkeyToggleLabel: "Ctrl+T",
-  })
-
-  assert.equal(
-    summary,
-    "Session shared-review • 3 CLIs connected • 1 visible agent • 3 collaborator agents • 2 collaborators • Ctrl+T hotkeys",
-  )
-  assert.doesNotMatch(summary, /user-|agent-a|owner/)
-})
-
-test("deriveAttachedFooterSummary includes workspace live sync mode and footer state", () => {
-  const summary = deriveAttachedFooterSummary({
-    session: session({ alias: "sync-review", agents: [agent("agent-a")] }),
-    connectedClientCount: 1,
-    multiAgentMode: false,
-    responseLayout: "individual",
-    sessionStatusMode: "idle",
-    hotkeyToggleLabel: "Ctrl+T",
-    workspaceLiveSyncStatus: workspaceLiveSyncStatus("conflict"),
-  })
-
-  assert.equal(
-    summary,
-    "Session sync-review • 1 CLI connected • 1 visible agent • sync managed conflict • Ctrl+T hotkeys",
-  )
-})
-
-test("deriveAttachedFooterSummary labels unrestricted workspace live sync as off", () => {
-  const summary = deriveAttachedFooterSummary({
-    session: session({ alias: "sync-off", agents: [agent("agent-a")] }),
-    connectedClientCount: 1,
-    multiAgentMode: false,
-    responseLayout: "individual",
-    sessionStatusMode: "idle",
-    hotkeyToggleLabel: "Ctrl+T",
-    workspaceLiveSyncStatus: workspaceLiveSyncStatus("off"),
-  })
-
-  assert.equal(
-    summary,
-    "Session sync-off • 1 CLI connected • 1 visible agent • sync off • Ctrl+T hotkeys",
-  )
-})
-
-test("deriveVisibleActivityLabel prefers active tool activity over provider activity", () => {
-  assert.equal(
-    deriveVisibleActivityLabel({
-      providerActivityLabel: "thinking",
-      activeToolLabels: ["reading", "patching"],
-    }),
-    "patching",
-  )
-  assert.equal(
-    deriveVisibleActivityLabel({
-      providerActivityLabel: "thinking",
-      activeToolLabels: [],
-    }),
-    "thinking",
-  )
-})
-
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
@@ -331,30 +102,6 @@ function providerRun(overrides: Partial<RuntimeProviderRun> = {}): RuntimeProvid
   }
 }
 
-function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
-  return {
-    id: "session-1",
-    alias: null,
-    workspace_id: "/workspace",
-    worktree_id: "/workspace/tree",
-    created_at_ms: 1,
-    status: "Created",
-    active_provider_run_id: null,
-    attachment_ids: [],
-    active_prompt: null,
-    queued_prompts: [],
-    focused_agent_id: null,
-    max_agents: 6,
-    agents: [],
-    config_state: {
-      version: 0,
-      values: {},
-      updated_by_attachment_id: null,
-    },
-    ...overrides,
-  }
-}
-
 function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id,
@@ -373,23 +120,6 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     created_at_ms: 1,
     last_activity_at_ms: 1,
     ...overrides,
-  }
-}
-
-function workspaceLiveSyncStatus(
-  footerState: WorkspaceLiveSyncStatus["footer_state"],
-): WorkspaceLiveSyncStatus {
-  return {
-    session_id: "session-1",
-    mode: footerState === "off" ? "unrestricted" : "managed",
-    footer_state: footerState,
-    sync_groups: [],
-    targets: [],
-    conflicts: [],
-    ignore: {
-      rules: [],
-      force_excludes: [],
-    },
   }
 }
 

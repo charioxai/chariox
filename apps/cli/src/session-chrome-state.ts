@@ -1,23 +1,10 @@
-import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
+import type { AgentInstance, RuntimeProviderRun } from "./cli-types.js"
 import {
-  applyProviderRunProfileToSession as sharedApplyProviderRunProfileToSession,
   derivePromptProviderSelection,
   providerRunForPromptSelection,
   resolveProviderModelContextLimit,
   type PromptProviderSelectionOptions,
-  type PromptProviderSelection,
 } from "@arroba/kernel-client/prompt-provider-selection"
-import {
-  sessionAttachedFooterSummary,
-} from "@arroba/kernel-client/shell-session-footer"
-import {
-  type SessionAgentBusyState,
-  type SessionFocusedStatusBadge,
-  type SessionStatusMode as KernelSessionStatusMode,
-  type SessionStatusBadgePart,
-} from "@arroba/kernel-client/session-runtime-status"
-import { deriveVisibleActivityLabel as sharedDeriveVisibleActivityLabel } from "@arroba/kernel-client/provider-status"
-import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
   formatPromptMetaParts,
@@ -26,10 +13,6 @@ import {
   type PromptUsageMeta,
 } from "./prompt-meta.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-
-export type SessionStatusMode = KernelSessionStatusMode
-export type StatusBadgePart = SessionStatusBadgePart
-export type FocusedStatusBadge = SessionFocusedStatusBadge
 
 type ProviderSelectionOptions = {
   providerRun: RuntimeProviderRun | null
@@ -40,19 +23,8 @@ type ProviderSelectionOptions = {
   defaultEffort: string
 }
 
-export function deriveCurrentProviderSelection(options: ProviderSelectionOptions): PromptProviderSelection {
-  return derivePromptProviderSelection(options as PromptProviderSelectionOptions)
-}
-
-export function applyProviderRunProfileToSession(
-  session: RuntimeSession,
-  providerRun: RuntimeProviderRun | null,
-): RuntimeSession {
-  return sharedApplyProviderRunProfileToSession(session, providerRun)
-}
-
 export function derivePromptMetaState(options: ProviderSelectionOptions): PromptMetaPart[] {
-  const selection = deriveCurrentProviderSelection(options)
+  const selection = derivePromptProviderSelection(options as PromptProviderSelectionOptions)
   return formatPromptMetaParts(
     selection.provider,
     selection.model,
@@ -76,26 +48,4 @@ export function derivePromptUsageState(options: {
     resolveProviderModelContextLimit(options.catalog, run.provider, run.model),
     12,
   )
-}
-
-export function deriveVisibleActivityLabel(options: {
-  providerActivityLabel: string | null
-  activeToolLabels: Iterable<string>
-}) {
-  return sharedDeriveVisibleActivityLabel(options)
-}
-
-export type AgentBusyState = SessionAgentBusyState
-
-export function deriveAttachedFooterSummary(options: {
-  session: RuntimeSession
-  connectedClientCount: number
-  multiAgentMode: boolean
-  responseLayout: MultiAgentResponseLayout
-  sessionStatusMode: SessionStatusMode
-  hotkeyToggleLabel: string
-  focusedHasPromptWork?: boolean
-  workspaceLiveSyncStatus?: WorkspaceLiveSyncStatus | null
-}): string {
-  return sessionAttachedFooterSummary(options)
 }

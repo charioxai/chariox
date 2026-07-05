@@ -8,10 +8,12 @@ import type {
   PromptUsageMeta,
 } from "./prompt-meta.js"
 import {
-  deriveCurrentProviderSelection,
   derivePromptMetaState,
   derivePromptUsageState,
 } from "./session-chrome-state.js"
+import {
+  derivePromptProviderSelection,
+} from "@arroba/kernel-client/prompt-provider-selection"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type ProviderPromptProjectionDefaults = {
@@ -45,7 +47,7 @@ export function createProviderPromptProjectionController(
       : options
   }
 
-  const currentProviderSelection = () => deriveCurrentProviderSelection(providerSelectionOptions())
+  const currentProviderSelection = () => derivePromptProviderSelection(providerSelectionOptions())
 
   return {
     currentProviderSelection,

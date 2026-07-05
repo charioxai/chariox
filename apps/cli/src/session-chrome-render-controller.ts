@@ -4,9 +4,11 @@ import type { FooterFlash } from "./footer-flash-controller.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { PromptMetaPart } from "./prompt-meta.js"
 import {
-  deriveAttachedFooterSummary,
-  type SessionStatusMode,
-} from "./session-chrome-state.js"
+  sessionAttachedFooterSummary,
+} from "@arroba/kernel-client/shell-session-footer"
+import type {
+  SessionStatusMode,
+} from "@arroba/kernel-client/session-runtime-status"
 import { compactFooterSummary } from "./footer-summary-compact.js"
 import {
   SESSION_NEW_FOOTER_HINT,
@@ -63,7 +65,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
   const apply = () => {
     const footerFlash = deps.getFooterFlash()
     const footerSummary = deps.isAttached()
-      ? deriveAttachedFooterSummary({
+      ? sessionAttachedFooterSummary({
         session: deps.getSession(),
         connectedClientCount: deps.getConnectedClientCount(),
         multiAgentMode: deps.getMultiAgentMode(),

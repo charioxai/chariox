@@ -3,7 +3,7 @@ import {
   type TextRenderable,
 } from "@opentui/core"
 
-import type { StatusBadgePart } from "./session-chrome-state.js"
+import type { SessionStatusBadgePart } from "@arroba/kernel-client/session-runtime-status"
 import type { StatusBadgeTone } from "./split-pane-footer.js"
 import { theme } from "./theme.js"
 
@@ -19,7 +19,7 @@ export function renderStatusBadgeLabel(
 
 export function renderStatusBadgeParts(
   texts: TextRenderable[],
-  parts: StatusBadgePart[],
+  parts: SessionStatusBadgePart[],
   minWidth: number,
   animationFrame: number,
 ): void {
@@ -46,7 +46,7 @@ export function renderStatusBadgeParts(
   }
 }
 
-function badgeCells(parts: StatusBadgePart[]): Array<{
+function badgeCells(parts: SessionStatusBadgePart[]): Array<{
   character: string
   tone: StatusBadgeTone
   partIndex: number

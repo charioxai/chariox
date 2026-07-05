@@ -1,15 +1,15 @@
-import type { FocusedStatusBadge } from "./session-chrome-state.js"
+import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 
 export type StatusIndicatorControllerDeps<TBox = unknown> = {
   isAttached: () => boolean
-  getBadge: () => FocusedStatusBadge | null
+  getBadge: () => SessionFocusedStatusBadge | null
   getAnimationFrame: () => number
   resetFocusedBadgeChange: () => void
-  logFocusedBadgeChange: (badge: FocusedStatusBadge) => void
+  logFocusedBadgeChange: (badge: SessionFocusedStatusBadge) => void
   renderIndicator: (options: {
     box: TBox | undefined
     attached: boolean
-    badge: FocusedStatusBadge | null
+    badge: SessionFocusedStatusBadge | null
     animationFrame: number
   }) => void
 }

@@ -4,7 +4,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 
-import type { FocusedStatusBadge } from "./session-chrome-state.js"
+import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import { renderStatusBadgeParts } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
@@ -19,7 +19,7 @@ type StatusIndicatorRenderOptions = {
   box: BoxRenderable | undefined
   state: StatusIndicatorRenderState
   attached: boolean
-  badge: FocusedStatusBadge | null
+  badge: SessionFocusedStatusBadge | null
   badgeWidth: number
   animationFrame: number
 }

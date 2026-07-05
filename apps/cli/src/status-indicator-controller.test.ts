@@ -1,16 +1,16 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { FocusedStatusBadge } from "./session-chrome-state.js"
+import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import { createStatusIndicatorController } from "./status-indicator-controller.js"
 
 test("status indicator controller logs and renders attached badges", () => {
   const badge = focusedBadge("WORKING")
-  const logged: FocusedStatusBadge[] = []
+  const logged: SessionFocusedStatusBadge[] = []
   const rendered: Array<{
     box: string | undefined
     attached: boolean
-    badge: FocusedStatusBadge | null
+    badge: SessionFocusedStatusBadge | null
     animationFrame: number
   }> = []
   const controller = createStatusIndicatorController<string>({
@@ -38,7 +38,7 @@ test("status indicator controller logs and renders attached badges", () => {
 test("status indicator controller clears badge state when detached or badge-less", () => {
   let attached = false
   let resetCount = 0
-  const rendered: Array<{ attached: boolean; badge: FocusedStatusBadge | null }> = []
+  const rendered: Array<{ attached: boolean; badge: SessionFocusedStatusBadge | null }> = []
   const controller = createStatusIndicatorController({
     isAttached: () => attached,
     getBadge: () => focusedBadge("IGNORED"),
@@ -79,7 +79,7 @@ test("status indicator controller clears badge state when detached or badge-less
   ])
 })
 
-function focusedBadge(label: string): FocusedStatusBadge {
+function focusedBadge(label: string): SessionFocusedStatusBadge {
   return {
     label,
     tone: "working",

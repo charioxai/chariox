@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import test from "node:test"
 
 import type { RuntimeProviderRun, TranscriptEntry } from "./cli-types.js"
-import type { FocusedStatusBadge } from "./session-chrome-state.js"
+import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import { createCliRuntimeDebugLogger } from "./cli-runtime-debug-logger.js"
 
 test("runtime debug logger gates view debug fields behind the debug flag", () => {
@@ -97,7 +97,7 @@ function providerRun(): RuntimeProviderRun {
   } as unknown as RuntimeProviderRun
 }
 
-function focusedBadge(label: string, tone: "idle" | "working"): FocusedStatusBadge {
+function focusedBadge(label: string, tone: "idle" | "working"): SessionFocusedStatusBadge {
   return {
     label,
     tone,

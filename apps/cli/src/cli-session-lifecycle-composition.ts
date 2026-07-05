@@ -26,7 +26,7 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-} from "./session-chrome-state.js"
+} from "@arroba/kernel-client/prompt-provider-selection"
 import {
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
