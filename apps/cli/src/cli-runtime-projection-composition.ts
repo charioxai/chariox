@@ -5,10 +5,11 @@ import {
   createCliRuntimeDebugLogger,
 } from "./cli-runtime-debug-logger.js"
 import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
-import {
-  createInteractionProjectionController,
-} from "./interaction-projection-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
+import {
+  sessionActiveInteractionForAgent,
+  sessionFocusedInteraction,
+} from "@arroba/kernel-client/session-runtime-lookup"
 import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
@@ -69,10 +70,9 @@ export function createCliRuntimeProjectionComposition(
   const multiAgentMode = responsePaneProjectionController.multiAgentMode
   const workflowScreenShowing = responsePaneProjectionController.workflowScreenShowing
   const splitAgentResponseMode = responsePaneProjectionController.splitAgentResponseMode
-  const interactionProjectionController = createInteractionProjectionController({
-    getSession: deps.sessionState,
-    getFocusedAgentId: focusedAgentId,
-  })
+  const activeInteractionForAgent = (agentId: string | null | undefined) =>
+    sessionActiveInteractionForAgent(deps.sessionState(), agentId)
+  const focusedAgentInteraction = () => sessionFocusedInteraction(deps.sessionState())
   const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
     workflowScreenActive: workflowScreenShowing(),
     workflows: deps.sessionState().workflows ?? [],
@@ -148,8 +148,8 @@ export function createCliRuntimeProjectionComposition(
     multiAgentMode,
     workflowScreenShowing,
     splitAgentResponseMode,
-    activeInteractionForAgent: interactionProjectionController.activeInteractionForAgent,
-    focusedAgentInteraction: interactionProjectionController.focusedAgentInteraction,
+    activeInteractionForAgent,
+    focusedAgentInteraction,
     workflowPromptState,
     responsePaneSelection,
     responsePaneAgentSignature,
