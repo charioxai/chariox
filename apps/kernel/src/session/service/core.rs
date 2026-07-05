@@ -1318,11 +1318,13 @@ fn workflow_publication_runtime_observability(
         .collect::<Vec<_>>();
     runs.sort_by_key(|run| std::cmp::Reverse(workflow_run_sort_time(run)));
 
-    let latest_run = runs.first().and_then(|run| serde_json::to_value(run).ok());
+    let latest_run = runs
+        .first()
+        .and_then(|run| workflow_publication_visible_run_value(publication, run));
     let recent_runs = runs
         .iter()
         .take(5)
-        .filter_map(|run| serde_json::to_value(run).ok())
+        .filter_map(|run| workflow_publication_visible_run_value(publication, run))
         .collect::<Vec<_>>();
     let latest_output = runs.iter().find_map(workflow_run_latest_output_value);
 
@@ -1380,6 +1382,148 @@ fn workflow_run_sort_time(run: &WorkflowRun) -> u64 {
         .iter()
         .find_map(|field| value.get(*field).and_then(Value::as_u64))
         .unwrap_or(0)
+}
+
+fn workflow_publication_visible_run_value(
+    publication: &WorkflowPublicationDefinition,
+    run: &WorkflowRun,
+) -> Option<Value> {
+    let value = serde_json::to_value(run).ok()?;
+    let policy = publication
+        .trace_exposure()
+        .and_then(|trace| trace.get("nodes"))
+        .and_then(Value::as_object);
+    let mut visible = serde_json::Map::new();
+    copy_json_fields(
+        &mut visible,
+        &value,
+        &[
+            "id",
+            "status",
+            "workflow_id",
+            "endpoint_id",
+            "publication_invocation",
+            "completed_by_node_run_id",
+            "created_at_ms",
+            "completed_at_ms",
+            "final_output",
+            "intermediate_outputs",
+        ],
+    );
+    if let Some(node_runs) = value.get("node_runs").and_then(Value::as_array) {
+        visible.insert(
+            "node_runs".to_string(),
+            Value::Array(
+                node_runs
+                    .iter()
+                    .filter_map(|node_run| visible_node_run_value(node_run, policy))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        let visible_messages = messages
+            .iter()
+            .filter(|message| {
+                let Some(source_node_run_id) =
+                    message.get("source_node_run_id").and_then(Value::as_str)
+                else {
+                    return false;
+                };
+                node_id_for_node_run(&value, source_node_run_id).is_some_and(|node_id| {
+                    trace_level_visible(policy, node_id, "assistant_messages")
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        visible.insert("messages".to_string(), Value::Array(visible_messages));
+    }
+    Some(Value::Object(visible))
+}
+
+fn visible_node_run_value(
+    node_run: &Value,
+    policy: Option<&serde_json::Map<String, Value>>,
+) -> Option<Value> {
+    let node_id = node_run.get("node_id").and_then(Value::as_str)?;
+    let mut visible = serde_json::Map::new();
+    copy_json_fields(
+        &mut visible,
+        node_run,
+        &["id", "node_id", "agent_id", "status", "completed_at_ms"],
+    );
+    if trace_level_visible(policy, node_id, "output_summary") {
+        copy_json_fields(&mut visible, node_run, &["summary"]);
+        if let Some(summary) = node_run
+            .get("completion")
+            .and_then(|completion| completion.get("summary"))
+            .cloned()
+        {
+            let mut completion = serde_json::Map::new();
+            completion.insert("summary".to_string(), summary);
+            visible.insert("completion".to_string(), Value::Object(completion));
+        }
+    }
+    if trace_level_visible(policy, node_id, "assistant_messages") {
+        if let Some(output) = node_run
+            .get("completion")
+            .and_then(|completion| completion.get("output"))
+            .cloned()
+        {
+            let completion = visible
+                .entry("completion".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(completion) = completion.as_object_mut() {
+                completion.insert("output".to_string(), output);
+            }
+        }
+    }
+    if trace_level_visible(policy, node_id, "thinking") {
+        copy_json_fields(&mut visible, node_run, &["thinking_traces"]);
+    }
+    if trace_level_visible(policy, node_id, "tool_use") {
+        let runtime_tool_calls = node_run
+            .get("turn_envelope")
+            .and_then(|envelope| envelope.get("runtime_tool_calls"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let mut turn_envelope = serde_json::Map::new();
+        turn_envelope.insert("runtime_tool_calls".to_string(), runtime_tool_calls);
+        visible.insert("turn_envelope".to_string(), Value::Object(turn_envelope));
+    }
+    Some(Value::Object(visible))
+}
+
+fn trace_level_visible(
+    policy: Option<&serde_json::Map<String, Value>>,
+    node_id: &str,
+    level: &str,
+) -> bool {
+    policy
+        .and_then(|nodes| nodes.get(node_id))
+        .and_then(Value::as_array)
+        .is_some_and(|levels| {
+            levels
+                .iter()
+                .any(|candidate| candidate.as_str() == Some(level))
+        })
+}
+
+fn node_id_for_node_run<'a>(run: &'a Value, node_run_id: &str) -> Option<&'a str> {
+    run.get("node_runs")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|node_run| node_run.get("id").and_then(Value::as_str) == Some(node_run_id))?
+        .get("node_id")
+        .and_then(Value::as_str)
+}
+
+fn copy_json_fields(target: &mut serde_json::Map<String, Value>, source: &Value, fields: &[&str]) {
+    for field in fields {
+        if let Some(value) = source.get(*field) {
+            target.insert((*field).to_string(), value.clone());
+        }
+    }
 }
 
 fn workflow_run_latest_output_value(run: &WorkflowRun) -> Option<Value> {

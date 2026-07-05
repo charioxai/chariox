@@ -32,6 +32,7 @@ const requestedPolicies = csvArg("--policies")
 const activeRuntimeStops = []
 const runtimeStartTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
 const protocolTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
+const scheduleOnlyObservationTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
 const providerSpecs = [
   {
     provider: "opencode",
@@ -211,11 +212,15 @@ async function runProviderMatrix(client, provider) {
           `invoking ${transport.id} publication ${publication.id}`,
         )
         await writeArtifact(`${prefix}/raw-response.json`, raw)
-        const statusPayload = runtime.local_url
+        let statusPayload = runtime.local_url
           ? await waitForPublicationStatus(runtime.local_url, transport)
           : transport.id === "schedule_only"
             ? await waitForScheduleOnlyPublicationStatus(client, sessionId, publication.id)
             : null
+        if (transport.id === "schedule_only" && !latestRunIdFromStatus(statusPayload)) {
+          const stopped = await stopRuntime(client, sessionId, matrixEntry, prefix)
+          if (stopped) statusPayload = statusPayloadFromRuntimeControl(stopped, statusPayload)
+        }
         await writeArtifact(`${prefix}/publication-status.json`, statusPayload)
         const latestRunId = latestRunIdFromStatus(statusPayload) ?? raw.workflow_run_id ?? null
         const workflowRunSessionId = statusPayload?.runtime_session_id ?? statusPayload?.inspect?.publication?.session_id ?? sessionId
@@ -254,7 +259,10 @@ async function runProviderMatrix(client, provider) {
 }
 
 async function workflowForTransport(client, sessionId, provider, transport, appliedByTransport) {
-  const cached = appliedByTransport.get(transport.id)
+  const cacheKey = transport.id === "schedule_only"
+    ? null
+    : transport.id
+  const cached = cacheKey ? appliedByTransport.get(cacheKey) : null
   if (cached) return cached
   const workflowSource = workflowCodeSource(provider, transport)
   const applied = await unwrap(
@@ -267,7 +275,7 @@ async function workflowForTransport(client, sessionId, provider, transport, appl
     endpointId: applied.result.apply.endpoint_ids.entry,
     nodeIds: applied.result.apply.node_ids,
   }
-  appliedByTransport.set(transport.id, compiled)
+  if (cacheKey) appliedByTransport.set(cacheKey, compiled)
   return compiled
 }
 
@@ -365,10 +373,12 @@ async function stopRuntime(client, sessionId, matrixEntry, prefix) {
       "WorkflowPublicationRuntimeControlled",
     )
     await writeArtifact(`${prefix}/runtime-stopped.json`, stopped)
+    return stopped
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error)
     matrixEntry.runtime_stop_error = message
     await writeArtifact(`${prefix}/runtime-stop-error.txt`, message)
+    return null
   }
 }
 
@@ -430,7 +440,7 @@ async function waitForPublicationStatus(localUrl, transport) {
 }
 
 async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicationId) {
-  const deadline = Date.now() + 180_000
+  const deadline = Date.now() + scheduleOnlyObservationTimeoutMs
   let last = null
   while (Date.now() < deadline) {
     const inspect = await unwrap(
@@ -449,10 +459,19 @@ async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicati
       latest_output: publicationResponse.publication?.latest_output ?? inspect.publication?.latest_output ?? null,
       runtime_session_id: inspect.publication?.session_id ?? sessionId,
     }
-    if (last.latest_run?.id || last.last_run?.id) return last
+    const latestRunId = latestRunIdFromStatus(last)
+    if (latestRunId) {
+      const workflowRun = await workflowRunSnapshot(client, last.runtime_session_id, latestRunId).catch(() => null)
+      last.workflow_run = workflowRun
+      if (workflowRun?.status && isTerminalStatus(workflowRun.status)) return last
+    }
     await sleep(1_000)
   }
   return last
+}
+
+function isTerminalStatus(status) {
+  return ["Completed", "Failed", "Stopped"].includes(status)
 }
 
 function latestRunIdFromStatus(statusPayload) {
@@ -463,6 +482,19 @@ function latestRunIdFromStatus(statusPayload) {
     ?? statusPayload?.inspect?.publication?.latest_run?.id
     ?? statusPayload?.inspect?.publication?.last_run?.id
     ?? null
+}
+
+function statusPayloadFromRuntimeControl(controlResponse, previousStatus) {
+  const publication = controlResponse?.publication ?? null
+  return {
+    ...(previousStatus ?? {}),
+    runtime_control: controlResponse,
+    publication,
+    latest_run: publication?.latest_run ?? previousStatus?.latest_run ?? null,
+    last_run: publication?.last_run ?? previousStatus?.last_run ?? null,
+    latest_output: publication?.latest_output ?? previousStatus?.latest_output ?? null,
+    runtime_session_id: publication?.session_id ?? previousStatus?.runtime_session_id ?? null,
+  }
 }
 
 function promptFor(provider, transport, policy) {
@@ -564,6 +596,8 @@ function protocolFailures(raw, statusPayload, workflowRun, transport) {
   const failures = []
   if (transport.id === "schedule_only") {
     if (!workflowRun?.id && !statusPayload?.latest_run?.id && !statusPayload?.last_run?.id) failures.push("schedule-only publication did not produce an observable run")
+    if (workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+    if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
     return failures
   }
   if (raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
