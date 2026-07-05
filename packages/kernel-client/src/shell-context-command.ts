@@ -12,7 +12,7 @@ import {
   parseExecutionMode,
   parsePermissionLevel,
 } from "./shell-agent-policy.js"
-import { sessionAgentIsBusy, sessionHasAgentRuntimeProjection } from "./shell-agent-activity.js"
+import { sessionAgentIsBusy, sessionHasAgentRuntimeProjection } from "./session-prompt-work.js"
 import { expectSessionState } from "./shell-session-attachment.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"

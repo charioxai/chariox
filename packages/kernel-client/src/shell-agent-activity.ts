@@ -1,6 +1,4 @@
 import type {
-  RuntimeInteraction,
-  RuntimeProviderRun,
   RuntimeSession,
   WorkspaceLiveSyncStatus,
 } from "./kernel-types.js"
@@ -51,6 +49,10 @@ export {
   type SessionStreamingAgent,
   type TurnCompletionDelayInput,
 } from "./session-runtime-transition.js"
+export {
+  runtimeProviderRunForAgent,
+  sessionActiveInteractionForAgent,
+} from "./session-runtime-lookup.js"
 export {
   agentRuntimeStateFromProjection,
   sessionAgentHasUnreadIdleOutput,
@@ -129,21 +131,4 @@ export function sessionVisibleAgentSummary(session: RuntimeSession): string {
   }
 
   return parts.join(" • ")
-}
-
-export function sessionActiveInteractionForAgent(
-  session: Pick<RuntimeSession, "active_interactions">,
-  agentId: string | null | undefined,
-): RuntimeInteraction | null {
-  if (!agentId) {
-    return null
-  }
-  return session.active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
-}
-
-export function runtimeProviderRunForAgent(
-  run: RuntimeProviderRun | null,
-  agentId: string | null | undefined,
-): RuntimeProviderRun | null {
-  return run && run.agent_instance_id === agentId ? run : null
 }

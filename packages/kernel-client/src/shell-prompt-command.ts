@@ -28,7 +28,7 @@ import {
   expectSessionState,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
-import { sessionHasActivePrompt, sessionPromptForAgent } from "./shell-agent-activity.js"
+import { sessionHasActivePrompt, sessionPromptForAgent } from "./session-prompt-identity.js"
 import { sessionWithProjectedAgentActivity } from "./runtime-session.js"
 
 type ShellKernelClient = {

@@ -12,7 +12,7 @@ import {
   remoteWorkerProviderRunRecoveryAction,
 } from "./provider-run-recovery.js"
 import { formatSessionHomeKernelLabel } from "./session-runtime-labels.js"
-import { sessionAgentIsBusy } from "./shell-agent-activity.js"
+import { sessionAgentIsBusy } from "./session-prompt-work.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 export function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {

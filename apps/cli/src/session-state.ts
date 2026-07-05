@@ -10,7 +10,7 @@ import {
 import {
   runtimeProviderRunForAgent as kernelRuntimeProviderRunForAgent,
   sessionActiveInteractionForAgent as kernelSessionActiveInteractionForAgent,
-} from "@arroba/kernel-client/shell-agent-activity"
+} from "@arroba/kernel-client/session-runtime-lookup"
 import {
   sessionActivePromptIdForAgent as kernelSessionActivePromptIdForAgent,
   sessionPromptStateForAgent as kernelSessionPromptStateForAgent,
