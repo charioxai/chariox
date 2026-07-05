@@ -18,6 +18,7 @@ import {
   sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentIsBusy,
+  sessionFooterHint,
   sessionFocusedStatusBadge,
   sessionAgentRuntimeActivityProjection,
   sessionAgentRuntimeActivityStatus,
@@ -35,6 +36,7 @@ import {
   sessionPromptWorkSummary,
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
+  sessionStatusMode,
   sessionWorkingStateAfterPromptWork,
   shouldPreserveAgentActivityLabel,
 } from "./shell-agent-activity.js"
@@ -243,6 +245,74 @@ test("sessionFocusedStatusBadge projects detached, disconnected, focused, and mu
       { id: "agent-2", busy: true },
     ],
   }), badge([{ label: "2 WORKING", tone: "working" }]))
+})
+
+test("session status mode and footer hint reflect prompt and queue work", () => {
+  assert.equal(sessionStatusMode({
+    daemonDisconnected: true,
+    working: false,
+    hasActivePrompt: false,
+    submitting: false,
+    queueDepth: 0,
+  }), "disconnected")
+  assert.equal(sessionStatusMode({
+    daemonDisconnected: false,
+    working: false,
+    hasActivePrompt: true,
+    submitting: false,
+    queueDepth: 0,
+  }), "working")
+  assert.equal(sessionStatusMode({
+    daemonDisconnected: false,
+    working: false,
+    hasActivePrompt: false,
+    submitting: false,
+    queueDepth: 1,
+  }), "working")
+  assert.equal(sessionStatusMode({
+    daemonDisconnected: false,
+    working: false,
+    hasActivePrompt: false,
+    submitting: false,
+    queueDepth: 0,
+  }), "idle")
+
+  assert.equal(sessionFooterHint({
+    fatalError: null,
+    activePromptId: "prompt-1",
+    queueDepth: 2,
+    statusLine: "Connected.",
+  }), "Processing prompt-1; 2 queued.")
+  assert.equal(sessionFooterHint({
+    fatalError: null,
+    activePromptId: "prompt-1",
+    queueDepth: 0,
+    statusLine: "Connected.",
+  }), "Processing prompt-1.")
+  assert.equal(sessionFooterHint({
+    fatalError: null,
+    activePromptId: null,
+    queueDepth: 1,
+    statusLine: "Connected.",
+  }), "1 queued prompt.")
+  assert.equal(sessionFooterHint({
+    fatalError: null,
+    activePromptId: null,
+    queueDepth: 2,
+    statusLine: "Connected.",
+  }), "2 queued prompts.")
+  assert.equal(sessionFooterHint({
+    fatalError: "boom",
+    activePromptId: "prompt-1",
+    queueDepth: 0,
+    statusLine: "Connected.",
+  }), "boom")
+  assert.equal(sessionFooterHint({
+    fatalError: null,
+    activePromptId: null,
+    queueDepth: 0,
+    statusLine: "Connected.",
+  }), "Connected.")
 })
 
 test("sessionAgentRuntimeDisplayState maps unfocused unread idle output to done", () => {

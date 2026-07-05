@@ -1,8 +1,11 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import {
+  sessionFooterHint,
   sessionFocusedStatusBadge,
+  sessionStatusMode,
   type SessionAgentBusyState,
   type SessionFocusedStatusBadge,
+  type SessionStatusMode as KernelSessionStatusMode,
   type SessionStatusBadgePart,
 } from "@arroba/kernel-client/shell-agent-activity"
 import { workspaceLiveSyncFooterSummary } from "@arroba/kernel-client/shell-workspace-format"
@@ -18,7 +21,7 @@ import { chooseVisibleActivityLabel } from "./runtime.js"
 import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
-export type SessionStatusMode = "idle" | "working" | "disconnected"
+export type SessionStatusMode = KernelSessionStatusMode
 export type StatusBadgePart = SessionStatusBadgePart
 export type FocusedStatusBadge = SessionFocusedStatusBadge
 
@@ -127,13 +130,7 @@ export function deriveSessionStatusMode(options: {
   submitting: boolean
   queueDepth: number
 }): SessionStatusMode {
-  if (options.daemonDisconnected) {
-    return "disconnected"
-  }
-  if (options.working || options.hasActivePrompt || options.submitting || options.queueDepth > 0) {
-    return "working"
-  }
-  return "idle"
+  return sessionStatusMode(options)
 }
 
 export function deriveFooterHint(options: {
@@ -142,18 +139,7 @@ export function deriveFooterHint(options: {
   queueDepth: number
   statusLine: string
 }): string {
-  if (options.fatalError) {
-    return options.fatalError
-  }
-  if (options.activePromptId) {
-    return options.queueDepth > 0
-      ? `Processing ${options.activePromptId}; ${options.queueDepth} queued.`
-      : `Processing ${options.activePromptId}.`
-  }
-  if (options.queueDepth > 0) {
-    return `${options.queueDepth} queued prompt${options.queueDepth === 1 ? "" : "s"}.`
-  }
-  return options.statusLine
+  return sessionFooterHint(options)
 }
 
 export function deriveVisibleActivityLabel(options: {

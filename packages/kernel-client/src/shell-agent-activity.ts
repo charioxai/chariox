@@ -93,6 +93,7 @@ export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
 export type SessionStreamingAgent = Pick<AgentInstance, "id" | "is_processing" | "state">
 
 export type SessionStatusBadgeTone = "idle" | "working" | "disconnected" | "error"
+export type SessionStatusMode = "idle" | "working" | "disconnected"
 
 export type SessionStatusBadgePart = {
   label: string
@@ -108,6 +109,42 @@ export type SessionFocusedStatusBadge = {
 export type SessionAgentBusyState = {
   id: string
   busy: boolean
+}
+
+export function sessionStatusMode(options: {
+  readonly daemonDisconnected: boolean
+  readonly working: boolean
+  readonly hasActivePrompt: boolean
+  readonly submitting: boolean
+  readonly queueDepth: number
+}): SessionStatusMode {
+  if (options.daemonDisconnected) {
+    return "disconnected"
+  }
+  if (options.working || options.hasActivePrompt || options.submitting || options.queueDepth > 0) {
+    return "working"
+  }
+  return "idle"
+}
+
+export function sessionFooterHint(options: {
+  readonly fatalError: string | null
+  readonly activePromptId: string | null
+  readonly queueDepth: number
+  readonly statusLine: string
+}): string {
+  if (options.fatalError) {
+    return options.fatalError
+  }
+  if (options.activePromptId) {
+    return options.queueDepth > 0
+      ? `Processing ${options.activePromptId}; ${options.queueDepth} queued.`
+      : `Processing ${options.activePromptId}.`
+  }
+  if (options.queueDepth > 0) {
+    return `${options.queueDepth} queued prompt${options.queueDepth === 1 ? "" : "s"}.`
+  }
+  return options.statusLine
 }
 
 export function sessionAgentRuntimeActivityProjection(
