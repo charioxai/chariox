@@ -1518,6 +1518,7 @@ fn validate_workflow_publication_options(
     match kind.as_str() {
         "human_http" => {
             validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
+            validate_human_http_publication_parser(parser)?;
         }
         "api_sse_json" => {
             validate_workflow_publication_methods(&kind, methods, &["POST"])?;
@@ -1661,6 +1662,25 @@ fn validate_json_publication_parser(
     }
     invalid_workflow_publication_option(&format!(
         "{transport} publications only support JSON body input"
+    ))
+}
+
+fn validate_human_http_publication_parser(
+    parser: &Option<serde_json::Value>,
+) -> Result<(), DaemonError> {
+    let Some(parser) = parser else {
+        return Ok(());
+    };
+    let Some(kind) = parser.get("kind").and_then(|value| value.as_str()) else {
+        return invalid_workflow_publication_option(
+            "human_http publication parser must be an object with a supported kind",
+        );
+    };
+    if matches!(kind, "path_template" | "json" | "query_params" | "webhook") {
+        return Ok(());
+    }
+    invalid_workflow_publication_option(&format!(
+        "human_http publications do not support parser `{kind}`"
     ))
 }
 

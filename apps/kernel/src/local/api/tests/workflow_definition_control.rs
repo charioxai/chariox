@@ -2942,9 +2942,8 @@ fn local_request_api_exports_agent_app_publication_package() {
                 methods: vec!["GET".to_string()],
                 transport: Some(serde_json::json!({ "kind": "human_http" })),
                 parser: Some(serde_json::json!({
-                    "kind": "regex",
-                    "source": "path",
-                    "pattern": "^/add/(?<prompt>.+)$"
+                    "kind": "path_template",
+                    "template": "/add/:prompt"
                 })),
                 input_schema: None,
                 trace_exposure: None,
@@ -3102,6 +3101,68 @@ fn local_request_api_validates_publication_transport_options() {
     assert!(human_app_js.contains("routePattern.indexOf('*')"));
     assert!(human_app_js.contains("window.location.href = invocationUrl(prompt)"));
     assert!(!human_app_js.contains("window.location.href = `/${encodeURIComponent(prompt)}`"));
+
+    for (alias, parser) in [
+        ("human-json-parser", serde_json::json!({ "kind": "json" })),
+        (
+            "human-query-parser",
+            serde_json::json!({ "kind": "query_params" }),
+        ),
+        (
+            "human-webhook-parser",
+            serde_json::json!({ "kind": "webhook" }),
+        ),
+    ] {
+        harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+                CreateWorkflowPublicationRequest {
+                    session_id: graph.session_id.clone(),
+                    workflow_ref: graph.workflow_id.clone(),
+                    endpoint_ref: graph.endpoint_id.clone(),
+                    queue_ref: Some("default".to_string()),
+                    alias: Some(alias.to_string()),
+                    kind: Some("ingress".to_string()),
+                    route: Some("/prompt/*".to_string()),
+                    methods: vec!["GET".to_string(), "POST".to_string()],
+                    transport: Some(serde_json::json!({ "kind": "human_http" })),
+                    parser: Some(parser),
+                    input_schema: None,
+                    trace_exposure: None,
+                    mode: Some("async".to_string()),
+                    sync_timeout_ms: None,
+                    poll_ms: None,
+                },
+            ))
+            .expect("supported human_http parser should be created");
+    }
+
+    let human_regex_parser = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+        CreateWorkflowPublicationRequest {
+            session_id: graph.session_id.clone(),
+            workflow_ref: graph.workflow_id.clone(),
+            endpoint_ref: graph.endpoint_id.clone(),
+            queue_ref: Some("default".to_string()),
+            alias: Some("human-regex-parser".to_string()),
+            kind: Some("ingress".to_string()),
+            route: Some("/prompt/*".to_string()),
+            methods: vec!["GET".to_string()],
+            transport: Some(serde_json::json!({ "kind": "human_http" })),
+            parser: Some(serde_json::json!({
+                "kind": "regex",
+                "source": "path",
+                "pattern": "^/prompt/(?<prompt>.+)$"
+            })),
+            input_schema: None,
+            trace_exposure: None,
+            mode: Some("async".to_string()),
+            sync_timeout_ms: None,
+            poll_ms: None,
+        },
+    ));
+    assert!(human_regex_parser
+        .expect_err("human_http regex parser should fail")
+        .to_string()
+        .contains("human_http publications do not support parser `regex`"));
 
     let api_publication = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
