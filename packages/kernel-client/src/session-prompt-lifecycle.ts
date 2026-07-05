@@ -5,12 +5,11 @@ import type {
 import {
   type AgentRuntimeActivityProjection,
   normalizeAgentRuntimePromptStatus,
-  projectAgentRuntimeActivity,
 } from "./agent-activity.js"
 import type { ExternalProviderObservedTranscriptIdentityFields } from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
-  sessionHasAgent,
+  sessionProjectedPromptActivityForAgent,
   sessionPromptStateEntriesForSessionAgents,
 } from "./session-agent-prompt-state.js"
 
@@ -32,12 +31,12 @@ export type PromptLifecycleTransition = {
 export function sessionActivePromptLifecycleRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
   if (session.agent_activity) {
     const records: ActivePromptLifecycleRecord[] = []
-    for (const [agentId, activity] of Object.entries(session.agent_activity)) {
-      if (!sessionHasAgent(session, agentId)) {
+    for (const agent of session.agents) {
+      const projection = sessionProjectedPromptActivityForAgent(session, agent.id)
+      if (!projection || projection === "idle" || projection === "not_found") {
         continue
       }
-      const projection = projectAgentRuntimeActivity(activity)
-      const activeTurnRecord = activePromptLifecycleRecordFromProjectedTurn(agentId, projection)
+      const activeTurnRecord = activePromptLifecycleRecordFromProjectedTurn(agent.id, projection)
       if (activeTurnRecord) {
         records.push(activeTurnRecord)
         continue
@@ -45,7 +44,7 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
       if (!projection.busy) {
         continue
       }
-      const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
+      const stateActivePrompt = session.prompt_states?.[agent.id]?.active_prompt
       if (stateActivePrompt) {
         records.push(activePromptLifecycleRecordFromPrompt(stateActivePrompt))
       }
