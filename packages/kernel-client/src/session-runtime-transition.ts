@@ -13,6 +13,10 @@ import {
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
 import {
+  sessionHasAgentActivityProjection,
+  sessionHasPromptStateProjection,
+} from "./session-agent-prompt-state.js"
+import {
   getToolActivityLabel,
 } from "./provider-status.js"
 
@@ -127,7 +131,9 @@ export function sessionRuntimeTransitionState(
   const nextFocusedAgentId = sessionFocusedAgentId(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
   const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.nextSession)
-  const nextStreamingAgentId = options.nextSession.agent_activity
+  const nextHasAgentActivityProjection = sessionHasAgentActivityProjection(options.nextSession)
+  const nextHasPromptStateProjection = sessionHasPromptStateProjection(options.nextSession)
+  const nextStreamingAgentId = nextHasAgentActivityProjection
     ? projectedStreamingAgentId
     : resolveSessionStreamingAgentId(
       options.nextSession.agents,
@@ -135,7 +141,7 @@ export function sessionRuntimeTransitionState(
       nextHasPromptWork,
       options.currentWorking,
       options.currentStreamingAgentId,
-      !options.nextSession.prompt_states,
+      !nextHasPromptStateProjection,
     )
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {

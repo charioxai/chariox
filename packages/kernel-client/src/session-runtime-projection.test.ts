@@ -1152,6 +1152,30 @@ test("sessionRuntimeTransitionState resolves streaming from prompt state before 
   })
 })
 
+test("sessionRuntimeTransitionState treats empty prompt states as authoritative idle", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+    prompt_states: {},
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "thinking" },
+  })
+
+  assert.equal(transition.nextHasPromptWork, false)
+  assert.equal(transition.nextStreamingAgentId, null)
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-1": null,
+  })
+})
+
 test("sessionWorkingStateAfterPromptWork keeps working latched until completion is confirmed", () => {
   assert.equal(sessionWorkingStateAfterPromptWork(true, false), true)
   assert.equal(sessionWorkingStateAfterPromptWork(true, true), true)
