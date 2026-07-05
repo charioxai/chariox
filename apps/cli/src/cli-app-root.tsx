@@ -91,7 +91,7 @@ import {
 import {
   nextQueuedPromptSelectionId,
   selectedQueuedPromptIndex,
-} from "./queued-prompt-selection-state.js"
+} from "@arroba/kernel-client/queued-prompt-selection"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,

@@ -7,7 +7,7 @@ import {
   nextInteractionChoiceIndex,
   resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
-} from "./interaction-choice-state.js"
+} from "@arroba/kernel-client/interaction-choice"
 
 export type FocusedInteractionChoiceKeyEvent = {
   name: string
