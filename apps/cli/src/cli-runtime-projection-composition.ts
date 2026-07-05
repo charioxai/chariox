@@ -4,12 +4,12 @@ import { createAgentRuntimeProjectionController } from "./agent-runtime-projecti
 import {
   createCliRuntimeDebugLogger,
 } from "./cli-runtime-debug-logger.js"
-import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import {
   sessionActiveInteractionForAgent,
   sessionFocusedInteraction,
 } from "@arroba/kernel-client/session-runtime-lookup"
+import { sessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
 import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
@@ -115,14 +115,13 @@ export function createCliRuntimeProjectionComposition(
   const visibleTranscriptEntries = transcriptEntryProjectionController.visibleEntries
   const connectedClientCount = () => deps.sessionState().attachment_ids.length
   const activePrompt = () => agentRuntimeProjectionController.focusedActivePrompt()
-  const focusedStatusBadgeController = createFocusedStatusBadgeController({
-    isAttached,
-    daemonDisconnected: deps.daemonDisconnected,
-    activeStatusLabel: agentRuntimeProjectionController.focusedActivityLabel,
-    focusedBusy: agentRuntimeProjectionController.focusedAgentBusy,
-    agents: agentRuntimeProjectionController.allAgentsBusyState,
+  const focusedStatusBadge = () => sessionFocusedStatusBadge({
+    attached: isAttached(),
+    daemonDisconnected: deps.daemonDisconnected(),
+    activeStatusLabel: agentRuntimeProjectionController.focusedActivityLabel(),
+    focusedBusy: agentRuntimeProjectionController.focusedAgentBusy(),
+    agents: agentRuntimeProjectionController.allAgentsBusyState(),
   })
-  const focusedStatusBadge = focusedStatusBadgeController.badge
   const runtimeDebugLogger = createCliRuntimeDebugLogger({
     logger: deps.appLogger,
     debugLogsEnabled: deps.debugLogsEnabled,
