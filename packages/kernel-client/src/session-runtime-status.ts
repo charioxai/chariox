@@ -14,18 +14,15 @@ import {
   normalizeProviderActivityLabel,
 } from "./provider-status.js"
 import {
+  agentPromptStateHasWork,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
+  type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
-
-export type AgentPromptStateLike = {
-  readonly active_prompt?: unknown | null
-  readonly queued_prompts?: readonly unknown[] | null
-}
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
-  readonly promptStates?: Record<string, AgentPromptStateLike | null> | null | undefined
+  readonly promptStates?: Record<string, SessionAgentPromptStateLike | null> | null | undefined
 }
 
 export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
@@ -213,7 +210,7 @@ export function sessionAgentRuntimeState(
     if (agent.state === "Error") {
       return "Error"
     }
-    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+    return agentPromptStateHasWork(promptState)
       ? "Working"
       : "Idle"
   }
@@ -260,7 +257,7 @@ export function agentRuntimeStateFromProjection(
     if (agent.state === "Error") {
       return "Error"
     }
-    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+    return agentPromptStateHasWork(promptState)
       ? "Working"
       : "Idle"
   }

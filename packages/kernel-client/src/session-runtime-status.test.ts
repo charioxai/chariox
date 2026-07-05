@@ -164,6 +164,40 @@ test("session runtime state prefers projected activity over stale legacy state",
   }), "Error")
 })
 
+test("session runtime state uses shared prompt-state work predicate", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "run",
+          status: "Running",
+        },
+      } as never,
+    },
+    agents: [makeAgent({ id: "agent-1", state: "Idle", is_processing: false })],
+  })
+
+  assert.equal(sessionAgentRuntimeState(session, makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  })), "Working")
+  assert.equal(agentRuntimeStateFromProjection(makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  }), {
+    promptStates: {
+      "agent-1": {
+        active_prompt: { id: "prompt-1" },
+      },
+    },
+  }), "Working")
+})
+
 test("session runtime state ignores activity outside session agents", () => {
   const session = makeSession({
     agents: [makeAgent({
