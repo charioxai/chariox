@@ -492,11 +492,6 @@ const finalOutput = workflow.schema({
   alias: "Trace final",
   schema: { type: "object", additionalProperties: true }
 });
-const handoff = workflow.schema({
-  handle: "handoff",
-  alias: "Trace handoff",
-  schema: { type: "object", additionalProperties: true }
-});
 workflow.define({ runOutputSchema: finalOutput });
 const planner = workflow.node({
   handle: "planner",
@@ -511,7 +506,7 @@ const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "trace-worker", provider: ${providerId}, model: ${model} }),
   publicLabel: "Worker",
-  instructions: "Do the work. Use normal Arroba workflow tools to validate and hand off to Finalizer. Put ${toolMarker} only in the tool-mediated handoff message. Do not put ${outputSummaryMarker}, ${assistantMarker}, or ${finalMarker} in this node output.",
+  instructions: "Do the work. Call workflow_console_write exactly once with content ${toolMarker}. Then hand off to Finalizer with a compact JSON message that does not contain ${outputSummaryMarker}, ${assistantMarker}, ${toolMarker}, or ${finalMarker}. Do not put ${toolMarker} in your final fenced JSON output.",
   canCompleteWorkflowRun: false,
   maxTurns: 2,
   canvas: { x: 320, y: 120 },
@@ -525,8 +520,8 @@ const finalizer = workflow.node({
   maxTurns: 2,
   canvas: { x: 640, y: 120 },
 });
-workflow.edge(planner, worker, { handle: "planner_worker", handoffSchema: handoff });
-workflow.edge(worker, finalizer, { handle: "worker_finalizer", handoffSchema: handoff });
+workflow.edge(planner, worker, { handle: "planner_worker" });
+workflow.edge(worker, finalizer, { handle: "worker_finalizer" });
 const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ${watchdog}
 `
