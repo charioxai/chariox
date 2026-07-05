@@ -54,6 +54,7 @@
     "./session-runtime-status": "./dist/session-runtime-status.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
+    "./transcript-collapsed-blob": "./dist/transcript-collapsed-blob.js",
     "./transcript-entry-state": "./dist/transcript-entry-state.js",
     "./transcript-entry-lineage": "./dist/transcript-entry-lineage.js",
     "./transcript-pane-reconcile": "./dist/transcript-pane-reconcile.js",

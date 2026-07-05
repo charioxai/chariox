@@ -8,8 +8,8 @@ import {
   setTranscriptTurnExpanded as sharedSetTranscriptTurnExpanded,
   stripTranscriptDisplayEntries as sharedStripTranscriptDisplayEntries,
 } from "@arroba/kernel-client/transcript-display-state"
+import { roleBlobTitle } from "@arroba/kernel-client/transcript-collapsed-blob"
 import type { TranscriptEntry } from "./cli-types.js"
-import { roleBlobTitle } from "./transcript-collapsed-blob.js"
 import {
   parseToolTranscriptUpdate,
   readApplyPatchFiles,

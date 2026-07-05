@@ -1,18 +1,17 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { collapsedTranscriptBlobPresentation, roleBlobTitle } from "./transcript-collapsed-blob.js"
-import type { TranscriptEntry } from "./cli-types.js"
+import {
+  collapsedTranscriptBlobPresentation,
+  roleBlobTitle,
+  type CollapsedTranscriptBlobEntry,
+} from "./transcript-collapsed-blob.js"
 
-test("collapsedTranscriptBlobPresentation formats normal collapsed blobs with a chevron header", () => {
+test("collapsed transcript blob presentation formats normal collapsed blobs with a chevron header", () => {
   const presentation = collapsedTranscriptBlobPresentation({
-    id: 1,
     role: "tool",
-    text: "tool body",
     blobTitle: "bash · COMPLETED",
     blobSummary: "$ git status",
-    blobCollapsible: true,
-    blobCollapsed: true,
   })
 
   assert.deepEqual(presentation, {
@@ -23,7 +22,7 @@ test("collapsedTranscriptBlobPresentation formats normal collapsed blobs with a 
   })
 })
 
-test("collapsedTranscriptBlobPresentation labels unloaded history blobs distinctly", () => {
+test("collapsed transcript blob presentation labels unloaded history blobs distinctly", () => {
   const presentation = collapsedTranscriptBlobPresentation(historyBlobEntry())
 
   assert.deepEqual(presentation, {
@@ -34,7 +33,7 @@ test("collapsedTranscriptBlobPresentation labels unloaded history blobs distinct
   })
 })
 
-test("collapsedTranscriptBlobPresentation exposes history loading state", () => {
+test("collapsed transcript blob presentation exposes history loading state", () => {
   const presentation = collapsedTranscriptBlobPresentation({
     ...historyBlobEntry(),
     historyBlobLoading: true,
@@ -49,7 +48,7 @@ test("collapsedTranscriptBlobPresentation exposes history loading state", () => 
   })
 })
 
-test("collapsedTranscriptBlobPresentation exposes history error state and retry action", () => {
+test("collapsed transcript blob presentation exposes history error state and retry action", () => {
   const presentation = collapsedTranscriptBlobPresentation({
     ...historyBlobEntry(),
     historyBlobLoading: false,
@@ -71,17 +70,12 @@ test("roleBlobTitle keeps collapsed role metadata specific", () => {
   assert.equal(roleBlobTitle("notice"), "notice")
 })
 
-function historyBlobEntry(): TranscriptEntry {
+function historyBlobEntry(): CollapsedTranscriptBlobEntry {
   return {
-    id: 1,
     role: "tool",
-    text: "",
     blobTitle: "tool",
     blobSummary: "1 tool call",
-    blobCollapsible: true,
-    blobCollapsed: true,
     historyBlobId: "blob-1",
-    historyBlobAgentId: "agent-1",
     historyBlobLoaded: false,
   }
 }

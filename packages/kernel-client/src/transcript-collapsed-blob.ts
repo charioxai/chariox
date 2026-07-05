@@ -1,13 +1,23 @@
-import type { TranscriptEntry } from "./cli-types.js"
-
-export type CollapsedTranscriptBlobPresentation = {
-  headline: string
-  detail: string
-  actionLabel: string
-  stateLabel: string
+export type CollapsedTranscriptBlobEntry = {
+  readonly role: string
+  readonly blobTitle?: string | null
+  readonly blobSummary?: string | null
+  readonly historyBlobId?: string | null
+  readonly historyBlobLoaded?: boolean | null
+  readonly historyBlobLoading?: boolean | null
+  readonly historyBlobError?: string | null
 }
 
-export function collapsedTranscriptBlobPresentation(entry: TranscriptEntry): CollapsedTranscriptBlobPresentation {
+export type CollapsedTranscriptBlobPresentation = {
+  readonly headline: string
+  readonly detail: string
+  readonly actionLabel: string
+  readonly stateLabel: string
+}
+
+export function collapsedTranscriptBlobPresentation(
+  entry: CollapsedTranscriptBlobEntry,
+): CollapsedTranscriptBlobPresentation {
   const title = cleanText(entry.blobTitle) || roleBlobTitle(entry.role)
   const stateLabel = collapsedBlobStateLabel(entry)
   const summary = cleanText(entry.blobSummary)
@@ -21,14 +31,14 @@ export function collapsedTranscriptBlobPresentation(entry: TranscriptEntry): Col
   }
 }
 
-export function roleBlobTitle(role: TranscriptEntry["role"]) {
+export function roleBlobTitle(role: string): string {
   if (role === "turn_toggle") {
     return "turn"
   }
   return role
 }
 
-function collapsedBlobStateLabel(entry: TranscriptEntry) {
+function collapsedBlobStateLabel(entry: CollapsedTranscriptBlobEntry): string {
   if (entry.historyBlobError) {
     return "ERROR"
   }
@@ -44,7 +54,7 @@ function collapsedBlobStateLabel(entry: TranscriptEntry) {
   return ""
 }
 
-function collapsedBlobDetail(entry: TranscriptEntry, stateLabel: string) {
+function collapsedBlobDetail(entry: CollapsedTranscriptBlobEntry, stateLabel: string): string {
   if (entry.historyBlobError) {
     return `History blob failed to load: ${entry.historyBlobError}`
   }
@@ -60,7 +70,7 @@ function collapsedBlobDetail(entry: TranscriptEntry, stateLabel: string) {
   return "Collapsed blob content"
 }
 
-function collapsedBlobActionLabel(entry: TranscriptEntry) {
+function collapsedBlobActionLabel(entry: CollapsedTranscriptBlobEntry): string {
   if (entry.historyBlobLoading) {
     return "loading..."
   }
@@ -73,6 +83,6 @@ function collapsedBlobActionLabel(entry: TranscriptEntry) {
   return "click to expand"
 }
 
-function cleanText(value: unknown) {
+function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
 }
