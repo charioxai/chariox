@@ -3,9 +3,11 @@ import {
   derivePromptPlaceholder,
 } from "@arroba/kernel-client/prompt-surface-state"
 import {
-  deriveFooterHint,
-  deriveSessionStatusMode,
-} from "./session-chrome-state.js"
+  sessionStatusMode,
+} from "@arroba/kernel-client/session-runtime-status"
+import {
+  sessionFooterHint,
+} from "@arroba/kernel-client/shell-session-footer"
 import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-state"
 
 export type PromptChromeProjectionControllerDeps<Color> = {
@@ -32,14 +34,14 @@ export function createPromptChromeProjectionController<Color>(
   deps: PromptChromeProjectionControllerDeps<Color>,
 ) {
   return {
-    sessionStatusMode: () => deriveSessionStatusMode({
+    sessionStatusMode: () => sessionStatusMode({
       daemonDisconnected: deps.daemonDisconnected(),
       working: deps.working(),
       hasActivePrompt: deps.hasActivePrompt(),
       submitting: deps.submitting(),
       queueDepth: deps.queueDepth(),
     }),
-    footerHint: () => deriveFooterHint({
+    footerHint: () => sessionFooterHint({
       fatalError: deps.fatalError(),
       activePromptId: deps.activePromptId(),
       queueDepth: deps.queueDepth(),

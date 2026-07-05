@@ -1,24 +1,24 @@
 import {
-  deriveFocusedStatusBadge,
-  type AgentBusyState,
-  type FocusedStatusBadge,
-} from "./session-chrome-state.js"
+  sessionFocusedStatusBadge,
+  type SessionAgentBusyState,
+  type SessionFocusedStatusBadge,
+} from "@arroba/kernel-client/session-runtime-status"
 
 type FocusedStatusBadgeControllerDeps = {
   isAttached: () => boolean
   daemonDisconnected: () => boolean
   activeStatusLabel: () => string | null
   focusedBusy: () => boolean
-  agents: () => AgentBusyState[]
+  agents: () => SessionAgentBusyState[]
 }
 
 export function createFocusedStatusBadgeController(
   deps: FocusedStatusBadgeControllerDeps,
 ): {
-  badge: () => FocusedStatusBadge
+  badge: () => SessionFocusedStatusBadge
 } {
-  const badge = (): FocusedStatusBadge => {
-    return deriveFocusedStatusBadge({
+  const badge = (): SessionFocusedStatusBadge => {
+    return sessionFocusedStatusBadge({
       attached: deps.isAttached(),
       daemonDisconnected: deps.daemonDisconnected(),
       activeStatusLabel: deps.activeStatusLabel(),

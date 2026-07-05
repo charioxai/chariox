@@ -9,11 +9,8 @@ import {
 } from "@arroba/kernel-client/prompt-provider-selection"
 import {
   sessionAttachedFooterSummary,
-  sessionFooterHint,
 } from "@arroba/kernel-client/shell-session-footer"
 import {
-  sessionFocusedStatusBadge,
-  sessionStatusMode,
   type SessionAgentBusyState,
   type SessionFocusedStatusBadge,
   type SessionStatusMode as KernelSessionStatusMode,
@@ -81,25 +78,6 @@ export function derivePromptUsageState(options: {
   )
 }
 
-export function deriveSessionStatusMode(options: {
-  daemonDisconnected: boolean
-  working: boolean
-  hasActivePrompt: boolean
-  submitting: boolean
-  queueDepth: number
-}): SessionStatusMode {
-  return sessionStatusMode(options)
-}
-
-export function deriveFooterHint(options: {
-  fatalError: string | null
-  activePromptId: string | null
-  queueDepth: number
-  statusLine: string
-}): string {
-  return sessionFooterHint(options)
-}
-
 export function deriveVisibleActivityLabel(options: {
   providerActivityLabel: string | null
   activeToolLabels: Iterable<string>
@@ -108,16 +86,6 @@ export function deriveVisibleActivityLabel(options: {
 }
 
 export type AgentBusyState = SessionAgentBusyState
-
-export function deriveFocusedStatusBadge(options: {
-  attached: boolean
-  daemonDisconnected: boolean
-  activeStatusLabel: string | null
-  focusedBusy: boolean
-  agents?: AgentBusyState[]
-}): FocusedStatusBadge {
-  return sessionFocusedStatusBadge(options)
-}
 
 export function deriveAttachedFooterSummary(options: {
   session: RuntimeSession

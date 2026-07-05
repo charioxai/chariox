@@ -7,11 +7,8 @@ import {
   applyProviderRunProfileToSession,
   deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
-  deriveFooterHint,
-  deriveFocusedStatusBadge,
   derivePromptMetaState,
   derivePromptUsageState,
-  deriveSessionStatusMode,
   deriveVisibleActivityLabel,
 } from "./session-chrome-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -194,84 +191,6 @@ test("derivePromptUsageState resolves usage metadata from the provider catalog",
   assert.equal(otherAgentUsage, null)
 })
 
-test("deriveSessionStatusMode and footer hint reflect prompt and failure state", () => {
-  assert.equal(
-    deriveSessionStatusMode({
-      daemonDisconnected: true,
-      working: false,
-      hasActivePrompt: false,
-      submitting: false,
-      queueDepth: 0,
-    }),
-    "disconnected",
-  )
-  assert.equal(
-    deriveSessionStatusMode({
-      daemonDisconnected: false,
-      working: false,
-      hasActivePrompt: true,
-      submitting: false,
-      queueDepth: 0,
-    }),
-    "working",
-  )
-  assert.equal(
-    deriveSessionStatusMode({
-      daemonDisconnected: false,
-      working: false,
-      hasActivePrompt: false,
-      submitting: false,
-      queueDepth: 1,
-    }),
-    "working",
-  )
-  assert.equal(
-    deriveFooterHint({
-      fatalError: null,
-      activePromptId: "prompt-1",
-      queueDepth: 2,
-      statusLine: "Connected.",
-    }),
-    "Processing prompt-1; 2 queued.",
-  )
-  assert.equal(
-    deriveFooterHint({
-      fatalError: null,
-      activePromptId: null,
-      queueDepth: 1,
-      statusLine: "Connected.",
-    }),
-    "1 queued prompt.",
-  )
-  assert.equal(
-    deriveFooterHint({
-      fatalError: null,
-      activePromptId: null,
-      queueDepth: 2,
-      statusLine: "Connected.",
-    }),
-    "2 queued prompts.",
-  )
-  assert.equal(
-    deriveFooterHint({
-      fatalError: "boom",
-      activePromptId: "prompt-1",
-      queueDepth: 0,
-      statusLine: "Connected.",
-    }),
-    "boom",
-  )
-  assert.equal(
-    deriveFooterHint({
-      fatalError: null,
-      activePromptId: null,
-      queueDepth: 0,
-      statusLine: "Connected.",
-    }),
-    "Connected.",
-  )
-})
-
 test("deriveAttachedFooterSummary includes view mode and hotkey hint without focused agent details", () => {
   const summary = deriveAttachedFooterSummary({
     session: session({
@@ -377,185 +296,13 @@ test("deriveVisibleActivityLabel prefers active tool activity over provider acti
   )
 })
 
-test("deriveFocusedStatusBadge follows session-level working state", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: false,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: false,
-    }),
-    badge([]),
-  )
-
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: true,
-      activeStatusLabel: "reading",
-      focusedBusy: true,
-    }),
-    badge([{ label: "DISCONNECTED", tone: "disconnected" }]),
-  )
-
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: true,
-    }),
-    badge([{ label: "THINKING", tone: "working" }]),
-  )
-
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: true,
-    }),
-    badge([{ label: "THINKING", tone: "working" }]),
-  )
-
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: false,
-    }),
-    badge([{ label: "IDLE", tone: "idle" }]),
-  )
-
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: "reading",
-      focusedBusy: true,
-    }),
-    badge([{ label: "READING", tone: "working" }]),
-  )
-})
-
-test("deriveFocusedStatusBadge stays working while the focused agent is busy", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: true,
-    }),
-    badge([{ label: "THINKING", tone: "working" }]),
-  )
-})
-
-test("deriveFocusedStatusBadge shows single agent status without agents array", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: false,
-    }),
-    badge([{ label: "IDLE", tone: "idle" }]),
-  )
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: "reading",
-      focusedBusy: true,
-    }),
-    badge([{ label: "READING", tone: "working" }]),
-  )
-})
-
-test("deriveFocusedStatusBadge shows N IDLE when all agents are idle", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: false,
-      agents: [
-        { id: "agent-1", busy: false },
-        { id: "agent-2", busy: false },
-        { id: "agent-3", busy: false },
-      ],
-    }),
-    badge([{ label: "3 IDLE", tone: "idle" }]),
-  )
-})
-
-test("deriveFocusedStatusBadge shows N WORKING when all agents are working", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: true,
-      agents: [
-        { id: "agent-1", busy: true },
-        { id: "agent-2", busy: true },
-      ],
-    }),
-    badge([{ label: "2 WORKING", tone: "working" }]),
-  )
-})
-
-test("deriveFocusedStatusBadge shows X IDLE Y WORKING for mixed states", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: "reading",
-      focusedBusy: true,
-      agents: [
-        { id: "agent-1", busy: false },
-        { id: "agent-2", busy: true },
-        { id: "agent-3", busy: false },
-        { id: "agent-4", busy: true },
-      ],
-    }),
-    badge([
-      { label: "2 IDLE", tone: "idle" },
-      { label: "2 WORKING", tone: "working" },
-    ]),
-  )
-})
-
-test("deriveFocusedStatusBadge shows single agent IDLE/WORKING with one agent in array", () => {
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: null,
-      focusedBusy: false,
-      agents: [{ id: "agent-1", busy: false }],
-    }),
-    badge([{ label: "IDLE", tone: "idle" }]),
-  )
-  assert.deepEqual(
-    deriveFocusedStatusBadge({
-      attached: true,
-      daemonDisconnected: false,
-      activeStatusLabel: "patching",
-      focusedBusy: true,
-      agents: [{ id: "agent-1", busy: true }],
-    }),
-    badge([{ label: "PATCHING", tone: "working" }]),
-  )
-})
-
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
     machineIndex: 0,
     remoteKernelIndex: 0,
-  terminalIndex: 0,
+    terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     workspaceLiveSyncMode: "off",
     providerId: "opencode",
@@ -565,16 +312,6 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     introStep: 0,
     keyState: { up: false, down: false, left: false, right: false },
     ...overrides,
-  }
-}
-
-function badge(parts: Array<{ label: string; tone: "idle" | "working" | "disconnected" | "error" }>) {
-  return {
-    label: parts.map((part) => part.label).join(" "),
-    tone: parts.some((part) => part.tone === "working")
-      ? "working"
-      : parts[0]?.tone ?? "idle",
-    parts,
   }
 }
 
