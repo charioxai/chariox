@@ -3,6 +3,7 @@ import type {
   RuntimeSession,
 } from "./kernel-types.js"
 import {
+  type AgentRuntimeActivityProjection,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
@@ -17,6 +18,10 @@ export type ActivePromptLifecycleRecord = {
   readonly status?: string
   readonly promptOrigin?: string | null
   readonly target_agent_id?: string | null
+  readonly providerRunId?: string | null
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
 }
 
 export type PromptLifecycleTransition = {
@@ -33,13 +38,9 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
         continue
       }
       const projection = projectAgentRuntimeActivity(activity)
-      if (projection.activeTurnPromptId) {
-        records.push({
-          id: projection.activeTurnPromptId,
-          status: projection.activeTurnStatus ?? projection.promptStatus,
-          promptOrigin: projection.activeTurnPromptOrigin ?? null,
-          target_agent_id: agentId,
-        })
+      const activeTurnRecord = activePromptLifecycleRecordFromProjectedTurn(agentId, projection)
+      if (activeTurnRecord) {
+        records.push(activeTurnRecord)
         continue
       }
       if (!projection.busy) {
@@ -95,6 +96,42 @@ function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActiveP
     status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
     promptOrigin: promptOriginFromRecord(prompt),
   }
+}
+
+function activePromptLifecycleRecordFromProjectedTurn(
+  agentId: string,
+  projection: AgentRuntimeActivityProjection,
+): ActivePromptLifecycleRecord | null {
+  const id = projection.activeTurnPromptId ?? externalActiveTurnLifecycleId(projection)
+  if (!id) {
+    return null
+  }
+  return {
+    id,
+    status: projection.activeTurnStatus ?? projection.promptStatus,
+    promptOrigin: projection.activeTurnPromptOrigin ?? null,
+    target_agent_id: agentId,
+    ...(projection.activeTurnProviderRunId ? { providerRunId: projection.activeTurnProviderRunId } : {}),
+    ...(projection.activeTurnExternalProvider ? { externalProvider: projection.activeTurnExternalProvider } : {}),
+    ...(projection.activeTurnExternalProviderSessionId
+      ? { externalProviderSessionId: projection.activeTurnExternalProviderSessionId }
+      : {}),
+    ...(projection.activeTurnExternalProviderTurnId
+      ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
+      : {}),
+  }
+}
+
+function externalActiveTurnLifecycleId(projection: AgentRuntimeActivityProjection): string | null {
+  if (!projection.activeTurnExternalProviderSessionId && !projection.activeTurnExternalProviderTurnId) {
+    return null
+  }
+  return [
+    "external",
+    projection.activeTurnExternalProvider ?? "",
+    projection.activeTurnExternalProviderSessionId ?? "",
+    projection.activeTurnExternalProviderTurnId ?? "",
+  ].join(":")
 }
 
 function activePromptLifecycleRecordIds(session: RuntimeSession): string[] {

@@ -94,3 +94,76 @@ test("session prompt lifecycle records ignore activity and prompt states outside
 
   assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
 })
+
+test("session prompt lifecycle records external active turn metadata", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "external:codex:thread-1:turn-1",
+          provider_run_id: "run-1",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "turn-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "external:codex:thread-1:turn-1",
+    status: "running",
+    promptOrigin: "external",
+    target_agent_id: "agent-1",
+    providerRunId: "run-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }])
+})
+
+test("session prompt lifecycle transition settles external active turns", () => {
+  assert.deepEqual(sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "cancelling",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+        },
+      },
+    }),
+  ), {
+    activePromptChanged: true,
+    cancelledPromptSettled: true,
+    settledAgentIds: ["agent-1"],
+  })
+})
