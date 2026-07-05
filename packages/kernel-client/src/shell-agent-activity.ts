@@ -12,7 +12,6 @@ import {
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
   agentRuntimePromptStatusIsActivePrompt,
-  normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
 import type { AgentRuntimeActivityBusyInput, AgentRuntimeActivityProjection, AgentRuntimeActivityStatus } from "./agent-activity.js"
@@ -21,24 +20,21 @@ import {
   normalizeProviderActivityLabel,
 } from "./provider-status.js"
 import { workspaceLiveSyncFooterSummary } from "./shell-workspace-format.js"
+import {
+  sessionActivePromptLifecycleRecords,
+  sessionPromptLifecycleTransition,
+} from "./session-prompt-lifecycle.js"
+export {
+  sessionActivePromptLifecycleRecords,
+  sessionPromptLifecycleTransition,
+  type ActivePromptLifecycleRecord,
+  type PromptLifecycleTransition,
+} from "./session-prompt-lifecycle.js"
 
 export type SessionPromptWorkSummary = {
   readonly active: number
   readonly queued: number
   readonly busyAgents: number
-}
-
-export type ActivePromptLifecycleRecord = {
-  readonly id: string
-  readonly status?: string
-  readonly promptOrigin?: string | null
-  readonly target_agent_id?: string | null
-}
-
-export type PromptLifecycleTransition = {
-  readonly activePromptChanged: boolean
-  readonly cancelledPromptSettled: boolean
-  readonly settledAgentIds: string[]
 }
 
 export type SessionIdleTurnCompletionInput = {
@@ -849,67 +845,6 @@ export function sessionActivePromptIdForAgent(
   return records.length === 1 ? records[0]?.id ?? null : null
 }
 
-export function sessionActivePromptLifecycleRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
-  if (session.agent_activity) {
-    const records: ActivePromptLifecycleRecord[] = []
-    for (const [agentId, activity] of Object.entries(session.agent_activity)) {
-      const projection = projectAgentRuntimeActivity(activity)
-      if (projection.activeTurnPromptId) {
-        records.push({
-          id: projection.activeTurnPromptId,
-          status: projection.activeTurnStatus ?? projection.promptStatus,
-          promptOrigin: projection.activeTurnPromptOrigin ?? null,
-          target_agent_id: agentId,
-        })
-        continue
-      }
-      if (!projection.busy) {
-        continue
-      }
-      const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
-      if (stateActivePrompt) {
-        records.push(activePromptLifecycleRecordFromPrompt(stateActivePrompt))
-      }
-    }
-    return records.sort(compareActivePromptLifecycleRecords)
-  }
-  if (session.prompt_states) {
-    return Object.values(session.prompt_states)
-      .map((state) => state.active_prompt)
-      .map((stateActivePrompt) => stateActivePrompt
-        ? activePromptLifecycleRecordFromPrompt(stateActivePrompt)
-        : null)
-      .filter((prompt): prompt is ActivePromptLifecycleRecord => Boolean(prompt))
-      .sort(compareActivePromptLifecycleRecords)
-  }
-  return session.active_prompt
-    ? [activePromptLifecycleRecordFromPrompt(session.active_prompt)]
-    : []
-}
-
-export function sessionPromptLifecycleTransition(
-  currentSession: RuntimeSession,
-  nextSession: RuntimeSession,
-): PromptLifecycleTransition {
-  const currentPromptRecords = sessionActivePromptLifecycleRecords(currentSession)
-  const previousPromptIds = currentPromptRecords.map((prompt) => prompt.id)
-  const nextPromptIds = activePromptLifecycleRecordIds(nextSession)
-  const nextPromptIdSet = new Set(nextPromptIds)
-  const settledPromptRecords = currentPromptRecords
-    .filter((prompt) => !nextPromptIdSet.has(prompt.id))
-
-  return {
-    activePromptChanged:
-      previousPromptIds.length !== nextPromptIds.length
-      || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
-    settledAgentIds: settledPromptRecords
-      .map((prompt) => prompt.target_agent_id)
-      .filter((agentId): agentId is string => Boolean(agentId)),
-    cancelledPromptSettled:
-      currentPromptRecords.some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
-  }
-}
-
 function legacySessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
   const promptState = promptStateForAgent(session, agentId)
   if (promptState !== undefined) {
@@ -941,25 +876,6 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
     return null
   }
   return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
-}
-
-function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
-  return {
-    ...prompt,
-    status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
-    promptOrigin: prompt.prompt_origin ?? null,
-  }
-}
-
-function activePromptLifecycleRecordIds(session: RuntimeSession): string[] {
-  return sessionActivePromptLifecycleRecords(session).map((prompt) => prompt.id)
-}
-
-function compareActivePromptLifecycleRecords(
-  left: ActivePromptLifecycleRecord,
-  right: ActivePromptLifecycleRecord,
-): number {
-  return left.id.localeCompare(right.id)
 }
 
 function promptStateHasWork(state: AgentPromptStateLike | null | undefined): boolean {
