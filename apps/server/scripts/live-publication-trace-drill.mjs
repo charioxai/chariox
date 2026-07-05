@@ -304,19 +304,32 @@ function traceExposureForPolicy(policy, nodeIds) {
 }
 
 async function startPublicationRuntime(client, sessionId, publicationId, transport, prefix) {
-  const port = await freePort()
-  const response = await unwrap(
-    withTimeout(client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "start", {
-      host: "127.0.0.1",
-      port,
-      kernelUrl,
-    })), runtimeStartTimeoutMs, `starting publication runtime ${publicationId}`),
-    "WorkflowPublicationRuntimeControlled",
-  )
-  await writeArtifact(`${prefix}/runtime-start.json`, response)
-  if (transport.id !== "schedule_only" && !response.local_url) throw new Error("publication runtime did not return a local_url")
-  if (response.local_url) await waitForGatewayReady(response.local_url)
-  return response
+  const failures = []
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const port = await freePort()
+    const response = await unwrap(
+      withTimeout(client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "start", {
+        host: "127.0.0.1",
+        port,
+        kernelUrl,
+      })), runtimeStartTimeoutMs, `starting publication runtime ${publicationId}`),
+      "WorkflowPublicationRuntimeControlled",
+    )
+    await writeArtifact(`${prefix}/runtime-start-attempt-${attempt}.json`, response)
+    await writeArtifact(`${prefix}/runtime-start.json`, response)
+    try {
+      if (transport.id !== "schedule_only" && !response.local_url) throw new Error("publication runtime did not return a local_url")
+      if (response.local_url) await waitForGatewayReady(response.local_url)
+      return response
+    } catch (error) {
+      const message = error instanceof Error ? error.stack ?? error.message : String(error)
+      failures.push(message)
+      await writeArtifact(`${prefix}/runtime-start-attempt-${attempt}-error.txt`, message)
+      await client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "stop")).catch(() => {})
+      if (attempt === 2) throw new Error(failures.join("\n--- retry ---\n"))
+    }
+  }
+  throw new Error("publication runtime did not start")
 }
 
 async function waitForGatewayReady(localUrl) {
