@@ -4,8 +4,8 @@ import {
   transcriptEntryWithTerminalMetadata,
   type TerminalRecordTranscriptMetadata,
 } from "@arroba/kernel-client/terminal-record-transcript"
+import { isProviderIdleStatus } from "@arroba/kernel-client/provider-status"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
-import { isProviderIdleStatus } from "./runtime.js"
 
 type KernelEventControllerDeps = {
   recordDaemonActivity: (source: string) => void

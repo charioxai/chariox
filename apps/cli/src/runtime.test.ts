@@ -5,18 +5,9 @@ import { LocalIpcError } from "./ipc.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   MAX_TRANSIENT_POLL_FAILURES,
-  chooseVisibleActivityLabel,
   describeCliError,
-  getTurnCompletionDelayMs,
   getExitCleanupDecision,
-  getProviderActivityLabel,
-  isProviderIdleStatus,
-  resolveStreamingAgentId,
-  resolveVisibleTranscriptAgentId,
   getPollRecoveryDecision,
-  getSessionStatusLabel,
-  getToolActivityLabel,
-  reconcileWorkingStateFromSession,
   SILENT_POLL_THRESHOLD,
   STATUS_BADGE_WIDTH,
   shouldEndSessionOnCliExit,
@@ -91,101 +82,6 @@ test("cli exit detaches instead of ending the session", () => {
   assert.equal(shouldEndSessionOnCliExit(false, 1), false)
 })
 
-test("session polling does not clear working state until explicit prompt work ends", () => {
-  assert.equal(reconcileWorkingStateFromSession(true, false), true)
-  assert.equal(reconcileWorkingStateFromSession(true, true), true)
-  assert.equal(reconcileWorkingStateFromSession(false, true), true)
-  assert.equal(reconcileWorkingStateFromSession(false, false), false)
-})
-
-test("status badge labels show exact active actions", () => {
-  assert.equal(getSessionStatusLabel("idle", "grepping"), "IDLE")
-  assert.equal(getSessionStatusLabel("disconnected", "grepping"), "DISCONNECTED")
-  assert.equal(getSessionStatusLabel("working", null), "THINKING")
-  assert.equal(getSessionStatusLabel("working", "grepping"), "GREPPING")
+test("status badge width leaves room for the longest fixed CLI status", () => {
   assert.equal(STATUS_BADGE_WIDTH, 14)
-})
-
-test("tool activity labels convert tool names into gerunds", () => {
-  assert.equal(getToolActivityLabel("bash"), "bashing")
-  assert.equal(getToolActivityLabel("grep"), "grepping")
-  assert.equal(getToolActivityLabel("glob"), "globbing")
-  assert.equal(getToolActivityLabel("read"), "reading")
-  assert.equal(getToolActivityLabel("apply_patch"), "patching")
-  assert.equal(getToolActivityLabel("webfetch"), "webfetching")
-  assert.equal(getToolActivityLabel("todowrite"), "todowriting")
-})
-
-test("tool activity labels take precedence over provider activity", () => {
-  assert.equal(chooseVisibleActivityLabel("reading", "grepping"), "grepping")
-  assert.equal(chooseVisibleActivityLabel("reconnecting", null), "reconnecting")
-  assert.equal(chooseVisibleActivityLabel(null, "writing"), "writing")
-  assert.equal(chooseVisibleActivityLabel(null, null), null)
-})
-
-test("provider status labels map to active badge text", () => {
-  assert.equal(getProviderActivityLabel("OpenCode is idle."), null)
-  assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
-  assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
-  assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
-  assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
-  assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
-})
-
-test("turn completion waits for a real quiet window after turn activity", () => {
-  assert.equal(getTurnCompletionDelayMs({
-    sessionHasPromptWork: false,
-    pendingTerminalRecordCount: 0,
-    pendingTerminalRecordFlush: false,
-    lastTurnActivityAt: 900,
-    now: 1_000,
-    quietWindowMs: 1_500,
-  }), 1_400)
-  assert.equal(getTurnCompletionDelayMs({
-    sessionHasPromptWork: false,
-    pendingTerminalRecordCount: 0,
-    pendingTerminalRecordFlush: false,
-    lastTurnActivityAt: 0,
-    now: 1_500,
-    quietWindowMs: 1_500,
-  }), 0)
-  assert.equal(getTurnCompletionDelayMs({
-    sessionHasPromptWork: true,
-    pendingTerminalRecordCount: 0,
-    pendingTerminalRecordFlush: false,
-    lastTurnActivityAt: 900,
-    now: 1_000,
-    quietWindowMs: 1_500,
-  }), null)
-})
-
-test("visible transcript follows focus in individual mode and primary pane in split mode", () => {
-  assert.equal(resolveVisibleTranscriptAgentId(false, "agent-a", "agent-b"), "agent-b")
-  assert.equal(resolveVisibleTranscriptAgentId(true, "agent-a", "agent-b"), "agent-a")
-  assert.equal(resolveVisibleTranscriptAgentId(true, null, "agent-b"), "agent-b")
-})
-
-test("streaming agent resolution prefers active processing and clears stale runs", () => {
-  const agents = [
-    { id: "agent-a", is_processing: false, state: "Idle" },
-    { id: "agent-b", is_processing: true, state: "Working" },
-  ] as const
-
-  assert.equal(resolveStreamingAgentId(agents, "agent-a", true, true, "agent-a"), "agent-b")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, "agent-a", true, false, null), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, true, false, "agent-a"), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, false, true, "agent-a"), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }] as const, null, false, false, "agent-a"), null)
-})
-
-test("streaming agent resolution can ignore legacy processing state for projected sessions", () => {
-  const agents = [
-    { id: "agent-a", is_processing: true, state: "Working" },
-    { id: "agent-b", is_processing: false, state: "Idle" },
-  ] as const
-
-  assert.equal(resolveStreamingAgentId(agents, "agent-b", true, false, null, false), "agent-b")
-  assert.equal(resolveStreamingAgentId(agents, null, true, false, "agent-b", false), "agent-b")
-  assert.equal(resolveStreamingAgentId(agents, null, false, true, "agent-b", false), null)
-  assert.equal(resolveStreamingAgentId(agents, null, false, false, null, false), null)
 })

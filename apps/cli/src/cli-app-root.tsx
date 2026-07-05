@@ -109,7 +109,6 @@ import {
 } from "./prompt-history.js"
 import {
   DEFAULT_CONNECTED_STATUS,
-  getSessionStatusLabel,
 } from "./runtime.js"
 import {
   type SessionChromeUpdateController,

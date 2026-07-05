@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { getToolActivityLabel } from "./runtime.js"
+import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,

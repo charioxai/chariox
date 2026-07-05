@@ -1,4 +1,4 @@
-import { resolveVisibleTranscriptAgentId } from "./runtime.js"
+import { resolveVisibleTranscriptAgentId } from "@arroba/kernel-client/session-runtime-transition"
 
 export type ResponsePaneAgent = {
   id: string

@@ -17,8 +17,8 @@ import {
   DEFAULT_CONNECTED_STATUS,
   SILENT_POLL_THRESHOLD,
   getPollRecoveryDecision,
-  getProviderActivityLabel,
 } from "./runtime.js"
+import { getProviderActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyProviderRunProfileToSession,
 } from "./session-chrome-state.js"
