@@ -1,4 +1,7 @@
-import { promptOriginFromRecord } from "./prompt-origin.js"
+import {
+  promptOriginFromRecord,
+  promptOriginIsExternal,
+} from "./prompt-origin.js"
 
 export type AgentRuntimeActivityBusyInput = {
   readonly busy?: boolean | null
@@ -99,6 +102,12 @@ export function agentRuntimeActivityProjectionHasTurnWork(
     return false
   }
   return projection.status === "working" || projection.busy
+}
+
+export function agentRuntimeActivityProjectionHasExternalActiveTurn(
+  projection: AgentRuntimeActivityProjection,
+): boolean {
+  return promptOriginIsExternal(projection.activeTurnPromptOrigin)
 }
 
 export function agentRuntimeActivityResolvedStatus(

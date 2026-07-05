@@ -6,6 +6,7 @@ import {
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
+  agentRuntimeActivityProjectionHasExternalActiveTurn,
   agentRuntimeActivityProjectionResolvedStatus,
   agentRuntimeActivityResolvedStatus,
   agentRuntimePromptStatusIsActive,
@@ -262,7 +263,7 @@ test("agent activity projection unwraps nested activity and normalizes settled s
 })
 
 test("agent activity projection exposes live active turn identity", () => {
-  assert.deepEqual(projectAgentRuntimeActivity({
+  const externalProjection = projectAgentRuntimeActivity({
     status: "idle",
     prompt_status: "none",
     busy: false,
@@ -277,7 +278,8 @@ test("agent activity projection exposes live active turn identity", () => {
       phase: "streaming",
       started_at_ms: 123,
     },
-  }), {
+  })
+  assert.deepEqual(externalProjection, {
     status: "idle",
     promptStatus: "none",
     busy: true,
@@ -308,6 +310,7 @@ test("agent activity projection exposes live active turn identity", () => {
     error: false,
     unreadIdleOutput: false,
   })
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(externalProjection), true)
 
   assert.equal(projectAgentRuntimeActivity({
     active_turn: {
@@ -332,6 +335,20 @@ test("agent activity projection exposes live active turn identity", () => {
       status: "running",
     },
   }).activeTurnPromptOrigin, "external")
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-external",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+    },
+  })), true)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-arroba",
+      prompt_origin: "arroba",
+      status: "running",
+    },
+  })), false)
 })
 
 test("agent activity projection exposes completed turn action metadata", () => {

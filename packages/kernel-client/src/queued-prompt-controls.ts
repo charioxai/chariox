@@ -1,6 +1,8 @@
-import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
+import {
+  agentRuntimeActivityProjectionHasExternalActiveTurn,
+  type AgentRuntimeActivityProjection,
+} from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
-import { promptOriginIsExternal } from "./prompt-origin.js"
 import {
   sessionAgentActivityRecordForAgent,
   sessionPromptStateRecordForAgent,
@@ -298,11 +300,5 @@ function projectedActivityHasExternalActiveTurn(activity: SessionProjectedPrompt
   if (!activity || activity === "idle" || activity === "not_found") {
     return false
   }
-  const projection = activity
-  return promptOriginIsExternal(projection.activeTurnPromptOrigin)
-    || Boolean(
-      projection.activeTurnExternalProvider
-        || projection.activeTurnExternalProviderSessionId
-        || projection.activeTurnExternalProviderTurnId,
-    )
+  return agentRuntimeActivityProjectionHasExternalActiveTurn(activity)
 }

@@ -289,7 +289,6 @@ test("queued prompt projection disables steering behind external active turn wit
         queued_prompt_count: 1,
         active_turn: {
           prompt_id: "external-active",
-          prompt_origin: "external",
           external_provider: "codex",
           external_provider_session_id: "provider-session-1",
           external_provider_turn_id: "provider-turn-1",
