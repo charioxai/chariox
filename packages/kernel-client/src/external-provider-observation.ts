@@ -154,7 +154,7 @@ export function mergeExternalProviderObservation(
   if (!incoming) {
     return existing
   }
-  const settlesActivePrompt = existing.settles_active_prompt || incoming.settles_active_prompt
+  const settlesActivePrompt = existing.settles_active_prompt === true || incoming.settles_active_prompt === true
   return {
     settles_active_prompt: settlesActivePrompt,
     passive_telemetry: settlesActivePrompt
