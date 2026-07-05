@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
+import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -52,8 +53,8 @@ const providerSpecs = [
 ]
 const transports = [
   { id: "human_http", route: "/prompt/*", methods: ["GET", "POST"], transport: { kind: "human_http" }, parser: { kind: "path_template", template: "/prompt/:prompt" }, mode: "sync" },
-  { id: "api_sse_json", route: "/invoke", methods: ["POST"], transport: { kind: "api_sse_json" }, parser: { kind: "json_body" }, mode: "async" },
-  { id: "websocket_json", route: "/socket", methods: ["GET"], transport: { kind: "websocket_json" }, parser: null, mode: "async" },
+  { id: "api_sse_json", route: "/invoke", methods: ["POST"], transport: { kind: "api_sse_json" }, parser: { kind: "json" }, mode: "async" },
+  { id: "websocket_json", route: "/socket", methods: [], transport: { kind: "websocket_json" }, parser: null, mode: "async" },
   { id: "mcp", route: "/mcp", methods: ["POST"], transport: { kind: "mcp" }, parser: null, mode: "sync" },
   { id: "schedule_only", route: null, methods: [], transport: { kind: "schedule_only" }, parser: null, mode: "async", kind: "schedule_only" },
 ]
@@ -173,23 +174,17 @@ function normalizeModelToken(value) {
 
 async function runProviderMatrix(client, provider) {
   const sessionAlias = `trace-${provider.provider}-${Date.now()}`
+  const workspaceRoot = await mkdtemp(join(tmpdir(), `${sessionAlias}-`))
   const session = await unwrap(
-    client.send(createSessionRequest(`workspace-${sessionAlias}`, `worktree-${sessionAlias}`, sessionAlias)),
+    client.send(createSessionRequest(workspaceRoot, workspaceRoot, sessionAlias)),
     "SessionCreated",
   )
   const sessionId = session.session.id
-  const workflowSource = workflowCodeSource(provider)
-  const applied = await unwrap(
-    client.send(applyWorkflowCodeRequest(sessionId, workflowCodeNodePath, workflowSource)),
-    "WorkflowCodeApplied",
-  )
-  await writeArtifact(`${provider.provider}/workflow-applied.json`, applied)
-  const workflowId = applied.result.apply.workflow_id
-  const endpointId = applied.result.apply.endpoint_ids.entry
-  const nodeIds = applied.result.apply.node_ids
+  const appliedByTransport = new Map()
 
   for (const policy of policies.filter((policy) => selected(requestedPolicies, policy.id))) {
     for (const transport of transports.filter((transport) => selected(requestedTransports, transport.id))) {
+      const { workflowId, endpointId, nodeIds } = await workflowForTransport(client, sessionId, provider, transport, appliedByTransport)
       const matrixEntry = {
         provider: provider.provider,
         model: provider.resolved_model,
@@ -206,10 +201,14 @@ async function runProviderMatrix(client, provider) {
       try {
         const publication = await createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix)
         await writeArtifact(`${prefix}/publication.json`, publication)
-        const runtime = await startPublicationRuntime(client, sessionId, publication.id, transport)
+        const runtime = await startPublicationRuntime(client, sessionId, publication.id, transport, prefix)
         activeRuntimeStops.push({ sessionId, publicationId: publication.id })
         await writeArtifact(`${prefix}/runtime.json`, runtime)
-        const raw = await invokeTransport(runtime.local_url ?? runtime.open_url ?? runtime.viewer_url, transport, provider, policy)
+        const raw = await withTimeout(
+          invokeTransport(runtime.local_url ?? runtime.open_url ?? runtime.viewer_url, transport, provider, policy),
+          protocolTimeoutMs + 5_000,
+          `invoking ${transport.id} publication ${publication.id}`,
+        )
         await writeArtifact(`${prefix}/raw-response.json`, raw)
         const statusPayload = runtime.local_url ? await waitForPublicationStatus(runtime.local_url, transport) : null
         await writeArtifact(`${prefix}/publication-status.json`, statusPayload)
@@ -218,9 +217,12 @@ async function runProviderMatrix(client, provider) {
         const workflowRun = latestRunId ? await workflowRunSnapshot(client, workflowRunSessionId, latestRunId) : null
         await writeArtifact(`${prefix}/workflow-run.json`, workflowRun)
         const assertions = assertExposure({
+          raw,
+          statusPayload,
           visible: JSON.stringify([raw, statusPayload]),
           workflowRun,
           policy,
+          transport,
           nodeIds,
         })
         await writeArtifact(`${prefix}/assertions.json`, assertions)
@@ -244,6 +246,24 @@ async function runProviderMatrix(client, provider) {
       }
     }
   }
+}
+
+async function workflowForTransport(client, sessionId, provider, transport, appliedByTransport) {
+  const cached = appliedByTransport.get(transport.id)
+  if (cached) return cached
+  const workflowSource = workflowCodeSource(provider, transport)
+  const applied = await unwrap(
+    client.send(applyWorkflowCodeRequest(sessionId, workflowCodeNodePath, workflowSource)),
+    "WorkflowCodeApplied",
+  )
+  await writeArtifact(`${provider.provider}/${transport.id}/workflow-applied.json`, applied)
+  const compiled = {
+    workflowId: applied.result.apply.workflow_id,
+    endpointId: applied.result.apply.endpoint_ids.entry,
+    nodeIds: applied.result.apply.node_ids,
+  }
+  appliedByTransport.set(transport.id, compiled)
+  return compiled
 }
 
 async function createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix) {
@@ -283,7 +303,7 @@ function traceExposureForPolicy(policy, nodeIds) {
   }
 }
 
-async function startPublicationRuntime(client, sessionId, publicationId, transport) {
+async function startPublicationRuntime(client, sessionId, publicationId, transport, prefix) {
   const port = await freePort()
   const response = await unwrap(
     withTimeout(client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "start", {
@@ -293,6 +313,7 @@ async function startPublicationRuntime(client, sessionId, publicationId, transpo
     })), runtimeStartTimeoutMs, `starting publication runtime ${publicationId}`),
     "WorkflowPublicationRuntimeControlled",
   )
+  await writeArtifact(`${prefix}/runtime-start.json`, response)
   if (transport.id !== "schedule_only" && !response.local_url) throw new Error("publication runtime did not return a local_url")
   if (response.local_url) await waitForGatewayReady(response.local_url)
   return response
@@ -354,13 +375,11 @@ async function invokeTransport(localUrl, transport, provider, policy) {
   }
   if (transport.id === "api_sse_json") {
     const url = new URL("/invoke", base)
-    const response = await fetch(url, {
+    return await invokeApiSse(url.toString(), {
       method: "POST",
       headers: { accept: "text/event-stream", "content-type": "application/json" },
       body: JSON.stringify({ prompt }),
-      signal: AbortSignal.timeout(protocolTimeoutMs),
     })
-    return { transport: transport.id, url: url.toString(), status: response.status, body: await response.text() }
   }
   if (transport.id === "websocket_json") {
     const url = new URL("/socket", base)
@@ -400,15 +419,19 @@ function promptFor(provider, transport, policy) {
   ].join("\n")
 }
 
-function workflowCodeSource(provider) {
+function workflowCodeSource(provider, transport) {
   const model = JSON.stringify(provider.resolved_model)
   const providerId = JSON.stringify(provider.provider)
   const outputSummaryMarker = markerNames.output_summary
   const assistantMarker = markerNames.assistant_messages
   const toolMarker = markerNames.tool_use
   const finalMarker = markerNames.final
+  const workflowAlias = JSON.stringify(`live-trace-${provider.provider}-${transport.id}`)
+  const watchdog = transport.id === "schedule_only"
+    ? `workflow.watchdog(entry, { handle: "schedule", queue: "default", enabled: true, intervalSeconds: 1, invocationPrompt: "Scheduled live trace validation.", policy: "queue", maxWakeups: 1 });`
+    : ""
   return `
-workflow.define({ alias: "live-trace-${provider.provider}", maxConcurrent: 4 });
+workflow.define({ alias: ${workflowAlias}, maxConcurrent: 4 });
 const finalOutput = workflow.schema({
   handle: "final",
   alias: "Trace final",
@@ -450,11 +473,11 @@ const finalizer = workflow.node({
 workflow.edge(planner, worker, { handle: "planner_worker", handoffSchema: handoff });
 workflow.edge(worker, finalizer, { handle: "worker_finalizer", handoffSchema: handoff });
 const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
-workflow.watchdog(entry, { handle: "schedule", queue: "default", enabled: true, intervalSeconds: 1, invocationPrompt: "Scheduled live trace validation.", policy: "queue", maxWakeups: 1 });
+${watchdog}
 `
 }
 
-function assertExposure({ visible, workflowRun, policy, nodeIds }) {
+function assertExposure({ raw, statusPayload, visible, workflowRun, policy, transport, nodeIds }) {
   const serializedRun = JSON.stringify(workflowRun ?? {})
   const providerEmitted = {
     output_summary: serializedRun.includes(markerNames.output_summary) || /summary/i.test(serializedRun),
@@ -466,6 +489,9 @@ function assertExposure({ visible, workflowRun, policy, nodeIds }) {
     ? new Set(["output_summary", "assistant_messages", "thinking", "tool_use"])
     : new Set(policy.levels ?? [])
   const failures = []
+  for (const failure of protocolFailures(raw, statusPayload, workflowRun, transport)) {
+    failures.push(failure)
+  }
   for (const level of ["output_summary", "assistant_messages", "thinking", "tool_use"]) {
     const marker = markerNames[level]
     const present = visible.includes(marker)
@@ -480,6 +506,29 @@ function assertExposure({ visible, workflowRun, policy, nodeIds }) {
     if (finalizerLeak) failures.push("mixed per-node policy leaked hidden finalizer detail")
   }
   return { ok: failures.length === 0, failures, provider_emitted: providerEmitted }
+}
+
+function protocolFailures(raw, statusPayload, workflowRun, transport) {
+  const failures = []
+  if (transport.id === "schedule_only") {
+    if (!workflowRun?.id && !statusPayload?.latest_run?.id && !statusPayload?.last_run?.id) failures.push("schedule-only publication did not produce an observable run")
+    return failures
+  }
+  if (raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
+  if (raw?.error && raw.status == null) failures.push(`${transport.id} protocol invocation error: ${raw.error}`)
+  if (transport.id === "api_sse_json") {
+    const events = Array.isArray(raw?.events) ? raw.events.map((event) => event.event) : []
+    if (!events.includes("final")) failures.push("api_sse_json stream did not emit final event")
+  }
+  if (transport.id === "websocket_json") {
+    const messages = Array.isArray(raw?.messages) ? raw.messages.join("\n") : ""
+    if (!messages.includes('"type":"final"')) failures.push("websocket_json stream did not emit final frame")
+  }
+  if (transport.id === "mcp" && !raw?.called?.result) failures.push("mcp tools/call did not return a result")
+  if (transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
+  if (workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+  if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
+  return failures
 }
 
 async function workflowRunSnapshot(client, sessionId, runId) {
@@ -507,13 +556,71 @@ async function postJson(url, payload) {
   return JSON.parse(await response.text())
 }
 
+async function invokeApiSse(url, init) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`api_sse_json invocation timed out for ${url}`)), protocolTimeoutMs)
+  const events = []
+  let body = ""
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal })
+    const reader = response.body?.getReader()
+    if (!reader) return { transport: "api_sse_json", url, status: response.status, body, events }
+    const decoder = new TextDecoder()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      body += decoder.decode(value, { stream: true })
+      parseSseEvents(body, events)
+      if (events.some((event) => event.event === "final" || event.event === "error" || event.event === "timeout")) break
+    }
+    body += decoder.decode()
+    parseSseEvents(body, events)
+    await reader.cancel().catch(() => {})
+    return { transport: "api_sse_json", url, status: response.status, body, events }
+  } catch (error) {
+    return {
+      transport: "api_sse_json",
+      url,
+      status: null,
+      body,
+      events,
+      timed_out: error?.name === "AbortError" || /timed out/i.test(String(error?.message ?? error)),
+      error: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function parseSseEvents(body, events) {
+  const parsedCount = events.reduce((count, event) => count + (event.raw?.length ?? 0), 0)
+  const remaining = body.slice(parsedCount)
+  const blocks = remaining.split(/\n\n/)
+  for (let index = 0; index < blocks.length - 1; index += 1) {
+    const raw = `${blocks[index]}\n\n`
+    let eventName = "message"
+    let data = ""
+    for (const line of blocks[index].split(/\n/)) {
+      if (line.startsWith("event:")) eventName = line.slice("event:".length).trim()
+      if (line.startsWith("data:")) data += line.slice("data:".length).trim()
+    }
+    let parsed = data
+    try {
+      parsed = JSON.parse(data)
+    } catch {
+      // Keep raw string data for malformed or non-JSON event payloads.
+    }
+    events.push({ event: eventName, data: parsed, raw })
+  }
+}
+
 async function invokeWebSocket(url, payload) {
   return await new Promise((resolve, reject) => {
     const messages = []
     const socket = new WebSocket(url)
     const timeout = setTimeout(() => {
       socket.close()
-      reject(new Error(`websocket invocation timed out for ${url}`))
+      resolve({ transport: "websocket_json", url, messages, timed_out: true })
     }, protocolTimeoutMs)
     socket.on("message", (data) => {
       const text = String(data)
