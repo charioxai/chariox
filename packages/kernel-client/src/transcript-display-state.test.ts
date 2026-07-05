@@ -134,6 +134,22 @@ test("applyTranscriptDisplayState keeps active turns expanded even with stale co
   )
 })
 
+test("applyTranscriptDisplayState infers active turns from history lifecycle metadata", () => {
+  const entries = applyTranscriptDisplayState(
+    baseTurnEntries().map((entry) => ({
+      ...entry,
+      historyTurnCompletedAtMs: null,
+    })),
+    [1],
+  )
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => entry.role),
+    ["user", "reasoning", "tool", "assistant"],
+  )
+})
+
 test("collapseLatestTranscriptTurn marks only completed non-trivial turns", () => {
   assert.deepEqual(collapseLatestTranscriptTurn(baseTurnEntries()), [1])
   assert.deepEqual(
