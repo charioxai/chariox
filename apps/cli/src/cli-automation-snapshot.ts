@@ -7,6 +7,7 @@ import {
 } from "@arroba/kernel-client/session-prompt-work"
 import {
   sessionAgentPaneStatusBadge,
+  sessionAgentRuntimeDisplayStates,
 } from "@arroba/kernel-client/session-runtime-status"
 
 import type {
@@ -79,6 +80,9 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
   const selectedWorkflow = session.workflows?.find((workflow) => workflow.id === deps.selectedWorkflowId()) ?? null
   const waitingRoomState = deps.waitingRoomState()
   const shellEntries = deps.workspaceShellEntries()
+  const agentRuntimeDisplayStates = Object.fromEntries(
+    sessionAgentRuntimeDisplayStates(session).map((entry) => [entry.id, entry.state]),
+  )
   return {
     screen: deps.workspaceScreenMode(),
     workflowScreenActive: deps.workflowScreenActive(),
@@ -103,8 +107,8 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           id: agent.id,
           alias: agent.alias,
           provider: agent.provider,
-          state: agent.state,
-          isProcessing: agent.is_processing,
+          state: agentRuntimeDisplayStates[agent.id] ?? agent.state,
+          isProcessing: agentRuntimeDisplayStates[agent.id] === "Working",
           badge,
         }
       }),

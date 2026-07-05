@@ -322,6 +322,7 @@ test("buildCliAutomationSnapshot trusts projected idle runtime state over stale 
           status: "idle",
           prompt_status: "none",
           busy: false,
+          unread_idle_output: false,
         },
       },
     },
@@ -385,7 +386,12 @@ test("buildCliAutomationSnapshot trusts projected idle runtime state over stale 
       interactionCustomEditing: () => false,
     })
 
-    assert.deepEqual((snapshot.session as { agents: Array<{ badge: unknown }> }).agents[0]?.badge, {
+    const snapshotAgent = (snapshot.session as {
+      agents: Array<{ state: unknown; isProcessing: unknown; badge: unknown }>
+    }).agents[0]
+    assert.equal(snapshotAgent?.state, "Idle")
+    assert.equal(snapshotAgent?.isProcessing, false)
+    assert.deepEqual(snapshotAgent?.badge, {
       label: "IDLE",
       tone: "idle",
     })
