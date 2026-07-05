@@ -6,11 +6,12 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import type {
   PromptMetaPart,
   PromptUsageMeta,
+  PromptMetaStateOptions,
 } from "@arroba/kernel-client/prompt-meta"
 import {
   derivePromptMetaState,
   derivePromptUsageState,
-} from "./session-chrome-state.js"
+} from "@arroba/kernel-client/prompt-meta"
 import {
   derivePromptProviderSelection,
 } from "@arroba/kernel-client/prompt-provider-selection"
@@ -33,7 +34,7 @@ export type ProviderPromptProjectionControllerDeps = {
 export function createProviderPromptProjectionController(
   deps: ProviderPromptProjectionControllerDeps,
 ) {
-  const providerSelectionOptions = () => {
+  const providerSelectionOptions = (): PromptMetaStateOptions => {
     const defaults = deps.getDefaults()
     const options = {
       providerRun: deps.getProviderRun(),

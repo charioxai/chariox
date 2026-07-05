@@ -1,3 +1,15 @@
+import {
+  derivePromptProviderSelection,
+  providerRunForPromptSelection,
+  resolveProviderModelContextLimit,
+  type PromptProviderSelectionOptions,
+  type ProviderModelContextCatalog,
+} from "./prompt-provider-selection.js"
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+} from "./kernel-types.js"
+
 export type PromptMetaTone = "primary" | "secondary" | "accent" | "warning" | "success" | "info" | "text"
 
 export type PromptMetaPart = {
@@ -15,6 +27,38 @@ export type PromptUsageMeta = {
 }
 
 const promptUsageNumber = new Intl.NumberFormat("en-US")
+
+export type PromptMetaStateOptions = PromptProviderSelectionOptions
+
+export type PromptUsageStateOptions = {
+  readonly providerRun: RuntimeProviderRun | null
+  readonly focusedAgent?: AgentInstance | null
+  readonly catalog: ProviderModelContextCatalog
+  readonly barWidth?: number
+}
+
+export function derivePromptMetaState(options: PromptMetaStateOptions): PromptMetaPart[] {
+  const selection = derivePromptProviderSelection(options)
+  return formatPromptMetaParts(
+    selection.provider,
+    selection.model,
+    selection.effort,
+  )
+}
+
+export function derivePromptUsageState(options: PromptUsageStateOptions): PromptUsageMeta | null {
+  const run = providerRunForPromptSelection(options.providerRun, options.focusedAgent)
+  if (!run) {
+    return null
+  }
+
+  return formatPromptUsageMeta(
+    run.usage_tokens_total,
+    run.usage?.context_tokens,
+    resolveProviderModelContextLimit(options.catalog, run.provider, run.model),
+    options.barWidth ?? 12,
+  )
+}
 
 export function formatPromptMetaLine(provider: string, model: string, effort: string) {
   return formatPromptMetaParts(provider, model, effort).map((part) => part.text).join(" • ")
