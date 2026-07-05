@@ -1,5 +1,6 @@
 import { agentRuntimeActivityIsBusy } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import { sessionHasAgent } from "./session-agent-prompt-state.js"
 
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
 
@@ -92,6 +93,9 @@ export function queuedPromptsForAgent(
   session: RuntimeSession,
   agentId: string,
 ): readonly PromptQueueItem[] | null {
+  if (!sessionHasAgent(session, agentId)) {
+    return []
+  }
   if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
     return []
   }

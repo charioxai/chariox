@@ -317,6 +317,40 @@ test("queued prompts for agent falls back to legacy top-level queues without pro
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
 })
 
+test("queued prompts for agent ignore queues outside session agents", () => {
+  const session = sessionWith({
+    queued_prompts: [prompt("queued-ghost", "agent-ghost")],
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: null,
+        queued_prompts: [prompt("state-queued-ghost", "agent-ghost")],
+      },
+    },
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        queued_prompt_controls: {
+          "state-queued-ghost": {
+            prompt_id: "state-queued-ghost",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: false,
+          },
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-ghost"), [])
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-ghost"), {
+    action: "replace",
+    prompts: [],
+  })
+})
+
 function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
   return {
     id: "session-1",

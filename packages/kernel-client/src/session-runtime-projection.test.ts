@@ -1787,6 +1787,7 @@ test("sessionPromptStateForAgent ignores legacy prompts once activity projection
 
 test("sessionPromptStateForAgent scopes legacy top-level prompts by agent", () => {
   const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
     active_prompt: {
       id: "prompt-1",
       source_attachment_id: "attach-1",
