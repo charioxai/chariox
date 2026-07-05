@@ -11,6 +11,7 @@ import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   sessionProjectedPromptActivityEntriesForSessionAgents,
   sessionPromptStateEntriesForSessionAgents,
+  sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
 
 export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIdentityFields & {
@@ -40,7 +41,7 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
       if (!projection.busy) {
         continue
       }
-      const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
+      const stateActivePrompt = sessionPromptStateRecordForAgent(session, agentId)?.active_prompt
       if (stateActivePrompt) {
         records.push(activePromptLifecycleRecordFromPrompt(stateActivePrompt))
       }
