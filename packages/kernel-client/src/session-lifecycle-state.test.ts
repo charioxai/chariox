@@ -4,6 +4,7 @@ import test from "node:test"
 import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
 import {
   isCompleteSessionSnapshot,
+  resolveAttachTimeProviderLaunch,
   resolveLaunchTargetAgent,
   resolveSessionAgentDefaults,
   resolveStoredAgentLaunch,
@@ -206,6 +207,79 @@ test("resolveStoredAgentLaunch falls back to session defaults for new or unfocus
     model: "kimi/k2.6",
     effort: "medium",
   })
+})
+
+test("resolveAttachTimeProviderLaunch loads existing provider runs before launch decisions", () => {
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(
+      makeSession({ active_provider_run_id: " run-1 " }),
+      { provider: "codex", model: "codex/gpt-5", effort: "low" },
+      false,
+    ),
+    { action: "load_provider_run", providerRunId: "run-1" },
+  )
+})
+
+test("resolveAttachTimeProviderLaunch launches with resolved focused agent defaults", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-b",
+    agents: [
+      makeAgent("agent-a"),
+      makeAgent("agent-b", {
+        provider: "claude",
+        model: "claude/sonnet-4.6",
+        effort: "high",
+      }),
+    ],
+  })
+
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(
+      session,
+      { provider: "codex", model: "codex/gpt-5", effort: "low" },
+      false,
+    ),
+    {
+      action: "launch_provider_run",
+      launch: { provider: "claude", model: "claude/sonnet-4.6", effort: "high" },
+      targetAgent: session.agents[1],
+      targetAgentId: "agent-b",
+    },
+  )
+})
+
+test("resolveAttachTimeProviderLaunch skips attach-time launches that cannot be local", () => {
+  const fallback = { provider: "codex", model: "codex/gpt-5", effort: "low" }
+  const remoteAgent = makeAgent("agent-a", {
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "worker-agent-1",
+    },
+  })
+
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(makeSession({ agents: [] }), fallback, false),
+    { action: "skip_launch", reason: "no_visible_agents", launch: fallback, targetAgent: null },
+  )
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(makeSession({ focused_agent_id: "missing" }), fallback, false),
+    { action: "skip_launch", reason: "missing_focused_agent", launch: fallback, targetAgent: null },
+  )
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(makeSession({ agents: [remoteAgent] }), fallback, false),
+    {
+      action: "skip_launch",
+      reason: "remote_backed_agent",
+      launch: { provider: "codex", model: "codex/gpt-5", effort: "medium" },
+      targetAgent: remoteAgent,
+    },
+  )
+  assert.equal(
+    resolveAttachTimeProviderLaunch(makeSession({ agents: [] }), fallback, true).action,
+    "launch_provider_run",
+  )
 })
 
 test("resolveSessionAgentDefaults ignores blank or default provider settings", () => {

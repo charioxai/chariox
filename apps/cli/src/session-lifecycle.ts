@@ -12,8 +12,7 @@ import type {
 import { sessionResponseLayout } from "@arroba/kernel-client/session-config-projection"
 import {
   isCompleteSessionSnapshot,
-  resolveLaunchTargetAgent,
-  resolveStoredAgentLaunch,
+  resolveAttachTimeProviderLaunch,
   sessionListEntryFromSession,
   upsertSessionListEntry,
   type SessionLifecycleLaunchSelection,
@@ -267,72 +266,79 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
-      if (!attachedSession.active_provider_run_id) {
-        const resolvedLaunch = resolveStoredAgentLaunch(
-          attachedSession,
-          launch,
-          createdSession,
-        )
-        deps.cliOptions.provider = resolvedLaunch.provider
-        deps.cliOptions.model = resolvedLaunch.model
-        deps.cliOptions.effort = resolvedLaunch.effort
-        const launchTargetAgent = resolveLaunchTargetAgent(
-          attachedSession,
-        )
-        const launchTargetAgentId = launchTargetAgent?.id ?? null
-        if (attachedSession.agents.length === 0 && !createdSession) {
-          deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
-            session_id: session.id,
-            focused_agent_id: attachedSession.focused_agent_id,
-          })
-          deps.setProviderRunState(null)
-        } else if (!launchTargetAgent && !createdSession) {
-          deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
-            session_id: session.id,
-            focused_agent_id: attachedSession.focused_agent_id,
-          })
-          deps.setProviderRunState(null)
-        } else if (launchTargetAgent?.remote_execution) {
-          deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
-            session_id: session.id,
-            agent_id: launchTargetAgent.id,
-            worker_kernel_id: launchTargetAgent.remote_execution.worker_kernel_id,
-          })
-          deps.setProviderRunState(null)
-        } else {
+      const launchDecision = resolveAttachTimeProviderLaunch(
+        attachedSession,
+        launch,
+        createdSession,
+      )
+      switch (launchDecision.action) {
+        case "launch_provider_run": {
+          deps.cliOptions.provider = launchDecision.launch.provider
+          deps.cliOptions.model = launchDecision.launch.model
+          deps.cliOptions.effort = launchDecision.launch.effort
           const run = await deps.launchProviderRun(
             session.id,
-            resolvedLaunch.provider,
+            launchDecision.launch.provider,
             deps.cliOptions.accountProfile,
-            resolvedLaunch.model,
-            resolvedLaunch.effort,
-            launchTargetAgentId,
+            launchDecision.launch.model,
+            launchDecision.launch.effort,
+            launchDecision.targetAgentId,
           )
           deps.logAttachedProviderRun?.("launched", run, {
             session_id: session.id,
-            requested_model: resolvedLaunch.model,
-            requested_variant: resolvedLaunch.effort,
+            requested_model: launchDecision.launch.model,
+            requested_variant: launchDecision.launch.effort,
           })
           deps.setProviderRunState(run)
           deps.syncCliProviderSelection({
             provider: run.provider,
             model: run.model,
-            effort: run.variant ?? resolvedLaunch.effort,
+            effort: run.variant ?? launchDecision.launch.effort,
           })
+          break
         }
-      } else {
-        const run = await deps.tryGetProviderRun(attachedSession.active_provider_run_id)
-        deps.logAttachedProviderRun?.("loaded", run, {
-          session_id: session.id,
-          requested_model: deps.cliOptions.model,
-        })
-        deps.setProviderRunState(run)
-        if (run) {
-          deps.syncCliProviderSelection({
-            provider: run.provider,
-            model: run.model,
-            effort: run.variant ?? deps.cliOptions.effort,
+        case "load_provider_run": {
+          const run = await deps.tryGetProviderRun(launchDecision.providerRunId)
+          deps.logAttachedProviderRun?.("loaded", run, {
+            session_id: session.id,
+            requested_model: deps.cliOptions.model,
           })
+          deps.setProviderRunState(run)
+          if (run) {
+            deps.syncCliProviderSelection({
+              provider: run.provider,
+              model: run.model,
+              effort: run.variant ?? deps.cliOptions.effort,
+            })
+          }
+          break
+        }
+        case "skip_launch":
+          deps.cliOptions.provider = launchDecision.launch.provider
+          deps.cliOptions.model = launchDecision.launch.model
+          deps.cliOptions.effort = launchDecision.launch.effort
+          if (launchDecision.reason === "no_visible_agents") {
+            deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
+              session_id: session.id,
+              focused_agent_id: attachedSession.focused_agent_id,
+            })
+          } else if (launchDecision.reason === "missing_focused_agent") {
+            deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
+              session_id: session.id,
+              focused_agent_id: attachedSession.focused_agent_id,
+            })
+          } else if (launchDecision.reason === "remote_backed_agent") {
+            deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
+              session_id: session.id,
+              agent_id: launchDecision.targetAgent?.id ?? null,
+              worker_kernel_id: launchDecision.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+            })
+          }
+          deps.setProviderRunState(null)
+          break
+        default: {
+          const exhaustive: never = launchDecision
+          throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
         }
       }
 

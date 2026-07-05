@@ -6,8 +6,7 @@ import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalo
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
 import {
-  resolveLaunchTargetAgent,
-  resolveStoredAgentLaunch,
+  resolveAttachTimeProviderLaunch,
 } from "@arroba/kernel-client/session-lifecycle-state"
 import { sessionHistoryCursorForVisibleAgent } from "@arroba/kernel-client/session-history-outline"
 
@@ -139,43 +138,49 @@ export async function bootstrapSession(
   const attachment = await deps.attachToSession(client, session.id, options.clientId)
   const attachedSession = await deps.getSessionState(client, session.id)
   let providerRun: RuntimeProviderRun | null = null
-  if (!attachedSession.active_provider_run_id) {
-    const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, {
-      provider: options.provider ?? "opencode",
-      model: options.model,
-      effort: options.effort,
-    }, createdSession)
-    const launchTargetAgent = resolveLaunchTargetAgent(attachedSession)
-    const launchTargetAgentId = launchTargetAgent?.id ?? null
-    if (attachedSession.agents.length === 0 && !createdSession) {
-      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (!launchTargetAgent && !createdSession) {
-      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (launchTargetAgent?.remote_execution) {
-      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-        session_id: session.id,
-        agent_id: launchTargetAgent.id,
-        worker_kernel_id: launchTargetAgent.remote_execution.worker_kernel_id,
-      })
-    } else {
+  const launchDecision = resolveAttachTimeProviderLaunch(attachedSession, {
+    provider: options.provider ?? "opencode",
+    model: options.model,
+    effort: options.effort,
+  }, createdSession)
+  switch (launchDecision.action) {
+    case "launch_provider_run":
       providerRun = await deps.launchProviderRun(
         client,
         session.id,
-        resolvedLaunch.provider,
+        launchDecision.launch.provider,
         options.accountProfile,
-        resolvedLaunch.model,
-        resolvedLaunch.effort,
-        launchTargetAgentId,
+        launchDecision.launch.model,
+        launchDecision.launch.effort,
+        launchDecision.targetAgentId,
       )
+      break
+    case "load_provider_run":
+      providerRun = await deps.tryGetProviderRun(client, launchDecision.providerRunId, deps.logger)
+      break
+    case "skip_launch":
+      if (launchDecision.reason === "no_visible_agents") {
+        deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+          session_id: session.id,
+          focused_agent_id: attachedSession.focused_agent_id,
+        })
+      } else if (launchDecision.reason === "missing_focused_agent") {
+        deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+          session_id: session.id,
+          focused_agent_id: attachedSession.focused_agent_id,
+        })
+      } else if (launchDecision.reason === "remote_backed_agent") {
+        deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+          session_id: session.id,
+          agent_id: launchDecision.targetAgent?.id ?? null,
+          worker_kernel_id: launchDecision.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+        })
+      }
+      break
+    default: {
+      const exhaustive: never = launchDecision
+      throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
     }
-  } else {
-    providerRun = await deps.tryGetProviderRun(client, attachedSession.active_provider_run_id, deps.logger)
   }
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)

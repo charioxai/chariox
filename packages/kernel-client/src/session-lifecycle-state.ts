@@ -46,7 +46,9 @@ export type SessionLifecycleListSession = {
   attachment_ids?: string[]
 }
 
-export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort">
+export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
+  readonly remote_execution?: AgentInstance["remote_execution"]
+}
 
 export type SessionLifecycleLaunchSession<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> = {
   id: string
@@ -54,6 +56,29 @@ export type SessionLifecycleLaunchSession<TAgent extends SessionLifecycleLaunchA
   focused_agent_id?: string | null
   agent_defaults?: RuntimeSession["agent_defaults"]
 }
+
+export type SessionLifecycleAttachLaunchSession<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  SessionLifecycleLaunchSession<TAgent> & {
+    active_provider_run_id?: string | null
+  }
+
+export type SessionLifecycleAttachProviderLaunchDecision<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  | {
+    readonly action: "load_provider_run"
+    readonly providerRunId: string
+  }
+  | {
+    readonly action: "launch_provider_run"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+    readonly targetAgentId: string | null
+  }
+  | {
+    readonly action: "skip_launch"
+    readonly reason: "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+  }
 
 export function upsertSessionListEntry<TEntry extends { id: string }>(
   current: readonly TEntry[],
@@ -173,6 +198,36 @@ export function resolveStoredAgentLaunch(
       : sessionDefaults.provider,
     model: focusedAgent.model?.trim() || sessionDefaults.model,
     effort: focusedAgent.effort?.trim() || sessionDefaults.effort,
+  }
+}
+
+export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleAttachLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  createdSession: boolean,
+): SessionLifecycleAttachProviderLaunchDecision<TAgent> {
+  const providerRunId = session.active_provider_run_id?.trim()
+  if (providerRunId) {
+    return { action: "load_provider_run", providerRunId }
+  }
+
+  const targetAgent = resolveLaunchTargetAgent(session)
+  const launch = resolveStoredAgentLaunch(session, fallback, createdSession)
+  if (session.agents.length === 0 && !createdSession) {
+    return { action: "skip_launch", reason: "no_visible_agents", launch, targetAgent }
+  }
+  if (!targetAgent && !createdSession) {
+    return { action: "skip_launch", reason: "missing_focused_agent", launch, targetAgent }
+  }
+  if (targetAgent?.remote_execution) {
+    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
+  }
+
+  return {
+    action: "launch_provider_run",
+    launch,
+    targetAgent,
+    targetAgentId: targetAgent?.id ?? null,
   }
 }
 
