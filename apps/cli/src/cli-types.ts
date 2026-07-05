@@ -33,7 +33,24 @@ import type {
   SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
   SessionInvite as KernelSessionInvite,
   SessionMember as KernelSessionMember,
+  RelayKernelPresence as KernelRelayKernelPresence,
+  RelayStatus as KernelRelayStatus,
+  RemoteMachineRecord as KernelRemoteMachineRecord,
+  TerminalRecord as KernelTerminalRecord,
   TerminalCommandCatalog,
+  WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
+  WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
+  WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
+  WaitingRoomPublicSnapshot as KernelWaitingRoomPublicSnapshot,
+  WaitingRoomPublicWorkflowEdgeSummary as KernelWaitingRoomPublicWorkflowEdgeSummary,
+  WaitingRoomPublicWorkflowEndpointSummary as KernelWaitingRoomPublicWorkflowEndpointSummary,
+  WaitingRoomPublicWorkflowNodeSummary as KernelWaitingRoomPublicWorkflowNodeSummary,
+  WaitingRoomPublicWorkflowSummary as KernelWaitingRoomPublicWorkflowSummary,
+  WaitingRoomSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
+  WorkspaceLiveSyncApplyStatus as KernelWorkspaceLiveSyncApplyStatus,
+  WorkspaceLiveSyncGroupStatus as KernelWorkspaceLiveSyncGroupStatus,
+  WorkspaceLiveSyncStatus as KernelWorkspaceLiveSyncStatus,
+  WorkspaceLiveSyncTargetStatus as KernelWorkspaceLiveSyncTargetStatus,
 } from "@arroba/kernel-client/kernel-types"
 import {
   normalizeAgentPromptState as normalizeKernelAgentPromptState,
@@ -209,155 +226,31 @@ export type CollaborationLevel = KernelCollaborationLevel
 
 export type SessionAgentDefaults = KernelSessionAgentDefaults
 
-export type WaitingRoomPublicSessionSummary = {
-  id: string
-  alias?: string | null
-  workspace_id: string
-  worktree_id: string
-  workspace_label?: string | null
-  directory?: string | null
-  worktree_label?: string | null
-  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
-  created_at_ms: number
-  last_used_at_ms?: number | null
-  status: string
-  connected_cli_count: number
-  activity?: WaitingRoomSessionActivitySummary
-  agents?: WaitingRoomPublicAgentSummary[]
-  workflows?: WaitingRoomPublicWorkflowSummary[]
-}
+export type WaitingRoomPublicSessionSummary = KernelWaitingRoomPublicSessionSummary
 
-export type WaitingRoomSessionActivitySummary = {
-  agent_count: number
-  working_agent_count: number
-  active_prompt_count: number
-  queued_prompt_count: number
-  error_agent_count: number
-  remote_agent_count?: number
-  missing_worker_provider_run_count?: number
-  home_proxy_agent_count?: number
-  remote_extension_sync_issue_count?: number
-  remote_extension_pending_revoke_count?: number
-  unread_idle_agent_count?: number
-}
+export type WaitingRoomSessionActivitySummary = KernelWaitingRoomSessionActivitySummary
 
-export type WaitingRoomPublicItemActivitySummary = {
-  working: boolean
-  active_prompt_count: number
-  queued_prompt_count: number
-  error: boolean
-}
+export type WaitingRoomPublicItemActivitySummary = KernelWaitingRoomPublicItemActivitySummary
 
-export type WaitingRoomPublicAgentSummary = {
-  id: string
-  agent_ref: string
-  alias?: string | null
-  created_at_ms: number
-  provider: string
-  model?: string | null
-  variant?: string | null
-  permission?: string | null
-  workspace_id: string
-  worktree_id: string
-  workspace_label?: string | null
-  directory?: string | null
-  worktree_label?: string | null
-  extension_grants?: ExtensionGrant[]
-  activity?: WaitingRoomPublicItemActivitySummary
-}
+export type WaitingRoomPublicAgentSummary = KernelWaitingRoomPublicAgentSummary
 
-export type WaitingRoomPublicWorkflowSummary = {
-  id: string
-  alias?: string | null
-  created_at_ms: number
-  activity?: WaitingRoomPublicItemActivitySummary
-  nodes?: WaitingRoomPublicWorkflowNodeSummary[]
-  edges?: WaitingRoomPublicWorkflowEdgeSummary[]
-  endpoints?: WaitingRoomPublicWorkflowEndpointSummary[]
-}
+export type WaitingRoomPublicWorkflowSummary = KernelWaitingRoomPublicWorkflowSummary
 
-export type WaitingRoomPublicWorkflowNodeSummary = {
-  id: string
-  agent_id: string
-  label: string
-  wait_for_all_inputs?: boolean
-}
+export type WaitingRoomPublicWorkflowNodeSummary = KernelWaitingRoomPublicWorkflowNodeSummary
 
-export type WaitingRoomPublicWorkflowEdgeSummary = {
-  id: string
-  from_node_id: string
-  to_node_id: string
-}
+export type WaitingRoomPublicWorkflowEdgeSummary = KernelWaitingRoomPublicWorkflowEdgeSummary
 
-export type WaitingRoomPublicWorkflowEndpointSummary = {
-  id: string
-  alias?: string | null
-  entry_node_id: string
-}
+export type WaitingRoomPublicWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEndpointSummary
 
-export type WaitingRoomRelayStatusView = {
-  configured: boolean
-  connected: boolean
-  relay_url?: string | null
-  relay_token_configured: boolean
-  daemon_id: string
-  machine_id: string
-  machine_alias?: string | null
-}
+export type WaitingRoomRelayStatusView = KernelRelayStatus
 
-export type WaitingRoomRemoteMachineView = {
-  machine_id: string
-  machine_alias?: string | null
-  registry_alias?: string | null
-  display_name: string
-  trust_status: "approved" | "pending" | "forgotten"
-  online: boolean
-  pending: boolean
-  kernel_count: number
-  available_providers?: string[]
-}
+export type WaitingRoomRemoteMachineView = KernelRemoteMachineRecord
 
-export type WaitingRoomRemoteKernelView = {
-  kernel_id: string
-  machine_id: string
-  machine_alias?: string | null
-  kernel_alias?: string | null
-  relay_alias?: string | null
-  available_providers?: string[]
-  capabilities?: string[]
-  accepting_remote_leases?: boolean
-  leased_agent_count?: number
-  local_session_count?: number
-}
+export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 
-export type WaitingRoomTerminalView = {
-  terminal_id: string
-  terminal_type: "cli" | "web" | "ios" | "android"
-  alias?: string | null
-  paired_at_ms: number
-  revoked: boolean
-}
+export type WaitingRoomTerminalView = KernelTerminalRecord
 
-export type WaitingRoomPublicSnapshot = {
-  schema_version: number
-  inventory_version: string
-  generated_at_ms: number
-  sessions: WaitingRoomPublicSessionSummary[]
-  relay_status: WaitingRoomRelayStatusView
-  remote_machines: WaitingRoomRemoteMachineView[]
-  remote_kernels: WaitingRoomRemoteKernelView[]
-  terminals?: WaitingRoomTerminalView[]
-  external_provider_sessions?: ExternalProviderSessionRecord[]
-  external_provider_sessions_has_more?: boolean
-  external_provider_sessions_next_cursor?: string | null
-  launch_target?: {
-    workspace_id: string
-    worktree_id: string
-    workspace_label?: string | null
-    directory?: string | null
-    worktree_label?: string | null
-  } | null
-}
+export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
 
 export type WorkspaceLinkAttachment = {
   link_id: string
@@ -379,49 +272,11 @@ export type WorkspaceLinkDefinition = {
   attachments?: WorkspaceLinkAttachment[]
 }
 
-export type WorkspaceLiveSyncTargetStatus = {
-  link_id: string
-  link_name: string
-  user_id: string
-  machine_id: string
-  kernel_id: string
-  repo_root: string
-  branch?: string | null
-  repo_fingerprint?: string | null
-  status: "ready" | "degraded" | "conflict"
-  attached_at_ms: number
-}
+export type WorkspaceLiveSyncTargetStatus = KernelWorkspaceLiveSyncTargetStatus
 
-export type WorkspaceLiveSyncGroupStatus = {
-  group_id: string
-  group_name: string
-  target_count: number
-  ready_targets: number
-  degraded_targets: number
-  conflicted_targets: number
-}
+export type WorkspaceLiveSyncGroupStatus = KernelWorkspaceLiveSyncGroupStatus
 
-export type WorkspaceLiveSyncStatus = {
-  session_id: string
-  mode: "managed" | "tracked" | "unrestricted"
-  footer_state: "off" | "managed" | "tracked" | "syncing" | "conflict" | "degraded"
-  sync_groups: WorkspaceLiveSyncGroupStatus[]
-  targets: WorkspaceLiveSyncTargetStatus[]
-  conflicts: Array<{
-    conflict_id: string
-    link_id: string
-    source_agent_id: string
-    target_user_id: string
-    target_repo_root: string
-    path: string
-    next_action: string
-  }>
-  ignore: {
-    ignore_file?: string | null
-    rules: string[]
-    force_excludes: string[]
-  }
-}
+export type WorkspaceLiveSyncStatus = KernelWorkspaceLiveSyncStatus
 
 export type AgentPromptState = KernelAgentPromptState
 
@@ -431,7 +286,7 @@ export type AgentQueuedPromptControl = KernelAgentQueuedPromptControl
 
 export type CompletedGitTurnActionProjection = KernelCompletedGitTurnActionProjection
 
-export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
+export type WorkspaceLiveSyncApplyStatus = KernelWorkspaceLiveSyncApplyStatus
 
 export type WorkspaceLiveSyncPathApplyResult = {
   path: string

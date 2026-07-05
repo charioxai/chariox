@@ -1,3 +1,5 @@
+import type { ExternalProviderSessionRecord } from "./external-provider-sessions.js"
+
 export type ArrobaMcpServerConfig = {
   name: string
   transport: Record<string, unknown>
@@ -1378,6 +1380,9 @@ export type WaitingRoomInventorySnapshot = {
 export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {
   schema_version: number
   generated_at_ms: number
+  external_provider_sessions?: ExternalProviderSessionRecord[]
+  external_provider_sessions_has_more?: boolean
+  external_provider_sessions_next_cursor?: string | null
 }
 
 export type WorkspaceWorktreeRecord = {

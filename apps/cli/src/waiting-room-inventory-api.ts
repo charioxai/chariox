@@ -2,6 +2,8 @@ import { externalProviderSessionPage } from "@arroba/kernel-client/external-prov
 import type {
   SliceRecord,
   ExternalProviderSessionRecord,
+  WaitingRoomRemoteKernelView,
+  WaitingRoomRemoteMachineView,
   WaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot,
 } from "./cli-types.js"
@@ -11,30 +13,9 @@ import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { listSlices } from "./slice-api.js"
 
-export type RemoteMachineView = {
-  machine_id: string
-  machine_alias?: string | null
-  registry_alias?: string | null
-  display_name: string
-  trust_status: "approved" | "pending" | "forgotten"
-  online: boolean
-  pending: boolean
-  kernel_count: number
-  available_providers?: string[]
-}
+export type RemoteMachineView = WaitingRoomRemoteMachineView
 
-export type RemoteKernelView = {
-  kernel_id: string
-  machine_id: string
-  machine_alias?: string | null
-  kernel_alias?: string | null
-  relay_alias?: string | null
-  available_providers?: string[]
-  capabilities?: string[]
-  accepting_remote_leases?: boolean
-  leased_agent_count?: number
-  local_session_count?: number
-}
+export type RemoteKernelView = WaitingRoomRemoteKernelView
 
 export type WaitingRoomInventory = {
   inventoryVersion: string
