@@ -15,6 +15,7 @@ import {
   createWorkflowPublicationRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
+  getWorkflowPublicationRequest,
   getWorkflowRunRequest,
 } from "@arroba/kernel-client/ipc-requests"
 
@@ -210,10 +211,14 @@ async function runProviderMatrix(client, provider) {
           `invoking ${transport.id} publication ${publication.id}`,
         )
         await writeArtifact(`${prefix}/raw-response.json`, raw)
-        const statusPayload = runtime.local_url ? await waitForPublicationStatus(runtime.local_url, transport) : null
+        const statusPayload = runtime.local_url
+          ? await waitForPublicationStatus(runtime.local_url, transport)
+          : transport.id === "schedule_only"
+            ? await waitForScheduleOnlyPublicationStatus(client, sessionId, publication.id)
+            : null
         await writeArtifact(`${prefix}/publication-status.json`, statusPayload)
-        const latestRunId = statusPayload?.latest_run?.id ?? raw.workflow_run_id ?? null
-        const workflowRunSessionId = statusPayload?.runtime_session_id ?? sessionId
+        const latestRunId = latestRunIdFromStatus(statusPayload) ?? raw.workflow_run_id ?? null
+        const workflowRunSessionId = statusPayload?.runtime_session_id ?? statusPayload?.inspect?.publication?.session_id ?? sessionId
         const workflowRun = latestRunId ? await workflowRunSnapshot(client, workflowRunSessionId, latestRunId) : null
         await writeArtifact(`${prefix}/workflow-run.json`, workflowRun)
         const assertions = assertExposure({
@@ -268,20 +273,21 @@ async function workflowForTransport(client, sessionId, provider, transport, appl
 
 async function createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix) {
   const traceExposure = traceExposureForPolicy(policy, nodeIds)
+  const publicationOptions = {
+    alias: `${prefix}`.replaceAll("/", "-").slice(0, 60),
+    queueRef: "default",
+    kind: transport.kind ?? "ingress",
+    route: transport.route,
+    methods: transport.methods,
+    transport: transport.transport,
+    parser: transport.parser,
+    traceExposure,
+    syncTimeoutMs: 240_000,
+    pollMs: 500,
+  }
+  if (transport.id !== "schedule_only") publicationOptions.mode = transport.mode
   const response = await unwrap(
-    client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, {
-      alias: `${prefix}`.replaceAll("/", "-").slice(0, 60),
-      queueRef: "default",
-      kind: transport.kind ?? "ingress",
-      route: transport.route,
-      methods: transport.methods,
-      transport: transport.transport,
-      parser: transport.parser,
-      traceExposure,
-      mode: transport.mode,
-      syncTimeoutMs: 240_000,
-      pollMs: 500,
-    })),
+    client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, publicationOptions)),
     "WorkflowPublicationCreated",
   )
   return response.publication
@@ -421,6 +427,42 @@ async function waitForPublicationStatus(localUrl, transport) {
     await sleep(1_000)
   }
   return last
+}
+
+async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicationId) {
+  const deadline = Date.now() + 180_000
+  let last = null
+  while (Date.now() < deadline) {
+    const inspect = await unwrap(
+      client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "inspect")),
+      "WorkflowPublicationRuntimeControlled",
+    )
+    const publicationResponse = await unwrap(
+      client.send(getWorkflowPublicationRequest(sessionId, publicationId)),
+      "WorkflowPublication",
+    )
+    last = {
+      inspect,
+      publication: publicationResponse.publication,
+      latest_run: publicationResponse.publication?.latest_run ?? inspect.publication?.latest_run ?? null,
+      last_run: publicationResponse.publication?.last_run ?? inspect.publication?.last_run ?? null,
+      latest_output: publicationResponse.publication?.latest_output ?? inspect.publication?.latest_output ?? null,
+      runtime_session_id: inspect.publication?.session_id ?? sessionId,
+    }
+    if (last.latest_run?.id || last.last_run?.id) return last
+    await sleep(1_000)
+  }
+  return last
+}
+
+function latestRunIdFromStatus(statusPayload) {
+  return statusPayload?.latest_run?.id
+    ?? statusPayload?.last_run?.id
+    ?? statusPayload?.publication?.latest_run?.id
+    ?? statusPayload?.publication?.last_run?.id
+    ?? statusPayload?.inspect?.publication?.latest_run?.id
+    ?? statusPayload?.inspect?.publication?.last_run?.id
+    ?? null
 }
 
 function promptFor(provider, transport, policy) {
