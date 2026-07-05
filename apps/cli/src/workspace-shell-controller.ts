@@ -5,7 +5,7 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { focusedAgentIdForSession } from "./session-state.js"
+import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import {
   appendWorkspaceShellEntry,
   workspaceShellCommandText,
@@ -23,7 +23,7 @@ export function deriveWorkspaceShellContextForSession(
   session: RuntimeSession,
   attachmentId: string | null | undefined,
 ): ShellContext {
-  const focusedAgentId = focusedAgentIdForSession(session)
+  const focusedAgentId = sessionFocusedAgentId(session)
   return {
     ...previous,
     workspace: session.workspace_id || previous.workspace,

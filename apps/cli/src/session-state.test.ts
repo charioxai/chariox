@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import {
+  SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
+} from "@arroba/kernel-client/session-config-projection"
 
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
@@ -8,10 +11,7 @@ import {
   buildDetachedSessionState,
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
-  focusedAgentIdForSession,
-  sessionResponseLayout,
   shouldConfirmIdleTurnCompletion,
-  SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 
 test("buildDetachedSessionState creates a parked local placeholder session", () => {
@@ -30,49 +30,6 @@ test("buildDetachedSessionState creates a parked local placeholder session", () 
   assert.equal(session.worktree_id, "/workspace/tree")
   assert.equal(session.active_prompt, null)
   assert.deepEqual(session.agents, [])
-})
-
-test("sessionResponseLayout prefers session config over fallback", () => {
-  const splitSession = session({
-    config_state: {
-      version: 1,
-      values: {
-        [SESSION_CONFIG_RESPONSE_LAYOUT_KEY]: "split",
-      },
-      updated_by_attachment_id: null,
-    },
-  })
-
-  assert.equal(sessionResponseLayout(splitSession, "individual"), "split")
-  assert.equal(sessionResponseLayout(session(), "split"), "split")
-  assert.equal(sessionResponseLayout(session(), null), "individual")
-})
-
-test("runtime session projections derive focus", () => {
-  const nextSession = session({
-    focused_agent_id: null,
-    agents: [agent("agent-a"), agent("agent-b")],
-  })
-
-  assert.equal(focusedAgentIdForSession(nextSession), "agent-a")
-})
-
-test("focusedAgentIdForSession does not fall back when focused id is not in the session", () => {
-  assert.equal(focusedAgentIdForSession(session({
-    focused_agent_id: "stale-agent",
-    agents: [agent("agent-a"), agent("agent-b")],
-  })), null)
-  assert.equal(focusedAgentIdForSession(session({
-    focused_agent_id: "stale-agent",
-    agents: [],
-  })), null)
-})
-
-test("focusedAgentIdForSession falls back only when no focused id is set", () => {
-  assert.equal(focusedAgentIdForSession(session({
-    focused_agent_id: null,
-    agents: [agent("agent-a"), agent("agent-b")],
-  })), "agent-a")
 })
 
 test("deriveSessionTransitionState preserves active agent labels and clears idle ones", () => {

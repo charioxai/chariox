@@ -2,13 +2,11 @@ import process from "node:process"
 
 import {
   sessionResponseLayout as kernelSessionResponseLayout,
-  SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "@arroba/kernel-client/session-config-projection"
 import {
   sessionHasPromptWork as kernelSessionHasPromptWork,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  sessionFocusedAgentId as kernelSessionFocusedAgentId,
   sessionShouldConfirmIdleTurnCompletion as kernelSessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState as kernelSessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
@@ -28,7 +26,6 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export const NO_SESSION_ID = "no-session"
-export const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY
 
 type SessionTransitionOptions = {
   currentSession: RuntimeSession
@@ -123,10 +120,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
   }
 }
 
-export function focusedAgentIdForSession(session: RuntimeSession): string | null {
-  return kernelSessionFocusedAgentId(session as Parameters<typeof kernelSessionFocusedAgentId>[0])
-}
-
 export function shouldConfirmIdleTurnCompletion(options: {
   nextSession: RuntimeSession
   currentWorking: boolean
@@ -142,16 +135,6 @@ export function shouldConfirmIdleTurnCompletion(options: {
   })
 }
 
-export function sessionResponseLayout(
-  session: RuntimeSession | null | undefined,
-  fallback?: MultiAgentResponseLayout | null,
-): MultiAgentResponseLayout {
-  return kernelSessionResponseLayout(
-    session as Parameters<typeof kernelSessionResponseLayout>[0],
-    fallback,
-  )
-}
-
 export function deriveSessionTransitionState(
   options: SessionTransitionOptions,
 ): SessionTransitionState {
@@ -165,7 +148,10 @@ export function deriveSessionTransitionState(
 
   return {
     ...transition,
-    nextLayout: sessionResponseLayout(options.nextSession, options.layoutPreference),
+    nextLayout: kernelSessionResponseLayout(
+      options.nextSession as Parameters<typeof kernelSessionResponseLayout>[0],
+      options.layoutPreference,
+    ),
   }
 }
 

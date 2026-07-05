@@ -44,9 +44,11 @@ import {
   sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  focusedAgentIdForSession,
   sessionResponseLayout,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-config-projection"
+import {
+  sessionFocusedAgentId,
+} from "@arroba/kernel-client/session-runtime-transition"
 import type { SessionListEntry } from "./sessions.js"
 import { applyTheme, setThemeRegistry } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -185,7 +187,7 @@ export function createCliAppState(options: {
     workspace: initialWorkspaceTarget,
     worktree: initialWorktreeTarget,
     sessionId: initialBinding ? initialSession.id : undefined,
-    agentId: initialBinding ? focusedAgentIdForSession(initialSession) ?? undefined : undefined,
+    agentId: initialBinding ? sessionFocusedAgentId(initialSession) ?? undefined : undefined,
     provider: cliOptions.provider ?? "opencode",
     model: cliOptions.model ?? "default",
     effort: cliOptions.effort || "medium",

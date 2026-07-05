@@ -9,7 +9,7 @@ import type {
   AttachedCliTransitionState,
   DetachedCliTransitionState,
 } from "./session-state.js"
-import { sessionResponseLayout } from "./session-state.js"
+import { sessionResponseLayout } from "@arroba/kernel-client/session-config-projection"
 import {
   isCompleteSessionSnapshot,
   resolveLaunchTargetAgent,

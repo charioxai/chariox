@@ -13,7 +13,7 @@ import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
-import { focusedAgentIdForSession } from "./session-state.js"
+import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
@@ -50,7 +50,7 @@ export function createAgentPaneRefreshController(
       nextAgents: nextSession.agents,
       splitAgentResponseMode: deps.splitAgentResponseMode(),
       currentFocusedAgentId: deps.getFocusedAgentId(),
-      nextFocusedAgentId: focusedAgentIdForSession(nextSession),
+      nextFocusedAgentId: sessionFocusedAgentId(nextSession),
     })
   }
 

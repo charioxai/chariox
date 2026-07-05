@@ -47,9 +47,11 @@ import {
   bootstrapSession,
 } from "./session-bootstrap.js"
 import {
-  focusedAgentIdForSession,
   sessionResponseLayout,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-config-projection"
+import {
+  sessionFocusedAgentId,
+} from "@arroba/kernel-client/session-runtime-transition"
 import {
   selectResponsePaneAgents,
 } from "./response-panes.js"
@@ -301,7 +303,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     getSessionHistoryOutline,
     getPromptInputHistory,
     resolveVisibleAgentId: (session, nextPreferences) => {
-      const focusedAgentId = focusedAgentIdForSession(session)
+      const focusedAgentId = sessionFocusedAgentId(session)
       return selectResponsePaneAgents(
         session.agents,
         focusedAgentId,

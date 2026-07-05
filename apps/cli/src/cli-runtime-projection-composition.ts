@@ -9,7 +9,7 @@ import {
   createInteractionProjectionController,
 } from "./interaction-projection-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
-import { focusedAgentIdForSession } from "./session-state.js"
+import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
   deriveWorkflowPromptState,
@@ -56,7 +56,7 @@ export function createCliRuntimeProjectionComposition(
   deps: CliRuntimeProjectionCompositionDeps,
 ) {
   const isAttached = () => deps.attachmentState() !== null
-  const focusedAgentId = () => focusedAgentIdForSession(deps.sessionState())
+  const focusedAgentId = () => sessionFocusedAgentId(deps.sessionState())
   const responsePaneProjectionController = createResponsePaneProjectionController({
     isAttached,
     getSession: deps.sessionState,

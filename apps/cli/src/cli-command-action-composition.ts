@@ -132,7 +132,7 @@ import {
   resumeMetaagentTask,
   updateMetaagentTask,
 } from "./session-api.js"
-import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "./session-state.js"
+import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@arroba/kernel-client/session-config-projection"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
