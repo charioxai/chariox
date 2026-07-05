@@ -125,7 +125,11 @@ async function preflight(client) {
     claude: await commandVersion("claude", ["--version"]),
     opencode: await commandVersion("opencode", ["--version"]),
   }
-  const catalogResponse = await client.send(getProviderCatalogRequest())
+  const catalogResponse = await withTimeout(
+    client.send(getProviderCatalogRequest()),
+    runtimeStartTimeoutMs,
+    "loading provider catalog",
+  )
   const catalog = catalogResponse?.ProviderCatalog?.catalog
   const providers = []
   for (const spec of providerSpecs) {
@@ -164,7 +168,11 @@ async function providerAuth(client, spec) {
     return { ok: true, mode: "cli_catalog", reason: null }
   }
   try {
-    const response = await client.send(getProviderAuthStatusRequest(spec.provider))
+    const response = await withTimeout(
+      client.send(getProviderAuthStatusRequest(spec.provider)),
+      runtimeStartTimeoutMs,
+      `checking ${spec.provider} auth status`,
+    )
     const status = response?.ProviderAuthStatus?.status
     const ok = status?.auth_state === "authenticated"
     return { ok, mode: "kernel", status, reason: ok ? null : `auth_state=${status?.auth_state ?? "unknown"}` }
