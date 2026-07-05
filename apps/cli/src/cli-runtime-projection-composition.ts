@@ -13,7 +13,7 @@ import { focusedAgentIdForSession } from "./session-state.js"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
   deriveWorkflowPromptState,
-} from "./workflow-prompt-state.js"
+} from "@arroba/kernel-client/workflow-prompt-state"
 
 type AnyFn = (...args: any[]) => any
 

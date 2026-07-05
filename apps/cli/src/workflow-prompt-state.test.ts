@@ -8,7 +8,7 @@ import {
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
   validateWorkflowPromptSubmit,
-} from "./workflow-prompt-state.js"
+} from "@arroba/kernel-client/workflow-prompt-state"
 
 test("resolveActiveWorkflowRun returns the newest non-terminal run", () => {
   const active = resolveActiveWorkflowRun("workflow-1", [

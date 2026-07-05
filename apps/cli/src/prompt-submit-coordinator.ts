@@ -1,7 +1,7 @@
 import { SESSION_NEW_ERROR_HINT } from "./sessions.js"
 import { isWorkspaceShellCommand } from "./workspace-shell.js"
 import type { WaitingRoomPromptBootstrapResult } from "./waiting-room-prompt-bootstrap-controller.js"
-import { isWorkflowCommandInput } from "./workflow-prompt-state.js"
+import { isWorkflowCommandInput } from "@arroba/kernel-client/workflow-prompt-state"
 
 export type PromptSubmitCoordinatorDeps = {
   getPromptText: () => string | null | undefined

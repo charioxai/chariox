@@ -10,7 +10,7 @@ import type {
 import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
 import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
-import { resolveActiveWorkflowRun } from "./workflow-prompt-state.js"
+import { resolveActiveWorkflowRun } from "@arroba/kernel-client/workflow-prompt-state"
 
 export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 

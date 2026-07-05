@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
-import type { WorkflowPromptState } from "./workflow-prompt-state.js"
+import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-state"
 
 test("prompt chrome projection derives status and footer from prompt state", () => {
   const controller = createPromptChromeProjectionController({
