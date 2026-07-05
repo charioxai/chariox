@@ -1,5 +1,13 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import {
+  applyProviderRunProfileToSession as sharedApplyProviderRunProfileToSession,
+  derivePromptProviderSelection,
+  providerRunForPromptSelection,
+  resolveProviderModelContextLimit,
+  type PromptProviderSelectionOptions,
+  type PromptProviderSelection,
+} from "@arroba/kernel-client/prompt-provider-selection"
+import {
   sessionAttachedFooterSummary,
   sessionFooterHint,
   sessionFocusedStatusBadge,
@@ -34,66 +42,15 @@ type ProviderSelectionOptions = {
   defaultEffort: string
 }
 
-export function deriveCurrentProviderSelection(options: ProviderSelectionOptions) {
-  const providerRun = providerRunForFocusedSelection(options.providerRun, options.focusedAgent)
-  return {
-    provider: providerRun?.provider
-      ?? normalizeProvider(options.focusedAgent?.provider)
-      ?? options.waitingRoomState.providerId
-      ?? options.defaultProvider
-      ?? "opencode",
-    model: providerRun?.model
-      ?? options.focusedAgent?.model
-      ?? options.waitingRoomState.modelId
-      ?? options.defaultModel,
-    effort: providerRun?.variant
-      ?? options.focusedAgent?.effort
-      ?? options.waitingRoomState.effort
-      ?? options.defaultEffort,
-  }
-}
-
-function providerRunForFocusedSelection(
-  providerRun: RuntimeProviderRun | null,
-  focusedAgent: AgentInstance | null | undefined,
-): RuntimeProviderRun | null {
-  if (!providerRun || !focusedAgent) {
-    return providerRun
-  }
-  return providerRun.agent_instance_id === focusedAgent.id ? providerRun : null
+export function deriveCurrentProviderSelection(options: ProviderSelectionOptions): PromptProviderSelection {
+  return derivePromptProviderSelection(options as PromptProviderSelectionOptions)
 }
 
 export function applyProviderRunProfileToSession(
   session: RuntimeSession,
   providerRun: RuntimeProviderRun | null,
 ): RuntimeSession {
-  const agentId = providerRun?.agent_instance_id
-  if (!agentId) {
-    return session
-  }
-
-  let changed = false
-  const agents = session.agents.map((agent) => {
-    if (agent.id !== agentId) {
-      return agent
-    }
-    if (
-      agent.provider === providerRun.provider
-      && agent.model === providerRun.model
-      && agent.effort === providerRun.variant
-    ) {
-      return agent
-    }
-    changed = true
-    return {
-      ...agent,
-      provider: providerRun.provider,
-      model: providerRun.model,
-      effort: providerRun.variant,
-    }
-  })
-
-  return changed ? { ...session, agents } : session
+  return sharedApplyProviderRunProfileToSession(session, providerRun)
 }
 
 export function derivePromptMetaState(options: ProviderSelectionOptions): PromptMetaPart[] {
@@ -110,7 +67,7 @@ export function derivePromptUsageState(options: {
   focusedAgent?: AgentInstance | null
   catalog: ProviderCatalog
 }): PromptUsageMeta | null {
-  const run = providerRunForFocusedSelection(options.providerRun, options.focusedAgent)
+  const run = providerRunForPromptSelection(options.providerRun, options.focusedAgent)
   if (!run) {
     return null
   }
@@ -173,38 +130,4 @@ export function deriveAttachedFooterSummary(options: {
   workspaceLiveSyncStatus?: WorkspaceLiveSyncStatus | null
 }): string {
   return sessionAttachedFooterSummary(options)
-}
-
-function resolveProviderModelContextLimit(
-  catalog: ProviderCatalog,
-  providerId: string,
-  modelRef: string,
-) {
-  const normalizedModelRef = modelRef.trim()
-  const parsed = normalizedModelRef.includes("/")
-    ? splitProviderModelRef(normalizedModelRef)
-    : { providerId, modelId: normalizedModelRef }
-  if (!parsed) {
-    return null
-  }
-
-  return catalog.all.find((item) => item.id === parsed.providerId)?.models[parsed.modelId]?.limit?.context ?? null
-}
-
-function splitProviderModelRef(modelRef: string) {
-  const parts = modelRef.split("/").filter(Boolean)
-  if (parts.length < 2) {
-    return null
-  }
-  return {
-    providerId: parts.at(-2)!,
-    modelId: parts.at(-1)!,
-  }
-}
-
-function normalizeProvider(provider?: string | null) {
-  if (!provider || provider === "default") {
-    return null
-  }
-  return provider
 }

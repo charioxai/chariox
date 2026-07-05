@@ -18,6 +18,7 @@
     "./kernel-types": "./dist/kernel-types.js",
     "./prompt-origin": "./dist/prompt-origin.js",
     "./prompt-history": "./dist/prompt-history.js",
+    "./prompt-provider-selection": "./dist/prompt-provider-selection.js",
     "./prompt-surface-state": "./dist/prompt-surface-state.js",
     "./prompt-submission": "./dist/prompt-submission.js",
     "./provider-namespace-command": "./dist/provider-namespace-command.js",
