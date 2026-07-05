@@ -185,7 +185,7 @@ test("terminalRecordTranscriptProjection keeps ordinary status merge separate fr
   })
   const external = terminalRecordTranscriptProjection({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: "EXTERNAL_PROVIDER_OBSERVED",
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "status-1",
@@ -200,6 +200,7 @@ test("terminalRecordTranscriptProjection keeps ordinary status merge separate fr
 
   assert.equal(ordinary.statusMergeKey, "__provider_status__")
   assert.equal(external.statusMergeKey, null)
+  assert.equal(external.metadata.source, "external_provider_observed")
 })
 
 test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {

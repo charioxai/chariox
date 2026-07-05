@@ -3,6 +3,7 @@ import {
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
   type ExternalProviderObservedTranscriptMetadata,
 } from "./external-provider-observation.js"
 
@@ -108,7 +109,7 @@ export function terminalRecordTranscriptProjection(
     transcriptRole: terminalRecordTranscriptRole(record.kind),
     transcriptText: record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text,
     mergeKey: record.merge_key ?? null,
-    statusMergeKey: record.kind === "provider_status" && metadata.source !== "external_provider_observed"
+    statusMergeKey: record.kind === "provider_status" && !sessionHistoryEntryIsExternalProviderObserved(metadata)
       ? "__provider_status__"
       : null,
   }
