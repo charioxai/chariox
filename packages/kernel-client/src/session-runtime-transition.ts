@@ -63,8 +63,11 @@ export type TurnCompletionDelayInput = {
   readonly quietWindowMs: number
 }
 
-export function sessionFocusedAgentId(
-  session: Pick<RuntimeSession, "agents" | "focused_agent_id">,
+export function sessionFocusedAgentId<TAgent extends { id: string }>(
+  session: {
+    readonly agents: readonly TAgent[]
+    readonly focused_agent_id?: string | null
+  },
 ): string | null {
   const focusedAgentId = session.focused_agent_id?.trim()
   if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {

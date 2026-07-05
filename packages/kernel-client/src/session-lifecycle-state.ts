@@ -1,4 +1,5 @@
 import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import { sessionFocusedAgentId } from "./session-runtime-transition.js"
 
 export type SessionLifecycleLaunchSelection = {
   provider: string
@@ -144,7 +145,7 @@ export function resolveLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAg
 export function resolveLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAgent>(
   session: SessionLifecycleLaunchSession<TAgent>,
 ): TAgent | null {
-  const focusedAgentId = sessionLifecycleFocusedAgentId(session)
+  const focusedAgentId = sessionFocusedAgentId(session)
   return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
 }
 
@@ -158,7 +159,7 @@ export function resolveStoredAgentLaunch(
   }
 
   const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
-  const focusedAgentId = sessionLifecycleFocusedAgentId(session)
+  const focusedAgentId = sessionFocusedAgentId(session)
   const focusedAgent = focusedAgentId
     ? session.agents.find((agent) => agent.id === focusedAgentId)
     : null
@@ -185,17 +186,4 @@ export function resolveSessionAgentDefaults(
     model: defaults?.model?.trim() || fallback.model,
     effort: defaults?.effort?.trim() || fallback.effort,
   }
-}
-
-function sessionLifecycleFocusedAgentId(
-  session: Pick<SessionLifecycleLaunchSession, "agents" | "focused_agent_id">,
-): string | null {
-  const focusedAgentId = session.focused_agent_id?.trim()
-  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
-    return focusedAgentId
-  }
-  if (focusedAgentId) {
-    return null
-  }
-  return session.agents[0]?.id ?? null
 }

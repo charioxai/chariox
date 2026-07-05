@@ -30,6 +30,10 @@ test("session focused agent keeps only session-scoped focus and falls back witho
     agents: [makeAgent({ id: "agent-a" })],
     focused_agent_id: null,
   })), "agent-a")
+  assert.equal(sessionFocusedAgentId({
+    agents: [{ id: "agent-a" }, { id: "agent-b" }],
+    focused_agent_id: " agent-b ",
+  }), "agent-b")
 })
 
 test("visible transcript follows focus in individual mode and primary pane in split mode", () => {
