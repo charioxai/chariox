@@ -1,7 +1,10 @@
-import { agentRuntimeActivityIsBusy, projectAgentRuntimeActivity } from "./agent-activity.js"
+import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { promptOriginIsExternal } from "./prompt-origin.js"
-import { sessionHasAgent } from "./session-agent-prompt-state.js"
+import {
+  sessionProjectedPromptActivityForAgent,
+  type SessionProjectedPromptActivity,
+} from "./session-agent-prompt-state.js"
 
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
 export const QUEUED_PROMPT_STEER_EXTERNAL_REASON =
@@ -119,17 +122,18 @@ export function queuedPromptsForAgent(
   session: RuntimeSession,
   agentId: string,
 ): readonly PromptQueueItem[] | null {
-  if (!sessionHasAgent(session, agentId)) {
+  const projectedActivity = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (projectedActivity === "not_found" || projectedActivity === "idle") {
     return []
   }
-  if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
+  if (projectedActivity && !projectedActivityAllowsPromptQueue(projectedActivity)) {
     return []
   }
   const promptStates = session.prompt_states
   if (promptStates) {
     return promptStates[agentId]?.queued_prompts ?? []
   }
-  if (session.agent_activity) {
+  if (projectedActivity) {
     return null
   }
   return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
@@ -143,8 +147,9 @@ export function queuedPromptProjectionForAgent(
   if (prompts === null) {
     return { action: "preserve" }
   }
-  const activity = session.agent_activity?.[agentId]
-  const disableSteeringBehindExternalTurn = activityHasExternalActiveTurn(activity)
+  const projectedActivity = sessionProjectedPromptActivityForAgent(session, agentId)
+  const disableSteeringBehindExternalTurn = projectedActivityHasExternalActiveTurn(projectedActivity)
+  const controls = session.agent_activity?.[agentId]?.queued_prompt_controls
   return {
     action: "replace",
     prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
@@ -152,7 +157,7 @@ export function queuedPromptProjectionForAgent(
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
         control: queuedPromptControlWithActivityFallback(
-          activity?.queued_prompt_controls,
+          controls,
           promptId,
           disableSteeringBehindExternalTurn,
         ),
@@ -264,19 +269,11 @@ function compareProjectedQueuedPromptOrder(
   return leftCreated - rightCreated || left.id.localeCompare(right.id)
 }
 
-function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {
-  if (!session.agent_activity) {
-    return true
-  }
-  const activity = session.agent_activity[agentId]
-  if (!activity) {
-    return false
-  }
-  const projection = projectAgentRuntimeActivity(activity)
+function projectedActivityAllowsPromptQueue(projection: AgentRuntimeActivityProjection): boolean {
   if (projection.queuedPromptCountExplicit && projection.queuedPromptCount === 0) {
     return false
   }
-  return agentRuntimeActivityIsBusy(activity)
+  return projection.busy
 }
 
 function queuedPromptControlWithActivityFallback(
@@ -295,8 +292,11 @@ function queuedPromptControlWithActivityFallback(
   }
 }
 
-function activityHasExternalActiveTurn(activity: unknown): boolean {
-  const projection = projectAgentRuntimeActivity(activity)
+function projectedActivityHasExternalActiveTurn(activity: SessionProjectedPromptActivity): boolean {
+  if (!activity || activity === "idle" || activity === "not_found") {
+    return false
+  }
+  const projection = activity
   return promptOriginIsExternal(projection.activeTurnPromptOrigin)
     || Boolean(
       projection.activeTurnExternalProvider
