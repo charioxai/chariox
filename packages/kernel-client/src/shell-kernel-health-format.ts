@@ -1,4 +1,5 @@
 import type { DaemonHealthProjection } from "./kernel-types.js"
+import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
@@ -879,13 +880,6 @@ function remoteExtensionSyncAggregateStatus(remoteExtensionSync: DaemonHealthPro
     return { state: "stale", pending_revoke: false }
   }
   return null
-}
-
-function remoteExtensionAggregateNextAction(remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"]): string {
-  if (remoteExtensionSync.pending_revoke_agents > 0) {
-    return "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects"
-  }
-  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
 }
 
 function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): number {

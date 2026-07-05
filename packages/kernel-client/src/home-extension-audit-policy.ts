@@ -1,3 +1,16 @@
+export function remoteExtensionAggregateNextAction(
+  summary: {
+    readonly pending_revoke_agents?: number | null | undefined
+    readonly remote_extension_pending_revoke_count?: number | null | undefined
+  },
+): string {
+  const pendingRevokes = summary.pending_revoke_agents ?? summary.remote_extension_pending_revoke_count ?? 0
+  if (pendingRevokes > 0) {
+    return "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects"
+  }
+  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
+}
+
 export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<string, unknown>): string | null {
   const status = typeof payload.status === "string" ? payload.status : ""
   const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""

@@ -9,6 +9,7 @@ import {
 import {
   homeExtensionAuditAgentRef,
   homeExtensionAuditRecoveryAction,
+  remoteExtensionAggregateNextAction,
 } from "./home-extension-audit-policy.js"
 
 test("remote extension sync formatter renders status and recovery consistently", () => {
@@ -152,6 +153,18 @@ test("home extension audit policy handles terminal invocation outcomes", () => {
     status: "failed",
   }), "inspect the home-side tool configuration and logs, then retry")
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.grant.created", {}), null)
+})
+
+test("home extension aggregate recovery action formats session and health summaries", () => {
+  assert.equal(remoteExtensionAggregateNextAction({
+    pending_revoke_agents: 1,
+  }), "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects")
+  assert.equal(remoteExtensionAggregateNextAction({
+    remote_extension_pending_revoke_count: 1,
+  }), "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects")
+  assert.equal(remoteExtensionAggregateNextAction({
+    pending_revoke_agents: 0,
+  }), "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy")
 })
 
 test("home extension audit policy resolves stable agent references", () => {

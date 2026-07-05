@@ -1,5 +1,6 @@
 import path from "node:path"
 
+import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
 
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
@@ -127,16 +128,9 @@ export function formatSessionActivityNextAction(session: Pick<SessionListEntry, 
     return remoteWorkerProviderRunRecoveryAction(null, null)
   }
   if ((activity.remote_extension_sync_issue_count ?? 0) > 0) {
-    return formatRemoteExtensionAggregateNextAction(activity)
+    return remoteExtensionAggregateNextAction(activity)
   }
   return null
-}
-
-function formatRemoteExtensionAggregateNextAction(activity: SessionActivitySummary): string {
-  if ((activity.remote_extension_pending_revoke_count ?? 0) > 0) {
-    return "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects"
-  }
-  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
