@@ -22,6 +22,7 @@
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
     "./provider-status": "./dist/provider-status.js",
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
+    "./queued-prompt-selection": "./dist/queued-prompt-selection.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
