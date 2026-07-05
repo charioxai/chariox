@@ -238,7 +238,7 @@ async fn start_publication_runtime(
     let local_url = if is_schedule_only {
         None
     } else {
-        Some(publication_local_url(&host, port, publication.route()))
+        Some(publication_local_url(&host, port))
     };
     let mut command = Command::new(resolve_arroba_cli_bin()?);
     command
@@ -572,19 +572,8 @@ fn safe_path_segment(value: &str) -> String {
         .collect()
 }
 
-fn publication_local_url(host: &str, port: u16, route: Option<&str>) -> String {
-    let base = format!("http://{}:{}", host, port);
-    match route.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(route) => {
-            let normalized = if route.starts_with('/') {
-                route.to_string()
-            } else {
-                format!("/{route}")
-            };
-            format!("{}{}", base, normalized.trim_end_matches('*'))
-        }
-        None => base,
-    }
+fn publication_local_url(host: &str, port: u16) -> String {
+    format!("http://{}:{}/", host, port)
 }
 
 fn is_schedule_only_publication(publication: &WorkflowPublicationDefinition) -> bool {
@@ -685,9 +674,9 @@ impl WorkflowPublicationRuntimeProcessStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_PUBLICATION_RUNTIME_PORT, launched_publication_runtime_message,
-        launched_publication_runtime_status, publication_runtime_port,
-        validate_publication_runtime_bind_address,
+        launched_publication_runtime_message, launched_publication_runtime_status,
+        publication_local_url, publication_runtime_port, validate_publication_runtime_bind_address,
+        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use std::net::TcpListener;
 
@@ -713,6 +702,14 @@ mod tests {
     }
 
     #[test]
+    fn ingress_runtime_local_url_points_to_gateway_root() {
+        assert_eq!(
+            publication_local_url("127.0.0.1", 43123),
+            "http://127.0.0.1:43123/"
+        );
+    }
+
+    #[test]
     fn schedule_only_runtime_port_is_ephemeral_internal_port() {
         assert_eq!(publication_runtime_port(Some(43123), true), 0);
         assert_eq!(publication_runtime_port(None, true), 0);
@@ -722,11 +719,9 @@ mod tests {
     fn ingress_runtime_rejects_zero_port() {
         let error = validate_publication_runtime_bind_address("127.0.0.1", 0, false)
             .expect_err("ingress port 0 should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("port must be between 1 and 65535")
-        );
+        assert!(error
+            .to_string()
+            .contains("port must be between 1 and 65535"));
     }
 
     #[test]

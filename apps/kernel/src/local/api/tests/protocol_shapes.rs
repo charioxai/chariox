@@ -1589,13 +1589,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let mut runtime_publication = publication.clone();
     runtime_publication.mark_runtime_status(
         "starting",
-        Some(Some("http://127.0.0.1:3000/qa/".to_string())),
+        Some(Some("http://127.0.0.1:3000/".to_string())),
         Some(serde_json::json!({
             "kind": "local_runtime",
             "status": "starting",
             "host": "127.0.0.1",
             "port": 3000,
-            "local_url": "http://127.0.0.1:3000/qa/",
+            "local_url": "http://127.0.0.1:3000/",
             "process_id": 4242,
             "package_root": "/tmp/arroba-publication-runtimes/session-1/publication-1-sha256_abc123"
         })),
@@ -1686,9 +1686,9 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             publication: runtime_publication.clone(),
             action: crate::local::WorkflowPublicationRuntimeAction::Start,
             status: "starting".to_string(),
-            local_url: Some("http://127.0.0.1:3000/qa/".to_string()),
-            open_url: Some("http://127.0.0.1:3000/qa/".to_string()),
-            viewer_url: Some("http://127.0.0.1:3000/qa/".to_string()),
+            local_url: Some("http://127.0.0.1:3000/".to_string()),
+            open_url: Some("http://127.0.0.1:3000/".to_string()),
+            viewer_url: Some("http://127.0.0.1:3000/".to_string()),
             process_id: Some(4242),
             message: Some("publication runtime starting; endpoint registration will publish a relay display URL when available".to_string()),
         },
@@ -1697,9 +1697,9 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             publication: runtime_publication,
             action: crate::local::WorkflowPublicationRuntimeAction::Inspect,
             status: "running".to_string(),
-            local_url: Some("http://127.0.0.1:3000/qa/".to_string()),
-            open_url: Some("http://127.0.0.1:3000/qa/".to_string()),
-            viewer_url: Some("http://127.0.0.1:3000/qa/".to_string()),
+            local_url: Some("http://127.0.0.1:3000/".to_string()),
+            open_url: Some("http://127.0.0.1:3000/".to_string()),
+            viewer_url: Some("http://127.0.0.1:3000/".to_string()),
             process_id: Some(4242),
             message: Some("publication runtime is running".to_string()),
         },
@@ -1840,11 +1840,11 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/15/WorkflowPublicationRuntimeControlled/open_url"),
-        Some(&serde_json::json!("http://127.0.0.1:3000/qa/"))
+        Some(&serde_json::json!("http://127.0.0.1:3000/"))
     );
     assert_eq!(
         snapshot.pointer("/15/WorkflowPublicationRuntimeControlled/viewer_url"),
-        Some(&serde_json::json!("http://127.0.0.1:3000/qa/"))
+        Some(&serde_json::json!("http://127.0.0.1:3000/"))
     );
     assert_eq!(
         snapshot.pointer("/16/ControlWorkflowPublicationRuntime/action"),
@@ -1898,7 +1898,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a9138086ee315e24580dc4e69836882314adb1c4ffa83ee22ecbea4b102257ca"
+        "b4bd8f136e64232d065e97c007c25fff25d583436d6e3641004b8ce1cd395ce7"
     );
 }
 
