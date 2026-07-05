@@ -253,8 +253,9 @@ export function applyExternalProviderObservedTurnMetadata<T extends ExternalProv
   if (!metadata) {
     return target
   }
-  if (target.source === undefined || target.source === null) {
-    target.source = metadata.source
+  const source = mergeExternalProviderObservedSource(target.source, metadata.source)
+  if (source !== undefined) {
+    target.source = source
   }
   if (target.externalProvider === undefined && metadata.externalProvider !== null) {
     target.externalProvider = metadata.externalProvider

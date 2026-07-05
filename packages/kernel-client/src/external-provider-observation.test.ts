@@ -551,7 +551,7 @@ test("external provider observed transcript field merge preserves identity and s
   })
 })
 
-test("external provider observed turn metadata applies only missing transcript identity fields", () => {
+test("external provider observed turn metadata keeps external source authoritative", () => {
   const target = {
     source: "provider_output",
     externalProvider: "codex",
@@ -567,7 +567,7 @@ test("external provider observed turn metadata applies only missing transcript i
   })
 
   assert.deepEqual(target, {
-    source: "provider_output",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
