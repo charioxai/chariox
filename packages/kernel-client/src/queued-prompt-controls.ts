@@ -28,6 +28,7 @@ export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly sourceAttachmentId: string
   readonly targetAgentId: string | null
   readonly prompt: string
+  readonly createdAtMs?: number | null
   readonly attachmentCount: number
 }
 
@@ -80,6 +81,7 @@ export function projectedQueuedPromptMatches(
     && current.sourceAttachmentId === next.sourceAttachmentId
     && current.targetAgentId === next.targetAgentId
     && current.prompt === next.prompt
+    && (current.createdAtMs ?? null) === (next.createdAtMs ?? null)
     && current.attachmentCount === next.attachmentCount
     && queuedPromptActionabilityMatches(current, next)
 }
@@ -140,7 +142,7 @@ export function queuedPromptProjectionForAgent(
   }
   return {
     action: "replace",
-    prompts: prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
+    prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
       const promptId = prompt.pending_prompt_id ?? prompt.id
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
@@ -150,7 +152,7 @@ export function queuedPromptProjectionForAgent(
         ),
       })
       return projected ? [projected] : []
-    }),
+    })),
   }
 }
 
@@ -171,9 +173,16 @@ export function projectQueuedPrompt(
     sourceAttachmentId: prompt.source_attachment_id ?? "",
     targetAgentId: prompt.target_agent_id ?? options.fallbackTargetAgentId ?? null,
     prompt: prompt.prompt,
+    ...(prompt.created_at_ms !== undefined ? { createdAtMs: prompt.created_at_ms } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
   }
+}
+
+export function sortProjectedQueuedPrompts(
+  prompts: readonly ProjectedQueuedPrompt[],
+): readonly ProjectedQueuedPrompt[] {
+  return [...prompts].sort(compareProjectedQueuedPromptOrder)
 }
 
 export function normalizeQueuedPromptStatus(status: string | null | undefined): string {
@@ -238,6 +247,15 @@ function hasOwn<T extends object, K extends PropertyKey>(
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
+}
+
+function compareProjectedQueuedPromptOrder(
+  left: ProjectedQueuedPrompt,
+  right: ProjectedQueuedPrompt,
+): number {
+  const leftCreated = left.createdAtMs ?? Number.MAX_SAFE_INTEGER
+  const rightCreated = right.createdAtMs ?? Number.MAX_SAFE_INTEGER
+  return leftCreated - rightCreated || left.id.localeCompare(right.id)
 }
 
 function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {

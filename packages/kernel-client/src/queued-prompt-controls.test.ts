@@ -16,6 +16,7 @@ import {
   queuedPromptsForAgent,
   queuedPromptStatusIsQueued,
   queuedPromptTitleLabel,
+  sortProjectedQueuedPrompts,
 } from "./queued-prompt-controls.js"
 import type { ProjectedQueuedPrompt } from "./queued-prompt-controls.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
@@ -100,7 +101,25 @@ test("projected queued prompt comparison includes identity and actionability", (
     ...current,
     prompt: "edited queued prompt",
   }]), false)
+  assert.equal(projectedQueuedPromptListsMatch([current], [{
+    ...current,
+    createdAtMs: 2_000,
+  }]), false)
   assert.equal(projectedQueuedPromptListsMatch([current], []), false)
+})
+
+test("projected queued prompt sorting uses creation time and stable id order", () => {
+  assert.deepEqual(sortProjectedQueuedPrompts([
+    projectedPrompt({ id: "queued-c", prompt: "c", createdAtMs: 1_000 }),
+    projectedPrompt({ id: "queued-missing", prompt: "missing" }),
+    projectedPrompt({ id: "queued-a", prompt: "a", createdAtMs: 1_000 }),
+    projectedPrompt({ id: "queued-oldest", prompt: "oldest", createdAtMs: 500 }),
+  ]).map((prompt) => prompt.id), [
+    "queued-oldest",
+    "queued-a",
+    "queued-c",
+    "queued-missing",
+  ])
 })
 
 test("queued prompt control lookup requires matching projected prompt identity", () => {
@@ -233,6 +252,35 @@ test("queued prompt projection returns display prompts with actionability", () =
   })
 })
 
+test("queued prompt projection returns prompts oldest first", () => {
+  const session = sessionWith({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [
+          prompt("queued-newer", "agent-1", 3_000),
+          prompt("queued-oldest", "agent-1", 1_000),
+          prompt("queued-middle", "agent-1", 2_000),
+        ],
+      },
+    },
+  })
+
+  const projection = queuedPromptProjectionForAgent(session, "agent-1")
+
+  assert.equal(projection.action, "replace")
+  assert.deepEqual(projection.prompts.map((prompt) => prompt.id), [
+    "queued-oldest",
+    "queued-middle",
+    "queued-newer",
+  ])
+  assert.deepEqual(projection.prompts.map((prompt) => prompt.createdAtMs), [
+    1_000,
+    2_000,
+    3_000,
+  ])
+})
+
 test("queued prompt projection preserves transcript when projected busy omits queue detail", () => {
   const session = sessionWith({
     agent_activity: {
@@ -254,6 +302,7 @@ test("project queued prompt records attachment count and fallback target", () =>
     source_attachment_id: "attachment-1",
     prompt: "queued",
     attachments: [{ url: "file:///tmp/a.txt", mime: "text/plain", filename: "a.txt" }],
+    created_at_ms: 1_234,
     status: "Queued",
   }, {
     fallbackTargetAgentId: "agent-fallback",
@@ -263,6 +312,7 @@ test("project queued prompt records attachment count and fallback target", () =>
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-fallback",
     prompt: "queued",
+    createdAtMs: 1_234,
     attachmentCount: 1,
     status: "queued",
     steerDisabled: false,
@@ -429,12 +479,13 @@ function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
   }
 }
 
-function prompt(id: string, agentId = "agent-1"): PromptQueueItem {
+function prompt(id: string, agentId = "agent-1", createdAtMs?: number): PromptQueueItem {
   return {
     id,
     source_attachment_id: "attachment-1",
     target_agent_id: agentId,
     prompt: id,
+    ...(createdAtMs !== undefined ? { created_at_ms: createdAtMs } : {}),
     status: "Queued",
   }
 }
