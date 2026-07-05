@@ -3,49 +3,61 @@ import test from "node:test"
 
 import type { AgentPromptState, WorkspaceLiveSyncStatus } from "./kernel-types.js"
 import {
+  sessionActivePromptIdForAgent,
+  sessionActivePromptForAgent,
+  sessionHasActivePrompt,
+  sessionPromptForAgent,
+  sessionPromptStateForAgent,
+} from "./session-prompt-identity.js"
+import {
+  sessionActivePromptLifecycleRecords,
+  sessionPromptLifecycleTransition,
+} from "./session-prompt-lifecycle.js"
+import {
+  sessionAgentIsBusy,
+  sessionHasProcessingAgent,
+  sessionHasPromptWork,
+  sessionProjectedStreamingAgentId,
+  sessionPromptWorkByAgent,
+  sessionPromptWorkSummary,
+} from "./session-prompt-work.js"
+import {
+  runtimeProviderRunForAgent,
+  sessionActiveInteractionForAgent,
+} from "./session-runtime-lookup.js"
+import {
   deriveAllAgentsBusyState,
   deriveFocusedActivityLabel,
   deriveFocusedAgentBusy,
   nextAgentActivityLabels,
   nextAgentBusyLatches,
   readAgentBusyLatch,
-  runtimeProviderRunForAgent,
   resolveActiveToolLabelForAgent,
   resolveSessionStreamingAgentId,
+  sessionFocusedAgentId,
+  sessionRuntimeTransitionState,
+  sessionShouldConfirmIdleTurnCompletion,
+  sessionWorkingStateAfterPromptWork,
+  shouldPreserveAgentActivityLabel,
+  turnCompletionDelayMs,
+} from "./session-runtime-transition.js"
+import {
   agentRuntimeStateFromProjection,
-  sessionActivePromptIdForAgent,
-  sessionActiveInteractionForAgent,
-  sessionActivePromptForAgent,
-  sessionActivePromptLifecycleRecords,
   sessionAgentHasUnreadIdleOutput,
-  sessionAgentIsBusy,
   sessionAgentPaneStatusBadge,
-  sessionAttachedFooterSummary,
-  sessionFooterHint,
-  sessionFocusedStatusBadge,
   sessionAgentRuntimeActivityProjection,
   sessionAgentRuntimeActivityStatus,
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeState,
-  sessionFocusedAgentId,
-  sessionHasActivePrompt,
-  sessionHasProcessingAgent,
-  sessionHasPromptWork,
-  sessionPromptLifecycleTransition,
-  sessionProjectedStreamingAgentId,
-  sessionPromptForAgent,
-  sessionPromptStateForAgent,
-  sessionPromptWorkByAgent,
-  sessionPromptWorkSummary,
-  sessionRuntimeTransitionState,
-  sessionShouldConfirmIdleTurnCompletion,
+  sessionFocusedStatusBadge,
   sessionStatusLabel,
   sessionStatusMode,
+} from "./session-runtime-status.js"
+import {
+  sessionAttachedFooterSummary,
+  sessionFooterHint,
   sessionVisibleAgentSummary,
-  sessionWorkingStateAfterPromptWork,
-  shouldPreserveAgentActivityLabel,
-  turnCompletionDelayMs,
-} from "./shell-agent-activity.js"
+} from "./shell-session-footer.js"
 import { makeAgent, makeSession } from "./shell-executor.test-support.js"
 
 test("sessionAgentIsBusy uses projected idle over stale legacy prompt state", () => {
