@@ -4,7 +4,6 @@ import type {
 } from "./kernel-types.js"
 import {
   agentLegacyProcessingStateIsBusy,
-  agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityProjectionHasTurnWork,
   agentRuntimePromptStatusIsActivePrompt,
   type AgentRuntimeActivityProjection,
@@ -145,7 +144,8 @@ export function sessionPromptWorkByAgent(session: RuntimeSession): Record<string
 
 export function sessionProjectedStreamingAgentId(session: RuntimeSession): string | null {
   if (session.agent_activity) {
-    return session.agents.find((agent) => agentRuntimeActivityHasTurnWork(session.agent_activity?.[agent.id]))?.id ?? null
+    return sessionProjectedPromptActivityEntriesForSessionAgents(session)
+      .find(([, projection]) => agentRuntimeActivityProjectionHasTurnWork(projection))?.[0] ?? null
   }
   if (session.prompt_states) {
     const activeAgents = session.agents.filter((agent) => {

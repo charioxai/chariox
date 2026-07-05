@@ -239,6 +239,18 @@ test("session projected streaming agent follows projected activity before legacy
     },
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
   })), "agent-2")
+
+  assert.equal(sessionProjectedStreamingAgentId(makeSession({
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })), null)
 })
 
 test("session projected streaming agent ignores queued-only projected activity", () => {
