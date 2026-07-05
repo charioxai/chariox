@@ -386,6 +386,20 @@ test("external provider observation merge preserves settlement over passive tele
     settles_active_prompt: false,
     passive_telemetry: true,
   })
+  assert.deepEqual(mergeExternalProviderObservation(null, {
+    settles_active_prompt: "true",
+    passive_telemetry: "yes",
+  } as never), {
+    settles_active_prompt: false,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: true,
+    passive_telemetry: true,
+  } as never, null), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
   assert.deepEqual(mergeExternalProviderObservation({
     settles_active_prompt: "true",
     passive_telemetry: "yes",

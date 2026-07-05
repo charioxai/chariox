@@ -148,18 +148,21 @@ export function mergeExternalProviderObservation(
   existing: SessionHistoryExternalObservation | null | undefined,
   incoming: SessionHistoryExternalObservation | null | undefined,
 ): SessionHistoryExternalObservation | null | undefined {
-  if (!existing) {
-    return incoming
+  const normalizedExisting = existing ? normalizedExternalObservation(existing) : existing
+  const normalizedIncoming = incoming ? normalizedExternalObservation(incoming) : incoming
+  if (!normalizedExisting) {
+    return normalizedIncoming
   }
-  if (!incoming) {
-    return existing
+  if (!normalizedIncoming) {
+    return normalizedExisting
   }
-  const settlesActivePrompt = existing.settles_active_prompt === true || incoming.settles_active_prompt === true
+  const settlesActivePrompt = normalizedExisting.settles_active_prompt === true
+    || normalizedIncoming.settles_active_prompt === true
   return {
     settles_active_prompt: settlesActivePrompt,
     passive_telemetry: settlesActivePrompt
       ? false
-      : existing.passive_telemetry === true || incoming.passive_telemetry === true,
+      : normalizedExisting.passive_telemetry === true || normalizedIncoming.passive_telemetry === true,
   }
 }
 
