@@ -4,6 +4,7 @@ import type {
 } from "./kernel-types.js"
 import {
   agentLegacyProcessingStateIsBusy,
+  agentRuntimeActivityProjectionResolvedStatus,
   agentRuntimeActivityResolvedStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
@@ -162,16 +163,23 @@ export function sessionAgentRuntimeActivityProjection(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
 ): AgentRuntimeActivityProjection {
-  const activity = agentId ? session?.agent_activity?.[agentId] : null
-  return projectAgentRuntimeActivity(activity)
+  if (!session || !agentId) {
+    return projectAgentRuntimeActivity(null)
+  }
+  const projection = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (!projection || projection === "idle" || projection === "not_found") {
+    return projectAgentRuntimeActivity(null)
+  }
+  return projection
 }
 
 export function sessionAgentRuntimeActivityStatus(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
 ): AgentRuntimeActivityStatus {
-  const activity = agentId ? session?.agent_activity?.[agentId] : null
-  return agentRuntimeActivityResolvedStatus(activity)
+  return agentRuntimeActivityProjectionResolvedStatus(
+    sessionAgentRuntimeActivityProjection(session, agentId),
+  )
 }
 
 export function sessionAgentRuntimeState(

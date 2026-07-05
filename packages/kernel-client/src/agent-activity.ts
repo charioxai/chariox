@@ -104,7 +104,12 @@ export function agentRuntimeActivityProjectionHasTurnWork(
 export function agentRuntimeActivityResolvedStatus(
   activity: unknown,
 ): AgentRuntimeActivityStatus {
-  const projection = projectAgentRuntimeActivity(activity)
+  return agentRuntimeActivityProjectionResolvedStatus(projectAgentRuntimeActivity(activity))
+}
+
+export function agentRuntimeActivityProjectionResolvedStatus(
+  projection: AgentRuntimeActivityProjection,
+): AgentRuntimeActivityStatus {
   if (projection.error || projection.status === "error") {
     return "error"
   }

@@ -6,6 +6,7 @@ import {
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
+  agentRuntimeActivityProjectionResolvedStatus,
   agentRuntimeActivityResolvedStatus,
   agentRuntimePromptStatusIsActive,
   agentRuntimePromptStatusIsActivePrompt,
@@ -136,6 +137,11 @@ test("agent activity resolved status follows error, busy, then idle", () => {
   assert.equal(agentRuntimeActivityResolvedStatus({ active_prompt_count: 1 }), "working")
   assert.equal(agentRuntimeActivityResolvedStatus({ status: "idle", busy: false }), "idle")
   assert.equal(agentRuntimeActivityResolvedStatus(null), "idle")
+  assert.equal(agentRuntimeActivityProjectionResolvedStatus(projectAgentRuntimeActivity({
+    error: true,
+    status: "idle",
+    busy: false,
+  })), "error")
 })
 
 test("agent activity turn-work helper distinguishes active turns from queued-only work", () => {

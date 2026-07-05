@@ -152,6 +152,12 @@ test("sessionAgentRuntimeActivityProjection returns normalized activity with idl
           phase: "streaming",
         },
       },
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
     },
   })
 
@@ -198,6 +204,19 @@ test("sessionAgentRuntimeActivityProjection returns normalized activity with idl
   })
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-1"), "working")
   assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-2"), "idle")
+  assert.deepEqual(sessionAgentRuntimeActivityProjection(session, "agent-ghost"), {
+    status: null,
+    promptStatus: "none",
+    busy: false,
+    activeTurn: null,
+    activePromptCount: 0,
+    activePromptCountExplicit: false,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
+    error: false,
+    unreadIdleOutput: false,
+  })
+  assert.equal(sessionAgentRuntimeActivityStatus(session, "agent-ghost"), "idle")
   assert.equal(sessionAgentRuntimeActivityStatus(null, "agent-1"), "idle")
 })
 
