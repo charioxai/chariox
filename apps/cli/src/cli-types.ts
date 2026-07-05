@@ -75,6 +75,22 @@ import type {
   WaitingRoomPublicWorkflowNodeSummary as KernelWaitingRoomPublicWorkflowNodeSummary,
   WaitingRoomPublicWorkflowSummary as KernelWaitingRoomPublicWorkflowSummary,
   WaitingRoomSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
+  WorkflowConsole as KernelWorkflowConsole,
+  WorkflowConsoleEntry as KernelWorkflowConsoleEntry,
+  WorkflowDefinition as KernelWorkflowDefinition,
+  WorkflowEdgeDefinition as KernelWorkflowEdgeDefinition,
+  WorkflowEndpointDefinition as KernelWorkflowEndpointDefinition,
+  WorkflowFailureEvent as KernelWorkflowFailureEvent,
+  WorkflowMessage as KernelWorkflowMessage,
+  WorkflowNodeDefinition as KernelWorkflowNodeDefinition,
+  WorkflowNodeRun as KernelWorkflowNodeRun,
+  WorkflowPromptQueueDefinition as KernelWorkflowPromptQueueDefinition,
+  WorkflowQueuedPrompt as KernelWorkflowQueuedPrompt,
+  WorkflowRun as KernelWorkflowRun,
+  WorkflowScheduleDefinition as KernelWorkflowScheduleDefinition,
+  WorkflowScheduleTrigger as KernelWorkflowScheduleTrigger,
+  WorkflowSchemaDefinition as KernelWorkflowSchemaDefinition,
+  WorkflowWatchdogDefinition as KernelWorkflowWatchdogDefinition,
   WorkspaceLiveSyncApplyStatus as KernelWorkspaceLiveSyncApplyStatus,
   WorkspaceLiveSyncGroupStatus as KernelWorkspaceLiveSyncGroupStatus,
   WorkspaceLiveSyncPathApplyResult as KernelWorkspaceLiveSyncPathApplyResult,
@@ -581,215 +597,37 @@ export type TranscriptEntry = {
   historyTotalChars?: number
 }
 
-export type WorkflowDefinition = {
-  id: string
-  alias: string | null
-  flush_agent_context_before_run?: boolean
-  run_output_schema_ref?: string | null
-  schemas?: WorkflowSchemaDefinition[]
-  nodes?: WorkflowNodeDefinition[]
-  edges?: WorkflowEdgeDefinition[]
-  endpoints?: WorkflowEndpointDefinition[]
-}
+export type WorkflowDefinition = KernelWorkflowDefinition
 
-export type WorkflowSchemaDefinition = {
-  id: string
-  alias?: string | null
-  description?: string | null
-  schema: unknown
-}
+export type WorkflowSchemaDefinition = KernelWorkflowSchemaDefinition
 
-export type WorkflowEndpointDefinition = {
-  id: string
-  alias: string | null
-  entry_node_id: string
-}
+export type WorkflowEndpointDefinition = KernelWorkflowEndpointDefinition
 
-export type WorkflowScheduleTrigger =
-  | { kind: "interval"; every_seconds: number }
-  | { kind: "cron"; expression: string; timezone: string }
+export type WorkflowScheduleTrigger = KernelWorkflowScheduleTrigger
 
-export type WorkflowScheduleDefinition = {
-  id: string
-  workflow_id: string
-  endpoint_id: string
-  enabled: boolean
-  trigger: WorkflowScheduleTrigger
-  invocation_prompt: string
-  overlap_policy: "skip" | "queue"
-  max_runs?: number | null
-  runs_started: number
-  last_scheduled_for_ms?: number | null
-  next_run_at_ms: number
-  last_run_at_ms?: number | null
-  last_status?: string | null
-  last_error?: string | null
-  last_workflow_run_id?: string | null
-  pending_run?: boolean
-  created_at_ms: number
-  updated_at_ms: number
-  interval_seconds?: number
-  policy?: "skip" | "queue"
-  max_wakeups?: number | null
-  wakeups_executed?: number
-}
+export type WorkflowScheduleDefinition = KernelWorkflowScheduleDefinition
 
-export type WorkflowWatchdogDefinition = WorkflowScheduleDefinition
+export type WorkflowWatchdogDefinition = KernelWorkflowWatchdogDefinition
 
-export type WorkflowPromptQueueDefinition = {
-  id: string
-  workflow_id: string
-  alias: string
-  priority: number
-  enabled: boolean
-  created_at_ms: number
-  updated_at_ms: number
-}
+export type WorkflowPromptQueueDefinition = KernelWorkflowPromptQueueDefinition
 
-export type WorkflowQueuedPrompt = {
-  id: string
-  queue_id: string
-  workflow_id: string
-  endpoint_id: string
-  prompt?: string | null
-  source: "manual" | "scheduled" | "watchdog"
-  schedule_id?: string | null
-  watchdog_id?: string | null
-  status: "queued" | "dispatching" | "running" | "completed" | "cancelled"
-  created_at_ms: number
-  updated_at_ms: number
-  dispatched_at_ms?: number | null
-  workflow_run_id?: string | null
-}
+export type WorkflowQueuedPrompt = KernelWorkflowQueuedPrompt
 
-export type WorkflowNodeDefinition = {
-  id: string
-  agent_id: string
-  owner_user_id?: string
-  created_by_user_id?: string
-  public_label?: string
-  instructions?: string | null
-  can_complete_workflow_run?: boolean
-  can_emit_intermediate_run_output?: boolean
-  wait_for_all_inputs?: boolean
-  intermediate_output_schema_ref?: string | null
-  max_turns?: number | null
-}
+export type WorkflowNodeDefinition = KernelWorkflowNodeDefinition
 
-export type WorkflowEdgeDefinition = {
-  id: string
-  from_node_id: string
-  to_node_id: string
-  source_side?: "top" | "right" | "bottom" | "left" | null
-  target_side?: "top" | "right" | "bottom" | "left" | null
-  handoff_schema_ref?: string | null
-  validation_policy?: "warn" | "halt" | null
-}
+export type WorkflowEdgeDefinition = KernelWorkflowEdgeDefinition
 
-export type WorkflowMessage = {
-  id: string
-  source_node_run_id: string | null
-  source_node_iteration_index?: number | null
-  edge_id?: string | null
-  target_node_id: string
-  message_type: string
-  summary: string
-  handoff_payload: string
-  created_at_ms: number
-}
+export type WorkflowMessage = KernelWorkflowMessage
 
-export type WorkflowNodeRun = {
-  id: string
-  node_id: string
-  agent_id: string
-  iteration_index?: number
-  status: string
-  summary: string | null
-  completion?: {
-    summary: string
-    output?: {
-      message: string
-    } | null
-  } | null
-  turn_envelope?: {
-    delivery_token: string
-    state: string
-    rendered_prompt?: string | null
-    mailbox_content?: string | null
-    handoff_payloads_json?: string | null
-    runtime_tool_calls?: {
-      tool_name: string
-      arguments_json: string
-      result_json?: string | null
-      ok: boolean
-      timestamp_ms: number
-    }[]
-    prepared_at_ms: number
-    dispatched_at_ms?: number | null
-    acknowledged_at_ms?: number | null
-    validated_completed_at_ms?: number | null
-  } | null
-  thinking_traces?: {
-    id: string
-    message: string
-    timestamp_ms: number
-  }[]
-  created_at_ms: number
-  started_at_ms: number | null
-  completed_at_ms: number | null
-}
+export type WorkflowNodeRun = KernelWorkflowNodeRun
 
-export type WorkflowFailureEvent = {
-  kind: string
-  source_node_run_id: string
-  edge_ids: string[]
-  message: string
-  timestamp_ms: number
-}
+export type WorkflowFailureEvent = KernelWorkflowFailureEvent
 
-export type WorkflowRun = {
-  id: string
-  workflow_id: string
-  endpoint_id: string
-  entry_node_id: string
-  status: string
-  invocation_prompt: string | null
-  active_node_run_id: string | null
-  node_runs: WorkflowNodeRun[]
-  messages: WorkflowMessage[]
-  failure_events?: WorkflowFailureEvent[]
-  intermediate_outputs?: {
-    id: string
-    source_node_run_id: string
-    output: {
-      message: string
-    }
-    valid: boolean
-    warning?: string | null
-    timestamp_ms: number
-  }[]
-  final_output?: {
-    message: string
-  } | null
-  final_output_valid?: boolean | null
-  final_output_warning?: string | null
-  completed_by_node_run_id?: string | null
-  created_at_ms: number
-  started_at_ms: number | null
-  completed_at_ms: number | null
-}
+export type WorkflowRun = KernelWorkflowRun
 
-export type WorkflowConsoleEntry = {
-  timestamp_ms: number
-  source_node_run_id?: string | null
-  source_agent_id?: string | null
-  text: string
-}
+export type WorkflowConsoleEntry = KernelWorkflowConsoleEntry
 
-export type WorkflowConsole = {
-  workflow_id: string
-  entries?: WorkflowConsoleEntry[]
-}
+export type WorkflowConsole = KernelWorkflowConsole
 
 export type ReadDirectoryTreeResult = {
   session_id: string
