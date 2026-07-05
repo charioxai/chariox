@@ -103,7 +103,16 @@ for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
 }
 
 try {
-  report.preflight = skipPreflight ? skippedPreflight() : await preflight(client)
+  try {
+    report.preflight = skipPreflight ? skippedPreflight() : await preflight(client)
+  } catch (error) {
+    report.preflight = {
+      ok: false,
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+      cli: {},
+      providers: [],
+    }
+  }
   await writeArtifact("preflight.json", report.preflight)
   if (preflightOnly) {
     await writeReport()
@@ -633,7 +642,14 @@ async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicati
       const latestRunId = latestRunIdFromStatus(last)
       if (latestRunId) {
         const workflowRun = await workflowRunSnapshot(client, last.runtime_session_id, latestRunId).catch(() => null)
-        last.workflow_run = workflowRun
+        if (workflowRun) {
+          const visibleRun = visibleWorkflowRunForPublication(last.publication, workflowRun)
+          last.latest_run = visibleRun
+          last.last_run = visibleRun
+          last.latest_output = workflowRun.final_output
+            ? { kind: "final", message: workflowRun.final_output.message, artifacts: workflowRun.final_output.artifacts ?? [] }
+            : last.latest_output
+        }
         if (workflowRun?.status && isTerminalStatus(workflowRun.status)) return last
       }
     } catch (error) {
