@@ -42,6 +42,8 @@ export type TerminalRecordTranscriptProjection = {
   readonly startsStreaming: boolean
   readonly marksAgentBusy: boolean
   readonly providerStatusIdle: boolean
+  readonly updatesProviderActivity: boolean
+  readonly appendsLiveTranscript: boolean
   readonly renderProviderStatus: boolean
   readonly transcriptRole: TerminalRecordTranscriptRole | null
   readonly transcriptText: string
@@ -86,6 +88,7 @@ export function terminalRecordTranscriptProjection(
   const renderProviderStatus = record.kind === "provider_status"
     ? terminalRecordProviderStatusShouldRender(record, text, options.shouldRenderProviderStatus)
     : false
+  const appendsLiveTranscript = !historyRefreshSignal && !passiveExternalTelemetry && !providerStatusIdle
 
   return {
     metadata,
@@ -97,6 +100,11 @@ export function terminalRecordTranscriptProjection(
       && !passiveExternalTelemetry
       && !providerStatusIdle,
     providerStatusIdle,
+    updatesProviderActivity: record.kind === "provider_status"
+      && !historyRefreshSignal
+      && !passiveExternalTelemetry
+      && !providerStatusIdle,
+    appendsLiveTranscript,
     renderProviderStatus,
     transcriptRole: terminalRecordTranscriptRole(record.kind),
     transcriptText: record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text,

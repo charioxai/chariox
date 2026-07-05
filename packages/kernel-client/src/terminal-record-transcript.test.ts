@@ -136,6 +136,8 @@ test("terminalRecordTranscriptProjection classifies external history refresh wit
   assert.equal(projection.passiveExternalTelemetry, false)
   assert.equal(projection.startsStreaming, false)
   assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.updatesProviderActivity, false)
+  assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.transcriptRole, "status")
   assert.equal(projection.statusMergeKey, null)
 })
@@ -159,6 +161,8 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
   assert.equal(projection.passiveExternalTelemetry, true)
   assert.equal(projection.startsStreaming, false)
   assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.updatesProviderActivity, false)
+  assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.renderProviderStatus, false)
   assert.equal(projection.metadata.externalProvider, "codex")
 })
@@ -174,6 +178,8 @@ test("terminalRecordTranscriptProjection keeps idle provider status from marking
   assert.equal(projection.providerStatusIdle, true)
   assert.equal(projection.startsStreaming, true)
   assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.updatesProviderActivity, false)
+  assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.renderProviderStatus, true)
 })
 
@@ -216,6 +222,8 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   assert.equal(assistant.mergeKey, "reply-1")
   assert.equal(assistant.startsStreaming, true)
   assert.equal(assistant.marksAgentBusy, true)
+  assert.equal(assistant.updatesProviderActivity, false)
+  assert.equal(assistant.appendsLiveTranscript, true)
 
   const error = terminalRecordTranscriptProjection({
     kind: "provider_error",
@@ -225,6 +233,18 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   })
   assert.equal(error.transcriptRole, "error")
   assert.equal(error.transcriptText, "failed")
+})
+
+test("terminalRecordTranscriptProjection marks active provider status as activity-only candidate", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+  }, "OpenCode is thinking", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.updatesProviderActivity, true)
+  assert.equal(projection.appendsLiveTranscript, true)
 })
 
 test("terminalRecordPromptHistoryText only accepts user prompt terminal records", () => {

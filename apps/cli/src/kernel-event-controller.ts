@@ -172,10 +172,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       }
     }
     if (deps.splitAgentResponseMode() && recordAgentId) {
-      if (record.kind === "provider_status") {
-        if (projection.providerStatusIdle) {
-          return
-        }
+      if (projection.updatesProviderActivity) {
         const activityLabel = deps.getProviderActivityLabel(text)
         deps.setAgentActivityLabel(recordAgentId, activityLabel)
         if (recordAgentId === deps.focusedAgentId()) {
@@ -187,6 +184,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           }
         }
       }
+      if (!projection.appendsLiveTranscript) {
+        return
+      }
       appendProjectedRecordToAgentPane(recordAgentId, projection)
       return
     }
@@ -195,12 +195,10 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const isVisibleRecord = recordAgentId === mainTranscriptAgentId
     if (!isVisibleRecord) {
       if (recordAgentId) {
-        if (record.kind === "provider_status") {
-          if (!projection.providerStatusIdle) {
-            deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
-            appendProjectedRecordToAgentPane(recordAgentId, projection)
-          }
-        } else {
+        if (projection.updatesProviderActivity) {
+          deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
+        }
+        if (projection.appendsLiveTranscript) {
           appendProjectedRecordToAgentPane(recordAgentId, projection)
         }
       }
@@ -208,21 +206,18 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       return
     }
 
-    switch (record.kind) {
-      case "provider_status": {
-        if (projection.providerStatusIdle) {
-          return
-        }
-        const activityLabel = deps.getProviderActivityLabel(text)
-        deps.setAgentActivityLabel(recordAgentId, activityLabel)
-        const nextFocusedActivityLabel = activityLabel ?? deps.agentActivityLabel(recordAgentId)
-        deps.setProviderActivityLabel(nextFocusedActivityLabel)
-        deps.applyProviderActivity(nextFocusedActivityLabel !== null)
-        if (activityLabel !== null) {
-          deps.syncVisibleActivityLabel()
-        }
-        break
+    if (projection.updatesProviderActivity) {
+      const activityLabel = deps.getProviderActivityLabel(text)
+      deps.setAgentActivityLabel(recordAgentId, activityLabel)
+      const nextFocusedActivityLabel = activityLabel ?? deps.agentActivityLabel(recordAgentId)
+      deps.setProviderActivityLabel(nextFocusedActivityLabel)
+      deps.applyProviderActivity(nextFocusedActivityLabel !== null)
+      if (activityLabel !== null) {
+        deps.syncVisibleActivityLabel()
       }
+    }
+    if (!projection.appendsLiveTranscript) {
+      return
     }
     appendProjectedRecordToVisibleTranscript(recordAgentId, projection)
   }
