@@ -5,11 +5,7 @@ import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY as KERNEL_SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "@arroba/kernel-client/session-config-projection"
 import {
-  sessionAgentIsBusy as kernelSessionAgentIsBusy,
-  sessionHasProcessingAgent as kernelSessionHasProcessingAgent,
   sessionHasPromptWork as kernelSessionHasPromptWork,
-  sessionProjectedStreamingAgentId as kernelSessionProjectedStreamingAgentId,
-  sessionPromptWorkByAgent as kernelSessionPromptWorkByAgent,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
   sessionFocusedAgentId as kernelSessionFocusedAgentId,
@@ -127,14 +123,6 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
   }
 }
 
-export function sessionHasPromptWork(session: RuntimeSession): boolean {
-  return kernelSessionHasPromptWork(session as Parameters<typeof kernelSessionHasPromptWork>[0])
-}
-
-export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
-  return kernelSessionHasProcessingAgent(session as Parameters<typeof kernelSessionHasProcessingAgent>[0])
-}
-
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
   return kernelSessionFocusedAgentId(session as Parameters<typeof kernelSessionFocusedAgentId>[0])
 }
@@ -154,17 +142,6 @@ export function shouldConfirmIdleTurnCompletion(options: {
   })
 }
 
-export function agentHasPromptWork(
-  session: RuntimeSession,
-  agentId: string | null | undefined,
-): boolean {
-  return kernelSessionAgentIsBusy(session as Parameters<typeof kernelSessionAgentIsBusy>[0], agentId)
-}
-
-export function promptWorkByAgent(session: RuntimeSession): Record<string, boolean> {
-  return kernelSessionPromptWorkByAgent(session as Parameters<typeof kernelSessionPromptWorkByAgent>[0])
-}
-
 export function sessionResponseLayout(
   session: RuntimeSession | null | undefined,
   fallback?: MultiAgentResponseLayout | null,
@@ -172,12 +149,6 @@ export function sessionResponseLayout(
   return kernelSessionResponseLayout(
     session as Parameters<typeof kernelSessionResponseLayout>[0],
     fallback,
-  )
-}
-
-export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
-  return kernelSessionProjectedStreamingAgentId(
-    session as Parameters<typeof kernelSessionProjectedStreamingAgentId>[0],
   )
 }
 
@@ -247,7 +218,7 @@ export function deriveAttachedCliTransitionState(options: {
     fatalError: null,
     daemonDisconnected: false,
     submitting: false,
-    working: sessionHasPromptWork(options.session),
+    working: kernelSessionHasPromptWork(options.session as Parameters<typeof kernelSessionHasPromptWork>[0]),
     statusLine: options.connectedStatus,
   }
 }

@@ -10,7 +10,7 @@ import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
   sessionHasPromptWork,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-prompt-work"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
 type PollLoop = typeof defaultRunPollingLoop

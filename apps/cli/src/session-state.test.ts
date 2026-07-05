@@ -3,17 +3,12 @@ import test from "node:test"
 
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
-  agentHasPromptWork,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
   focusedAgentIdForSession,
-  projectedStreamingAgentIdForSession,
-  promptWorkByAgent,
-  sessionHasProcessingAgent,
-  sessionHasPromptWork,
   sessionResponseLayout,
   shouldConfirmIdleTurnCompletion,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
@@ -53,29 +48,13 @@ test("sessionResponseLayout prefers session config over fallback", () => {
   assert.equal(sessionResponseLayout(session(), null), "individual")
 })
 
-test("runtime session projections derive focus and prompt work by agent", () => {
+test("runtime session projections derive focus", () => {
   const nextSession = session({
     focused_agent_id: null,
     agents: [agent("agent-a"), agent("agent-b")],
-    prompt_states: {
-      "agent-b": {
-        active_prompt: null,
-        queued_prompts: [{
-          id: "prompt-1",
-          source_attachment_id: "attachment-1",
-          target_agent_id: "agent-b",
-          prompt: "review",
-          status: "queued",
-        }],
-      },
-    },
   })
 
   assert.equal(focusedAgentIdForSession(nextSession), "agent-a")
-  assert.deepEqual(promptWorkByAgent(nextSession), {
-    "agent-a": false,
-    "agent-b": true,
-  })
 })
 
 test("focusedAgentIdForSession does not fall back when focused id is not in the session", () => {
@@ -135,7 +114,6 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
     layoutPreference: "individual",
   })
 
-  assert.equal(sessionHasPromptWork(nextSession), true)
   assert.equal(transition.nextFocusedAgentId, "agent-b")
   assert.equal(transition.nextStreamingAgentId, "agent-b")
   assert.equal(transition.nextFocusedActivityLabel, "writing")
@@ -149,255 +127,11 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
   assert.equal(transition.nextAgentSignature, "agent-a,agent-b")
 })
 
-test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across agents", () => {
-  const nextSession = session({
-    focused_agent_id: "agent-a",
-    active_prompt: null,
-    queued_prompts: [],
-    prompt_states: {
-      "agent-b": {
-        active_prompt: {
-          id: "prompt-2",
-          source_attachment_id: "attachment-1",
-          target_agent_id: "agent-b",
-          prompt: "review",
-          status: "running",
-        },
-        queued_prompts: [],
-      },
-    },
-    agents: [agent("agent-a"), agent("agent-b", { is_processing: true, state: "Working" })],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), true)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
-  assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
-})
-
-test("sessionHasPromptWork and agentHasPromptWork prefer kernel agent activity", () => {
-  const nextSession = session({
-    agent_activity: {
-      "agent-a": {
-        status: "working",
-        prompt_status: "settling",
-        busy: true,
-      },
-      "agent-b": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-      },
-    },
-    agents: [agent("agent-a"), agent("agent-b")],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), true)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
-  assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
-})
-
-test("kernel agent activity busy predicate includes status, prompt status, and active turn", () => {
-  for (const activity of [
-    { status: "working", prompt_status: "none", busy: false },
-    { status: "idle", prompt_status: "settling", busy: false },
-    {
-      status: "idle",
-      prompt_status: "none",
-      busy: false,
-      active_turn: {
-        prompt_id: "prompt-1",
-        status: "running",
-        phase: "streaming",
-      },
-    },
-  ] satisfies NonNullable<RuntimeSession["agent_activity"]>[string][]) {
-    const nextSession = session({
-      agent_activity: {
-        "agent-a": activity,
-      },
-      agents: [agent("agent-a")],
-    })
-
-    assert.equal(sessionHasPromptWork(nextSession), true)
-    assert.equal(sessionHasProcessingAgent(nextSession), true)
-    assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
-    assert.equal(projectedStreamingAgentIdForSession(nextSession), "agent-a")
-  }
-})
-
-test("kernel agent activity suppresses stale legacy prompt activity", () => {
-  const nextSession = session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale top-level prompt",
-      status: "running",
-    },
-    queued_prompts: [{
-      id: "queued-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-b",
-      prompt: "stale queued prompt",
-      status: "queued",
-    }],
-    prompt_states: {
-      "agent-a": {
-        active_prompt: {
-          id: "prompt-state-stale",
-          source_attachment_id: "attachment-1",
-          target_agent_id: "agent-a",
-          prompt: "stale prompt state",
-          status: "running",
-        },
-        queued_prompts: [],
-      },
-    },
-    agent_activity: {},
-    agents: [agent("agent-a"), agent("agent-b")],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), false)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
-  assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
-  assert.deepEqual(promptWorkByAgent(nextSession), {
-    "agent-a": false,
-    "agent-b": false,
-  })
-})
-
-test("prompt_states suppress stale legacy prompt activity even when empty", () => {
-  const nextSession = session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale top-level prompt",
-      status: "running",
-    },
-    queued_prompts: [{
-      id: "queued-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale queued prompt",
-      status: "queued",
-    }],
-    prompt_states: {},
-    agents: [agent("agent-a")],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), false)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
-  assert.equal(projectedStreamingAgentIdForSession(nextSession), null)
-})
-
-test("agent_activity suppresses stale legacy prompt state even when prompt_states are absent", () => {
-  const nextSession = session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale top-level prompt",
-      status: "running",
-    },
-    queued_prompts: [{
-      id: "queued-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale queued prompt",
-      status: "queued",
-    }],
-    agent_activity: {
-      "agent-a": {
-        status: "working",
-        prompt_status: "running",
-        busy: true,
-      },
-    },
-    agents: [agent("agent-a")],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), true)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
-})
-
-test("explicit empty agent prompt state suppresses stale top-level prompts", () => {
-  const nextSession = session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale top-level prompt",
-      status: "running",
-    },
-    queued_prompts: [{
-      id: "queued-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale queued prompt",
-      status: "queued",
-    }],
-    prompt_states: {
-      "agent-a": {
-        active_prompt: null,
-        queued_prompts: [],
-      },
-    },
-    agents: [agent("agent-a")],
-  })
-
-  assert.equal(sessionHasPromptWork(nextSession), false)
-  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
-  assert.equal(projectedStreamingAgentIdForSession(nextSession), null)
-})
-
-test("projectedStreamingAgentIdForSession uses projected activity before legacy active prompts", () => {
-  assert.equal(projectedStreamingAgentIdForSession(session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale",
-      status: "running",
-    },
-    agent_activity: {
-      "agent-a": { status: "idle", prompt_status: "none", busy: false },
-      "agent-b": { status: "working", prompt_status: "running", busy: true },
-    },
-    agents: [agent("agent-a"), agent("agent-b")],
-  })), "agent-b")
-
-  assert.equal(projectedStreamingAgentIdForSession(session({
-    active_prompt: {
-      id: "prompt-stale",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "stale",
-      status: "running",
-    },
-    agent_activity: {},
-    agents: [agent("agent-a")],
-  })), null)
-
-  assert.equal(projectedStreamingAgentIdForSession(session({
-    active_prompt: {
-      id: "prompt-legacy",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-a",
-      prompt: "legacy",
-      status: "running",
-    },
-    agents: [agent("agent-a")],
-  })), "agent-a")
-})
-
 test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
   const idleSession = session({
     agents: [agent("agent-a", { state: "Focused" }), agent("agent-b")],
   })
 
-  assert.equal(sessionHasPromptWork(idleSession), false)
-  assert.equal(sessionHasProcessingAgent(idleSession), false)
   assert.equal(shouldConfirmIdleTurnCompletion({
     nextSession: idleSession,
     currentWorking: true,
@@ -562,7 +296,6 @@ test("deriveSessionTransitionState ignores stale processing state when prompt st
     layoutPreference: "individual",
   })
 
-  assert.equal(sessionHasProcessingAgent(nextSession), false)
   assert.equal(transition.nextHasPromptWork, false)
   assert.equal(transition.nextStreamingAgentId, null)
   assert.equal(transition.nextFocusedActivityLabel, null)
@@ -608,7 +341,6 @@ test("deriveSessionTransitionState resolves streaming from active prompt state b
     layoutPreference: "individual",
   })
 
-  assert.equal(sessionHasProcessingAgent(nextSession), true)
   assert.equal(transition.nextHasPromptWork, true)
   assert.equal(transition.nextStreamingAgentId, "agent-b")
   assert.deepEqual(transition.nextAgentActivityLabels, {

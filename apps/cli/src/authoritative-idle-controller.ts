@@ -3,7 +3,7 @@ import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
   sessionHasProcessingAgent,
   sessionHasPromptWork,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-prompt-work"
 
 export type AuthoritativeIdleControllerDeps = {
   batchUpdate: (callback: () => void) => void

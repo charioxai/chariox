@@ -1,6 +1,7 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
 import {
   sessionHasAgentRuntimeProjection,
+  sessionAgentIsBusy,
 } from "@arroba/kernel-client/session-prompt-work"
 import { createEffect } from "solid-js"
 
@@ -21,7 +22,6 @@ import {
 import {
   createSessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
-import { agentHasPromptWork } from "./session-state.js"
 import { createSplitPaneFooterRenderController } from "./split-pane-footer-render-controller.js"
 import {
   renderSplitPaneFooters as renderSplitPaneFootersView,
@@ -325,7 +325,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getMultiAgentMode: deps.multiAgentMode,
     getResponseLayout: deps.multiAgentResponseLayout,
     getSessionStatusMode: deps.sessionStatusMode,
-    getFocusedHasPromptWork: () => agentHasPromptWork(deps.sessionState(), deps.focusedAgentId()),
+    getFocusedHasPromptWork: () => sessionAgentIsBusy(deps.sessionState(), deps.focusedAgentId()),
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,

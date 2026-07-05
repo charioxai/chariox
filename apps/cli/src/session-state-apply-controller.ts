@@ -5,9 +5,11 @@ import {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
+  sessionProjectedStreamingAgentId,
+} from "@arroba/kernel-client/session-prompt-work"
+import {
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
-  projectedStreamingAgentIdForSession,
   shouldConfirmIdleTurnCompletion,
 } from "./session-state.js"
 
@@ -115,7 +117,7 @@ export function createSessionStateApplyController(
     if (promptLifecycle.cancelledPromptSettled) {
       deps.clearActiveToolLabels()
       deps.setAgentActivityLabels({})
-      deps.setStreamingAgentId(projectedStreamingAgentIdForSession(nextSession))
+      deps.setStreamingAgentId(sessionProjectedStreamingAgentId(nextSession))
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       if (deps.getStatusLine() === "Cancellation requested.") {

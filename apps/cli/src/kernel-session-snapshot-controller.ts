@@ -4,7 +4,7 @@ import type {
 } from "./cli-types.js"
 import {
   sessionHasPromptWork,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-prompt-work"
 
 type KernelSessionSnapshotControllerDeps = {
   getSession: () => RuntimeSession

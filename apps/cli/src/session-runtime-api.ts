@@ -14,7 +14,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { describeCliError } from "./runtime.js"
-import { sessionHasPromptWork } from "./session-state.js"
+import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 
 export async function pumpTerminalOutput(
   client: LocalIpcClient,

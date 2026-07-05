@@ -13,7 +13,8 @@ import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
-import { focusedAgentIdForSession, sessionHasPromptWork } from "./session-state.js"
+import { focusedAgentIdForSession } from "./session-state.js"
+import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 

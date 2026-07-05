@@ -16,15 +16,15 @@ import {
 import {
   sessionPromptStateForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
+import {
+  sessionHasPromptWork,
+  sessionPromptWorkByAgent,
+} from "@arroba/kernel-client/session-prompt-work"
 import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
-import {
-  promptWorkByAgent,
-  sessionHasPromptWork,
-} from "./session-state.js"
 import {
   resolveSessionAgentReference,
   type ResolvedAgentReference,
@@ -85,7 +85,7 @@ export function createAgentRuntimeProjectionController(
   const agentBusyLatch = (agentId: string | null | undefined) =>
     readAgentBusyLatch(deps.getAgentBusyLatches(), agentId)
   const anyPromptWork = () => sessionHasPromptWork(deps.getSession())
-  const hasPromptWorkByAgent = () => promptWorkByAgent(deps.getSession())
+  const hasPromptWorkByAgent = () => sessionPromptWorkByAgent(deps.getSession())
   const focusedPromptState = () => promptStateForAgent(deps.getFocusedAgentId())
   const focusedQueueDepth = () => agentQueuedDepth(deps.getFocusedAgentId())
   const focusedActivePrompt = () => agentActivePrompt(deps.getFocusedAgentId())

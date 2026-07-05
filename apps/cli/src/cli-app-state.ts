@@ -40,9 +40,11 @@ import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
 import {
-  focusedAgentIdForSession,
-  projectedStreamingAgentIdForSession,
   sessionHasPromptWork,
+  sessionProjectedStreamingAgentId,
+} from "@arroba/kernel-client/session-prompt-work"
+import {
+  focusedAgentIdForSession,
   sessionResponseLayout,
 } from "./session-state.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -154,7 +156,7 @@ export function createCliAppState(options: {
   const [providerActivityLabel, setProviderActivityLabel] = createSignal<string | null>(null)
   const [agentActivityLabels, setAgentActivityLabels] = createSignal<Record<string, string | null>>({})
   const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(
-    projectedStreamingAgentIdForSession(initialSession),
+    sessionProjectedStreamingAgentId(initialSession),
   )
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
