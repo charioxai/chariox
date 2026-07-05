@@ -1,4 +1,9 @@
 import {
+  describeCollapsedTranscriptBlob,
+  type CollapsedTranscriptBlobEntry,
+  type CollapsedTranscriptBlobDescription,
+} from "./transcript-collapsed-blob.js"
+import {
   stripTranscriptDisplayOnlyEntries,
   transcriptEntryIsBlobCollapsible,
   transcriptTurnFinalAssistantEntry,
@@ -10,6 +15,7 @@ import {
 
 export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRoleEntry & {
   readonly text: string
+  readonly sourceText?: string | null
   readonly turnTracking?: "none" | string | null
   readonly hidden?: boolean
   readonly blobCollapsible?: boolean
@@ -19,10 +25,7 @@ export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRole
   readonly toggleMode?: "expand" | "collapse"
 }
 
-export type TranscriptBlobDescription = {
-  readonly title: string
-  readonly summary: string
-}
+export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription
 
 export type TranscriptDisplayStateOptions = {
   readonly describeCollapsedBlob?: (entry: TranscriptDisplayEntry) => TranscriptBlobDescription
@@ -41,7 +44,7 @@ type MutableTranscriptDisplayEntry =
 
 export function normalizeTranscriptTurnIds<TEntry extends TranscriptDisplayEntry>(
   entries: readonly TEntry[],
-): TranscriptDisplayEntry[] {
+): TEntry[] {
   let activeTurnId: number | undefined
   let nextTurnId = 1
 
@@ -49,18 +52,18 @@ export function normalizeTranscriptTurnIds<TEntry extends TranscriptDisplayEntry
     const next: MutableTranscriptDisplayEntry = { ...entry }
     if (entry.turnTracking === "none") {
       delete next.turnId
-      return next
+      return next as TEntry
     }
     if (entry.role === "user") {
       activeTurnId = entry.turnId ?? nextTurnId
       next.turnId = activeTurnId
       nextTurnId = Math.max(nextTurnId, activeTurnId + 1)
-      return next
+      return next as TEntry
     }
     if (activeTurnId !== undefined) {
       next.turnId = activeTurnId
     }
-    return next
+    return next as TEntry
   })
 }
 
@@ -97,7 +100,7 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
   collapsedTurnIds: readonly number[] = [],
   activeTurnId: number | null = null,
   options: TranscriptDisplayStateOptions = {},
-): TranscriptDisplayEntry[] {
+): TEntry[] {
   const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries)).map((entry) => ({
     ...entry,
     hidden: false,
@@ -118,7 +121,9 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
         entry.blobCollapsible = true
         entry.blobCollapsed = entry.blobCollapsed ?? true
         if (!entry.historyBlobId) {
-          const preview = options.describeCollapsedBlob?.(entry)
+          const preview = options.describeCollapsedBlob
+            ? options.describeCollapsedBlob(entry)
+            : describeCollapsedTranscriptBlob(entry as CollapsedTranscriptBlobEntry)
           if (preview) {
             entry.blobTitle = preview.title
             entry.blobSummary = preview.summary
@@ -160,7 +165,7 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
     } as MutableTranscriptDisplayEntry)
   }
 
-  return normalized
+  return normalized as TEntry[]
 }
 
 export function setTranscriptTurnExpanded<TEntry extends TranscriptDisplayEntry>(

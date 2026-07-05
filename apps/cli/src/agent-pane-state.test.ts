@@ -7,7 +7,7 @@ import {
   shouldRefreshAgentPanesForSessionChange,
   trimAgentPaneEntries,
 } from "@arroba/kernel-client/agent-pane-state"
-import { applyTranscriptDisplayState } from "./transcript-display.js"
+import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []

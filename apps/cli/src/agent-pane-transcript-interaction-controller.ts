@@ -10,7 +10,7 @@ import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
-} from "./transcript-display.js"
+} from "@arroba/kernel-client/transcript-display-state"
 
 export type AgentPaneTranscriptInteractionControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]

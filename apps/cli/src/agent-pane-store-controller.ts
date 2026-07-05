@@ -8,7 +8,7 @@ import type {
   AgentInstance,
   TranscriptEntry,
 } from "./cli-types.js"
-import { applyTranscriptDisplayState } from "./transcript-display.js"
+import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 
 export type AgentPaneStoreControllerDeps = {

@@ -8,7 +8,7 @@ import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
-} from "./transcript-display.js"
+} from "@arroba/kernel-client/transcript-display-state"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 
 export type TranscriptStateControllerDeps = {

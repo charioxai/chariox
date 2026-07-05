@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { applyTranscriptDisplayState } from "./transcript-display.js"
+import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 
 export type AgentPaneStreamingCommitControllerDeps = {
   trimLiveAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => TranscriptEntry[]

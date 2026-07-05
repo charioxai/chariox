@@ -2,7 +2,7 @@ import type { TranscriptEntry } from "./cli-types.js"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
-} from "./transcript-display.js"
+} from "@arroba/kernel-client/transcript-display-state"
 
 export type CollapsedTurnIdsByAgent = Record<string, number[]>
 export type ExpandedTurnIdsByAgent = CollapsedTurnIdsByAgent

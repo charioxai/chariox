@@ -1,6 +1,6 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { computeTranscriptRebuildScrollTop } from "./background-effects.js"
-import { applyTranscriptDisplayState } from "./transcript-display.js"
+import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
 import {
   computeCurrentTranscriptTurnId as computeCurrentTurnId,
