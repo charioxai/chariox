@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   formatWorkspaceLiveSyncModeChangeMessage,
   formatWorkspaceLiveSyncDefaultModeChangeMessage,
+  formatWorkspaceLiveSyncModeCompactLabel,
   formatWorkspaceLiveSyncModeLabel,
   parseWorkspaceLiveSyncModeCommand,
   workspaceLiveSyncModeProtocolValue,
@@ -36,6 +37,14 @@ test("workspace live sync mode helper formats user-facing scoped labels", () => 
     formatWorkspaceLiveSyncModeLabel("tracked"),
     "tracked (selected workspace/worktree only; other repositories unrestricted)",
   )
+})
+
+test("workspace live sync mode helper formats compact labels", () => {
+  assert.equal(formatWorkspaceLiveSyncModeCompactLabel("managed"), "managed")
+  assert.equal(formatWorkspaceLiveSyncModeCompactLabel("tracked"), "tracked")
+  assert.equal(formatWorkspaceLiveSyncModeCompactLabel("unrestricted"), "off")
+  assert.equal(formatWorkspaceLiveSyncModeCompactLabel(null), "off")
+  assert.equal(formatWorkspaceLiveSyncModeCompactLabel(undefined), "off")
 })
 
 test("workspace live sync mode helper formats scoped mode-change messages", () => {

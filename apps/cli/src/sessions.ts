@@ -3,6 +3,7 @@ import path from "node:path"
 import { remoteExtensionAggregateNextAction } from "@arroba/kernel-client"
 import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
 import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
+import { formatWorkspaceLiveSyncModeCompactLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import {
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
@@ -98,8 +99,7 @@ export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_dae
 }
 
 export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {
-  const mode = session.workspace_live_sync_mode
-  return mode === "managed" || mode === "tracked" ? mode : "off"
+  return formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode)
 }
 
 function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">): string {

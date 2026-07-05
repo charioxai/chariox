@@ -29,6 +29,10 @@ export function formatWorkspaceLiveSyncModeLabel(mode: WorkspaceLiveSyncModeLabe
   return "config default"
 }
 
+export function formatWorkspaceLiveSyncModeCompactLabel(mode: WorkspaceLiveSyncModeLabelInput): string {
+  return mode === "managed" || mode === "tracked" ? mode : "off"
+}
+
 export function formatWorkspaceLiveSyncModeChangeMessage(
   mode: WorkspaceLiveSyncModeInput,
   options: {
