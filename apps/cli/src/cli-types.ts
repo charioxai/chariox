@@ -23,6 +23,7 @@ import type {
   CollaborationLevel as KernelCollaborationLevel,
   AgentPromptState as KernelAgentPromptState,
   AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
+  AgentForkPayload as KernelAgentForkPayload,
   AgentRuntimeActivity as KernelAgentRuntimeActivity,
   CompletedGitTurnActionProjection as KernelCompletedGitTurnActionProjection,
   CaptureScreenshotResult as KernelCaptureScreenshotResult,
@@ -87,6 +88,7 @@ import type {
   QueuedPromptCancelledPayload as KernelQueuedPromptCancelledPayload,
   QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
   QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
+  ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
   SkillImportOutcome as KernelSkillImportOutcome,
   SkillImportSkip as KernelSkillImportSkip,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
@@ -237,10 +239,7 @@ export type WorkspaceLiveSyncPathApplyResult = KernelWorkspaceLiveSyncPathApplyR
 
 export type TurnUndoResult = KernelTurnUndoResult
 
-export type AgentForkPayload = {
-  source_agent_id: string
-  agent: AgentInstance
-  provider_run: RuntimeProviderRun
+export type AgentForkPayload = Omit<KernelAgentForkPayload, "session"> & {
   session: RuntimeSession
 }
 
@@ -430,9 +429,7 @@ export type WorkflowConsoleEntry = KernelWorkflowConsoleEntry
 
 export type WorkflowConsole = KernelWorkflowConsole
 
-export type ReadDirectoryTreeResult = {
-  session_id: string
-  root_path: string
+export type ReadDirectoryTreeResult = Omit<KernelReadDirectoryTreeResult, "entries"> & {
   entries: DirectoryTreeEntry[]
 }
 
