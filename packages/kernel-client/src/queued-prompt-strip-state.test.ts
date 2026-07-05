@@ -322,6 +322,34 @@ test("syncQueuedPromptTranscriptEntriesByAgent reports changed agent ids", () =>
   assert.deepEqual(synced.entriesByAgent["agent-1"], [])
 })
 
+test("syncQueuedPromptTranscriptEntriesByAgent ignores projection keys outside session agents", () => {
+  const synced = syncQueuedPromptTranscriptEntriesByAgent({
+    "agent-1": [{
+      id: 1,
+      role: "assistant",
+      text: "ready",
+    }],
+  }, session({
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: null,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-ghost": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  }))
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(Object.keys(synced.entriesByAgent), ["agent-1"])
+})
+
 test("syncQueuedPromptTranscriptEntriesByAgentWithPreviews refreshes changed agent previews", () => {
   const entriesByAgent: Record<string, QueuedPromptTranscriptPreviewEntry[]> = {
     "agent-1": [{

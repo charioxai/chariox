@@ -9,6 +9,7 @@ import {
   reindexTranscriptEntries,
   trimSingleTrailingNewline,
 } from "./transcript-entry-state.js"
+import { sessionAgentIds } from "./session-agent-prompt-state.js"
 import { sessionHasAgentRuntimeProjection } from "./session-prompt-work.js"
 
 export type QueuedPromptStripItem = {
@@ -170,11 +171,7 @@ export function syncQueuedPromptTranscriptEntriesByAgent<TEntry extends QueuedPr
 ): QueuedPromptTranscriptByAgentSyncResult<TEntry> {
   const entriesByAgentNext: Record<string, TEntry[]> = { ...entriesByAgent }
   const changedAgentIds: string[] = []
-  const agentIds = new Set([
-    ...session.agents.map((agent) => agent.id),
-    ...Object.keys(session.prompt_states ?? {}),
-    ...Object.keys(session.agent_activity ?? {}),
-  ])
+  const agentIds = new Set(sessionAgentIds(session))
   if (sessionHasAgentRuntimeProjection(session)) {
     for (const [agentId, entries] of Object.entries(entriesByAgent)) {
       if (entries.some((entry) => entry.queuedPrompt)) {
