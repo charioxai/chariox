@@ -8,6 +8,8 @@ import {
 } from "@opentui/core"
 import { setTimeout as startTimeout } from "node:timers"
 
+import { queuedPromptMetaLabel } from "@arroba/kernel-client/queued-prompt-controls"
+
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
@@ -245,7 +247,10 @@ function buildQueuedPromptTranscriptContent(
     flexGrow: 0,
   })
   actions.add(new TextRenderable(renderer, {
-    content: ` ${queuedPromptStatusLabel(entry)}${queuedPromptAttachmentLabel(entry)} `,
+    content: ` ${queuedPromptMetaLabel({
+      status: entry.queuedPrompt?.status,
+      attachmentCount: entry.queuedPrompt?.attachmentCount,
+    })} `,
     fg: theme.textMuted,
     attributes: TextAttributes.BOLD,
   }))
@@ -281,16 +286,4 @@ function buildQueuedPromptActionLabel(
     }, 0)
   }
   return text
-}
-
-function queuedPromptStatusLabel(entry: TranscriptEntry): string {
-  return entry.queuedPrompt?.status?.trim().toLowerCase().replace(/[_-]+/g, " ") || "queued"
-}
-
-function queuedPromptAttachmentLabel(entry: TranscriptEntry): string {
-  const attachmentCount = entry.queuedPrompt?.attachmentCount ?? 0
-  if (attachmentCount <= 0) {
-    return ""
-  }
-  return ` · ${attachmentCount} file${attachmentCount === 1 ? "" : "s"}`
 }

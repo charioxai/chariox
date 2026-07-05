@@ -155,6 +155,27 @@ export function normalizeQueuedPromptStatus(status: string | null | undefined): 
   return status?.trim().toLowerCase() || "queued"
 }
 
+export function queuedPromptStatusLabel(status: string | null | undefined): string {
+  return normalizeQueuedPromptStatus(status).replace(/[_-]+/g, " ")
+}
+
+export function queuedPromptAttachmentLabel(attachmentCount: number | null | undefined): string {
+  const count = Math.max(0, Math.trunc(attachmentCount ?? 0))
+  if (count <= 0) {
+    return ""
+  }
+  return ` · ${count} file${count === 1 ? "" : "s"}`
+}
+
+export function queuedPromptMetaLabel(
+  item: {
+    readonly status?: string | null | undefined
+    readonly attachmentCount?: number | null | undefined
+  },
+): string {
+  return `${queuedPromptStatusLabel(item.status)}${queuedPromptAttachmentLabel(item.attachmentCount)}`
+}
+
 export function queuedPromptStatusIsQueued(status: string): boolean {
   return normalizeQueuedPromptStatus(status) === "queued"
 }

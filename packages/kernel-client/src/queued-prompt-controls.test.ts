@@ -8,7 +8,9 @@ import {
   queuedPromptActionability,
   queuedPromptActionabilityMatches,
   queuedPromptControlForPrompt,
+  queuedPromptMetaLabel,
   queuedPromptProjectionForAgent,
+  queuedPromptStatusLabel,
   queuedPromptsForAgent,
   queuedPromptStatusIsQueued,
 } from "./queued-prompt-controls.js"
@@ -122,6 +124,12 @@ test("queued prompt status helpers normalize queue vocabulary", () => {
   assert.equal(normalizeQueuedPromptStatus(""), "queued")
   assert.equal(queuedPromptStatusIsQueued(" queued "), true)
   assert.equal(queuedPromptStatusIsQueued("running"), false)
+  assert.equal(queuedPromptStatusLabel("dispatching_prompt"), "dispatching prompt")
+  assert.equal(queuedPromptStatusLabel("queued-prompt"), "queued prompt")
+  assert.equal(queuedPromptMetaLabel({ status: "Queued", attachmentCount: 0 }), "queued")
+  assert.equal(queuedPromptMetaLabel({ status: "dispatching", attachmentCount: 1 }), "dispatching · 1 file")
+  assert.equal(queuedPromptMetaLabel({ status: "queued", attachmentCount: 2 }), "queued · 2 files")
+  assert.equal(queuedPromptMetaLabel({ status: null, attachmentCount: -1 }), "queued")
 })
 
 test("queued prompts for agent prefer authoritative prompt states", () => {
