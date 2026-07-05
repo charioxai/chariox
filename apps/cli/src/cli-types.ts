@@ -23,7 +23,11 @@ import type {
   MetaagentTask as KernelMetaagentTask,
   MetaagentTaskStatus as KernelMetaagentTaskStatus,
   PromptAttachmentPart as KernelPromptAttachmentPart,
+  PromptInputHistoryEntry as KernelPromptInputHistoryEntry,
+  PromptInputHistoryEntryKind as KernelPromptInputHistoryEntryKind,
+  PromptInputHistoryPage as KernelPromptInputHistoryPage,
   PromptQueueItem as KernelPromptQueueItem,
+  PromptSubmittedPayload as KernelPromptSubmittedPayload,
   ProviderAuthStatus as KernelProviderAuthStatus,
   ProviderLoginStart as KernelProviderLoginStart,
   ProviderLogoutResult as KernelProviderLogoutResult,
@@ -55,9 +59,13 @@ import type {
   RemoteMachineRecord as KernelRemoteMachineRecord,
   TerminalRecord as KernelTerminalRecord,
   TerminalCommandCatalog,
+  TerminalOutputRecord as KernelTerminalOutputRecord,
   TurnUndoResult as KernelTurnUndoResult,
   UserConfigMutationEffect as KernelUserConfigMutationEffect,
   UserConfigSchemaEntry as KernelUserConfigSchemaEntry,
+  QueuedPromptCancelledPayload as KernelQueuedPromptCancelledPayload,
+  QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
+  QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
   WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
   WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
@@ -481,42 +489,15 @@ export type RuntimeNoticeRecord = {
   message: string
 }
 
-export type TerminalOutputRecord = {
-  record_id?: number | null
-  agent_id?: string | null
-  prompt_id?: string | null
-  source_attachment_id?: string | null
-  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
-  merge_key?: string
-  source?: "external_provider_observed" | string | null
-  external_provider?: string | null
-  external_provider_session_id?: string | null
-  external_provider_turn_id?: string | null
-  observed_at_ms?: number | null
-  external_observation?: SessionHistoryExternalObservation | null
-  bytes: number[]
-}
+export type TerminalOutputRecord = KernelTerminalOutputRecord
 
-export type PromptSubmittedPayload = {
-  outcome: Record<string, unknown>
-  session: RuntimeSession
-  agent_activity?: Record<string, AgentRuntimeActivity>
-  agent_activity_revision?: number
-}
+export type PromptSubmittedPayload = KernelPromptSubmittedPayload
 
-export type QueuedPromptSteeredPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity?: Record<string, AgentRuntimeActivity>
-  agent_activity_revision?: number
-}
+export type QueuedPromptSteeredPayload = KernelQueuedPromptSteeredPayload
 
-export type QueuedPromptCancelledPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity?: Record<string, AgentRuntimeActivity>
-  agent_activity_revision?: number
-}
+export type QueuedPromptCancelledPayload = KernelQueuedPromptCancelledPayload
+
+export type QueuedPromptUpdatedPayload = KernelQueuedPromptUpdatedPayload
 
 export type SessionHistoryPageEntry = KernelSessionHistoryPageEntry
 
@@ -543,18 +524,11 @@ export type SessionHistoryOutlineBlob = KernelSessionHistoryOutlineBlob
 
 export type SessionHistoryBlobContent = KernelSessionHistoryBlobContent
 
-export type PromptInputHistoryEntry = {
-  sequence: number
-  timestamp_ms: number
-  session_id: string
-  source_attachment_id?: string | null
-  kind: "prompt" | "command"
-  text: string
-}
+export type PromptInputHistoryEntryKind = KernelPromptInputHistoryEntryKind
 
-export type PromptInputHistoryPage = {
-  entries: PromptInputHistoryEntry[]
-}
+export type PromptInputHistoryEntry = KernelPromptInputHistoryEntry
+
+export type PromptInputHistoryPage = KernelPromptInputHistoryPage
 
 export type TranscriptEntry = {
   id: number
