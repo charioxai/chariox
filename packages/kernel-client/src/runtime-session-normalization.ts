@@ -47,8 +47,9 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
   if (payload.agent_activity === undefined) {
     return normalized
   }
+  const { agent_activity_revision: _revision, ...withoutRevision } = normalized
   return {
-    ...normalized,
+    ...withoutRevision,
     agent_activity: payload.agent_activity,
     ...(typeof payload.agent_activity_revision === "number"
       ? { agent_activity_revision: payload.agent_activity_revision }

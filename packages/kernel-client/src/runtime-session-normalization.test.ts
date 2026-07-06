@@ -54,6 +54,34 @@ test("runtime session normalization can apply projected agent activity payloads"
   assert.equal(normalized.agent_activity_revision, 7)
 })
 
+test("runtime session normalization clears stale activity revision when replacement has no revision", () => {
+  const normalized = normalizeRuntimeSessionWithAgentActivity({
+    session: {
+      ...session(),
+      agent_activity: {
+        "agent-stale": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+      agent_activity_revision: 6,
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(Object.keys(normalized.agent_activity ?? {}), ["agent-1"])
+  assert.equal(normalized.agent_activity_revision, undefined)
+})
+
 test("runtime session normalization clears stale embedded activity when projection is explicitly absent", () => {
   const normalized = normalizeRuntimeSessionWithAgentActivity({
     session: {
