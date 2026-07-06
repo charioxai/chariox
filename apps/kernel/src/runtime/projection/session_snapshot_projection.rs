@@ -290,12 +290,13 @@ fn active_turn_projection(
     phase: AgentTurnRuntimePhase,
     started_at_ms: Option<u64>,
 ) -> AgentActiveTurnProjection {
+    let external_from_prompt_id = crate::history::parse_external_provider_observed_id(&prompt_id);
     let external = external_observed_id.or_else(|| {
-        prompt_origin
-            .is_some_and(|origin| origin == PromptOrigin::External)
-            .then(|| crate::history::parse_external_provider_observed_id(&prompt_id))
+        (prompt_origin != Some(PromptOrigin::Arroba))
+            .then_some(external_from_prompt_id.clone())
             .flatten()
     });
+    let prompt_origin = prompt_origin.or_else(|| external.as_ref().map(|_| PromptOrigin::External));
     AgentActiveTurnProjection {
         prompt_id,
         provider_run_id,
@@ -505,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn session_snapshot_projection_does_not_infer_external_origin_without_prompt_owner_state() {
+    fn session_snapshot_projection_infers_external_origin_from_active_turn_prompt_id() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -533,10 +534,19 @@ mod tests {
             active_turn.prompt_id,
             "external:codex:session-1:user-1".to_string()
         );
-        assert_eq!(active_turn.prompt_origin, None);
-        assert_eq!(active_turn.external_provider, None);
-        assert_eq!(active_turn.external_provider_session_id, None);
-        assert_eq!(active_turn.external_provider_turn_id, None);
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            active_turn.external_provider_session_id.as_deref(),
+            Some("session-1")
+        );
+        assert_eq!(
+            active_turn.external_provider_turn_id.as_deref(),
+            Some("user-1")
+        );
     }
 
     #[test]
