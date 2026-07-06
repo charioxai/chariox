@@ -147,6 +147,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setActiveStatusLabel(nextAttachedState.activeStatusLabel)
     deps.setFatalError(nextAttachedState.fatalError)
     deps.setDaemonDisconnected(nextAttachedState.daemonDisconnected)
+    deps.setStreamingAgentId(nextAttachedState.streamingAgentId)
     deps.setSubmitting(nextAttachedState.submitting)
     deps.setWorking(nextAttachedState.working)
     deps.setStatusLine(nextAttachedState.statusLine)

@@ -2,6 +2,7 @@ import process from "node:process"
 
 import {
   sessionHasPromptWork as kernelSessionHasPromptWork,
+  sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
   type CliOptions,
@@ -40,6 +41,7 @@ export type AttachedCliTransitionState = {
   activeStatusLabel: null
   fatalError: null
   daemonDisconnected: false
+  streamingAgentId: string | null
   submitting: false
   working: boolean
   statusLine: string
@@ -121,6 +123,7 @@ export function deriveAttachedCliTransitionState(options: {
     activeStatusLabel: null,
     fatalError: null,
     daemonDisconnected: false,
+    streamingAgentId: sessionProjectedStreamingAgentId(options.session),
     submitting: false,
     working: kernelSessionHasPromptWork(options.session as Parameters<typeof kernelSessionHasPromptWork>[0]),
     statusLine: options.connectedStatus,

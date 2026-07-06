@@ -92,6 +92,7 @@ test("deriveAttachedCliTransitionState resets transient UI state and keeps promp
   assert.equal(attached.providerActivityLabel, null)
   assert.equal(attached.activeStatusLabel, null)
   assert.equal(attached.submitting, false)
+  assert.equal(attached.streamingAgentId, "agent-a")
   assert.equal(attached.working, true)
   assert.equal(attached.statusLine, "")
 })
