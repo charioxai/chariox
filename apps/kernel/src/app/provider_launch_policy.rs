@@ -6,7 +6,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{
-    AgentExecutionMode, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
+    normalize_provider_resume_model, AgentExecutionMode, LaunchProviderRequest,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::RuntimeSession;
 
@@ -47,10 +48,10 @@ pub(crate) fn sanitize_resume_state_for_launch(
         .filter(|value| !value.trim().is_empty());
     let agent_variant = agent.effort().filter(|value| !value.trim().is_empty());
     let requested_model =
-        normalize_resume_model_for_adapter(&request.adapter_key, request.model.as_str());
+        normalize_provider_resume_model(&request.adapter_key, request.model.as_str());
     let agent_model = agent
         .model()
-        .map(|model| normalize_resume_model_for_adapter(&request.adapter_key, model));
+        .map(|model| normalize_provider_resume_model(&request.adapter_key, model));
     let model_changed = agent_model
         .as_deref()
         .is_some_and(|model| model != requested_model);
@@ -60,12 +61,7 @@ pub(crate) fn sanitize_resume_state_for_launch(
         return resume_state;
     }
 
-    match request.adapter_key.as_str() {
-        "opencode" => resume_state.without_opencode_session_id(),
-        "codex" => resume_state.without_codex_thread_id(),
-        "claude" => resume_state.without_claude_session_id(),
-        _ => resume_state,
-    }
+    resume_state.without_provider_session_id(&request.adapter_key)
 }
 
 pub(crate) fn granted_mcp_servers_for_agent_launch(
@@ -183,18 +179,6 @@ fn resolve_git_root(path: &Path) -> Option<PathBuf> {
 fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
     if !roots.iter().any(|existing| existing == &root) {
         roots.push(root);
-    }
-}
-
-fn normalize_resume_model_for_adapter(adapter_key: &str, model: &str) -> String {
-    let trimmed = model.trim();
-    if adapter_key == "codex" {
-        trimmed
-            .strip_prefix("codex/")
-            .unwrap_or(trimmed)
-            .to_string()
-    } else {
-        trimmed.to_string()
     }
 }
 

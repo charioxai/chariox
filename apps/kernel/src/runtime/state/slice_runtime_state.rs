@@ -153,9 +153,7 @@ impl KernelRuntimeState {
                     structured_endpoint: None,
                     provider_session_id: run
                         .provider_session_id()
-                        .or_else(|| run.resume_state().opencode_session_id())
-                        .or_else(|| run.resume_state().codex_thread_id())
-                        .or_else(|| run.resume_state().claude_session_id())
+                        .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
                         .map(str::to_string),
                     existing_provider_run_id: Some(run.id().to_string()),
                 }

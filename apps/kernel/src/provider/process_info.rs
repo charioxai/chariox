@@ -78,13 +78,9 @@ impl ProviderProcessInfo {
         let provider_session_ids = runs
             .iter()
             .filter_map(|run| {
-                run.provider_session_id().map(str::to_string).or_else(|| {
-                    run.resume_state()
-                        .opencode_session_id()
-                        .or_else(|| run.resume_state().codex_thread_id())
-                        .or_else(|| run.resume_state().claude_session_id())
-                        .map(str::to_string)
-                })
+                run.provider_session_id()
+                    .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
+                    .map(str::to_string)
             })
             .collect::<BTreeSet<_>>()
             .into_iter()

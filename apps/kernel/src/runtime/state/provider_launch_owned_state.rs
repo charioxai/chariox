@@ -23,22 +23,12 @@ impl KernelRuntimeOwnedState {
                 .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
         }
         if let Some(provider_session_id) = request.provider_session_id {
-            if launch_request.adapter_key == "codex" {
-                launch_request = launch_request.with_resume_state(
-                    crate::provider::ProviderResumeState::from_codex_thread_id(provider_session_id),
-                );
-            } else if launch_request.adapter_key == "opencode" {
-                launch_request = launch_request.with_resume_state(
-                    crate::provider::ProviderResumeState::from_opencode_session_id(
-                        provider_session_id,
-                    ),
-                );
-            } else if launch_request.adapter_key == "claude" {
-                launch_request = launch_request.with_resume_state(
-                    crate::provider::ProviderResumeState::from_claude_session_id(
-                        provider_session_id,
-                    ),
-                );
+            let resume_state = crate::provider::ProviderResumeState::from_external_provider_session(
+                &launch_request.adapter_key,
+                provider_session_id,
+            );
+            if !resume_state.is_empty() {
+                launch_request = launch_request.with_resume_state(resume_state);
             }
         }
         let config = self.config_projection.snapshot();

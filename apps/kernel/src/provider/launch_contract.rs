@@ -39,6 +39,17 @@ pub fn external_provider_import_model(provider: &str, requested_model: Option<St
     })
 }
 
+pub fn normalize_provider_resume_model(provider: &str, model: &str) -> String {
+    let trimmed = model.trim();
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => trimmed
+            .strip_prefix("codex/")
+            .unwrap_or(trimmed)
+            .to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderResumeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +97,15 @@ impl ProviderResumeState {
         self.claude_session_id.as_deref()
     }
 
+    pub fn provider_session_id(&self, provider: &str) -> Option<&str> {
+        match provider.trim().to_ascii_lowercase().as_str() {
+            "codex" => self.codex_thread_id(),
+            "opencode" => self.opencode_session_id(),
+            "claude" => self.claude_session_id(),
+            _ => None,
+        }
+    }
+
     pub fn set_opencode_session_id(&mut self, session_id: impl Into<String>) {
         self.opencode_session_id = Some(session_id.into());
     }
@@ -122,6 +142,15 @@ impl ProviderResumeState {
         }
     }
 
+    pub fn without_provider_session_id(&self, provider: &str) -> Self {
+        match provider.trim().to_ascii_lowercase().as_str() {
+            "codex" => self.without_codex_thread_id(),
+            "opencode" => self.without_opencode_session_id(),
+            "claude" => self.without_claude_session_id(),
+            _ => self.clone(),
+        }
+    }
+
     pub fn with_opencode_resume_state(&self, opencode_resume_state: &Self) -> Self {
         Self {
             opencode_session_id: opencode_resume_state.opencode_session_id.clone(),
@@ -134,7 +163,7 @@ impl ProviderResumeState {
         provider: &str,
         provider_session_id: impl Into<String>,
     ) -> Self {
-        match provider {
+        match provider.trim().to_ascii_lowercase().as_str() {
             "codex" => Self::from_codex_thread_id(provider_session_id),
             "opencode" => Self::from_opencode_session_id(provider_session_id),
             "claude" => Self::from_claude_session_id(provider_session_id),
@@ -604,7 +633,8 @@ pub struct ProviderLaunchResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        external_provider_import_model, ExternalProviderImportMetadata, LaunchProviderRequest,
+        external_provider_import_model, normalize_provider_resume_model,
+        ExternalProviderImportMetadata, LaunchProviderRequest, ProviderResumeState,
     };
 
     #[test]
@@ -689,6 +719,72 @@ mod tests {
         assert_eq!(
             external_provider_import_model("claude", Some("custom-model".to_string())),
             "custom-model".to_string()
+        );
+    }
+
+    #[test]
+    fn provider_resume_state_maps_provider_keys_to_session_ids() {
+        let mut state = ProviderResumeState::from_codex_thread_id("codex-thread");
+        state.set_claude_session_id("claude-session");
+        state.set_opencode_session_id("opencode-session");
+
+        assert_eq!(state.provider_session_id(" Codex "), Some("codex-thread"));
+        assert_eq!(state.provider_session_id("CLAUDE"), Some("claude-session"));
+        assert_eq!(
+            state.provider_session_id("opencode"),
+            Some("opencode-session")
+        );
+        assert_eq!(state.provider_session_id("unknown"), None);
+    }
+
+    #[test]
+    fn provider_resume_state_removes_only_requested_provider_session() {
+        let mut state = ProviderResumeState::from_codex_thread_id("codex-thread");
+        state.set_claude_session_id("claude-session");
+        state.set_opencode_session_id("opencode-session");
+
+        let without_codex = state.without_provider_session_id("codex");
+        assert_eq!(without_codex.codex_thread_id(), None);
+        assert_eq!(without_codex.claude_session_id(), Some("claude-session"));
+        assert_eq!(
+            without_codex.opencode_session_id(),
+            Some("opencode-session")
+        );
+
+        assert_eq!(
+            state
+                .without_provider_session_id("unknown")
+                .provider_session_id("codex"),
+            Some("codex-thread")
+        );
+    }
+
+    #[test]
+    fn provider_resume_state_from_external_provider_session_normalizes_provider_key() {
+        assert_eq!(
+            ProviderResumeState::from_external_provider_session(" Codex ", "thread-1")
+                .codex_thread_id(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            ProviderResumeState::from_external_provider_session("CLAUDE", "session-1")
+                .claude_session_id(),
+            Some("session-1")
+        );
+        assert!(
+            ProviderResumeState::from_external_provider_session("unknown", "session-1").is_empty()
+        );
+    }
+
+    #[test]
+    fn provider_resume_model_normalization_is_provider_contract_policy() {
+        assert_eq!(
+            normalize_provider_resume_model("codex", " codex/gpt-test "),
+            "gpt-test"
+        );
+        assert_eq!(
+            normalize_provider_resume_model("claude", " claude/sonnet "),
+            "claude/sonnet"
         );
     }
 }

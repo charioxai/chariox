@@ -37,10 +37,10 @@ pub use command_catalog::{
 };
 pub use launch_contract::{
     canonical_external_provider_session_id, external_provider_import_model,
-    external_provider_session_providers,
-    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
-    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
-    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
+    external_provider_session_providers, normalize_provider_resume_model, AgentExecutionMode,
+    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
+    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
+    RuntimeMcpBinding,
 };
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
 pub use opencode::{

@@ -92,18 +92,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             request = request.with_structured_endpoint(endpoint);
         }
         if let Some(provider_session_id) = provider_session_id {
-            request = match adapter_key {
-                "codex" => request.with_resume_state(ProviderResumeState::from_codex_thread_id(
-                    provider_session_id,
-                )),
-                "opencode" => request.with_resume_state(
-                    ProviderResumeState::from_opencode_session_id(provider_session_id),
-                ),
-                "claude" => request.with_resume_state(ProviderResumeState::from_claude_session_id(
-                    provider_session_id,
-                )),
-                _ => request,
-            };
+            let resume_state = ProviderResumeState::from_external_provider_session(
+                adapter_key,
+                provider_session_id,
+            );
+            if !resume_state.is_empty() {
+                request = request.with_resume_state(resume_state);
+            }
         }
         self.app.launch_provider(request)
     }

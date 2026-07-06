@@ -392,9 +392,7 @@ impl ProviderProcessService {
             run.set_resume_state(resume_state.clone());
             run.set_provider_session_id(
                 resume_state
-                    .opencode_session_id()
-                    .or_else(|| resume_state.codex_thread_id())
-                    .or_else(|| resume_state.claude_session_id())
+                    .provider_session_id(run.adapter_key())
                     .map(str::to_string),
             );
         }

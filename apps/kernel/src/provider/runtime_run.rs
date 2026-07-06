@@ -137,12 +137,7 @@ impl RuntimeProviderRun {
             provider_session_id: request
                 .resume_state
                 .as_ref()
-                .and_then(|state| {
-                    state
-                        .opencode_session_id()
-                        .or_else(|| state.codex_thread_id())
-                        .or_else(|| state.claude_session_id())
-                })
+                .and_then(|state| state.provider_session_id(&request.adapter_key))
                 .map(str::to_string),
             terminal_diagnostic: None,
             started_at_ms: now,
