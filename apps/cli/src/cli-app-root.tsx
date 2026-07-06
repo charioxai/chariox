@@ -427,7 +427,6 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     resolveSessionAgent,
     agentBusyLatch,
     anyPromptWork,
-    hasPromptWorkByAgent,
     focusedQueueDepth,
     focusedActivePrompt,
     focusedActivityLabel,

@@ -39,7 +39,6 @@ export function createCliAppProcessRuntimeComposition(
     sessionState: deps.sessionState,
     focusedAgentId: deps.focusedAgentId,
     agentActivityLabels: deps.agentActivityLabels,
-    hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
     isAttached: deps.isAttached,

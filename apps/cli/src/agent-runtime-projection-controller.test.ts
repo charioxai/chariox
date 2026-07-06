@@ -44,10 +44,6 @@ test("agent runtime projection resolves focused agent, prompt work, and tool act
   assert.equal(controller.focusedActivePrompt()?.id, "prompt-1")
   assert.equal(controller.focusedQueueDepth(), 1)
   assert.equal(controller.anyPromptWork(), true)
-  assert.deepEqual(controller.hasPromptWorkByAgent(), {
-    "agent-a": true,
-    "agent-b": false,
-  })
   assert.equal(controller.activeToolLabelForAgent("agent-a"), "editing")
   assert.equal(controller.focusedActivityLabel(), "editing")
   assert.equal(controller.focusedAgentBusy(), true)
