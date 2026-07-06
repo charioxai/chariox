@@ -147,6 +147,21 @@ test("session history transcript hydration preserves external observed metadata"
   })
 })
 
+test("session history transcript hydration recovers external observed metadata from merge key", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(7, "provider_output", "native reply", {
+      merge_key: "external:codex:thread-1:item-1",
+      source: "external_provider_observed",
+    }),
+  ])
+
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0]?.source, "external_provider_observed")
+  assert.equal(entries[0]?.externalProvider, "codex")
+  assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(entries[0]?.externalProviderTurnId, "item-1")
+})
+
 test("session history transcript hydration renders only non-passive external provider statuses", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(1, "provider_status", "OpenCode status: reconnecting"),

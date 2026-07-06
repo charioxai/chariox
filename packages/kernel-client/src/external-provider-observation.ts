@@ -74,11 +74,13 @@ export function historyEntryExternalProviderObservedMetadata(
   if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return null
   }
+  const mergeKeyIdentity = parseExternalProviderObservedId(entry.merge_key)
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: nonBlankString(entry.external_provider),
-    externalProviderSessionId: nonBlankString(entry.external_provider_session_id),
-    externalProviderTurnId: nonBlankString(entry.external_provider_turn_id),
+    externalProvider: nonBlankString(entry.external_provider) ?? mergeKeyIdentity?.provider ?? null,
+    externalProviderSessionId:
+      nonBlankString(entry.external_provider_session_id) ?? mergeKeyIdentity?.providerSessionId ?? null,
+    externalProviderTurnId: nonBlankString(entry.external_provider_turn_id) ?? mergeKeyIdentity?.providerTurnId ?? null,
     observedAtMs: finiteNumber(entry.observed_at_ms),
     externalObservation: normalizedExternalObservation(entry.external_observation),
   }
@@ -351,6 +353,7 @@ export function applyExternalProviderObservedTurnMetadata<T extends ExternalProv
 
 export type ExternalProviderObservedKernelFields = {
   readonly kind?: string | null | undefined
+  readonly merge_key?: string | null | undefined
   readonly source?: string | null | undefined
   readonly external_provider?: string | null | undefined
   readonly external_provider_session_id?: string | null | undefined

@@ -74,6 +74,31 @@ test("external provider observed metadata projects kernel history fields", () =>
   })
 })
 
+test("external provider observed metadata falls back to merge key identity", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:item-1",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "item-1",
+    observedAtMs: null,
+    externalObservation: null,
+  })
+  assert.equal(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:item-1",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "item-2",
+  })?.externalProvider, "opencode")
+  assert.equal(historyEntryExternalProviderObservedMetadata({
+    source: "provider_output",
+    merge_key: "external:codex:thread-1:item-1",
+  }), null)
+})
+
 test("external provider observed metadata normalizes nullable fields", () => {
   assert.deepEqual(historyEntryExternalProviderObservedMetadata({
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
