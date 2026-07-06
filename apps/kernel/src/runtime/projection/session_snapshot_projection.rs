@@ -11,6 +11,8 @@ use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession};
 
+pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
     pub metadata: ProjectionMetadata,
@@ -132,7 +134,7 @@ impl SessionSnapshotProjection {
             },
         );
         Ok(Self {
-            metadata: ProjectionMetadata::new(3, last_event_id),
+            metadata: ProjectionMetadata::new(SESSION_SNAPSHOT_PROJECTION_VERSION, last_event_id),
             session,
             provider_run,
             agent_activity,
@@ -367,7 +369,10 @@ mod tests {
         let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
             .expect("projection should build");
 
-        assert_eq!(projection.metadata.projection_version, 3);
+        assert_eq!(
+            projection.metadata.projection_version,
+            super::SESSION_SNAPSHOT_PROJECTION_VERSION
+        );
         assert_eq!(projection.metadata.last_event_id, 42);
         assert_eq!(projection.session.id(), session.id());
         assert_eq!(projection.session.agents().len(), 2);

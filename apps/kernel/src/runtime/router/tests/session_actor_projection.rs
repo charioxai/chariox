@@ -1102,11 +1102,15 @@ async fn acknowledge_output_seen_uses_agent_store_membership_projection() {
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
-    let stored_session = router
+    let projection = router
         .runtime_state
         .session_snapshot_projection(&session_id, 0)
-        .expect("projection should resolve")
-        .session;
+        .expect("projection should resolve");
+    assert_eq!(
+        projection.metadata.projection_version,
+        SESSION_SNAPSHOT_PROJECTION_VERSION
+    );
+    let stored_session = projection.session;
     assert!(
         stored_session
             .agents()

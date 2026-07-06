@@ -33,7 +33,9 @@ pub use queued_prompt_controls::AgentQueuedPromptControlProjection;
 #[cfg(test)]
 pub(crate) use queued_prompt_controls::QUEUED_PROMPT_STEER_EXTERNAL_REASON;
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
-pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
+pub(crate) use session_snapshot_projection::{
+    agent_activity_for_session_projection, SESSION_SNAPSHOT_PROJECTION_VERSION,
+};
 pub use session_snapshot_projection::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,
     AgentTurnRuntimePhase, SessionSnapshotProjection,

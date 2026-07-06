@@ -262,7 +262,10 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
-            metadata: crate::runtime::projection::ProjectionMetadata::new(2, last_event_id),
+            metadata: crate::runtime::projection::ProjectionMetadata::new(
+                crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
+                last_event_id,
+            ),
             session,
             provider_run,
             agent_activity,
@@ -299,7 +302,10 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
-            metadata: crate::runtime::projection::ProjectionMetadata::new(2, last_event_id),
+            metadata: crate::runtime::projection::ProjectionMetadata::new(
+                crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
+                last_event_id,
+            ),
             session,
             provider_run,
             agent_activity,

@@ -104,6 +104,7 @@ mod tests {
     use crate::runtime::command::{
         KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,
     };
+    use crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION;
     use crate::runtime::router::CommandRouter;
     use crate::session::{
         CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
