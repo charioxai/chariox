@@ -1,4 +1,7 @@
-import { sessionHistoryEntryIsExternalProviderObserved } from "./external-provider-observation.js"
+import {
+  externalProviderObservedIdentityKey,
+  sessionHistoryEntryIsExternalProviderObserved,
+} from "./external-provider-observation.js"
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
 type TranscriptEntryRole = KernelTranscriptEntry["role"] | string
@@ -87,19 +90,17 @@ export function transcriptTurnIsCollapsible<TEntry extends TranscriptTurnDisplay
 
 export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): string[] {
   const keys: string[] = []
-  const externalProvider = normalizeExternalProviderLineageProvider(entry.externalProvider)
-  const externalProviderSessionId = nonBlankString(entry.externalProviderSessionId) ?? ""
-  const externalProviderTurnId = nonBlankString(entry.externalProviderTurnId) ?? ""
+  const externalIdentityKey = externalProviderObservedIdentityKey(entry)
   const source = transcriptLineageSource(entry)
   if (
     sessionHistoryEntryIsExternalProviderObserved(entry)
-    && (externalProvider || externalProviderSessionId || externalProviderTurnId)
+    && externalIdentityKey
   ) {
     keys.push([
       "external",
-      externalProvider,
-      externalProviderSessionId,
-      externalProviderTurnId,
+      externalIdentityKey.provider,
+      externalIdentityKey.providerSessionId,
+      externalIdentityKey.providerTurnId,
       entry.role,
     ].join(":"))
   }
@@ -230,13 +231,4 @@ function transcriptLineageSource(entry: TranscriptLineageEntry): string {
     return "external_provider_observed"
   }
   return entry.source?.trim() ?? ""
-}
-
-function normalizeExternalProviderLineageProvider(value: string | null | undefined): string {
-  return nonBlankString(value)?.toLowerCase() ?? ""
-}
-
-function nonBlankString(value: string | null | undefined): string | null {
-  const trimmed = value?.trim()
-  return trimmed ? trimmed : null
 }

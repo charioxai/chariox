@@ -10,6 +10,7 @@ import {
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedIdentityIsPresent,
+  externalProviderObservedIdentityKey,
   externalProviderObservedIdentityMatches,
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
@@ -52,6 +53,13 @@ test("external provider observed identity matching normalizes provider and trims
     externalProvider: " codex ",
     externalProviderSessionId: "thread-1",
   }), true)
+  assert.deepEqual(externalProviderObservedIdentityKey({
+    promptId: "external: CODEX : thread-1 : user-1",
+  }), {
+    provider: "codex",
+    providerSessionId: "thread-1",
+    providerTurnId: "user-1",
+  })
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: " CODEX ",
     externalProviderSessionId: " thread-1 ",
@@ -60,6 +68,13 @@ test("external provider observed identity matching normalizes provider and trims
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }, {
+    promptId: "external:codex:thread-1:user-1",
   }), true)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: "opencode",
@@ -78,6 +93,13 @@ test("external provider observed identity matching normalizes provider and trims
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    promptId: "external:codex:thread-1:user-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
   }), false)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: "codex",

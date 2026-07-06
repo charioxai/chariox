@@ -78,6 +78,17 @@ test("transcript entry lineage keys normalize external observed identity", () =>
   ])
 })
 
+test("transcript entry lineage keys ignore provider-only external observed identity", () => {
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "hello",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+  }), [
+    "text:external_provider_observed::assistant:hello",
+  ])
+})
+
 test("transcript entry lineage keys include durable history blob identity", () => {
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",

@@ -43,6 +43,12 @@ export type ExternalProviderObservedIdentityFields = {
   readonly externalProviderTurnId?: string | null
 }
 
+export type ExternalProviderObservedIdentityKey = {
+  readonly provider: string
+  readonly providerSessionId: string
+  readonly providerTurnId: string
+}
+
 export function sessionHistoryEntryIsExternalProviderObserved(
   entry: { readonly source?: string | null | undefined },
 ): boolean {
@@ -72,37 +78,52 @@ export function parseExternalProviderObservedId(
 export function externalProviderObservedIdentityIsPresent(
   value: ExternalProviderObservedIdentityFields,
 ): boolean {
-  return Boolean(nonBlankString(value.externalProviderSessionId) || nonBlankString(value.externalProviderTurnId))
+  return externalProviderObservedIdentityKey(value) !== null
+}
+
+export function externalProviderObservedIdentityKey(
+  value: ExternalProviderObservedIdentityFields,
+): ExternalProviderObservedIdentityKey | null {
+  const promptIdentity = parseExternalProviderObservedId(value.promptId)
+  const provider = normalizeExternalProviderId(value.externalProvider)
+    ?? (promptIdentity ? normalizeExternalProviderId(promptIdentity.provider) : null)
+    ?? ""
+  const providerSessionId = nonBlankString(value.externalProviderSessionId)
+    ?? promptIdentity?.providerSessionId
+    ?? ""
+  const providerTurnId = nonBlankString(value.externalProviderTurnId)
+    ?? promptIdentity?.providerTurnId
+    ?? ""
+  if (!providerSessionId && !providerTurnId) {
+    return null
+  }
+  return {
+    provider,
+    providerSessionId,
+    providerTurnId,
+  }
 }
 
 export function externalProviderObservedIdentityMatches(
   candidate: ExternalProviderObservedIdentityFields,
   expected: ExternalProviderObservedIdentityFields,
 ): boolean {
-  const expectedProvider = normalizeExternalProviderId(expected.externalProvider)
-  const expectedSessionId = nonBlankString(expected.externalProviderSessionId)
-  const expectedTurnId = nonBlankString(expected.externalProviderTurnId)
-  if (!expectedSessionId && !expectedTurnId) {
+  const expectedKey = externalProviderObservedIdentityKey(expected)
+  if (!expectedKey) {
     return false
   }
 
-  const promptIdentity = parseExternalProviderObservedId(candidate.promptId)
-  if (
-    promptIdentity
-    && (!expectedProvider || normalizeExternalProviderId(promptIdentity.provider) === expectedProvider)
-    && (!expectedSessionId || promptIdentity.providerSessionId === expectedSessionId)
-  ) {
-    return true
-  }
-
-  const candidateProvider = normalizeExternalProviderId(candidate.externalProvider)
-  if (expectedProvider && candidateProvider && candidateProvider !== expectedProvider) {
+  const candidateKey = externalProviderObservedIdentityKey(candidate)
+  if (!candidateKey) {
     return false
   }
-  if (expectedSessionId && nonBlankString(candidate.externalProviderSessionId) !== expectedSessionId) {
+  if (expectedKey.provider && candidateKey.provider && candidateKey.provider !== expectedKey.provider) {
     return false
   }
-  if (expectedTurnId && nonBlankString(candidate.externalProviderTurnId) !== expectedTurnId) {
+  if (expectedKey.providerSessionId && candidateKey.providerSessionId !== expectedKey.providerSessionId) {
+    return false
+  }
+  if (expectedKey.providerTurnId && candidateKey.providerTurnId !== expectedKey.providerTurnId) {
     return false
   }
   return true
