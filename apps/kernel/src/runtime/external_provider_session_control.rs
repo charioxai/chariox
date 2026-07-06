@@ -41,6 +41,9 @@ const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_mill
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
+const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS: &str = "external_provider_history_updated";
+const EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON: &str = "active_prompt_started";
+const EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON: &str = "active_prompt_settled";
 
 #[derive(Debug, Default)]
 struct ExternalProviderSessionDiscoveryCache {
@@ -1117,9 +1120,9 @@ fn append_observed_external_turns_for_attached_target_with_options(
             provider_run_id.as_deref(),
             state_signal_merge_key.as_deref(),
             if latest_active_prompt.is_some() {
-                "active_prompt_started"
+                EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON
             } else {
-                "active_prompt_settled"
+                EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON
             },
         );
     }
@@ -1143,7 +1146,7 @@ fn persist_observed_external_settlement_history_signal(
     let merge_key = external_provider_observed_state_merge_key(
         &target.provider,
         &target.provider_session_id,
-        "active_prompt_settled",
+        EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
         latest_merge_key,
     );
     let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
@@ -1278,7 +1281,7 @@ fn emit_observed_external_history_signal(
             crate::terminal::TerminalOutputKind::ProviderStatus,
             entry.merge_key.clone(),
             recipient_attachment_ids,
-            b"external_provider_history_updated",
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             crate::terminal::TerminalOutputExternalObservationMetadata {
                 source: SessionHistoryEntrySource::ExternalProviderObserved,
                 external_provider: entry.external_provider.clone(),
@@ -1323,19 +1326,19 @@ fn emit_observed_external_state_signal(
                 latest_merge_key,
             )),
             recipient_attachment_ids,
-            b"external_provider_history_updated",
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             crate::terminal::TerminalOutputExternalObservationMetadata {
                 source: SessionHistoryEntrySource::ExternalProviderObserved,
                 external_provider: Some(target.provider.clone()),
                 external_provider_session_id: Some(target.provider_session_id.clone()),
                 external_provider_turn_id: Some(reason.to_string()),
                 observed_at_ms: None,
-                external_observation: (reason == "active_prompt_settled").then_some(
-                    SessionHistoryExternalObservation {
-                        settles_active_prompt: reason == "active_prompt_settled",
+                external_observation: (reason == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON)
+                    .then_some(SessionHistoryExternalObservation {
+                        settles_active_prompt: reason
+                            == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
                         passive_telemetry: false,
-                    },
-                ),
+                    }),
             },
         );
 }
