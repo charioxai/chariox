@@ -207,7 +207,7 @@ pub(crate) fn read_external_provider_observed_turns(
     provider: &str,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
-    let turns = match provider {
+    let turns = match normalized_external_provider_id(provider) {
         "codex" => codex_roots()
             .into_iter()
             .flat_map(|root| read_codex_observed_turns(&root, provider_session_id))
@@ -226,7 +226,18 @@ pub(crate) fn read_external_provider_observed_turns(
 }
 
 fn provider_matches(filter: Option<&str>, provider: &str) -> bool {
-    filter.map_or(true, |filter| filter == provider)
+    filter.map_or(true, |filter| {
+        normalized_external_provider_id(filter) == provider
+    })
+}
+
+fn normalized_external_provider_id(provider: &str) -> &'static str {
+    let provider = provider.trim();
+    discovered_external_provider_ids()
+        .iter()
+        .copied()
+        .find(|candidate| provider.eq_ignore_ascii_case(candidate))
+        .unwrap_or("")
 }
 
 fn codex_roots() -> Vec<PathBuf> {
@@ -2896,6 +2907,16 @@ mod tests {
                 "{provider} discovery must have explicit observation policy"
             );
         }
+    }
+
+    #[test]
+    fn external_provider_filters_normalize_provider_ids() {
+        assert!(provider_matches(None, "codex"));
+        assert!(provider_matches(Some(" Codex "), "codex"));
+        assert!(provider_matches(Some("CLAUDE"), "claude"));
+        assert!(provider_matches(Some("OpenCode"), "opencode"));
+        assert!(!provider_matches(Some("unknown"), "codex"));
+        assert!(!provider_matches(Some(""), "codex"));
     }
 
     #[test]
