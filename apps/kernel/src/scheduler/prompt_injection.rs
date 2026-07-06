@@ -852,9 +852,9 @@ mod tests {
         assert!(assembly
             .hidden_system_context
             .contains("same node-level intermediate output schema"));
-        assert!(assembly
-            .hidden_system_context
-            .contains("edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"));
+        assert!(assembly.hidden_system_context.contains(
+            "edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"
+        ));
         assert!(assembly
             .hidden_system_context
             .contains("validate the routed message for each selected edge"));

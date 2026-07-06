@@ -695,10 +695,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             session.id(),
             workflow_run.id(),
             &node_run_id,
-            WorkflowOutputPayload::new(
-                r#"{"event":"started","status":"routing"}"#,
-                Vec::new(),
-            ),
+            WorkflowOutputPayload::new(r#"{"event":"started","status":"routing"}"#, Vec::new()),
             true,
             None,
         )
@@ -708,16 +705,16 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         .expect("first intermediate output should be recorded");
     assert_eq!(after_first_intermediate.intermediate_outputs().len(), 1);
     assert_eq!(after_first_intermediate.node_runs().len(), 1);
-    assert_eq!(after_first_intermediate.messages().len(), workflow_run.messages().len());
+    assert_eq!(
+        after_first_intermediate.messages().len(),
+        workflow_run.messages().len()
+    );
     service
         .submit_workflow_run_intermediate_output(
             session.id(),
             workflow_run.id(),
             &node_run_id,
-            WorkflowOutputPayload::new(
-                r#"{"event":"checked","status":"routing"}"#,
-                Vec::new(),
-            ),
+            WorkflowOutputPayload::new(r#"{"event":"checked","status":"routing"}"#, Vec::new()),
             true,
             None,
         )
@@ -835,7 +832,10 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         .completion()
         .and_then(|snapshot| snapshot.output())
         .expect("second payload should include routed output");
-    assert_eq!(second_output.message(), r#"{"task":"target-node selected task"}"#);
+    assert_eq!(
+        second_output.message(),
+        r#"{"task":"target-node selected task"}"#
+    );
 }
 
 #[test]

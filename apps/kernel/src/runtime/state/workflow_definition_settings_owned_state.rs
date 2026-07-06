@@ -46,5 +46,4 @@ impl KernelRuntimeOwnedState {
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
     }
-
 }
