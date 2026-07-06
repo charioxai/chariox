@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::AgentInstance;
 use crate::app::ActiveTurnState;
+use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::session::{PromptQueueItem, RuntimeSession};
 
 use super::super::{
@@ -15,6 +16,7 @@ pub(super) fn snapshot(
     agent_runtime: &AgentRuntimeProjectionStore,
     canonical_agents: &[AgentInstance],
     active_turns: &BTreeMap<String, ActiveTurnState>,
+    provider_runs: &[RuntimeProviderRun],
 ) -> ProjectionInvariantHealthSnapshot {
     let mut agent_projections = agent_runtime
         .list()
@@ -29,6 +31,10 @@ pub(super) fn snapshot(
         .iter()
         .map(|session| session.id().to_string())
         .collect::<BTreeSet<_>>();
+    let provider_runs_by_id = provider_runs
+        .iter()
+        .map(|run| (run.id().to_string(), run))
+        .collect::<BTreeMap<_, _>>();
     let mut projected_session_agents = BTreeMap::new();
     let mut checked_agents = 0;
     let mut mismatches = Vec::new();
@@ -169,6 +175,54 @@ pub(super) fn snapshot(
                 ),
             });
         }
+        match provider_runs_by_id.get(&active_turn.provider_run_id) {
+            None => mismatches.push(ProjectionInvariantMismatch {
+                kind: "active_turn_missing_provider_run".to_string(),
+                session_id: active_turn.session_id.clone(),
+                agent_id: Some(active_turn.agent_id.clone()),
+                details: format!(
+                    "active turn points at missing provider run {}",
+                    active_turn.provider_run_id
+                ),
+            }),
+            Some(run) => {
+                if run.state() == ProviderRunState::Ended {
+                    mismatches.push(ProjectionInvariantMismatch {
+                        kind: "active_turn_ended_provider_run".to_string(),
+                        session_id: active_turn.session_id.clone(),
+                        agent_id: Some(active_turn.agent_id.clone()),
+                        details: format!(
+                            "active turn points at ended provider run {}",
+                            active_turn.provider_run_id
+                        ),
+                    });
+                }
+                if run.session_id() != active_turn.session_id {
+                    mismatches.push(ProjectionInvariantMismatch {
+                        kind: "active_turn_provider_run_session_mismatch".to_string(),
+                        session_id: active_turn.session_id.clone(),
+                        agent_id: Some(active_turn.agent_id.clone()),
+                        details: format!(
+                            "active turn provider run {} points at session {}",
+                            active_turn.provider_run_id,
+                            run.session_id()
+                        ),
+                    });
+                }
+                if run.agent_instance_id() != Some(active_turn.agent_id.as_str()) {
+                    mismatches.push(ProjectionInvariantMismatch {
+                        kind: "active_turn_provider_run_agent_mismatch".to_string(),
+                        session_id: active_turn.session_id.clone(),
+                        agent_id: Some(active_turn.agent_id.clone()),
+                        details: format!(
+                            "active turn provider run {} points at agent {}",
+                            active_turn.provider_run_id,
+                            run.agent_instance_id().unwrap_or("-")
+                        ),
+                    });
+                }
+            }
+        }
         let Some(session) = sessions
             .iter()
             .find(|session| session.id() == active_turn.session_id)
@@ -289,7 +343,9 @@ mod tests {
         session_store.update(session.clone());
         agent_store.update_session(&session);
         let active_turns = BTreeMap::new();
-        let clean_snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let provider_runs = Vec::new();
+        let clean_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
         assert_eq!(clean_snapshot.checked_sessions, 1);
         assert_eq!(clean_snapshot.checked_agents, 1);
         assert!(clean_snapshot.mismatches.is_empty());
@@ -305,7 +361,8 @@ mod tests {
             0,
         );
 
-        let drift_snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let drift_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
         assert!(drift_snapshot
             .mismatches
             .iter()
@@ -333,7 +390,9 @@ mod tests {
         agent_store.update_session(&session);
 
         let active_turns = BTreeMap::new();
-        let snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let provider_runs = Vec::new();
+        let snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
 
         assert_eq!(snapshot.checked_sessions, 1);
         assert_eq!(snapshot.checked_agents, 1);
@@ -388,7 +447,9 @@ mod tests {
         agent_store.update_session(&session);
 
         let active_turns = BTreeMap::new();
-        let snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let provider_runs = Vec::new();
+        let snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
 
         assert_eq!(snapshot.checked_sessions, 1);
         assert_eq!(snapshot.checked_agents, 0);
@@ -411,11 +472,20 @@ mod tests {
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
+        let valid_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let wrong_agent_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let mut ended_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        ended_run.mark_ended();
         let session = crate::app::KernelSessionReadService::new(&app)
             .session_snapshot(session.id())
             .expect("session snapshot should load");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
+        let provider_runs = vec![
+            valid_run.clone(),
+            wrong_agent_run.clone(),
+            ended_run.clone(),
+        ];
 
         let session_store = SessionStateProjectionStore::default();
         let agent_store = AgentRuntimeProjectionStore::default();
@@ -423,16 +493,17 @@ mod tests {
         agent_store.update_session(&session);
         let mut active_turns = BTreeMap::new();
         active_turns.insert(
-            "run-valid".to_string(),
+            valid_run.id().to_string(),
             crate::app::ActiveTurnState::new(
                 session_id.clone(),
                 agent_id.clone(),
                 "prompt-valid".to_string(),
-                "run-valid".to_string(),
+                valid_run.id().to_string(),
             ),
         );
 
-        let clean_snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let clean_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
         assert!(
             clean_snapshot.mismatches.is_empty(),
             "{:?}",
@@ -449,17 +520,33 @@ mod tests {
             ),
         );
         active_turns.insert(
-            "run-missing-agent".to_string(),
+            wrong_agent_run.id().to_string(),
             crate::app::ActiveTurnState::new(
                 session_id.clone(),
                 "missing-agent".to_string(),
                 "prompt-missing-agent".to_string(),
-                "run-missing-agent".to_string(),
+                wrong_agent_run.id().to_string(),
+            ),
+        );
+        active_turns.insert(
+            ended_run.id().to_string(),
+            crate::app::ActiveTurnState::new(
+                session_id.clone(),
+                agent_id.clone(),
+                "prompt-ended-run".to_string(),
+                ended_run.id().to_string(),
             ),
         );
 
-        let drift_snapshot = session_store.invariant_snapshot(&agent_store, &[], &active_turns);
+        let drift_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
 
+        assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_missing_provider_run"
+                && mismatch.session_id == "missing-session"
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("run-missing-session")
+        }));
         assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
             mismatch.kind == "active_turn_missing_session"
                 && mismatch.session_id == "missing-session"
@@ -470,7 +557,19 @@ mod tests {
             mismatch.kind == "active_turn_missing_session_agent"
                 && mismatch.session_id == session_id
                 && mismatch.agent_id.as_deref() == Some("missing-agent")
-                && mismatch.details.contains("run-missing-agent")
+                && mismatch.details.contains(wrong_agent_run.id())
+        }));
+        assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_provider_run_agent_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some("missing-agent")
+                && mismatch.details.contains(wrong_agent_run.id())
+        }));
+        assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_ended_provider_run"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains(ended_run.id())
         }));
     }
 
@@ -503,10 +602,12 @@ mod tests {
         agent_store.update_session(&second_session);
 
         let active_turns = BTreeMap::new();
+        let provider_runs = Vec::new();
         let snapshot = session_store.invariant_snapshot(
             &agent_store,
             &[first_agent.clone(), ghost_agent.clone()],
             &active_turns,
+            &provider_runs,
         );
 
         assert!(snapshot.mismatches.iter().any(|mismatch| {

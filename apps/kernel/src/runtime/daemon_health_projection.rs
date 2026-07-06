@@ -37,6 +37,7 @@ pub(crate) async fn build_daemon_health_projection(
 ) -> DaemonHealthProjection {
     let agents = input.runtime_state.list_agents();
     let active_turns = input.runtime_state.active_turn_snapshot();
+    let provider_runs = input.provider_run_projection.list();
     DaemonHealthProjection::new(
         input.last_event_id,
         input.session_runtime.queue_snapshots().await,
@@ -74,6 +75,7 @@ pub(crate) async fn build_daemon_health_projection(
             input.agent_runtime_projection,
             &agents,
             &active_turns,
+            &provider_runs,
         ),
     )
 }
