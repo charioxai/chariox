@@ -20,6 +20,7 @@ One line per landed task; keep this file short. Format: `date task — outcome (
 - 2026-07-06 C4 report-only CSP on the cloud API with strict script-src; `ARROBA_CLOUD_CSP_MODE` selects report-only/enforce/off (`71cfe91e` arroba-cloud).
 - 2026-07-06 C2 (enforcement) bounded revocation denylist in the relay scoped verifier — `RelayRevocationRegistry` rejects revoked `jti`/`account_id`, prunes on expiry (`d1aab6fb1` arroba).
 - 2026-07-06 C3 (partial) relay rejects tokens issued implausibly far in the future (60s skew tolerance) (`24c373a19` arroba).
+- 2026-07-06 C3 (drift) `session_id` added to Rust relay claims + cross-impl conformance test verifying a TS-issued JWT (`b463db17d` arroba, `02259302` arroba-cloud). Both repos verify one shared fixture; wire-shape drift fails a conformance test.
 - 2026-07-06 F1 repo hygiene — untracked scratch strays, gitignored worktree/drill dirs (`ffd345c0b`, `98e85cdb9` arroba).
 - 2026-07-06 F2 README slimmed; milestone prose moved to `docs/STATUS.md` (`98e85cdb9` arroba).
 
@@ -30,7 +31,7 @@ One line per landed task; keep this file short. Format: `date task — outcome (
   - **B4 write-path (transcript append)** — transcript *append* on the fanout/prompt-transcript path (`app/provider_output_fanout.rs:438`, `runtime/state/prompt_transcript_owned_state.rs`). Appends return `HistoryEvent` used by callers, so a naive `spawn_blocking` reorders; do it as a single-threaded writer actor to preserve ordering. Reads already use `spawn_blocking`.
 - Phase 2 remaining:
   - **C2 sync feed** — enforcement primitive is in (`RelayRevocationRegistry`, wire via `ScopedTokenVerifier::with_revocations`). Remaining: cloud exposes revocations (`account-admin-revocations`) and the relay periodically pulls + calls `revoke_token_id`/`revoke_account`/`prune`. Needs a relay HTTP client + cloud endpoint; verify live.
-  - **C3 format consolidation** — relay accepts both `arroba-scoped-v1` and JWT with duplicated parsing; consolidate on JWT (deprecation window), add a shared valid/invalid test-vector fixture consumed by both repos, add `session_id` to the Rust claim struct (11 literals to update). Future-iat/skew check already done.
+  - **C3 format consolidation** — relay still accepts both `arroba-scoped-v1` and JWT with duplicated parsing; consolidate on JWT behind a deprecation window (keep accepting the old format one release with a warning metric, then delete `decode_scoped_token_parts`/`encode_scoped_hmac_token`). `session_id`, future-iat/skew, and the shared conformance fixture are done.
 - Phase 3/4/5 remaining: **D1** root Cargo workspace (defer while a parallel agent is editing `apps/kernel/Cargo.lock` — structural conflict risk); **E1–E4** monster-file splits (sliced, some in parallel-agent territory); **F3** projection clone reduction (measure with B1 `app_lock` first).
 - Already-done-in-tree: B5 blocking HTTP wrapped in `spawn_blocking` at `runtime/state/tool_dispatch/credential.rs:287`; history reads use `spawn_blocking`.
 - Use daemon health `app_lock` (B1) to measure before/after for any B3/B4/F3 change.
