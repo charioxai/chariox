@@ -31,6 +31,7 @@ import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
 import { reindexTranscriptEntries } from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
@@ -52,6 +53,7 @@ import type {
 
 export type SessionHistoryTranscriptEntry = KernelTranscriptEntry & {
   promptId?: string | null
+  promptOrigin?: string | null
   sourceAttachmentId?: string | null
   attachments?: SessionHistoryPromptAttachment[]
   providerRunId?: string | null
@@ -256,29 +258,33 @@ export function hydrateSessionHistoryOutlineAgentEntries(
       activeTurnId = turnId
     }
     const externalMetadata = outlineTurnExternalMetadata(turn)
+    const promptMetadata = outlineTurnPromptMetadata(turn)
     const promptEntries = hydrateSessionHistoryPageEntriesForTurn([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
-      entries.push(applyOutlineTurnExternalMetadata(
+      entries.push(applyOutlineTurnMetadata(
         applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
         externalMetadata,
+        promptMetadata,
       ))
     }
     for (const item of orderedSessionHistoryOutlineItems(turn)) {
       if (item.kind === "blob") {
-        entries.push(applyOutlineTurnExternalMetadata(
+        entries.push(applyOutlineTurnMetadata(
           applyOutlineTurnLifecycleMetadata(
             outlineBlobTranscriptEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
             completedAtMs,
           ),
           externalMetadata,
+          promptMetadata,
         ))
         continue
       }
       const hydratedEntries = hydrateSessionHistoryPageEntriesForTurn([item.entry], turnId, turn.prompt_id ?? null)
       for (const entry of hydratedEntries) {
-        entries.push(applyOutlineTurnExternalMetadata(
+        entries.push(applyOutlineTurnMetadata(
           applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
           externalMetadata,
+          promptMetadata,
         ))
       }
     }
@@ -299,6 +305,9 @@ export function replaceSessionHistoryBlobPlaceholder(
   }
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder)
+  const promptMetadata: OutlineTurnPromptMetadata = placeholder.promptOrigin !== undefined
+    ? { promptOrigin: placeholder.promptOrigin }
+    : {}
   const activeTurnId = placeholder.historyTurnCompletedAtMs === null
     && typeof turnId === "number"
     ? turnId
@@ -315,9 +324,10 @@ export function replaceSessionHistoryBlobPlaceholder(
     if (placeholder.historyBlobAgentId) {
       next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
     }
-    return applyOutlineTurnExternalMetadata(
+    return applyOutlineTurnMetadata(
       applyOutlineTurnLifecycleMetadata(next, placeholder.historyTurnCompletedAtMs),
       externalMetadata,
+      promptMetadata,
     )
   })
   const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
@@ -387,6 +397,7 @@ function applySessionHistoryTranscriptMetadata(
   if (options.providerRunId !== undefined) entry.providerRunId = options.providerRunId
   applyExternalProviderObservedTranscriptMetadata(entry, options)
   if (options.promptId !== undefined) entry.promptId = options.promptId
+  if (options.promptOrigin !== undefined) entry.promptOrigin = options.promptOrigin
   if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
   if (options.attachments !== undefined) {
     entry.attachments = mergeSessionHistoryPromptAttachments(entry.attachments, options.attachments)
@@ -406,6 +417,7 @@ type SessionHistoryTranscriptMetadataOptions = {
   observedAtMs?: number | null | undefined
   externalObservation?: SessionHistoryTranscriptEntry["externalObservation"] | undefined
   promptId?: string | null | undefined
+  promptOrigin?: string | null | undefined
   sourceAttachmentId?: string | null | undefined
   attachments?: SessionHistoryTranscriptEntry["attachments"] | undefined
   historyEntryIndex?: number | undefined
@@ -418,19 +430,53 @@ function historyEntryTranscriptIdentityOptions(
   entry: SessionHistoryEntry,
   turnPromptId?: string | null,
 ): Partial<SessionHistoryTranscriptEntry> {
+  const promptOrigin = promptOriginFromRecord(entry)
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
 }
 
 type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
+type OutlineTurnPromptMetadata = {
+  readonly promptOrigin?: string | null
+}
 
 function outlineTurnExternalMetadata(
   turn: SessionHistoryOutlineTurn,
 ): OutlineTurnExternalMetadata | null {
   return promptOriginExternalProviderObservedMetadata(turn)
+}
+
+function outlineTurnPromptMetadata(turn: SessionHistoryOutlineTurn): OutlineTurnPromptMetadata {
+  const promptOrigin = promptOriginFromRecord(turn)
+  return promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
+    ? { promptOrigin }
+    : {}
+}
+
+function applyOutlineTurnPromptMetadata(
+  entry: SessionHistoryTranscriptEntry,
+  metadata: OutlineTurnPromptMetadata,
+): SessionHistoryTranscriptEntry {
+  return metadata.promptOrigin !== undefined && entry.promptOrigin === undefined
+    ? { ...entry, promptOrigin: metadata.promptOrigin }
+    : entry
+}
+
+function applyOutlineTurnMetadata(
+  entry: SessionHistoryTranscriptEntry,
+  externalMetadata: OutlineTurnExternalMetadata | null,
+  promptMetadata: OutlineTurnPromptMetadata,
+): SessionHistoryTranscriptEntry {
+  return applyOutlineTurnPromptMetadata(
+    applyOutlineTurnExternalMetadata(entry, externalMetadata),
+    promptMetadata,
+  )
 }
 
 function applyOutlineTurnExternalMetadata(
