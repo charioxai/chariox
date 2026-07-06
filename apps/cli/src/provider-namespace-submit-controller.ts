@@ -12,6 +12,7 @@ import {
   validateProviderNamespaceSubmit,
 } from "@arroba/kernel-client/provider-namespace-submit-policy"
 import {
+  promptSubmissionFailureRuntimeState,
   promptSubmissionRuntimeState,
 } from "@arroba/kernel-client/prompt-submission"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
@@ -23,6 +24,7 @@ export type ProviderNamespaceSubmitControllerDeps = {
   getPendingAttachmentCount: () => number
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
+  getSession: () => RuntimeSession
   hasAgent: (agentId: string) => boolean
   clearActiveToolLabels: () => void
   setProviderActivityLabel: (label: string | null) => void
@@ -126,7 +128,9 @@ export function createProviderNamespaceSubmitController(
         deps.clearAgentBusy(deps.getSubmittingAgentId())
         deps.setSubmittingAgentId(null)
         deps.setSubmitting(false)
-        deps.setWorking(false)
+        const runtimeState = promptSubmissionFailureRuntimeState(deps.getSession())
+        deps.setStreamingAgentId(runtimeState.streamingAgentId)
+        deps.setWorking(runtimeState.working)
         deps.setFatalError(formatError(error))
         deps.updateSessionChrome()
       }

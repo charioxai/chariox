@@ -123,11 +123,35 @@ test("provider namespace submit restores UI after submission failure", async () 
   assert.equal(harness.fatalErrors().at(-1), "provider failed")
 })
 
+test("provider namespace submit failure preserves active session runtime state", async () => {
+  const harness = createHarness({
+    session: runtimeSession("session-1", {
+      agents: [agent("agent-active")],
+      active_prompt: {
+        id: "prompt-active",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-active",
+        prompt: "running",
+        status: "running",
+      },
+    }),
+    submitProviderNamespacePrompt: async () => {
+      throw new Error("provider failed")
+    },
+  })
+
+  assert.equal(await harness.controller.submit("/opencode session list"), true)
+
+  assert.deepEqual(harness.streamingAgentIds(), ["agent-active"])
+  assert.equal(harness.workingValues().at(-1), true)
+})
+
 function createHarness(options: {
   focusedProvider?: "opencode" | "codex" | "claude-headless" | "claude-p" | null
   focusedAgentId?: string | null
   hasAgent?: (agentId: string) => boolean
   attachment?: RuntimeAttachment | null
+  session?: RuntimeSession
   submitProviderNamespacePrompt?: ProviderNamespaceSubmitControllerDeps["submitProviderNamespacePrompt"]
 } = {}) {
   const submissions: Array<{ attachmentId: string; targetAgentId: string | null; prompt: string }> = []
@@ -153,6 +177,7 @@ function createHarness(options: {
     getPendingAttachmentCount: () => 0,
     waitForPendingAgentFocusTransition: async () => {},
     getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    getSession: () => options.session ?? runtimeSession("session-1", { agents: [agent("agent-1")] }),
     hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},
     setProviderActivityLabel: () => {},

@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
+  promptSubmissionFailureRuntimeState,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "./prompt-submission.js"
@@ -126,5 +127,30 @@ test("promptSubmissionRuntimeState allows optimistic streaming only for started 
   }), {
     streamingAgentId: "agent-started",
     working: true,
+  })
+})
+
+test("promptSubmissionFailureRuntimeState follows current session work", () => {
+  const activeSession = makeSession({
+    agents: [makeAgent({ id: "agent-active" })],
+    active_prompt: {
+      id: "prompt-active",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-active",
+      prompt: "running",
+      status: "running",
+    },
+  })
+
+  assert.deepEqual(promptSubmissionFailureRuntimeState(activeSession), {
+    streamingAgentId: "agent-active",
+    working: true,
+  })
+
+  assert.deepEqual(promptSubmissionFailureRuntimeState(makeSession({
+    agents: [makeAgent({ id: "agent-idle" })],
+  })), {
+    streamingAgentId: null,
+    working: false,
   })
 })

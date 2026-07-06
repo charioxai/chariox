@@ -213,11 +213,35 @@ test("normal prompt submit restores UI after submit failure", async () => {
   assert.equal(harness.fatalErrors().at(-1), "submit failed")
 })
 
+test("normal prompt submit failure preserves active session runtime state", async () => {
+  const harness = createHarness({
+    session: runtimeSession("session-1", null, {
+      agents: [agent("agent-active")],
+      active_prompt: {
+        id: "prompt-active",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-active",
+        prompt: "running",
+        status: "running",
+      },
+    }),
+    submitPrompt: async () => {
+      throw new Error("submit failed")
+    },
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.streamingAgentIds(), ["agent-active"])
+  assert.equal(harness.workingValues().at(-1), true)
+})
+
 function createHarness(options: {
   attachment?: RuntimeAttachment | null
   pendingAttachments?: PendingPromptAttachment[]
   inlineLocalFiles?: boolean
   focusedAgentId?: string | null
+  session?: RuntimeSession
   hasAgent?: (agentId: string) => boolean
   submitPrompt?: NormalPromptSubmitControllerDeps["submitPrompt"]
 } = {}) {
@@ -248,6 +272,7 @@ function createHarness(options: {
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
     getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    getSession: () => options.session ?? runtimeSession("session-1", null, { agents: [agent("agent-1")] }),
     hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},
     setProviderActivityLabel: () => {},

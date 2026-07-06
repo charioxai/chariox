@@ -49,3 +49,13 @@ export function promptSubmissionRuntimeState(options: {
     working: sessionHasPromptWork(options.session) || options.submittedTargetAgentId != null,
   }
 }
+
+export function promptSubmissionFailureRuntimeState(session: RuntimeSession): {
+  readonly streamingAgentId: string | null
+  readonly working: boolean
+} {
+  return {
+    streamingAgentId: sessionProjectedStreamingAgentId(session),
+    working: sessionHasPromptWork(session),
+  }
+}

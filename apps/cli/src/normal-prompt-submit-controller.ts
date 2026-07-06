@@ -9,6 +9,7 @@ import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
+  promptSubmissionFailureRuntimeState,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "@arroba/kernel-client/prompt-submission"
@@ -22,6 +23,7 @@ export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
+  getSession: () => RuntimeSession
   hasAgent: (agentId: string) => boolean
   clearActiveToolLabels: () => void
   setProviderActivityLabel: (label: string | null) => void
@@ -135,7 +137,9 @@ export function createNormalPromptSubmitController(
         deps.clearAgentBusy(deps.getSubmittingAgentId())
         deps.setSubmittingAgentId(null)
         deps.setSubmitting(false)
-        deps.setWorking(false)
+        const runtimeState = promptSubmissionFailureRuntimeState(deps.getSession())
+        deps.setStreamingAgentId(runtimeState.streamingAgentId)
+        deps.setWorking(runtimeState.working)
         deps.setFatalError(formatError(error))
         deps.updateSessionChrome()
       }
