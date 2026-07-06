@@ -97,6 +97,51 @@ test("agent runtime projection queue depth follows shared runtime projection", (
   assert.equal(controller.agentQueuedDepth("agent-a"), 0)
 })
 
+test("agent runtime projection active prompt follows projected active turn identity", () => {
+  const stalePrompt = prompt({ id: "prompt-stale", target_agent_id: "agent-a" })
+  const session = runtimeSession({
+    focused_agent_id: "agent-a",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: stalePrompt,
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_turn: {
+          prompt_id: "prompt-active",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+  const controller = createAgentRuntimeProjectionController({
+    getSession: () => session,
+    getFocusedAgentId: () => "agent-a",
+    getProviderRun: () => null,
+    getVisibleTranscriptAgentId: () => "agent-a",
+    getActiveToolLabels: () => [],
+    getAgentPaneToolUpdates: () => [],
+    getAgentPanePreviews: () => ({}),
+    getAgentActivityLabels: () => ({}),
+    updateAgentActivityLabels: () => {},
+    getAgentBusyLatches: () => ({}),
+    updateAgentBusyLatches: () => {},
+    getSubmitting: () => false,
+    getSubmittingAgentId: () => null,
+    getStreamingAgentId: () => null,
+  })
+
+  assert.equal(controller.agentActivePrompt("agent-a"), null)
+  assert.equal(controller.focusedActivePrompt(), null)
+})
+
 test("agent runtime projection updates busy latches and preserves active labels", () => {
   let latches: Record<string, boolean> = {}
   let labels: Record<string, string | null> = { "agent-a": "running" }
