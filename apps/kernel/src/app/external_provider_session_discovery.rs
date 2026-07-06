@@ -28,6 +28,7 @@ const MAX_OBSERVED_METADATA_OBJECT_FIELDS: usize = 80;
 const MAX_OBSERVED_METADATA_TEXT_CHARS: usize = 16_000;
 const MAX_PROMPT_PREVIEW_CHARS: usize = 240;
 const MAX_TITLE_CHARS: usize = 80;
+const DISCOVERED_EXTERNAL_PROVIDER_IDS: &[&str] = &["codex", "claude", "opencode"];
 
 static PROVIDER_TRANSCRIPT_PATH_INDEX: OnceLock<
     Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>>,
@@ -160,6 +161,10 @@ pub(crate) fn discover_external_provider_sessions(
         }
     }
     deduplicate_external_sessions(sessions)
+}
+
+pub(crate) fn discovered_external_provider_ids() -> &'static [&'static str] {
+    DISCOVERED_EXTERNAL_PROVIDER_IDS
 }
 
 pub(crate) fn external_provider_session_discovery_candidate_paths(
@@ -2873,6 +2878,25 @@ mod tests {
     use super::*;
     use std::fs::OpenOptions;
     use std::io::{self, Write};
+
+    #[test]
+    fn discovered_external_providers_have_observation_policy() {
+        let discovered = discovered_external_provider_ids()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let configured = crate::app::ExternalProviderObservationPolicy::configured_provider_ids()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(discovered, configured);
+        for provider in discovered {
+            assert!(
+                crate::app::ExternalProviderObservationPolicy::for_provider(provider)
+                    .is_configured(),
+                "{provider} discovery must have explicit observation policy"
+            );
+        }
+    }
 
     #[test]
     fn observed_turn_model_derives_history_kind_and_external_keys() {

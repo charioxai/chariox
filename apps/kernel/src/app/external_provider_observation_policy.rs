@@ -58,6 +58,16 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Self { provider }
     }
 
+    pub(crate) fn configured_provider_ids() -> impl Iterator<Item = &'static str> {
+        EXTERNAL_PROVIDER_OBSERVATION_SPECS
+            .iter()
+            .map(|spec| spec.provider)
+    }
+
+    pub(crate) fn is_configured(self) -> bool {
+        self.spec().is_some()
+    }
+
     fn spec(self) -> Option<&'static ExternalProviderObservationSpec> {
         let provider = self.provider.trim();
         EXTERNAL_PROVIDER_OBSERVATION_SPECS
