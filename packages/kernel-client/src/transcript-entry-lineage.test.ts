@@ -64,6 +64,20 @@ test("transcript entry lineage keys prefer durable external observed identity", 
   ])
 })
 
+test("transcript entry lineage keys normalize external observed identity", () => {
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "hello",
+    source: " EXTERNAL_PROVIDER_OBSERVED ",
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " turn-1 ",
+  }), [
+    "external:codex:thread-1:turn-1:assistant",
+    "text:external_provider_observed::assistant:hello",
+  ])
+})
+
 test("transcript entry lineage keys include durable history blob identity", () => {
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",
@@ -148,6 +162,24 @@ test("transcript entry lineage detects shared refreshed/current entries", () => 
     externalProviderSessionId: "thread-b",
     externalProviderTurnId: "turn-b",
   }]), false)
+})
+
+test("transcript entry lineage matches refreshed external entries with normalized identity", () => {
+  assert.equal(transcriptEntriesShareRenderableLineage([{
+    role: "assistant",
+    text: "live answer",
+    source: " EXTERNAL_PROVIDER_OBSERVED ",
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " turn-1 ",
+  }], [{
+    role: "assistant",
+    text: "history answer",
+    source: "external_provider_observed",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }]), true)
 })
 
 test("transcript entry lineage prepending skips duplicates without dropping unique older entries", () => {

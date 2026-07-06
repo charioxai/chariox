@@ -87,9 +87,10 @@ export function transcriptTurnIsCollapsible<TEntry extends TranscriptTurnDisplay
 
 export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): string[] {
   const keys: string[] = []
-  const externalProvider = entry.externalProvider ?? ""
-  const externalProviderSessionId = entry.externalProviderSessionId ?? ""
-  const externalProviderTurnId = entry.externalProviderTurnId ?? ""
+  const externalProvider = normalizeExternalProviderLineageProvider(entry.externalProvider)
+  const externalProviderSessionId = nonBlankString(entry.externalProviderSessionId) ?? ""
+  const externalProviderTurnId = nonBlankString(entry.externalProviderTurnId) ?? ""
+  const source = transcriptLineageSource(entry)
   if (
     sessionHistoryEntryIsExternalProviderObserved(entry)
     && (externalProvider || externalProviderSessionId || externalProviderTurnId)
@@ -119,7 +120,7 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
   if (typeof entry.turnId === "number") {
     keys.push([
       "turn",
-      entry.source ?? "",
+      source,
       entry.turnId,
       entry.role,
     ].join(":"))
@@ -127,7 +128,7 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
   if (text) {
     keys.push([
       "text",
-      entry.source ?? "",
+      source,
       entry.turnId ?? "",
       entry.role,
       text,
@@ -138,6 +139,7 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
 
 export function transcriptEntryDeduplicationKeys(entry: TranscriptLineageEntry): string[] {
   const keys: string[] = []
+  const source = transcriptLineageSource(entry)
   const blobAgentId = entry.historyBlobSourceAgentId ?? entry.historyBlobAgentId
   const blobId = entry.historyBlobSourceId ?? entry.historyBlobId
   if (blobAgentId || blobId) {
@@ -154,7 +156,7 @@ export function transcriptEntryDeduplicationKeys(entry: TranscriptLineageEntry):
   if (text) {
     keys.push([
       "text",
-      entry.source ?? "",
+      source,
       entry.turnId ?? "",
       entry.role,
       text,
@@ -221,4 +223,20 @@ function renderableEntries<TEntry extends TranscriptLineageEntry>(
   entries: readonly TEntry[],
 ): TEntry[] {
   return stripTranscriptDisplayOnlyEntries(entries)
+}
+
+function transcriptLineageSource(entry: TranscriptLineageEntry): string {
+  if (sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return "external_provider_observed"
+  }
+  return entry.source?.trim() ?? ""
+}
+
+function normalizeExternalProviderLineageProvider(value: string | null | undefined): string {
+  return nonBlankString(value)?.toLowerCase() ?? ""
+}
+
+function nonBlankString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
 }
