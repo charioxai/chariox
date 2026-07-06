@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 pub type RelayRealmId = String;
@@ -174,7 +175,11 @@ impl SharedTokenVerifier {
         request: RelayAuthRequest<'_>,
     ) -> Result<VerifiedRelayIdentity, RelayAuthError> {
         if let Some(expected_token) = self.expected_token.as_deref() {
-            if expected_token != request.token {
+            let matches: bool = expected_token
+                .as_bytes()
+                .ct_eq(request.token.as_bytes())
+                .into();
+            if !matches {
                 return Err(RelayAuthError::InvalidToken);
             }
         }
@@ -466,10 +471,14 @@ fn verify_hmac_signature(
 }
 
 fn current_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+    fail_closed_unix_ms(SystemTime::now().duration_since(UNIX_EPOCH))
+}
+
+// A broken clock must reject expired tokens, not accept them: map failure to
+// the end of time so every expiry check fails closed.
+fn fail_closed_unix_ms(now: Result<Duration, SystemTimeError>) -> u64 {
+    now.map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX)
 }
 
 fn subject_kind_for_action(action: RelayAction) -> RelaySubjectKind {
@@ -560,6 +569,38 @@ mod tests {
         assert!(claims.allows_target(Some("daemon-1")));
         assert!(!claims.allows_target(Some("daemon-2")));
         assert!(!claims.allows_target(None));
+    }
+
+    #[test]
+    fn clock_failure_maps_to_end_of_time_so_expiry_fails_closed() {
+        let clock_error = UNIX_EPOCH
+            .duration_since(SystemTime::now())
+            .expect_err("epoch should be before now");
+        assert_eq!(fail_closed_unix_ms(Err(clock_error)), u64::MAX);
+
+        let claims = RelayTokenClaims {
+            issuer: "issuer".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect],
+            allowed_targets: None,
+            issued_at_ms: 10,
+            expires_at_ms: 20,
+            token_id: "token-1".to_string(),
+            account_id: None,
+            organization_id: None,
+            user_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: None,
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        };
+        assert_eq!(
+            validate_claims(&claims, RelayAction::ClientConnect, None, Some(u64::MAX)),
+            Err(RelayAuthError::TokenExpired)
+        );
     }
 
     #[test]
