@@ -68,7 +68,7 @@ test("attached session prime selects the visible split-pane screen", async () =>
   assert.deepEqual(harness.replaceCalls[0]?.agentId, "agent-3")
 })
 
-test("attached session prime scopes external observed history to imported agents", async () => {
+test("attached session prime projects kernel-scoped history without local import repair", async () => {
   const harness = primeHarness({
     outline: {
       agents: [{
@@ -104,15 +104,15 @@ test("attached session prime scopes external observed history to imported agents
   assert.deepEqual(renderableTexts(harness.agentPaneEntries["agent-1"] ?? []), [
     "codex prompt",
     "codex output",
+    "opencode output",
     "codex summary",
   ])
   assert.deepEqual(renderableReplaceEntries(harness.replaceCalls.at(-1)?.entries ?? []), [
     { id: 1, role: "user", text: "codex prompt" },
     { id: 3, role: "assistant", text: "codex output" },
-    { id: 4, role: "assistant", text: "codex summary" },
+    { id: 4, role: "assistant", text: "opencode output" },
+    { id: 5, role: "assistant", text: "codex summary" },
   ])
-  assert.equal(harness.agentPaneEntries["agent-1"]?.some((entry) => entry.text === "opencode output"), false)
-  assert.equal(harness.replaceCalls.at(-1)?.entries.some((entry) => entry.text === "opencode output"), false)
   assert.equal(harness.replaceCalls.at(-1)?.agentId, "agent-1")
 })
 

@@ -2,8 +2,6 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  entriesBelongingToAgent,
-  entryBelongsToAgent,
   focusedAgentIdForAgentPaneSession,
   preserveLoadedHistoryBlobs,
   prependHistoryEntriesWithoutDuplicates,
@@ -197,7 +195,7 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
   assert.equal(result[1]?.id, 2)
 })
 
-test("refreshAgentPaneState scopes loaded external history pages to imported agents", async () => {
+test("refreshAgentPaneState projects kernel-scoped history pages without local import repair", async () => {
   const pages = new Map<string, Array<{
     entries: Array<{
       role: string
@@ -276,6 +274,8 @@ test("refreshAgentPaneState scopes loaded external history pages to imported age
       "agent-a": [
         { role: "user", text: "existing prompt", turnId: 0 },
         { role: "assistant", text: "existing answer", turnId: 0 },
+        { role: "user", text: "existing follow-up", turnId: 0 },
+        { role: "assistant", text: "existing follow-up answer", turnId: 0 },
       ],
     },
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
@@ -294,60 +294,15 @@ test("refreshAgentPaneState scopes loaded external history pages to imported age
 
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
     "codex older prompt",
+    "opencode older prompt",
     "codex current output",
+    "opencode current output",
   ])
-  assert.equal(result.visibleEntries.some((entry) => entry.text.includes("opencode")), false)
   assert.equal(result.visibleCursor, null)
-  assert.equal(result.previews["agent-a"], "codex older prompt | codex current output")
-})
-
-test("entryBelongsToAgent scopes external observed entries to imported agents", () => {
-  const agent = {
-    external_provider_import: {
-      external_provider: "codex",
-      external_provider_session_id: "codex:thread-a",
-      external_provider_session_provider_id: "thread-a",
-    },
-  }
-
-  assert.equal(entryBelongsToAgent(agent, {
-    source: "external_provider_observed",
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-a",
-  }), true)
-
-  assert.equal(entryBelongsToAgent(agent, {
-    source: "external_provider_observed",
-    externalProvider: "opencode",
-    externalProviderSessionId: "thread-b",
-  }), false)
-
-  assert.equal(entryBelongsToAgent(agent, {
-    source: "provider_output",
-    externalProvider: "opencode",
-    externalProviderSessionId: "thread-b",
-  }), true)
-
-  assert.deepEqual(entriesBelongingToAgent(agent, [
-    {
-      text: "matching",
-      source: "external_provider_observed",
-      externalProvider: "codex",
-      externalProviderSessionId: "thread-a",
-    },
-    {
-      text: "other",
-      source: "external_provider_observed",
-      externalProvider: "opencode",
-      externalProviderSessionId: "thread-b",
-    },
-    {
-      text: "ordinary",
-      source: "provider_output",
-      externalProvider: "opencode",
-      externalProviderSessionId: "thread-b",
-    },
-  ]).map((entry) => entry.text), ["matching", "ordinary"])
+  assert.equal(
+    result.previews["agent-a"],
+    "codex older prompt | opencode older prompt | codex current output | opencode current output",
+  )
 })
 
 test("focusedAgentIdForAgentPaneSession ignores stale focus", () => {

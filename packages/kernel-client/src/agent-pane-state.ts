@@ -1,8 +1,4 @@
 import {
-  externalProviderObservedEntryBelongsToImport,
-  type ExternalProviderImportMatchFields,
-} from "./external-provider-observation.js"
-import {
   prependTranscriptEntriesWithoutDuplicateRenderableLineage,
   stripTranscriptDisplayOnlyEntries,
   transcriptEntriesContainRenderableLineage,
@@ -11,8 +7,6 @@ import {
   type TranscriptRoleEntry,
 } from "./transcript-entry-lineage.js"
 import { transcriptRetentionSlice } from "./transcript-entry-state.js"
-
-export type AgentPaneExternalProviderImport = ExternalProviderImportMatchFields
 
 export type AgentPaneSession<TAgent extends { id: string }> = {
   readonly agents: readonly TAgent[]
@@ -199,30 +193,6 @@ export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEn
   )
 }
 
-export function entryBelongsToAgent(
-  agent: { readonly external_provider_import?: AgentPaneExternalProviderImport | null },
-  entry: {
-    readonly source?: string | null
-    readonly externalProvider?: string | null
-    readonly externalProviderSessionId?: string | null
-  },
-): boolean {
-  return externalProviderObservedEntryBelongsToImport(agent.external_provider_import, entry)
-}
-
-export function entriesBelongingToAgent<
-  TEntry extends {
-    readonly source?: string | null
-    readonly externalProvider?: string | null
-    readonly externalProviderSessionId?: string | null
-  },
->(
-  agent: { readonly external_provider_import?: AgentPaneExternalProviderImport | null },
-  entries: readonly TEntry[],
-): TEntry[] {
-  return entries.filter((entry) => entryBelongsToAgent(agent, entry))
-}
-
 export function historyBlobSourceKey(
   agentId: string | null | undefined,
   blobId: string,
@@ -246,7 +216,7 @@ function historyCursorKey(cursor: unknown): string {
 }
 
 export async function refreshAgentPaneState<
-  TAgent extends { id: string; external_provider_import?: AgentPaneExternalProviderImport | null },
+  TAgent extends { id: string },
   THistoryEntry,
   TEntry extends AgentPaneHistoryBlobEntry,
   TCursor,
@@ -279,9 +249,9 @@ export async function refreshAgentPaneState<
 
   for (const agent of options.session.agents) {
     const agentHasTurnWork = options.hasTurnWorkForAgent(agent)
-    const currentPaneEntries = entriesBelongingToAgent(agent, options.currentPaneEntriesByAgent?.[agent.id] ?? [])
+    const currentPaneEntries = options.currentPaneEntriesByAgent?.[agent.id] ?? []
     let historyPage = await options.loadHistoryPage(agent.id, null)
-    let resolvedHistoryEntries = entriesBelongingToAgent(agent, options.hydrateEntries(historyPage.entries))
+    let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
     const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
@@ -297,7 +267,7 @@ export async function refreshAgentPaneState<
       requestedHistoryCursorKeys.add(cursorKey)
       historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
       resolvedHistoryEntries = prependHistoryEntriesWithoutDuplicates(
-        entriesBelongingToAgent(agent, options.hydrateEntries(historyPage.entries)),
+        options.hydrateEntries(historyPage.entries),
         resolvedHistoryEntries,
       )
     }

@@ -9,7 +9,6 @@ import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
-import { entriesBelongingToAgent } from "@arroba/kernel-client/agent-pane-state"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,
@@ -243,11 +242,8 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           ? { agentId: visibleAgentId, cursor: outlineAgent.next_cursor }
           : null,
       )
-      const visibleAgent = session.agents.find((agent: any) => agent.id === visibleAgentId)
       const hydratedOlderEntries = outlineAgent ? hydrateSessionHistoryOutlineAgentEntries(outlineAgent) : []
-      const olderEntries = visibleAgent
-        ? entriesBelongingToAgent(visibleAgent, hydratedOlderEntries)
-        : hydratedOlderEntries
+      const olderEntries = hydratedOlderEntries
       if (olderEntries.length === 0) {
         return false
       }

@@ -434,7 +434,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
   assert.equal(result.visibleEntries.some((entry) => entry.queuedPrompt), false)
 })
 
-test("refreshAgentPaneState does not preserve another imported agent when refreshed history is empty", async () => {
+test("refreshAgentPaneState does not repair mismatched imported-agent live pane entries", async () => {
   const result = await refreshAgentPaneState({
     session: {
       agents: [{
@@ -478,10 +478,10 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
 
-  assert.deepEqual(result.visibleEntries, [])
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["agent a output"])
 })
 
-test("refreshAgentPaneState ignores stray external ids without observed source when filtering panes", async () => {
+test("refreshAgentPaneState preserves ordinary live pane entries with external-looking ids", async () => {
   const result = await refreshAgentPaneState({
     session: {
       agents: [{
