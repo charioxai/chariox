@@ -192,16 +192,22 @@ export function mergeExternalProviderObservedHistoryFields<T extends ExternalPro
       target.source = source
     }
   }
-  if (target.external_provider === undefined && incoming.external_provider !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.external_provider) && incoming.external_provider != null) {
     target.external_provider = incoming.external_provider
   }
-  if (target.external_provider_session_id === undefined && incoming.external_provider_session_id !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.external_provider_session_id)
+    && incoming.external_provider_session_id != null
+  ) {
     target.external_provider_session_id = incoming.external_provider_session_id
   }
-  if (target.external_provider_turn_id === undefined && incoming.external_provider_turn_id !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.external_provider_turn_id)
+    && incoming.external_provider_turn_id != null
+  ) {
     target.external_provider_turn_id = incoming.external_provider_turn_id
   }
-  if (target.observed_at_ms === undefined && incoming.observed_at_ms !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.observed_at_ms) && incoming.observed_at_ms != null) {
     target.observed_at_ms = incoming.observed_at_ms
   }
   const externalObservation = mergeExternalProviderObservation(
@@ -222,16 +228,22 @@ export function mergeExternalProviderObservedTranscriptFields<T extends External
   if (!sessionHistoryEntryIsExternalProviderObserved(older)) {
     return target
   }
-  if (target.externalProvider === undefined && older.externalProvider !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.externalProvider) && older.externalProvider != null) {
     target.externalProvider = older.externalProvider
   }
-  if (target.externalProviderSessionId === undefined && older.externalProviderSessionId !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderSessionId)
+    && older.externalProviderSessionId != null
+  ) {
     target.externalProviderSessionId = older.externalProviderSessionId
   }
-  if (target.externalProviderTurnId === undefined && older.externalProviderTurnId !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderTurnId)
+    && older.externalProviderTurnId != null
+  ) {
     target.externalProviderTurnId = older.externalProviderTurnId
   }
-  if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.observedAtMs) && older.observedAtMs != null) {
     target.observedAtMs = older.observedAtMs
   }
   if (older.externalObservation !== undefined || newer.externalObservation !== undefined) {
@@ -293,13 +305,19 @@ export function applyExternalProviderObservedTurnMetadata<T extends ExternalProv
   if (source !== undefined) {
     target.source = source
   }
-  if (target.externalProvider === undefined && metadata.externalProvider !== null) {
+  if (fieldCanAcceptExternalProviderMetadata(target.externalProvider) && metadata.externalProvider != null) {
     target.externalProvider = metadata.externalProvider
   }
-  if (target.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== null) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderSessionId)
+    && metadata.externalProviderSessionId != null
+  ) {
     target.externalProviderSessionId = metadata.externalProviderSessionId
   }
-  if (target.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== null) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderTurnId)
+    && metadata.externalProviderTurnId != null
+  ) {
     target.externalProviderTurnId = metadata.externalProviderTurnId
   }
   return target
@@ -443,6 +461,10 @@ function normalizeExternalProviderObservedSource(value: string | null | undefine
 
 function normalizeExternalProviderId(value: string | null | undefined): string | null {
   return nonBlankString(value)?.toLowerCase() ?? null
+}
+
+function fieldCanAcceptExternalProviderMetadata(value: unknown): boolean {
+  return value === undefined || value === null
 }
 
 function finiteNumber(value: number | null | undefined): number | null {

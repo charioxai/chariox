@@ -547,6 +547,60 @@ test("external provider observed transcript field merge preserves identity and s
   })
 })
 
+test("external provider observed transcript field merge fills null identity fields", () => {
+  const target: {
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+  } = {
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+    observedAtMs: null,
+  }
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+
+  assert.deepEqual(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+})
+
+test("external provider observed history field merge fills null identity fields", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {
+    external_provider: null,
+    external_provider_session_id: null,
+    external_provider_turn_id: null,
+    observed_at_ms: null,
+  }
+
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 100,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 100,
+  })
+})
+
 test("external provider observed transcript metadata application shares live and history policy", () => {
   const target: {
     source?: string | null
@@ -628,6 +682,33 @@ test("external provider observed turn metadata ignores null provider identity fi
 
   assert.deepEqual(target, {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  })
+})
+
+test("external provider observed turn metadata fills null provider identity fields", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+  } = {
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+  }
+
+  applyExternalProviderObservedTurnMetadata(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
   })
 })
 
