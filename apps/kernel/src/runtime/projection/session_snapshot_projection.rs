@@ -104,14 +104,26 @@ impl SessionSnapshotProjection {
         app.project_session_runtime_view(&mut session);
         let provider_run = session
             .active_provider_run_id()
-            .and_then(|provider_run_id| app.providers().get_run(provider_run_id).ok());
+            .and_then(|provider_run_id| {
+                app.providers()
+                    .get_run(provider_run_id)
+                    .ok()
+                    .or_else(|| app.provider_run_projection_store().get(provider_run_id))
+            });
         let prompt_activity = app.prompt_activity_store();
         let prompt_activity = prompt_activity.read();
         let active_turns = app.active_turn_store().snapshot();
         let completed_git_turn_snapshots = app.completed_git_turn_snapshot_store();
         let agent_activity = agent_activity_for_session_projection(
             &session,
-            |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
+            |agent_id| {
+                app.providers()
+                    .get_run_for_agent(session.id(), agent_id)
+                    .or_else(|| {
+                        app.provider_run_projection_store()
+                            .get_for_agent(session.id(), agent_id)
+                    })
+            },
             &prompt_activity,
             &active_turns,
             unread_for_user_id,
@@ -347,6 +359,66 @@ mod tests {
         assert_eq!(projection.metadata.last_event_id, 42);
         assert_eq!(projection.session.id(), session.id());
         assert_eq!(projection.session.agents().len(), 1);
+    }
+
+    #[test]
+    fn session_snapshot_projection_uses_projected_provider_run_fallback() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let mut provider_run =
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "projected-run",
+                session.id().to_string(),
+                Some(agent.id().to_string()),
+                "codex".to_string(),
+            );
+        provider_run.mark_running();
+        provider_run.set_usage(crate::provider::ProviderRunTokenUsage {
+            total_tokens: Some(42),
+            last_tokens: Some(42),
+            context_tokens: Some(42),
+            context_window: Some(128_000),
+        });
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(provider_run.clone());
+        app.active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "prompt-projected".to_string(),
+                provider_run.id().to_string(),
+            ));
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let projected_run = projection
+            .provider_run
+            .as_ref()
+            .expect("provider run should be projected from fallback");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(
+            projection.session.active_provider_run_id(),
+            Some(provider_run.id())
+        );
+        assert_eq!(projected_run.id(), provider_run.id());
+        assert_eq!(projected_run.usage(), provider_run.usage());
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+        assert_eq!(
+            activity
+                .active_turn
+                .as_ref()
+                .and_then(|turn| turn.provider_run_id.as_deref()),
+            Some(provider_run.id())
+        );
     }
 
     #[test]
