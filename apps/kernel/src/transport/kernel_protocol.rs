@@ -742,6 +742,7 @@ mod tests {
         let records = (0..20)
             .map(|index| TerminalOutputRecord {
                 record_id: Some(index as u64),
+                timestamp_ms: 1_000 + index as u64,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
@@ -771,6 +772,7 @@ mod tests {
         let records = (0..5)
             .map(|index| TerminalOutputRecord {
                 record_id: Some(index as u64),
+                timestamp_ms: 2_000 + index as u64,
                 session_id: format!("session-{index}"),
                 provider_run_id: format!("provider-run-{index}"),
                 agent_id: Some(format!("agent-{index}")),

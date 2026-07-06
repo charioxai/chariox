@@ -16,11 +16,13 @@ test("codex kernel output projection ignores unscoped and wrong-agent records", 
   projection.project([
     {
       agent_id: null,
+      timestamp_ms: 1_000,
       kind: "provider_output",
       bytes: [...Buffer.from("unscoped", "utf8")],
     },
     {
       agent_id: "agent-2",
+      timestamp_ms: 1_001,
       kind: "provider_output",
       bytes: [...Buffer.from("wrong", "utf8")],
     },
@@ -41,6 +43,7 @@ test("codex kernel output projection broadcasts matching agent records", () => {
 
   projection.project([{
     agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_000,
     kind: "provider_output",
     bytes: [...Buffer.from("hello", "utf8")],
   }])
@@ -60,6 +63,7 @@ test("codex kernel output projection suppresses passive external telemetry", () 
 
   projection.project([{
     agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_001,
     kind: "provider_output",
     source: "external_provider_observed",
     external_provider: "codex",
@@ -88,6 +92,7 @@ test("codex kernel output projection follows shared live append suppression", ()
 
   projection.project([{
     agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_002,
     kind: "provider_status",
     bytes: [...Buffer.from("OpenCode is idle.", "utf8")],
   }])
@@ -107,6 +112,7 @@ test("codex kernel output projection normalizes provider errors through shared t
 
   projection.project([{
     agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_003,
     kind: "provider_error",
     bytes: [...Buffer.from("failed\r\n", "utf8")],
   }])
@@ -115,3 +121,37 @@ test("codex kernel output projection normalizes provider errors through shared t
   assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("failed\\r\\n")), false)
   assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("failed")), true)
 })
+
+test("codex kernel output projection uses kernel record timestamps for user item lifecycle", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+    nowMs: () => 9_999_999,
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([{
+    agent_id: "agent-1",
+    timestamp_ms: 1_700_000_123_456,
+    kind: "prompt_echo",
+    bytes: [...Buffer.from("hello", "utf8")],
+  }])
+
+  assert.equal(findMethodParam(broadcasts, "item/started", "startedAtMs"), 1_700_000_123_456)
+  assert.equal(findMethodParam(broadcasts, "item/completed", "completedAtMs"), 1_700_000_123_456)
+  const turnStarted = broadcasts.find((message) => messageMethod(message) === "turn/started") as { params?: { turn?: { startedAt?: number } } } | undefined
+  assert.equal(turnStarted?.params?.turn?.startedAt, 1_700_000_123)
+})
+
+function messageMethod(message: unknown): string | undefined {
+  return typeof message === "object" && message !== null && "method" in message
+    ? String((message as { method?: unknown }).method)
+    : undefined
+}
+
+function findMethodParam(messages: readonly unknown[], method: string, param: string): unknown {
+  const message = messages.find((candidate) => messageMethod(candidate) === method)
+  return (message as { params?: Record<string, unknown> } | undefined)?.params?.[param]
+}

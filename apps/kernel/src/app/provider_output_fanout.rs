@@ -126,6 +126,7 @@ impl ProviderOutputFanout {
         if bounded_bytes.is_empty() {
             return TerminalOutputRecord {
                 record_id: None,
+                timestamp_ms: crate::session::unix_epoch_ms(),
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),

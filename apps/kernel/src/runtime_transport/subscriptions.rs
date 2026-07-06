@@ -1020,6 +1020,7 @@ mod tests {
         KernelEvent::TerminalOutput {
             records: vec![TerminalOutputRecord {
                 record_id: None,
+                timestamp_ms: 1_000,
                 session_id: session_id.to_string(),
                 provider_run_id: "provider-run-a".to_string(),
                 agent_id: Some("agent-a".to_string()),

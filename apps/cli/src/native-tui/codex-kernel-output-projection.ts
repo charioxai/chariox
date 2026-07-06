@@ -11,6 +11,7 @@ type ProjectedItem = {
   itemId: string
   kind: "agentMessage" | "reasoning"
   text: string
+  completedAtMs: number
   timer: NodeJS.Timeout | null
 }
 
@@ -18,23 +19,28 @@ export function createCodexKernelOutputProjection(options: {
   agentId: string
   broadcast: (message: unknown) => void
   debug: (label: string, payload: unknown) => void
+  nowMs?: () => number
 }) {
+  const nowMs = options.nowMs ?? Date.now
   let projectedThreadId: string | null = null
   let nextProjectedTurnId = 1
   const projectedItems = new Map<string, ProjectedItem>()
 
-  const turnPayload = (turnId: string, status: "inProgress" | "completed") => ({
+  const recordTimestampMs = (record: TerminalOutputRecord): number =>
+    Number.isFinite(record.timestamp_ms) ? record.timestamp_ms : nowMs()
+
+  const turnPayload = (turnId: string, status: "inProgress" | "completed", timestampMs: number) => ({
     id: turnId,
     items: [],
     itemsView: "notLoaded",
     status,
     error: null,
-    startedAt: Math.floor(Date.now() / 1000),
-    completedAt: status === "completed" ? Math.floor(Date.now() / 1000) : null,
+    startedAt: Math.floor(timestampMs / 1000),
+    completedAt: status === "completed" ? Math.floor(timestampMs / 1000) : null,
     durationMs: null,
   })
 
-  const startProjectedTurn = () => {
+  const startProjectedTurn = (timestampMs: number) => {
     if (!projectedThreadId) return null
     const turnId = `arroba-projected-turn-${nextProjectedTurnId++}`
     options.broadcast({
@@ -50,7 +56,7 @@ export function createCodexKernelOutputProjection(options: {
       method: "turn/started",
       params: {
         threadId: projectedThreadId,
-        turn: turnPayload(turnId, "inProgress"),
+        turn: turnPayload(turnId, "inProgress", timestampMs),
       },
     })
     return turnId
@@ -69,7 +75,7 @@ export function createCodexKernelOutputProjection(options: {
             : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
           threadId: projectedThreadId,
           turnId: projection.turnId,
-          completedAtMs: Date.now(),
+          completedAtMs: projection.completedAtMs,
         },
       })
       options.broadcast({
@@ -85,7 +91,7 @@ export function createCodexKernelOutputProjection(options: {
         method: "turn/completed",
         params: {
           threadId: projectedThreadId,
-          turn: turnPayload(projection.turnId, "completed"),
+          turn: turnPayload(projection.turnId, "completed", projection.completedAtMs),
         },
       })
       projectedItems.delete(projection.key)
@@ -103,11 +109,12 @@ export function createCodexKernelOutputProjection(options: {
         shouldRenderProviderStatus: () => false,
       })
       if (!recordProjection.appendsLiveTranscript) continue
+      const timestampMs = recordTimestampMs(record)
 
       if (recordProjection.transcriptRole === "user") {
-        const turnId = startProjectedTurn()
+        const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
-        const itemId = `arroba-projected-user-${Date.now()}-${nextProjectedTurnId}`
+        const itemId = `arroba-projected-user-${timestampMs}-${nextProjectedTurnId}`
         options.broadcast({
           jsonrpc: "2.0",
           method: "item/started",
@@ -119,7 +126,7 @@ export function createCodexKernelOutputProjection(options: {
             },
             threadId: projectedThreadId,
             turnId,
-            startedAtMs: Date.now(),
+            startedAtMs: timestampMs,
           },
         })
         options.broadcast({
@@ -133,7 +140,7 @@ export function createCodexKernelOutputProjection(options: {
             },
             threadId: projectedThreadId,
             turnId,
-            completedAtMs: Date.now(),
+            completedAtMs: timestampMs,
           },
         })
         options.debug("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
@@ -145,10 +152,10 @@ export function createCodexKernelOutputProjection(options: {
       const itemKey = `${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
-        const turnId = startProjectedTurn()
+        const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
-        const itemId = `arroba-projected-${itemKind}-${Date.now()}-${nextProjectedTurnId}`
-        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", timer: null }
+        const itemId = `arroba-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
+        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, timer: null }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
@@ -159,11 +166,12 @@ export function createCodexKernelOutputProjection(options: {
               : { type: "agentMessage", id: itemId, text: "", phase: "final_answer", memoryCitation: null },
             threadId: projectedThreadId,
             turnId,
-            startedAtMs: Date.now(),
+            startedAtMs: timestampMs,
           },
         })
       }
       itemProjection.text += recordProjection.transcriptText
+      itemProjection.completedAtMs = Math.max(itemProjection.completedAtMs, timestampMs)
       options.broadcast({
         jsonrpc: "2.0",
         method: itemKind === "reasoning" ? "item/reasoning/textDelta" : "item/agentMessage/delta",

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
+use crate::session::unix_epoch_ms;
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
@@ -35,6 +36,7 @@ pub enum TerminalOutputKind {
 pub struct TerminalOutputRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_id: Option<u64>,
+    pub timestamp_ms: u64,
     pub session_id: String,
     pub provider_run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -691,6 +693,7 @@ impl TerminalStreamService {
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -731,6 +734,7 @@ impl TerminalStreamService {
             let recipient_attachment_ids = Vec::from(output.recipient_attachment_ids.as_ref());
             let record = TerminalOutputRecord {
                 record_id: None,
+                timestamp_ms: unix_epoch_ms(),
                 session_id: output.session_id,
                 provider_run_id: output.provider_run_id,
                 agent_id: output.agent_id,
@@ -787,6 +791,7 @@ impl TerminalStreamService {
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -824,6 +829,7 @@ impl TerminalStreamService {
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
+            timestamp_ms: unix_epoch_ms(),
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
@@ -1396,6 +1402,7 @@ fn scoped_output_record(
 ) -> TerminalOutputRecord {
     TerminalOutputRecord {
         record_id: Some(record_id),
+        timestamp_ms: record.timestamp_ms,
         session_id: record.session_id.clone(),
         provider_run_id: record.provider_run_id.clone(),
         agent_id: record.agent_id.clone(),
@@ -1451,6 +1458,18 @@ fn terminal_output_record_scoped_json_bytes(
 ) -> usize {
     let mut total = 2_usize;
     let mut field_count = 0_usize;
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "record_id",
+        json_u64_len(u64::MAX),
+    );
+    add_json_field(
+        &mut total,
+        &mut field_count,
+        "timestamp_ms",
+        json_u64_len(record.timestamp_ms),
+    );
     add_json_field(
         &mut total,
         &mut field_count,
@@ -1563,6 +1582,10 @@ fn json_string_len(value: &str) -> usize {
             character => character.len_utf8(),
         })
     })
+}
+
+fn json_u64_len(value: u64) -> usize {
+    value.to_string().len()
 }
 
 fn json_byte_array_len(bytes: &[u8]) -> usize {
@@ -1883,6 +1906,7 @@ mod tests {
     fn output_drain_size_estimator_bounds_scoped_json() {
         let record = TerminalOutputRecord {
             record_id: None,
+            timestamp_ms: 1_700,
             session_id: "session-\n1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-\"1\"".to_string()),

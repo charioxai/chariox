@@ -1520,7 +1520,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 227
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 228
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1678,6 +1678,7 @@ export type RuntimeNoticeRecord = {
 
 export type TerminalOutputRecord = {
   record_id?: number | null
+  timestamp_ms: number
   agent_id?: string | null
   prompt_id?: string | null
   source_attachment_id?: string | null
