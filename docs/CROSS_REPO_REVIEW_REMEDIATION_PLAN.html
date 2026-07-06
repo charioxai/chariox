@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cross-Repo Review Remediation Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f5;
+      --panel: #ffffff;
+      --ink: #151714;
+      --muted: #586057;
+      --line: #d9ded2;
+      --strong-line: #aab4a1;
+      --accent: #0d6b57;
+      --accent-soft: #e5f1ec;
+      --warn: #9a6517;
+      --warn-soft: #fff3d8;
+      --bad: #a23a28;
+      --bad-soft: #fae6e1;
+      --code: #eef1ea;
+      --shadow: 0 16px 42px rgba(26, 35, 22, 0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 44px 0 72px;
+    }
+
+    header {
+      border-top: 6px solid var(--ink);
+      padding-top: 22px;
+      margin-bottom: 34px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      max-width: 860px;
+      font-size: clamp(2.2rem, 5vw, 4.2rem);
+      line-height: 0.98;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: clamp(1.45rem, 2vw, 2rem);
+      border-bottom: 2px solid var(--strong-line);
+      padding-bottom: 8px;
+    }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 1.12rem;
+    }
+
+    p.lede {
+      max-width: 820px;
+      font-size: 1.08rem;
+      color: var(--muted);
+      margin: 0 0 10px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .meta span {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 14px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 26px 28px;
+      margin-bottom: 26px;
+    }
+
+    section > h2:first-child { margin-top: 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      margin: 14px 0;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    .table-scroll { overflow-x: auto; }
+
+    code {
+      background: var(--code);
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.86em;
+      word-break: break-word;
+    }
+
+    .task {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin: 14px 0;
+      background: #fcfdfb;
+    }
+
+    .task.security { border-left-color: var(--bad); }
+    .task.hygiene { border-left-color: var(--warn); }
+
+    .task h4 {
+      margin: 0 0 6px;
+      font-size: 1rem;
+    }
+
+    .task .where {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .task ul { margin: 6px 0 6px 20px; padding: 0; }
+    .task li { margin: 4px 0; }
+
+    .task .accept {
+      margin-top: 10px;
+      background: var(--accent-soft);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.9rem;
+    }
+
+    .task.security .accept { background: var(--bad-soft); }
+    .task.hygiene .accept { background: var(--warn-soft); }
+
+    .accept strong { color: var(--accent); }
+    .task.security .accept strong { color: var(--bad); }
+    .task.hygiene .accept strong { color: var(--warn); }
+
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    .pill.p0 { background: var(--bad-soft); color: var(--bad); }
+    .pill.p1 { background: var(--warn-soft); color: var(--warn); }
+    .pill.p2 { background: var(--accent-soft); color: var(--accent); }
+
+    .repo {
+      display: inline-block;
+      border: 1px solid var(--strong-line);
+      border-radius: 5px;
+      padding: 1px 8px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    ol.phases { margin: 10px 0 0 20px; padding: 0; }
+    ol.phases li { margin: 8px 0; }
+
+    .callout {
+      border: 1px solid var(--strong-line);
+      border-radius: 10px;
+      background: var(--warn-soft);
+      padding: 12px 16px;
+      font-size: 0.94rem;
+      margin: 14px 0;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Cross-Repo Review Remediation Plan</h1>
+    <p class="lede">
+      A phased plan to carry out the July 2026 cross-repo review of <code>arroba</code> and
+      <code>arroba-cloud</code>: eliminate blocking work under the kernel's global lock, close the
+      security gaps in relay and cloud token handling, restore fail-closed startup behavior in the
+      hosted control plane, add missing CI, and pay down the largest structural debts.
+    </p>
+    <div class="meta">
+      <span>Drafted: 2026-07-06</span>
+      <span>Repos: arroba, arroba-cloud</span>
+      <span>Source: full-repo review (kernel, relay, cloud API, relay-tokens, web terminal)</span>
+      <span>Status: proposed</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Workstream overview</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Phase</th>
+            <th>Workstream</th>
+            <th>Repo</th>
+            <th>Priority</th>
+            <th>Effort</th>
+            <th>Risk of change</th>
+            <th>User-visible impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>0</td>
+            <td>A. Fail-closed security fixes + cloud CI</td>
+            <td>arroba-cloud, arroba</td>
+            <td>P0</td>
+            <td>1–2 days</td>
+            <td>Low (small, isolated diffs)</td>
+            <td>Closes impersonation/forgery windows</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>B. Unblock the kernel: no blocking work under the app lock</td>
+            <td>arroba</td>
+            <td>P0</td>
+            <td>1–2 weeks</td>
+            <td>Medium (touches hot paths)</td>
+            <td>Daemon-wide latency stalls disappear</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>C. Token model hardening (TTL caps, revocation, single format)</td>
+            <td>both</td>
+            <td>P1</td>
+            <td>3–5 days</td>
+            <td>Medium (wire compatibility)</td>
+            <td>Long-lived stolen tokens become containable</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>D. Rust workspace + shared claim model</td>
+            <td>arroba</td>
+            <td>P1</td>
+            <td>2–3 days</td>
+            <td>Low</td>
+            <td>Faster CI, no dependency drift</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>E. Structural refactors (monster files, flat api dir)</td>
+            <td>both</td>
+            <td>P2</td>
+            <td>ongoing, sliced</td>
+            <td>Medium (mechanical, test-guarded)</td>
+            <td>Review velocity, onboarding</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>F. Hygiene and small performance items</td>
+            <td>arroba</td>
+            <td>P2</td>
+            <td>&lt;1 day</td>
+            <td>Trivial</td>
+            <td>Clean clone, smaller repo</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout">
+      Phases 0 and 1 are independent and can start in parallel. Phase 2 (token hardening) should land
+      before any hosted relay realm is opened to external users. Phases 3–5 are sequenced after the
+      P0 work only to keep review bandwidth focused; nothing blocks them technically.
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 0 — Fail-closed security fixes and cloud CI <span class="pill p0">P0</span></h2>
+    <p>
+      Small, self-contained diffs that close real exposure. Each task is independently landable and
+      should ship with a regression test. Target: all landed within two working days.
+    </p>
+
+    <div class="task security">
+      <h4>A1. Require real cookie/CSRF secrets at startup <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/api/src/http/browser-security-registration.ts:30–31</code>, <code>apps/api/src/node-server.ts</code></div>
+      <ul>
+        <li>Remove the <code>"dev-only-cookie-secret-must-not-ship"</code> / <code>"dev-only-csrf-hmac-key-must-not-ship"</code> fallbacks from <code>registerBrowserSecurity</code>.</li>
+        <li>Make <code>createCloudApiServer</code> throw at startup when neither <code>options.csrf</code> nor <code>options.auth0.sessionSecret</code> supplies a secret, unless an explicit <code>allowInsecureDevSecrets: true</code> flag is passed.</li>
+        <li>Set that flag only in test factories (<code>server.test.ts</code>, <code>local-browser-terminal-server.ts</code>) — never in <code>node-server.ts</code>.</li>
+        <li>Wire <code>ARROBA_CLOUD_COOKIE_SECRET</code> / <code>ARROBA_CLOUD_CSRF_HMAC_KEY</code> env vars through <code>startCloudApiNodeServer</code> so production has a first-class configuration path.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> starting <code>node-server.ts</code> with no Auth0 config and no explicit secrets exits non-zero with a clear message; a test asserts the throw; existing test suites pass using the explicit dev flag.</div>
+    </div>
+
+    <div class="task security">
+      <h4>A2. Guard the test-identity-header bypass out of production <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/api/src/node-server.ts:14</code></div>
+      <ul>
+        <li>Remove <code>testAuth0IdentityHeader: env.ARROBA_CLOUD_TEST_AUTH0_IDENTITY_HEADER === "1"</code> from the production entrypoint entirely.</li>
+        <li>Keep the option on <code>createCloudApiServer</code> for test factories, but make it refuse to activate when <code>NODE_ENV === "production"</code> (throw, don't silently ignore).</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> setting the env var against the production entrypoint has no effect; a test asserts that constructing a server with the option under <code>NODE_ENV=production</code> throws.</div>
+    </div>
+
+    <div class="task security">
+      <h4>A3. Constant-time signature and token comparison <span class="repo">both</span></h4>
+      <div class="where"><code>arroba-cloud/packages/relay-tokens/src/index.ts:171</code>, <code>arroba/apps/relay/src/auth.rs:177</code></div>
+      <ul>
+        <li>TypeScript: in <code>verifyRelayToken</code>, decode both signatures to buffers and compare with <code>crypto.timingSafeEqual</code> (length-check first, then compare; reject on length mismatch).</li>
+        <li>Rust: replace <code>expected_token != request.token</code> in <code>SharedTokenVerifier::verify</code> with a constant-time comparison. Add the <code>subtle</code> crate (already transitively present via the crypto stack) and use <code>ConstantTimeEq</code> on the byte slices.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> unit tests still pass (behavioral equivalence); grep shows no <code>!==</code>/<code>!=</code> comparisons on signatures or bearer tokens in either auth path.</div>
+    </div>
+
+    <div class="task security">
+      <h4>A4. Relay auth fails closed on clock error <span class="repo">arroba</span></h4>
+      <div class="where"><code>apps/relay/src/auth.rs:468</code> (<code>current_unix_ms</code>)</div>
+      <ul>
+        <li><code>current_unix_ms()</code> currently returns <code>0</code> when <code>SystemTime::now()</code> is before the epoch, which makes every expired token verify successfully.</li>
+        <li>Change the verifier to treat clock failure as <code>RelayAuthError::InvalidToken</code> (plumb <code>Result</code> or return <code>u64::MAX</code> so expiry checks fail closed).</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> a unit test injecting a failed clock shows expired tokens are rejected, not accepted.</div>
+    </div>
+
+    <div class="task security">
+      <h4>A5. Make relay "open bootstrap mode" an explicit opt-in <span class="repo">arroba</span></h4>
+      <div class="where"><code>apps/relay/src/auth.rs:176–181</code>, relay server config/bootstrap</div>
+      <ul>
+        <li>Today <code>SharedTokenVerifier::new(None)</code> accepts any request. Keep the capability for localhost bootstrap, but require the relay binary/config to state it explicitly (e.g. <code>auth_mode = "open"</code> or <code>--insecure-open-relay</code>).</li>
+        <li>When the relay binds to a non-loopback address with no verifier configured, refuse to start (or log a prominent warning in the first release, hard-fail in the next).</li>
+        <li>Update the test <code>shared_verifier_preserves_open_bootstrap_mode_when_no_token_configured</code> to exercise the explicit opt-in instead of enshrining the silent default.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> a relay started on <code>0.0.0.0</code> with no token and no explicit open flag fails to start; loopback bootstrap flow still works.</div>
+    </div>
+
+    <div class="task">
+      <h4>A6. Add CI to arroba-cloud <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>.github/workflows/ci.yml</code> (new)</div>
+      <ul>
+        <li>Mirror the arroba node job: pnpm 9.15 / Node 22, <code>pnpm install --frozen-lockfile</code>, <code>pnpm lint</code>, <code>pnpm build</code>, <code>pnpm test</code>.</li>
+        <li>Add a Postgres service container (schema lives in <code>packages/db/prisma</code>) and run <code>prisma migrate deploy</code> before tests that need it; skip or mock DB-bound suites if they already support it.</li>
+        <li>Gate merges to <code>main</code> on the workflow once it is green for a few days.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> pushing a commit that breaks a unit test produces a red check on the PR.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 1 — Unblock the kernel <span class="pill p0">P0</span></h2>
+    <p>
+      The daemon serializes all command handling behind one <code>Arc&lt;Mutex&lt;DaemonApp&gt;&gt;</code>
+      (114 <code>lock().await</code> sites), and blocking work runs while the lock is held: hard sleeps,
+      blocking relay network round trips, ~139 sync filesystem calls, blocking <code>ureq</code> HTTP, and a
+      sync <code>rusqlite</code> connection. Any one of these stalls every session, agent, and terminal in the
+      daemon. This phase removes the blocking work from under the lock <em>without</em> waiting for the full
+      M4.5 actor-ownership migration; it is compatible with it and reduces its risk.
+    </p>
+
+    <h3>Order of attack</h3>
+    <ol class="phases">
+      <li><strong>B1</strong> — instrument first, so improvements are measurable.</li>
+      <li><strong>B2</strong> — remove hard sleeps (worst latency per byte of diff).</li>
+      <li><strong>B3</strong> — move relay round trips outside the lock (worst tail latency).</li>
+      <li><strong>B4</strong> — wrap sync SQLite and filesystem I/O (steady-state jitter).</li>
+      <li><strong>B5</strong> — swap the blocking HTTP client in the credential service.</li>
+    </ol>
+
+    <div class="task">
+      <h4>B1. Instrument lock hold times and command latency</h4>
+      <div class="where"><code>apps/kernel/src/runtime/command_latency.rs</code> (extend), <code>runtime_transport.rs:136</code></div>
+      <ul>
+        <li>Wrap the app mutex in a helper that records hold duration per call site (feature-gated or debug-level <code>tracing</code> spans; a histogram in daemon health is enough).</li>
+        <li>Expose p50/p95/max lock-hold and per-command latency in the existing daemon health projection so regressions are visible in the smoke harness.</li>
+        <li>Capture a baseline run (multi-agent session with active provider output) before B2–B5 land.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> daemon health reports lock-hold percentiles; baseline numbers recorded in this document's follow-up notes.</div>
+    </div>
+
+    <div class="task">
+      <h4>B2. Remove hard sleeps from event processing</h4>
+      <div class="where"><code>apps/kernel/src/app/provider_output_claude_native.rs:810, 1225, 1450, 1457</code>; <code>transport/relay_client/display_tunnel.rs:665</code></div>
+      <ul>
+        <li>The 300ms <code>std::thread::sleep</code> on <code>Stop</code>/<code>SessionEnd</code> guesses when the claude-headless transcript has flushed. Replace with an event-driven wait: schedule a follow-up drain command (via the existing command router) after the delay instead of sleeping inline, or poll the transcript file for size stabilization on a background task.</li>
+        <li>Same treatment for the 100–250ms sleeps in the retry/drain loops: convert the containing operations to spawned provider-operation dispatch (the pattern already exists for prompt dispatch writes per the M4.5 notes) so the wait happens off-lock with <code>tokio::time::sleep</code>.</li>
+        <li>This is also a correctness fix: fixed sleeps silently drop output on slow machines. The stabilization check must be deterministic (size unchanged across two polls, or provider-signaled completion), not a bigger sleep.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> no <code>std::thread::sleep</code> remains in async-reachable kernel code (grep-clean, excluding tests); the claude-native suites pass; a Stop event during an active second session no longer stalls that session's echo (verify with B1 metrics).</div>
+    </div>
+
+    <div class="task">
+      <h4>B3. Move relay round trips outside the app lock</h4>
+      <div class="where"><code>apps/kernel/src/app/relay_runtime.rs:56</code> (<code>block_on_relay_future</code>), ~20 call sites in <code>app/remote_agent_binding.rs</code>, <code>app/remote_workspace_live_sync_fanout.rs</code></div>
+      <ul>
+        <li>Adopt a two-step pattern per call site: (1) under the lock, snapshot the inputs the request needs and enqueue the intent; (2) release the lock, run the relay future on the runtime (<code>tokio::spawn</code> or the provider-operation dispatch lane), then (3) re-enter via a kernel command that applies the result to state. The router and mailbox infrastructure for step 3 already exists.</li>
+        <li>Prioritize call sites on interactive paths (agent binding, prompt relay) over startup-only ones (registration).</li>
+        <li>Once the last call site is converted, delete <code>block_on_relay_future</code> and its <code>block_in_place</code> escape hatch so the pattern cannot return.</li>
+        <li>Sequencing note: coordinate with the in-flight M4.5 ownership work — convert call sites in the same order that their owning modules are migrated, to avoid churning files twice.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> <code>block_on_relay_future</code> no longer exists; no <code>block_in_place</code> in the kernel; remote-binding tests and the relay smoke harness pass; B1 metrics show relay operations no longer appear in lock-hold tails.</div>
+    </div>
+
+    <div class="task">
+      <h4>B4. Isolate sync SQLite and filesystem I/O</h4>
+      <div class="where"><code>apps/kernel/src/history.rs:462</code> (<code>Arc&lt;Mutex&lt;Connection&gt;&gt;</code>), <code>runtime/history_executor.rs</code>, <code>runtime/history_requests.rs</code>, ~139 <code>std::fs</code> call sites under <code>app/</code></div>
+      <ul>
+        <li>History store: route all rusqlite access through a dedicated blocking lane — either <code>spawn_blocking</code> at the executor boundary or a single-threaded worker owning the <code>Connection</code> with an mpsc request channel (preferred: removes the mutex entirely and serializes writes naturally).</li>
+        <li>Filesystem: triage the <code>std::fs</code> sites under <code>app/</code>. Config reads at startup are fine; anything on the command path while the app lock is held (session history appends, workspace scans, provider auth inspection in <code>relay_registration</code>) moves behind <code>spawn_blocking</code> or into the same follow-up-command pattern as B3.</li>
+        <li>Cache <code>inspect_home_provider_auth</code> results with a short TTL so heartbeats don't re-scan the home directory.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> history executor paths contain no direct sync DB calls on the runtime; history suites pass; heartbeat processing does no home-dir I/O (verified by tracing).</div>
+    </div>
+
+    <div class="task">
+      <h4>B5. Replace blocking HTTP in the credential service</h4>
+      <div class="where"><code>apps/kernel/src/secret.rs:267–292</code> (<code>ureq</code>)</div>
+      <ul>
+        <li><code>http_request_with_credential</code> runs a blocking <code>ureq</code> call. Either wrap the whole call in <code>spawn_blocking</code> at its dispatch boundary (cheapest, keeps <code>ureq</code>), or move to the async client already in the dependency tree (<code>hyper</code>) — decide based on how many call sites exist after B3.</li>
+        <li>While here: return secrets as <code>Zeroizing&lt;String&gt;</code> from <code>resolve_secret</code> and adjust the few consumers, so plaintext secrets don't linger in caller memory.</li>
+        <li>Micro-cleanup: replace the per-byte <code>format!</code> in <code>hex_bytes</code> (<code>secret.rs:737</code>) with a single-buffer writer.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> credential HTTP tests pass; no blocking HTTP call reachable from a tokio worker without <code>spawn_blocking</code>; <code>resolve_secret</code> signature returns <code>Zeroizing</code>.</div>
+    </div>
+
+    <div class="task">
+      <h4>B6. Panic and lock-poisoning policy</h4>
+      <div class="where"><code>apps/kernel/src/provider/run_actor/runtime_slots.rs</code>, <code>slice/store.rs</code>, ~267 prod <code>unwrap/expect</code> sites</div>
+      <ul>
+        <li>Most prod expects are std-mutex poisoning guards; one panic while holding a slot mutex cascades into daemon-wide panics on every later access.</li>
+        <li>Adopt <code>parking_lot::Mutex</code> for the runtime slot registries (no poisoning, smaller/faster), or standardize on a recover-and-log helper (<code>lock().unwrap_or_else(PoisonError::into_inner)</code>) with a tracing error.</li>
+        <li>Audit the remaining non-poisoning unwraps in <code>slice/store.rs</code> and <code>provider/</code> for ones reachable from user input; convert those to <code>DaemonError</code> returns. Leave genuine invariants as expects with messages.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> a deliberately injected panic in one provider-run task no longer breaks unrelated sessions (add a test); prod unwrap count reduced and the remainder documented as invariants.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 2 — Token model hardening <span class="pill p1">P1</span></h2>
+    <p>
+      Must land before hosted relay realms are opened beyond trusted testers. These changes touch the
+      wire format contract between arroba-cloud (issuer) and the arroba relay (verifier), so they ship
+      as coordinated pairs with shared test vectors.
+    </p>
+
+    <div class="task security">
+      <h4>C1. Cap client-supplied TTLs server-side <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/api/src/runtime-token-service.ts:39</code>, <code>pairing-service.ts:61</code>, <code>device-login-service.ts:54</code>, <code>pairing-token-repository.ts:21</code></div>
+      <ul>
+        <li>Every issuance path does <code>input.ttlMs ?? default</code> with no ceiling, and routes accept <code>ttlMs</code> from request bodies — an authenticated client can mint effectively immortal relay tokens.</li>
+        <li>Add per-token-type maxima in one shared module (suggested starting points: runtime relay tokens 1h, pairing tokens 15m, device-login 10m, session invites 7d) and clamp with <code>Math.min</code>; reject rather than clamp if the request exceeds the max by more than 10× (likely a bug or abuse).</li>
+        <li>Make the maxima configurable via entitlements later; hardcode sane values now.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> unit tests per issuance path prove a 10-year requested TTL produces a token capped at the type maximum; route schema documents the cap.</div>
+    </div>
+
+    <div class="task security">
+      <h4>C2. Relay-side revocation for scoped tokens <span class="repo">arroba</span></h4>
+      <div class="where"><code>apps/relay/src/auth.rs</code> (<code>ScopedTokenVerifier</code>), relay server state</div>
+      <ul>
+        <li>The relay verifies scoped tokens purely by signature + expiry; <code>jti</code> (<code>token_id</code>) is carried but never checked, and arroba-cloud already has revocation bookkeeping (<code>account-admin-revocations</code>) with nowhere to enforce it.</li>
+        <li>Add an in-memory denylist to <code>ScopedTokenVerifier</code> keyed by <code>token_id</code> (and a coarser one by <code>account_id</code> for account deactivation), checked in <code>validate_claims</code>.</li>
+        <li>Feed it from cloud: a periodic pull of active revocations for the realm (simple, works with current architecture) — entries expire from the denylist when the underlying token would have expired anyway, keeping it bounded.</li>
+        <li>With C1's short TTLs, a small propagation delay is acceptable; document the bound (revocation effective within one sync interval).</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> revoking a token in cloud causes the relay to reject it within the sync interval in an integration drill; denylist size is bounded by outstanding-token count.</div>
+    </div>
+
+    <div class="task">
+      <h4>C3. Single token format + shared claim model <span class="repo">both</span></h4>
+      <div class="where"><code>arroba/apps/relay/src/auth.rs</code> (dual <code>arroba-scoped-v1</code>/JWT parsing), <code>arroba-cloud/packages/relay-tokens</code></div>
+      <ul>
+        <li>The relay accepts two formats with duplicated claim parsing; the TS and Rust claim models are hand-synchronized and already drifting (TS emits <code>session_id</code>, Rust silently drops it).</li>
+        <li>Standardize on the JWT form (cloud already issues it), deprecate <code>arroba-scoped-v1</code>: keep accepting it for one release with a warning metric, then delete <code>decode_scoped_token_parts</code> and <code>encode_scoped_hmac_token</code> or move them to test-only.</li>
+        <li>Create a shared conformance fixture: a JSON file of valid/invalid token test vectors (claims, secret, expected verdict) checked into <em>both</em> repos (or one repo, vendored by script into the other) and consumed by both test suites. Add <code>session_id</code> to the Rust claim struct while doing this.</li>
+        <li>Add <code>nbf</code>/future-<code>iat</code> tolerance checks (small clock-skew window, e.g. 60s) on the Rust verifier.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> both suites run the same vector file green; Rust and TS claim structs field-for-field identical; only one non-deprecated wire format remains.</div>
+    </div>
+
+    <div class="task">
+      <h4>C4. Enable a real CSP on the hosted web app <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/api/src/server.ts:89</code> (<code>contentSecurityPolicy: false</code>), <code>apps/web</code></div>
+      <ul>
+        <li>The browser terminal handles relay tokens and session data; XSS there is token theft. Define a strict policy (<code>default-src 'self'</code>; explicit <code>connect-src</code> for relay websocket origins; no <code>unsafe-inline</code> scripts) and enumerate what currently violates it.</li>
+        <li>The styles-as-TS-modules pattern likely means injected <code>&lt;style&gt;</code> tags — allow <code>style-src 'unsafe-inline'</code> initially if needed, but keep <code>script-src</code> strict; tighten styles when Phase 4 splits them out.</li>
+        <li>Roll out with <code>Content-Security-Policy-Report-Only</code> first, watch reports in the worker, then enforce.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> enforced CSP with strict <code>script-src</code> in production; terminal, workflows, and admin shells function; a regression test asserts the header.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 3 — Rust workspace and build unification <span class="pill p1">P1</span></h2>
+
+    <div class="task">
+      <h4>D1. Root Cargo workspace <span class="repo">arroba</span></h4>
+      <div class="where">new root <code>Cargo.toml</code>; <code>apps/kernel</code>, <code>apps/relay</code>, <code>adapters/rust</code> (currently three crates, three lockfiles)</div>
+      <ul>
+        <li>Create a virtual workspace with the three members; delete the per-crate <code>Cargo.lock</code> files in favor of one root lock. This removes version drift between kernel and relay — which share the auth types via a path dependency today.</li>
+        <li>Hoist common dependency versions into <code>[workspace.dependencies]</code>; add <code>[workspace.lints]</code> (clippy: <code>unwrap_used</code>/<code>expect_used</code> as warn in lib targets to hold the line from B6).</li>
+        <li>Update CI to build/test from the workspace root — <code>Swatinem/rust-cache</code> then caches one target dir instead of three, cutting Rust CI time.</li>
+        <li>Check <code>scripts/</code> and the compatibility launcher for hardcoded per-crate paths.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> <code>cargo test --workspace</code> green from root; one lockfile; CI wall-clock for the Rust job measurably down; <code>cargo tree -d</code> shows no internally-duplicated majors.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 4 — Structural refactors <span class="pill p2">P2</span></h2>
+    <p>
+      Sliced, mechanical, test-guarded. Do not schedule these as one big effort — attach each slice to
+      whatever feature work already touches the area, in the same spirit as the M4.5 ownership
+      migration. Listed by payoff.
+    </p>
+
+    <div class="task">
+      <h4>E1. Split <code>terminal-browser-app.ts</code> <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/web/src/terminal/app/terminal-browser-app.ts</code> (4,861 lines)</div>
+      <ul>
+        <li>This is the browser-side analog of the old <code>DaemonApp</code> god object. The sibling <code>terminal/</code> controllers (side-panel composition, session snapshot, history hydration, slices panel) show the target shape already exists — continue it.</li>
+        <li>Extraction order: (1) connection/reconnect + subscription resumption, (2) transcript/render state, (3) command dispatch and keybindings, (4) remaining app shell. One extraction per PR, each moving its tests along.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> file under ~1,000 lines of composition; extracted modules unit-tested independently; no behavior change per existing suites.</div>
+    </div>
+
+    <div class="task">
+      <h4>E2. Kernel monster files <span class="repo">arroba</span></h4>
+      <div class="where"><code>workflow_code.rs</code> (6,337), <code>runtime/external_provider_session_control.rs</code> (5,149), <code>app/external_provider_session_discovery.rs</code> (4,026), <code>app/kernel_session.rs</code> (2,728), <code>terminal/stream.rs</code> (2,702)</div>
+      <ul>
+        <li><code>WORKFLOW_CODE_OVERARCHING_PLAN.html</code> already governs <code>workflow_code.rs</code> — fold its split into that plan rather than duplicating here.</li>
+        <li>For the external-provider pair: split by provider lifecycle stage (discovery / adoption / settlement / reconciliation) into submodules, mirroring the <code>runtime/router/</code> directory pattern already used elsewhere.</li>
+        <li>Rule of thumb to enforce via review (or a CI lint on file length for new files): new modules over ~1,500 lines need a stated reason.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> each split lands green with no logic diff (move-only commits separated from behavior commits); largest kernel source file trending down per quarter.</div>
+    </div>
+
+    <div class="task">
+      <h4>E3. Directory structure for <code>apps/api/src</code> <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/api/src</code> (~100 flat files with name-prefix namespacing)</div>
+      <ul>
+        <li>The prefixes are the module map: move <code>account-*</code> → <code>account/</code>, <code>browser-*</code> → <code>browser/</code>, <code>billing-*</code> → <code>billing/</code>, <code>cloud-api-*-facade</code> → <code>facades/</code>, keeping <code>routes/</code> and <code>http/</code> as-is.</li>
+        <li>Pure file moves + import updates, one prefix family per PR; the existing <code>architecture-boundaries.test.ts</code> should be extended to assert the new directory boundaries so they stick.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> no file at <code>apps/api/src</code> top level except entrypoints and shared config; boundaries test enforces it.</div>
+    </div>
+
+    <div class="task">
+      <h4>E4. Styles out of TypeScript <span class="repo">arroba-cloud</span></h4>
+      <div class="where"><code>apps/web/src/styles/</code> — <code>workflows.ts</code> (3,876), <code>freeform.ts</code> (3,648), <code>terminal.ts</code> (2,957), <code>tokens.ts</code> (1,613), <code>waiting-room.ts</code> (1,488)</div>
+      <ul>
+        <li>~13,500 lines of CSS living as TS strings defeats tooling (no CSS linting, no dead-rule detection) and forces the <code>unsafe-inline</code> style CSP carve-out from C4.</li>
+        <li>Move to plain <code>.css</code> files bundled by the existing build, keeping <code>tokens.ts</code> as the single source that generates CSS custom properties. Do this after C4's report-only phase identifies what inline styles remain.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> styles served as static CSS; <code>style-src</code> tightened; visual parity confirmed against the existing visual-validation fixtures in <code>tmp/</code> (promote those into a real test dir while at it).</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phase 5 — Hygiene and small items <span class="pill p2">P2</span></h2>
+
+    <div class="task hygiene">
+      <h4>F1. Remove tracked junk, ignore generated clutter <span class="repo">arroba</span></h4>
+      <div class="where">repo root</div>
+      <ul>
+        <li><code>git rm</code>: <code>gmail-view-email-sent-1781191069.png</code>, <code>commands.txt</code>, <code>outputs/workflow-echo-mcp-*.txt</code>, <code>.tmp-opencode-openapi.json</code>; move <code>tmp/live-drills/*</code> into <code>docs/</code> or <code>examples/</code> if the drill fixtures are still referenced, otherwise delete.</li>
+        <li>Add to <code>.gitignore</code>: <code>worktree-*/</code>, <code>outputs/</code>, <code>tmp/</code>, <code>host-worktree/</code>. Delete the stray <code>{</code> directory and stale <code>worktree-*</code> checkouts locally.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> <code>git ls-files</code> at root shows only real project files; fresh clone contains no screenshots or drill outputs.</div>
+    </div>
+
+    <div class="task hygiene">
+      <h4>F2. README restructure <span class="repo">arroba</span></h4>
+      <div class="where"><code>README.md</code></div>
+      <ul>
+        <li>Move the milestone-history prose (the 40-line "current codebase provides" bullet) to <code>docs/STATUS.md</code> or the roadmap doc; keep the README to: what Arroba is, architecture sketch, how to build/run each app, where the docs live.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> README under ~120 lines; a newcomer can go from clone to running daemon + CLI using only the README.</div>
+    </div>
+
+    <div class="task">
+      <h4>F3. Projection clone reduction <span class="repo">arroba</span></h4>
+      <div class="where">kernel projections (~5,000 <code>.clone()</code> sites overall; focus on per-command snapshot clones)</div>
+      <ul>
+        <li>Continue the "trimmed router-side snapshots" direction: wrap warmed read models in <code>Arc</code> so command handlers share rather than copy; measure with the B1 instrumentation before/after to pick the top three projection types by clone cost rather than doing a blanket pass.</li>
+      </ul>
+      <div class="accept"><strong>Accept:</strong> the top clone hotspots identified by measurement are Arc-shared; command latency p95 improvement recorded.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verification strategy</h2>
+    <ul>
+      <li><strong>Every security fix (A*, C*) ships with a regression test</strong> that encodes the attack: dev-secret startup, prod identity header, tampered signature timing path (behavioral), oversized TTL, revoked <code>jti</code>, expired-token-with-broken-clock.</li>
+      <li><strong>Phase 1 is measured, not asserted:</strong> B1's lock-hold and command-latency histograms are the acceptance instrument for B2–B5; keep the baseline and after numbers in a short appendix committed next to this plan.</li>
+      <li><strong>Refactors are move-only:</strong> Phase 4 slices separate mechanical moves from behavior changes into distinct commits, relying on the existing (large) suites; no refactor PR may change a test expectation.</li>
+      <li><strong>Cross-repo token changes (C1–C3) land behind compatibility:</strong> relay keeps accepting the old format for one release; the shared vector file is the contract test preventing drift from returning.</li>
+      <li>Existing harnesses to lean on: the local daemon smoke harness (kernel), relay smoke drills, arroba-cloud's route/service suites, and the visual-validation fixtures for the web terminal.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Suggested schedule</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Week</th><th>Focus</th><th>Deliverables</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Phase 0 complete; B1 instrumentation</td><td>A1–A6 merged; lock-hold baseline captured</td></tr>
+          <tr><td>2</td><td>B2 (sleeps) + B3 start (relay off-lock)</td><td>No sleeps under lock; top interactive relay call sites converted</td></tr>
+          <tr><td>3</td><td>B3 finish, B4, B5</td><td><code>block_on_relay_future</code> deleted; history I/O off-runtime; before/after latency appendix</td></tr>
+          <tr><td>4</td><td>Phase 2 (C1–C3), B6</td><td>TTL caps + revocation live; single token format on deprecation path; poisoning policy</td></tr>
+          <tr><td>5</td><td>Phase 3 (workspace), C4 report-only CSP</td><td>Root workspace; CSP violation data collecting</td></tr>
+          <tr><td>6+</td><td>Phase 4 slices as opportunity allows; Phase 5 in gaps</td><td>E1 first extraction; F1/F2 done; CSP enforced when clean</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="margin-top:12px">
+      The schedule assumes one primary engineer with review support; Phase 0 and B1 are safely
+      parallelizable with a second contributor from day one.
+    </p>
+  </section>
+</main>
+</body>
+</html>
