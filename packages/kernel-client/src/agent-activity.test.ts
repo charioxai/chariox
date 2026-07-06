@@ -326,7 +326,7 @@ test("agent activity projection exposes live active turn identity", () => {
       external_provider_session_id: "thread-1",
       status: "running",
     },
-  }).activeTurnPromptOrigin, undefined)
+  }).activeTurnPromptOrigin, "external")
 
   assert.equal(projectAgentRuntimeActivity({
     active_turn: {
@@ -334,14 +334,14 @@ test("agent activity projection exposes live active turn identity", () => {
       external_provider_turn_id: "turn-1",
       status: "running",
     },
-  }).activeTurnPromptOrigin, undefined)
+  }).activeTurnPromptOrigin, "external")
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
     active_turn: {
       prompt_id: "prompt-external",
       external_provider_turn_id: "turn-1",
       status: "running",
     },
-  })), false)
+  })), true)
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
     active_turn: {
       prompt_id: "prompt-arroba",
