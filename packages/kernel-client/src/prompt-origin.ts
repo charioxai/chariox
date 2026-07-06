@@ -20,10 +20,10 @@ export function promptOriginIsExternal(origin: string | null | undefined): boole
 }
 
 export type PromptOriginRecord = {
-  readonly prompt_origin?: string | null
-  readonly external_provider?: string | null
-  readonly external_provider_session_id?: string | null
-  readonly external_provider_turn_id?: string | null
+  readonly prompt_origin?: string | null | undefined
+  readonly external_provider?: string | null | undefined
+  readonly external_provider_session_id?: string | null | undefined
+  readonly external_provider_turn_id?: string | null | undefined
 }
 
 function inferExternalPromptOriginFromRecord(
