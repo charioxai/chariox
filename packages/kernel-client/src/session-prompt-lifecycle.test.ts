@@ -295,3 +295,54 @@ test("session prompt lifecycle transition detects same prompt external identity 
     settledAgentIds: [],
   })
 })
+
+test("session prompt lifecycle transition normalizes external identity fingerprints", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
+            external_provider: " CODEX ",
+            external_provider_session_id: " thread-1 ",
+            external_provider_turn_id: " turn-1 ",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: false,
+    cancelledPromptSettled: false,
+    settledAgentIds: [],
+  })
+})

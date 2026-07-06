@@ -126,9 +126,9 @@ function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRec
     prompt.promptOrigin ?? "",
     prompt.target_agent_id ?? "",
     prompt.providerRunId ?? "",
-    prompt.externalProvider ?? "",
-    prompt.externalProviderSessionId ?? "",
-    prompt.externalProviderTurnId ?? "",
+    normalizeExternalProviderLifecycleProvider(prompt.externalProvider),
+    normalizeExternalProviderLifecycleIdentity(prompt.externalProviderSessionId),
+    normalizeExternalProviderLifecycleIdentity(prompt.externalProviderTurnId),
   ].join("\u001f")
 }
 
@@ -137,4 +137,12 @@ function compareActivePromptLifecycleRecords(
   right: ActivePromptLifecycleRecord,
 ): number {
   return left.id.localeCompare(right.id)
+}
+
+function normalizeExternalProviderLifecycleProvider(value: string | null | undefined): string {
+  return normalizeExternalProviderLifecycleIdentity(value).toLowerCase()
+}
+
+function normalizeExternalProviderLifecycleIdentity(value: string | null | undefined): string {
+  return value?.trim() ?? ""
 }
