@@ -58,6 +58,14 @@ pub(crate) fn build_waiting_room_public_snapshot(
     generated_at_ms: u64,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let remote_machines = remote_machines
+        .into_iter()
+        .map(filter_remote_machine_product_providers)
+        .collect::<Vec<_>>();
+    let remote_kernels = remote_kernels
+        .into_iter()
+        .map(filter_remote_kernel_product_providers)
+        .collect::<Vec<_>>();
     let sessions =
         waiting_room_session_summaries(runtime_sessions, metaagent_events, caller_user_id);
     let launch_target = infer_waiting_room_launch_target();
@@ -86,6 +94,18 @@ pub(crate) fn build_waiting_room_public_snapshot(
         terminals,
         launch_target,
     })
+}
+
+fn filter_remote_machine_product_providers(
+    mut machine: RemoteMachineRecord,
+) -> RemoteMachineRecord {
+    crate::provider::retain_public_inventory_providers(&mut machine.available_providers);
+    machine
+}
+
+fn filter_remote_kernel_product_providers(mut kernel: RelayKernelPresence) -> RelayKernelPresence {
+    crate::provider::retain_public_inventory_providers(&mut kernel.available_providers);
+    kernel
 }
 
 pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
@@ -625,7 +645,9 @@ mod tests {
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
         assert_eq!(snapshot.remote_machines.len(), 1);
+        assert!(snapshot.remote_machines[0].available_providers.is_empty());
         assert_eq!(snapshot.remote_kernels.len(), 1);
+        assert!(snapshot.remote_kernels[0].available_providers.is_empty());
         assert_eq!(snapshot.terminals.len(), 1);
         assert!(!snapshot.inventory_version.is_empty());
     }

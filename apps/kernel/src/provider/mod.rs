@@ -172,6 +172,10 @@ pub(crate) fn provider_batch_launch_concurrency_limit(
     default_limit
 }
 
+pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
+    providers.retain(|provider| provider != "dev-stub");
+}
+
 pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> bool {
     provider_adapter_supports_policy_reload(run.adapter_key())
 }
@@ -218,13 +222,14 @@ pub(crate) use workspace_write_fence::{
 #[cfg(test)]
 mod tests {
     use super::{
-        adapter_key_for_provider, canonical_provider_family, provider_adapter_supports_policy_reload,
-        provider_batch_launch_concurrency_limit, provider_id_for_launch,
-        provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
-        provider_run_refreshes_selection_on_read, provider_run_supports_policy_reload,
-        provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
-        provider_run_uses_claude_native_bridge, provider_run_uses_runtime_structured_utility_prompt,
-        provider_run_waits_for_workflow_publication_completion,
+        adapter_key_for_provider, canonical_provider_family,
+        provider_adapter_supports_policy_reload, provider_batch_launch_concurrency_limit,
+        provider_id_for_launch, provider_run_finalizes_cancellation_on_abort_dispatch,
+        provider_run_is_claude_headless, provider_run_refreshes_selection_on_read,
+        provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_policy_reload,
+        provider_run_supports_selection_sync, provider_run_uses_claude_native_bridge,
+        provider_run_uses_runtime_structured_utility_prompt,
+        provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
         run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
         ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
@@ -381,6 +386,19 @@ mod tests {
             provider_batch_launch_concurrency_limit("custom", "custom", 99),
             99
         );
+    }
+
+    #[test]
+    fn public_inventory_provider_visibility_is_provider_policy() {
+        let mut providers = vec![
+            "codex".to_string(),
+            "dev-stub".to_string(),
+            "opencode".to_string(),
+        ];
+
+        retain_public_inventory_providers(&mut providers);
+
+        assert_eq!(providers, vec!["codex", "opencode"]);
     }
 
     #[test]

@@ -59,8 +59,14 @@ impl RemoteRelayInventoryProjectionStore {
             .state
             .lock()
             .expect("remote relay inventory projection lock should not be poisoned");
-        state.remote_machines = remote_machines;
-        state.remote_kernels = remote_kernels;
+        state.remote_machines = remote_machines
+            .into_iter()
+            .map(filter_remote_machine_product_providers)
+            .collect();
+        state.remote_kernels = remote_kernels
+            .into_iter()
+            .map(filter_remote_kernel_product_providers)
+            .collect();
         state.refreshed_at_ms = unix_epoch_ms();
         state.refresh_requested_at_ms = state.refreshed_at_ms;
     }
@@ -75,9 +81,11 @@ impl RemoteRelayInventoryProjectionStore {
             .iter_mut()
             .find(|existing| existing.machine_id == machine.machine_id)
         {
-            *existing = machine;
+            *existing = filter_remote_machine_product_providers(machine);
         } else {
-            state.remote_machines.push(machine);
+            state
+                .remote_machines
+                .push(filter_remote_machine_product_providers(machine));
         }
         sort_remote_machines(&mut state.remote_machines);
         state.refreshed_at_ms = unix_epoch_ms();
@@ -109,6 +117,18 @@ impl RemoteRelayInventoryProjectionStore {
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
     }
+}
+
+fn filter_remote_machine_product_providers(
+    mut machine: RemoteMachineRecord,
+) -> RemoteMachineRecord {
+    crate::provider::retain_public_inventory_providers(&mut machine.available_providers);
+    machine
+}
+
+fn filter_remote_kernel_product_providers(mut kernel: RelayKernelPresence) -> RelayKernelPresence {
+    crate::provider::retain_public_inventory_providers(&mut kernel.available_providers);
+    kernel
 }
 
 fn sort_remote_machines(remote_machines: &mut [RemoteMachineRecord]) {
@@ -192,7 +212,9 @@ mod tests {
         assert_eq!(machines[0].trust_status, RemoteMachineTrustStatus::Approved);
         assert!(!machines[0].pending);
         assert_eq!(machines[0].registry_alias.as_deref(), Some("build box"));
+        assert!(machines[0].available_providers.is_empty());
         assert_eq!(kernels.len(), 1);
+        assert!(kernels[0].available_providers.is_empty());
     }
 
     #[test]
