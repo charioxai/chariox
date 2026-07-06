@@ -33,3 +33,6 @@ host-worktree/
 outputs/
 tmp/
 .tmp-opencode-openapi.json
+
+commands.txt
+gmail-view-email-sent-*.png
