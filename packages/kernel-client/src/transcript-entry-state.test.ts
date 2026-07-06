@@ -89,12 +89,14 @@ test("createTranscriptSteeredPromptEntry keeps steering out of turn tracking", (
   assert.deepEqual(createTranscriptSteeredPromptEntry("steer\n", {
     promptId: "prompt-1",
     sourceAttachmentId: "attachment-1",
+    promptOrigin: "external",
   }), {
     role: "user",
     text: "steer",
     turnTracking: "none",
     promptId: "prompt-1",
     sourceAttachmentId: "attachment-1",
+    promptOrigin: "external",
   })
   assert.equal(createTranscriptSteeredPromptEntry("\n"), null)
 })

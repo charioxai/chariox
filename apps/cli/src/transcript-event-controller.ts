@@ -80,7 +80,7 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
   const appendSteeredPrompt = (
     text: string,
     agentId: string,
-    metadata: { promptId?: string | null; sourceAttachmentId?: string | null } = {},
+    metadata: { promptId?: string | null; sourceAttachmentId?: string | null; promptOrigin?: string | null } = {},
   ) => {
     const entry = createTranscriptSteeredPromptEntry(text, metadata)
     if (!entry) {

@@ -1281,6 +1281,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           appendSteeredPrompt(payload.prompt.prompt, queuedPrompt.agentId, {
             promptId: payload.prompt.id,
             sourceAttachmentId: payload.prompt.source_attachment_id,
+            promptOrigin: payload.prompt.prompt_origin ?? queuedPrompt.promptOrigin,
           })
         }
         applySessionState(payload.session)

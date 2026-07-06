@@ -15,6 +15,7 @@ export type TranscriptEntryStateEntry = {
 export type TranscriptPromptMetadata = {
   readonly promptId?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
+  readonly promptOrigin?: string | null | undefined
 }
 
 export type TranscriptUserPromptTurn = {
@@ -33,6 +34,7 @@ export type TranscriptSteeredPromptEntry = {
   readonly turnTracking: "none"
   readonly promptId?: string | null
   readonly sourceAttachmentId?: string | null
+  readonly promptOrigin?: string | null
 }
 
 export type TranscriptEntryRuntimeState = {
@@ -174,6 +176,7 @@ export function createTranscriptSteeredPromptEntry(
     turnTracking: "none",
     ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
     ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
   }
 }
 

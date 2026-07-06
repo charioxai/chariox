@@ -64,6 +64,7 @@ test("transcript event controller appends steered prompts without starting a new
   harness.controller.appendSteeredPrompt("steer this\n", "agent-1", {
     promptId: "prompt-2",
     sourceAttachmentId: "attachment-2",
+    promptOrigin: "external",
   })
 
   assert.deepEqual(harness.recordedActivities, ["queued_prompt_steer"])
@@ -79,6 +80,7 @@ test("transcript event controller appends steered prompts without starting a new
       turnTracking: "none",
       promptId: "prompt-2",
       sourceAttachmentId: "attachment-2",
+      promptOrigin: "external",
     },
   ])
   assert.equal(harness.previewSynced, 1)
