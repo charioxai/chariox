@@ -26,3 +26,10 @@ opencode-dev/
 codex-main/
 paseo/
 .gstack/
+
+# Scratch worktrees and generated drill artifacts
+worktree-*/
+host-worktree/
+outputs/
+tmp/
+.tmp-opencode-openapi.json
