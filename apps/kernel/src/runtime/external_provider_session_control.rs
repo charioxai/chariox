@@ -4870,6 +4870,20 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "complete external reply");
         assert_eq!(entries[0].observed_at_ms, Some(84));
+        assert!(entries[0].is_external_provider_observed());
+        assert_eq!(
+            entries[0].merge_key.as_deref(),
+            Some("external:codex:thread-observed:assistant-1")
+        );
+        assert_eq!(entries[0].external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            entries[0].external_provider_session_id.as_deref(),
+            Some("thread-observed")
+        );
+        assert_eq!(
+            entries[0].external_provider_turn_id.as_deref(),
+            Some("assistant-1")
+        );
     }
 
     #[test]
