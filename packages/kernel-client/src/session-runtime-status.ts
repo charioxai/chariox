@@ -237,6 +237,14 @@ export function sessionAgentRuntimeDisplayStates(
   }))
 }
 
+export function sessionAgentRuntimeDisplayStateByAgent(
+  session: RuntimeSession | null | undefined,
+): Readonly<Record<string, AgentRuntimeDisplayState>> {
+  return Object.fromEntries(
+    sessionAgentRuntimeDisplayStates(session).map((entry) => [entry.id, entry.state]),
+  )
+}
+
 export function agentRuntimeStateFromProjection(
   agent: AgentInstance,
   context: AgentRuntimeProjectionContext,
