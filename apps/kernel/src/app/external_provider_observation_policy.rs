@@ -9,47 +9,82 @@ pub(crate) struct ExternalProviderObservationPolicy<'a> {
     provider: &'a str,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExternalProviderObservationSpec {
+    provider: &'static str,
+    requires_explicit_completion: bool,
+    settling_status_prefixes: &'static [&'static str],
+    settling_status_fragments: &'static [&'static str],
+    passive_status_prefixes: &'static [&'static str],
+    projects_token_usage: bool,
+}
+
+const EXTERNAL_PROVIDER_OBSERVATION_SPECS: &[ExternalProviderObservationSpec] = &[
+    ExternalProviderObservationSpec {
+        provider: "codex",
+        requires_explicit_completion: true,
+        settling_status_prefixes: &["codex task_complete", "codex event turn_aborted"],
+        settling_status_fragments: &["\"type\":\"turn_aborted\"", "\"type\": \"turn_aborted\""],
+        passive_status_prefixes: &["codex token_count"],
+        projects_token_usage: true,
+    },
+    ExternalProviderObservationSpec {
+        provider: "claude",
+        requires_explicit_completion: false,
+        settling_status_prefixes: &["claude message completed"],
+        settling_status_fragments: &[],
+        passive_status_prefixes: &["claude last-prompt", "claude ai-title"],
+        projects_token_usage: false,
+    },
+    ExternalProviderObservationSpec {
+        provider: "opencode",
+        requires_explicit_completion: true,
+        settling_status_prefixes: &["opencode message completed"],
+        settling_status_fragments: &[],
+        passive_status_prefixes: &[],
+        projects_token_usage: false,
+    },
+];
+
 impl<'a> ExternalProviderObservationPolicy<'a> {
     pub(crate) fn for_provider(provider: &'a str) -> Self {
         Self { provider }
     }
 
-    fn provider_is(self, expected: &str) -> bool {
-        self.provider.trim().eq_ignore_ascii_case(expected)
+    fn spec(self) -> Option<&'static ExternalProviderObservationSpec> {
+        let provider = self.provider.trim();
+        EXTERNAL_PROVIDER_OBSERVATION_SPECS
+            .iter()
+            .find(|spec| provider.eq_ignore_ascii_case(spec.provider))
     }
 
     pub(crate) fn uses_explicit_completion(self) -> bool {
-        self.provider_is("codex") || self.provider_is("opencode")
+        self.spec()
+            .is_some_and(|spec| spec.requires_explicit_completion)
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
-        if self.provider_is("codex") {
-            return text.starts_with("codex task_complete")
-                || text.starts_with("codex event turn_aborted")
-                || text.contains("\"type\":\"turn_aborted\"")
-                || text.contains("\"type\": \"turn_aborted\"");
-        }
-        if self.provider_is("claude") {
-            return text.starts_with("claude message completed");
-        }
-        if self.provider_is("opencode") {
-            return text.starts_with("opencode message completed");
-        }
-        false
+        self.spec().is_some_and(|spec| {
+            spec.settling_status_prefixes
+                .iter()
+                .any(|prefix| text.starts_with(prefix))
+                || spec
+                    .settling_status_fragments
+                    .iter()
+                    .any(|fragment| text.contains(fragment))
+        })
     }
 
     pub(crate) fn status_is_passive_telemetry(self, text: &str) -> bool {
-        if self.provider_is("codex") {
-            return text.starts_with("codex token_count");
-        }
-        if self.provider_is("claude") {
-            return text.starts_with("claude last-prompt") || text.starts_with("claude ai-title");
-        }
-        false
+        self.spec().is_some_and(|spec| {
+            spec.passive_status_prefixes
+                .iter()
+                .any(|prefix| text.starts_with(prefix))
+        })
     }
 
     pub(crate) fn status_usage(self, text: &str) -> Option<ProviderRunTokenUsage> {
-        if !self.provider_is("codex") {
+        if !self.spec().is_some_and(|spec| spec.projects_token_usage) {
             return None;
         }
         let (header, payload) = text.split_once('\n')?;
