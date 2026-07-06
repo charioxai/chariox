@@ -27,3 +27,17 @@ export function runtimeProviderRunForAgent(
 ): RuntimeProviderRun | null {
   return run && run.agent_instance_id === agentId ? run : null
 }
+
+export function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun): boolean {
+  return left.id === right.id
+    && left.session_id === right.session_id
+    && left.agent_instance_id === right.agent_instance_id
+    && left.adapter_key === right.adapter_key
+    && left.provider === right.provider
+    && left.account_profile === right.account_profile
+    && left.model === right.model
+    && left.variant === right.variant
+    && left.client_interface === right.client_interface
+    && left.usage_tokens_total === right.usage_tokens_total
+    && left.state === right.state
+}

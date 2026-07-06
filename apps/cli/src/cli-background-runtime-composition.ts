@@ -12,7 +12,6 @@ import { createKernelResyncController } from "./kernel-resync-controller.js"
 import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
 import { createKernelSessionUnavailableController } from "./kernel-session-unavailable-controller.js"
 import { createPollerDegradationController } from "./poller-degradation-controller.js"
-import { sameProviderRun } from "./provider-api.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   SILENT_POLL_THRESHOLD,
@@ -27,6 +26,7 @@ import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import {
   previewLineForTerminalRecord,
 } from "@arroba/kernel-client/session-history-preview"
+import { sameProviderRun } from "@arroba/kernel-client/session-runtime-lookup"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
 import {
   computeNextTranscriptTurnId as computeNextTurnId,

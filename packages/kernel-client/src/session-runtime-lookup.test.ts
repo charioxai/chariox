@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   runtimeProviderRunForAgent,
+  sameProviderRun,
   sessionActiveInteractionForAgent,
   sessionFocusedInteraction,
 } from "./session-runtime-lookup.js"
@@ -66,4 +67,25 @@ test("runtime provider run lookup requires matching agent ownership", () => {
   assert.equal(runtimeProviderRunForAgent(run, "agent-1")?.id, "run-1")
   assert.equal(runtimeProviderRunForAgent(run, "agent-2"), null)
   assert.equal(runtimeProviderRunForAgent(null, "agent-1"), null)
+})
+
+test("same provider run compares identity and projected runtime metadata", () => {
+  const run: RuntimeProviderRun = {
+    id: "run-1",
+    session_id: "session-1",
+    provider: "codex",
+    agent_instance_id: "agent-1",
+    adapter_key: "codex",
+    account_profile: "default",
+    model: "gpt-5.2",
+    variant: null,
+    usage_tokens_total: 10,
+    state: "running",
+    client_interface: "native_tui",
+  }
+
+  assert.equal(sameProviderRun(run, { ...run }), true)
+  assert.equal(sameProviderRun(run, { ...run, usage_tokens_total: 11 }), false)
+  assert.equal(sameProviderRun(run, { ...run, state: "completed" }), false)
+  assert.equal(sameProviderRun(run, { ...run, client_interface: "headless" }), false)
 })
