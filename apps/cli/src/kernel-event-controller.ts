@@ -60,91 +60,117 @@ type KernelEventControllerDeps = {
   handleExternalProviderHistoryUpdated?: (agentId: string | null) => void
 }
 
+type ProjectedRecordAppendTarget = {
+  user: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
+  reasoning: (text: string, projection: TerminalRecordTranscriptProjection) => void
+  tool: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
+  error: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
+  status: (text: string, projection: TerminalRecordTranscriptProjection) => void
+  assistant: (text: string, projection: TerminalRecordTranscriptProjection) => void
+}
+
 export function createKernelEventController(deps: KernelEventControllerDeps) {
   let lastTransportNoticeMessage: string | null = null
   let lastTransportNoticeAtMs = 0
 
-  const appendProjectedRecordToAgentPane = (
-    recordAgentId: string,
+  const appendProjectedRecord = (
     projection: TerminalRecordTranscriptProjection,
+    target: ProjectedRecordAppendTarget,
   ) => {
     const metadata = projection.metadata
     switch (projection.transcriptRole) {
       case "user": {
-        if (deps.hasTrailingUserPrompt(recordAgentId, projection.transcriptText, metadata.promptId ?? null)) {
-          break
-        }
-        const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
-        deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({
-          role: "user",
-          text: deps.trimSingleTrailingNewline(projection.transcriptText),
-          turnId: deps.computeNextTurnId(paneEntries),
-        }, metadata))
+        target.user(projection.transcriptText, metadata)
         break
       }
       case "reasoning":
-        deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", projection.transcriptText, projection.mergeKey ?? undefined, undefined, metadata)
+        target.reasoning(projection.transcriptText, projection)
         break
       case "tool":
-        deps.appendToolUpdateToAgentPane(recordAgentId, projection.transcriptText, metadata)
+        target.tool(projection.transcriptText, metadata)
         break
       case "error":
-        if (projection.transcriptText) {
-          deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "error", text: projection.transcriptText, emphasis: "error" }, metadata))
-        }
+        target.error(projection.transcriptText, metadata)
         break
       case "status":
         if (projection.renderProviderStatus) {
-          deps.appendProviderChunkToAgentPane(recordAgentId, "status", projection.transcriptText, projection.statusMergeKey ?? undefined, undefined, metadata)
+          target.status(projection.transcriptText, projection)
         }
         break
       case "assistant":
-        deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", projection.transcriptText, projection.mergeKey ?? undefined, undefined, metadata)
+        target.assistant(projection.transcriptText, projection)
         break
       case null:
         break
     }
   }
 
+  const appendProjectedRecordToAgentPane = (
+    recordAgentId: string,
+    projection: TerminalRecordTranscriptProjection,
+  ) => appendProjectedRecord(projection, {
+    user: (text, metadata) => {
+      if (deps.hasTrailingUserPrompt(recordAgentId, text, metadata.promptId ?? null)) {
+        return
+      }
+      const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
+      deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({
+        role: "user",
+        text: deps.trimSingleTrailingNewline(text),
+        turnId: deps.computeNextTurnId(paneEntries),
+      }, metadata))
+    },
+    reasoning: (text, item) => {
+      deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, item.mergeKey ?? undefined, undefined, item.metadata)
+    },
+    tool: (text, metadata) => {
+      deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
+    },
+    error: (text, metadata) => {
+      if (text) {
+        deps.appendTranscriptEntryToAgentPane(recordAgentId, transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "error", text, emphasis: "error" }, metadata))
+      }
+    },
+    status: (text, item) => {
+      deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, item.statusMergeKey ?? undefined, undefined, item.metadata)
+    },
+    assistant: (text, item) => {
+      deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, item.mergeKey ?? undefined, undefined, item.metadata)
+    },
+  })
+
   const appendProjectedRecordToVisibleTranscript = (
     recordAgentId: string,
     projection: TerminalRecordTranscriptProjection,
-  ) => {
-    const metadata = projection.metadata
-    switch (projection.transcriptRole) {
-      case "user":
-        if (deps.hasTrailingUserPrompt(recordAgentId, projection.transcriptText, metadata.promptId ?? null)) {
-          break
-        }
-        deps.appendEntry(transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "user", text: deps.trimSingleTrailingNewline(projection.transcriptText) }, metadata))
-        deps.syncVisibleTranscriptPreview()
-        break
-      case "reasoning":
-        deps.appendProviderChunk("reasoning", projection.transcriptText, projection.mergeKey ?? undefined, undefined, metadata)
-        deps.syncVisibleTranscriptPreview()
-        break
-      case "tool":
-        deps.appendToolUpdate(projection.transcriptText, metadata)
-        deps.syncVisibleTranscriptPreview()
-        break
-      case "error":
-        deps.appendProviderError(projection.transcriptText)
-        deps.syncVisibleTranscriptPreview()
-        break
-      case "status":
-        if (projection.renderProviderStatus) {
-          deps.appendProviderChunk("status", projection.transcriptText, projection.statusMergeKey ?? undefined, undefined, metadata)
-          deps.syncVisibleTranscriptPreview()
-        }
-        break
-      case "assistant":
-        deps.appendProviderChunk("assistant", projection.transcriptText, projection.mergeKey ?? undefined, undefined, metadata)
-        deps.syncVisibleTranscriptPreview()
-        break
-      case null:
-        break
-    }
-  }
+  ) => appendProjectedRecord(projection, {
+    user: (text, metadata) => {
+      if (deps.hasTrailingUserPrompt(recordAgentId, text, metadata.promptId ?? null)) {
+        return
+      }
+      deps.appendEntry(transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "user", text: deps.trimSingleTrailingNewline(text) }, metadata))
+      deps.syncVisibleTranscriptPreview()
+    },
+    reasoning: (text, item) => {
+      deps.appendProviderChunk("reasoning", text, item.mergeKey ?? undefined, undefined, item.metadata)
+      deps.syncVisibleTranscriptPreview()
+    },
+    tool: (text, metadata) => {
+      deps.appendToolUpdate(text, metadata)
+      deps.syncVisibleTranscriptPreview()
+    },
+    error: (text) => {
+      deps.appendProviderError(text)
+      deps.syncVisibleTranscriptPreview()
+    },
+    status: (text, item) => {
+      deps.appendProviderChunk("status", text, item.statusMergeKey ?? undefined, undefined, item.metadata)
+      deps.syncVisibleTranscriptPreview()
+    },
+    assistant: (text, item) => {
+      deps.appendProviderChunk("assistant", text, item.mergeKey ?? undefined, undefined, item.metadata)
+      deps.syncVisibleTranscriptPreview()
+    },
+  })
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
     deps.recordDaemonActivity("terminal_record")
