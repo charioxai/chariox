@@ -36,6 +36,7 @@ pub use command_catalog::{
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
 };
 pub use launch_contract::{
+    canonical_external_provider_session_id, external_provider_session_providers,
     AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
     ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
     ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,

@@ -4,7 +4,10 @@ use std::sync::{Arc, RwLock};
 use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
-use crate::provider::{ExternalProviderImportMetadata, ExternalProviderObservedCursor};
+use crate::provider::{
+    canonical_external_provider_session_id, ExternalProviderImportMetadata,
+    ExternalProviderObservedCursor,
+};
 use crate::session::unix_epoch_ms;
 
 const DEFAULT_EXTERNAL_PROVIDER_SESSION_LIMIT: usize = 25;
@@ -350,11 +353,7 @@ pub(crate) fn external_session_id_for_provider_session(
     provider: &str,
     provider_session_id: &str,
 ) -> Option<String> {
-    let provider = provider.trim().to_ascii_lowercase();
-    let provider_session_id = provider_session_id.trim();
-    (!provider_session_id.is_empty()
-        && matches!(provider.as_str(), "codex" | "opencode" | "claude"))
-    .then(|| format!("{provider}:{provider_session_id}"))
+    canonical_external_provider_session_id(provider, provider_session_id)
 }
 
 fn apply_attachment_marker(

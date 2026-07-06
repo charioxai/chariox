@@ -14,6 +14,23 @@ pub(super) fn default_provider_owner_user_id() -> String {
     DEFAULT_LOCAL_USER_ID.to_string()
 }
 
+const EXTERNAL_PROVIDER_SESSION_PROVIDERS: &[&str] = &["codex", "claude", "opencode"];
+
+pub fn external_provider_session_providers() -> &'static [&'static str] {
+    EXTERNAL_PROVIDER_SESSION_PROVIDERS
+}
+
+pub fn canonical_external_provider_session_id(
+    provider: &str,
+    provider_session_id: &str,
+) -> Option<String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    let provider_session_id = provider_session_id.trim();
+    (!provider_session_id.is_empty()
+        && EXTERNAL_PROVIDER_SESSION_PROVIDERS.contains(&provider.as_str()))
+    .then(|| format!("{provider}:{provider_session_id}"))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderResumeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +121,32 @@ impl ProviderResumeState {
             claude_session_id: self.claude_session_id.clone(),
         }
     }
+
+    pub fn from_external_provider_session(
+        provider: &str,
+        provider_session_id: impl Into<String>,
+    ) -> Self {
+        match provider {
+            "codex" => Self::from_codex_thread_id(provider_session_id),
+            "opencode" => Self::from_opencode_session_id(provider_session_id),
+            "claude" => Self::from_claude_session_id(provider_session_id),
+            _ => Self::default(),
+        }
+    }
+
+    pub fn external_provider_sessions(&self) -> Vec<(&'static str, &str)> {
+        let mut sessions = Vec::new();
+        if let Some(provider_session_id) = self.codex_thread_id() {
+            sessions.push(("codex", provider_session_id));
+        }
+        if let Some(provider_session_id) = self.claude_session_id() {
+            sessions.push(("claude", provider_session_id));
+        }
+        if let Some(provider_session_id) = self.opencode_session_id() {
+            sessions.push(("opencode", provider_session_id));
+        }
+        sessions
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,9 +208,10 @@ impl ExternalProviderImportMetadata {
             .trim()
             .to_string();
         let external_provider_session_id = external_provider_session_id.into().trim().to_string();
-        let external_provider_session_id = (!external_provider_session_provider_id.is_empty()
-            && matches!(external_provider.as_str(), "codex" | "opencode" | "claude"))
-        .then(|| format!("{external_provider}:{external_provider_session_provider_id}"))
+        let external_provider_session_id = canonical_external_provider_session_id(
+            &external_provider,
+            &external_provider_session_provider_id,
+        )
         .unwrap_or(external_provider_session_id);
         Self {
             external_provider_session_id,

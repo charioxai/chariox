@@ -96,7 +96,6 @@ pub(crate) fn load_provider_catalog(
                 )
             },
         })?;
-    include_local_adapter_providers(&mut catalog);
     annotate_remote_machine_providers(
         &mut catalog,
         &approved_remote_machines,
@@ -113,29 +112,6 @@ pub(crate) fn load_provider_catalog(
         }),
     );
     Ok(catalog)
-}
-
-fn include_local_adapter_providers(catalog: &mut OpenCodeProviderCatalog) {
-    if !catalog.all.iter().any(|provider| provider.id == "dev-stub") {
-        catalog.all.push(OpenCodeProviderInfo {
-            id: "dev-stub".to_string(),
-            name: display_name_for_provider("dev-stub"),
-            remote_machine_aliases: Vec::new(),
-            models: Default::default(),
-        });
-    }
-    if !catalog
-        .connected
-        .iter()
-        .any(|provider| provider == "dev-stub")
-    {
-        catalog.connected.push("dev-stub".to_string());
-    }
-    catalog.connected.sort();
-    catalog.connected.dedup();
-    catalog
-        .all
-        .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
 }
 
 pub(crate) fn provider_auth_status_response(
@@ -368,6 +344,7 @@ fn remote_only_provider_catalog(
         .iter()
         .filter(|machine| machine.machine_id != local_machine_id)
         .flat_map(|machine| machine.available_providers.iter().cloned())
+        .filter(|provider| provider != "dev-stub")
         .collect::<Vec<_>>();
     provider_ids.sort();
     provider_ids.dedup();
@@ -396,7 +373,6 @@ fn display_name_for_provider(provider_id: &str) -> String {
     match provider_id {
         "codex" => "Codex".to_string(),
         "opencode" => "OpenCode".to_string(),
-        "dev-stub" => "Dev Stub".to_string(),
         other => other.to_string(),
     }
 }
@@ -620,7 +596,11 @@ exit 2
                 machine_id: "machine-remote".to_string(),
                 machine_alias: Some("builder".to_string()),
                 kernel_count: 1,
-                available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                available_providers: vec![
+                    "codex".to_string(),
+                    "opencode".to_string(),
+                    "dev-stub".to_string(),
+                ],
                 provider_accounts: Vec::new(),
             },
         ];
@@ -633,6 +613,7 @@ exit 2
             catalog.connected,
             vec!["codex".to_string(), "opencode".to_string()]
         );
+        assert!(!catalog.all.iter().any(|provider| provider.id == "dev-stub"));
         assert_eq!(catalog.default.len(), 0);
         let codex = catalog
             .all
@@ -648,34 +629,6 @@ exit 2
         assert_eq!(codex.remote_machine_aliases, vec!["builder".to_string()]);
         assert_eq!(opencode.name, "OpenCode");
         assert_eq!(opencode.remote_machine_aliases, vec!["builder".to_string()]);
-    }
-
-    #[test]
-    fn includes_dev_stub_as_a_local_adapter_provider() {
-        let mut catalog = OpenCodeProviderCatalog {
-            all: vec![OpenCodeProviderInfo {
-                id: "codex".to_string(),
-                name: "Codex".to_string(),
-                remote_machine_aliases: Vec::new(),
-                models: Default::default(),
-            }],
-            default: Default::default(),
-            connected: vec!["codex".to_string()],
-        };
-
-        include_local_adapter_providers(&mut catalog);
-
-        assert!(catalog
-            .connected
-            .iter()
-            .any(|provider| provider == "dev-stub"));
-        let dev_stub = catalog
-            .all
-            .iter()
-            .find(|provider| provider.id == "dev-stub")
-            .expect("dev-stub should be present");
-        assert_eq!(dev_stub.name, "Dev Stub");
-        assert!(dev_stub.models.is_empty());
     }
 
     #[test]

@@ -21,8 +21,8 @@ use crate::local::{
     LocalDaemonResponse,
 };
 use crate::provider::{
-    ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
-    ProviderResumeState, RuntimeProviderRun,
+    external_provider_session_providers, ExternalProviderImportMetadata,
+    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
@@ -426,10 +426,10 @@ async fn refresh_external_provider_session_index(
         let app = app.lock().await;
         app.external_provider_session_index_store()
     };
-    for provider in ["codex", "claude", "opencode"] {
+    for provider in external_provider_session_providers() {
         let provider_sessions = discovered
             .iter()
-            .filter(|session| session.provider == provider)
+            .filter(|session| session.provider == *provider)
             .cloned()
             .collect::<Vec<_>>();
         store.replace_provider_sessions(provider, provider_sessions);
@@ -526,10 +526,10 @@ pub(crate) async fn execute_external_provider_session_request(
             if let Some(provider) = provider.as_deref() {
                 store.replace_provider_sessions(provider, discovered);
             } else {
-                for provider in ["codex", "claude", "opencode"] {
+                for provider in external_provider_session_providers() {
                     let provider_sessions = discovered
                         .iter()
-                        .filter(|session| session.provider == provider)
+                        .filter(|session| session.provider == *provider)
                         .cloned()
                         .collect::<Vec<_>>();
                     store.replace_provider_sessions(provider, provider_sessions);
@@ -846,7 +846,7 @@ fn launch_imported_external_provider(
         LaunchProviderRequest::new(session.id(), provider, provider, "default", model)
             .with_agent_id(agent.id())
             .with_owner_user_id(agent.owner_user_id().to_string())
-            .with_resume_state(resume_state_for_external_session(
+            .with_resume_state(ProviderResumeState::from_external_provider_session(
                 provider,
                 &external.provider_session_id,
             ))
@@ -1511,14 +1511,7 @@ fn push_resume_state_attachments(
     session_id: &str,
     agent_id: &str,
 ) {
-    for (provider, provider_session_id) in [
-        ("codex", resume_state.codex_thread_id()),
-        ("opencode", resume_state.opencode_session_id()),
-        ("claude", resume_state.claude_session_id()),
-    ] {
-        let Some(provider_session_id) = provider_session_id else {
-            continue;
-        };
+    for (provider, provider_session_id) in resume_state.external_provider_sessions() {
         if let Some(external_session_id) =
             external_session_id_for_provider_session(provider, provider_session_id)
         {
@@ -1588,23 +1581,20 @@ fn attached_external_observer_targets_from_resume_state(
     provider_run_id: Option<String>,
     resume_state: &ProviderResumeState,
 ) -> Vec<AttachedExternalObserverTarget> {
-    [
-        ("codex", resume_state.codex_thread_id()),
-        ("opencode", resume_state.opencode_session_id()),
-        ("claude", resume_state.claude_session_id()),
-    ]
-    .into_iter()
-    .filter_map(|(provider, provider_session_id)| {
-        attached_external_observer_target_from_provider_session(
-            cursor_store,
-            session_id,
-            agent_id,
-            provider_run_id.clone(),
-            provider,
-            provider_session_id?,
-        )
-    })
-    .collect()
+    resume_state
+        .external_provider_sessions()
+        .into_iter()
+        .filter_map(|(provider, provider_session_id)| {
+            attached_external_observer_target_from_provider_session(
+                cursor_store,
+                session_id,
+                agent_id,
+                provider_run_id.clone(),
+                provider,
+                provider_session_id,
+            )
+        })
+        .collect()
 }
 
 fn attached_external_observer_target_from_provider_session(
@@ -1689,18 +1679,6 @@ fn persist_external_import_metadata(
     )?;
     let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?;
     Ok(agent)
-}
-
-fn resume_state_for_external_session(
-    provider: &str,
-    provider_session_id: &str,
-) -> ProviderResumeState {
-    match provider {
-        "codex" => ProviderResumeState::from_codex_thread_id(provider_session_id),
-        "opencode" => ProviderResumeState::from_opencode_session_id(provider_session_id),
-        "claude" => ProviderResumeState::from_claude_session_id(provider_session_id),
-        _ => ProviderResumeState::default(),
-    }
 }
 
 fn default_external_provider_model(provider: &str) -> &'static str {
@@ -4936,18 +4914,23 @@ mod tests {
     #[test]
     fn resume_state_maps_known_external_providers() {
         assert_eq!(
-            resume_state_for_external_session("codex", "thread-1").codex_thread_id(),
+            ProviderResumeState::from_external_provider_session("codex", "thread-1")
+                .codex_thread_id(),
             Some("thread-1")
         );
         assert_eq!(
-            resume_state_for_external_session("opencode", "session-1").opencode_session_id(),
+            ProviderResumeState::from_external_provider_session("opencode", "session-1")
+                .opencode_session_id(),
             Some("session-1")
         );
         assert_eq!(
-            resume_state_for_external_session("claude", "session-2").claude_session_id(),
+            ProviderResumeState::from_external_provider_session("claude", "session-2")
+                .claude_session_id(),
             Some("session-2")
         );
-        assert!(resume_state_for_external_session("dev-stub", "session-3").is_empty());
+        assert!(
+            ProviderResumeState::from_external_provider_session("dev-stub", "session-3").is_empty()
+        );
     }
 
     #[test]
