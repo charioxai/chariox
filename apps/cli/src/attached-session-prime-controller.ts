@@ -14,6 +14,7 @@ import {
 } from "@arroba/kernel-client/session-history-transcript"
 import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+import { entryBelongsToAgent } from "@arroba/kernel-client/agent-pane-state"
 
 export type AttachedSessionPrimeControllerDeps = {
   promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">
@@ -50,10 +51,16 @@ export function createAttachedSessionPrimeController(
       session.agents.map((agent) => agent.id),
     )
     await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
-    const entriesByAgent = new Map(outline.agents.map((agent) => [
-      agent.agent_id,
-      reindexTranscriptEntries(hydrateSessionHistoryOutlineAgentEntries(agent), 0),
-    ]))
+    const agentsById = new Map(session.agents.map((agent) => [agent.id, agent]))
+    const entriesByAgent = new Map(outline.agents.map((agent) => {
+      const sessionAgent = agentsById.get(agent.agent_id)
+      const entries = hydrateSessionHistoryOutlineAgentEntries(agent)
+        .filter((entry) => !sessionAgent || entryBelongsToAgent(sessionAgent, entry))
+      return [
+        agent.agent_id,
+        reindexTranscriptEntries(entries, 0),
+      ]
+    }))
     for (const [agentId, entries] of entriesByAgent) {
       deps.setAgentPaneEntries(agentId, cloneTranscriptEntries(entries))
       deps.setAgentPanePreview(agentId, formatTranscriptPreview(entries))

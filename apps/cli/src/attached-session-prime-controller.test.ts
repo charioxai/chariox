@@ -68,6 +68,57 @@ test("attached session prime selects the visible split-pane screen", async () =>
   assert.deepEqual(harness.replaceCalls[0]?.agentId, "agent-3")
 })
 
+test("attached session prime scopes external observed history to imported agents", async () => {
+  const harness = primeHarness({
+    outline: {
+      agents: [{
+        agent_id: "agent-1",
+        turns: [{
+          turn_id: "turn-1",
+          prompt_id: "external:codex:thread-1:user-1",
+          prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+          started_at_ms: 1,
+          user_prompt: historyEntry(1, "user_prompt", "codex prompt\n", "agent-1", externalObserved("codex", "thread-1", "user-1")),
+          entries: [
+            historyEntry(2, "provider_output", "codex output", "agent-1", externalObserved("codex", "thread-1", "assistant-1")),
+            historyEntry(3, "provider_output", "opencode output", "agent-1", externalObserved("opencode", "thread-2", "assistant-1")),
+          ],
+          summary: historyEntry(4, "provider_output", "codex summary", "agent-1", externalObserved("codex", "thread-1", "summary-1")),
+          blobs: [],
+        }],
+        next_cursor: null,
+      }],
+    },
+  })
+
+  await harness.controller.prime(session({
+    agents: [agent("agent-1", {
+      external_provider_import: {
+        external_provider: "codex",
+        external_provider_session_id: "codex:thread-1",
+        external_provider_session_provider_id: "thread-1",
+      },
+    })],
+  }))
+
+  assert.deepEqual(renderableTexts(harness.agentPaneEntries["agent-1"] ?? []), [
+    "codex prompt",
+    "codex output",
+    "codex summary",
+  ])
+  assert.deepEqual(renderableReplaceEntries(harness.replaceCalls.at(-1)?.entries ?? []), [
+    { id: 1, role: "user", text: "codex prompt" },
+    { id: 3, role: "assistant", text: "codex output" },
+    { id: 4, role: "assistant", text: "codex summary" },
+  ])
+  assert.equal(harness.agentPaneEntries["agent-1"]?.some((entry) => entry.text === "opencode output"), false)
+  assert.equal(harness.replaceCalls.at(-1)?.entries.some((entry) => entry.text === "opencode output"), false)
+  assert.equal(harness.replaceCalls.at(-1)?.agentId, "agent-1")
+})
+
 function primeHarness(options: {
   split?: boolean
   maxAgentsPerScreen?: number
@@ -148,7 +199,19 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   }
 }
 
-function agent(id: string): AgentInstance {
+function renderableTexts(entries: readonly TranscriptEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.text !== "click to collapse")
+    .map((entry) => entry.text)
+}
+
+function renderableReplaceEntries(
+  entries: readonly { id: number; role: TranscriptEntry["role"]; text: string }[],
+): Array<{ id: number; role: TranscriptEntry["role"]; text: string }> {
+  return entries.filter((entry) => entry.text !== "click to collapse")
+}
+
+function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id,
     agent_ref: id,
@@ -165,6 +228,7 @@ function agent(id: string): AgentInstance {
     grid_col_span: 1,
     created_at_ms: 1,
     last_activity_at_ms: 1,
+    ...overrides,
   }
 }
 
@@ -173,13 +237,27 @@ function historyEntry(
   kind: "user_prompt" | "provider_output",
   text: string,
   agentId: string,
+  metadata: Record<string, unknown> = {},
 ) {
   return {
     entry_index: entryIndex,
     fragment_start: 0,
     fragment_end: text.length,
     total_chars: text.length,
-    entry: { kind, text, agent_id: agentId },
+    entry: { kind, text, agent_id: agentId, ...metadata },
+  }
+}
+
+function externalObserved(
+  provider: string,
+  sessionId: string,
+  turnId: string,
+): Record<string, unknown> {
+  return {
+    source: "external_provider_observed",
+    external_provider: provider,
+    external_provider_session_id: sessionId,
+    external_provider_turn_id: turnId,
   }
 }
 
