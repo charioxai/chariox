@@ -176,7 +176,7 @@ impl KernelRuntimeState {
             let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) else {
                 return Ok(ProviderReloadOutcome::Unaffected);
             };
-            if !adapter_supports_policy_reload(run.adapter_key()) {
+            if !crate::provider::provider_run_supports_policy_reload(&run) {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }
             let config = owned.config_projection.snapshot();
@@ -246,10 +246,6 @@ fn user_config_path_requires_provider_reload(path: &str) -> bool {
     path == "providers.workspace_live_sync"
 }
 
-fn adapter_supports_policy_reload(adapter_key: &str) -> bool {
-    matches!(adapter_key, "claude" | "codex" | "opencode")
-}
-
 fn active_agent_provider_run_ids_for_session(
     runs: &[crate::provider::RuntimeProviderRun],
     session_id: &str,
@@ -273,27 +269,7 @@ mod tests {
 
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
-    use super::{active_agent_provider_run_ids_for_session, adapter_supports_policy_reload};
-
-    #[test]
-    fn provider_reload_policy_includes_structured_real_provider_adapters() {
-        for adapter in ["claude", "codex", "opencode"] {
-            assert!(
-                adapter_supports_policy_reload(adapter),
-                "{adapter} should relaunch when launch-time MCP config changes"
-            );
-        }
-    }
-
-    #[test]
-    fn provider_reload_policy_excludes_unmanaged_or_stub_adapters() {
-        for adapter in ["dev-stub", "unknown"] {
-            assert!(
-                !adapter_supports_policy_reload(adapter),
-                "{adapter} should not use provider relaunch policy"
-            );
-        }
-    }
+    use super::active_agent_provider_run_ids_for_session;
 
     #[test]
     fn provider_reload_policy_selects_active_agent_runs_for_session_mode_changes() {

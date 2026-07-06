@@ -136,6 +136,14 @@ pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
     run.adapter_key() == "opencode"
 }
 
+pub(crate) fn provider_adapter_supports_policy_reload(adapter_key: &str) -> bool {
+    matches!(adapter_key, "claude" | "codex" | "opencode")
+}
+
+pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> bool {
+    provider_adapter_supports_policy_reload(run.adapter_key())
+}
+
 pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run: &RuntimeProviderRun,
 ) -> bool {
@@ -178,8 +186,9 @@ pub(crate) use workspace_write_fence::{
 #[cfg(test)]
 mod tests {
     use super::{
+        provider_adapter_supports_policy_reload,
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
-        provider_run_refreshes_selection_on_read,
+        provider_run_refreshes_selection_on_read, provider_run_supports_policy_reload,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
         provider_run_uses_claude_native_bridge, provider_run_uses_runtime_structured_utility_prompt,
         provider_run_waits_for_workflow_publication_completion,
@@ -276,6 +285,30 @@ mod tests {
         assert!(!provider_run_reuses_run_for_mcp_continuation_reload(
             &claude
         ));
+    }
+
+    #[test]
+    fn provider_policy_reload_support_is_provider_policy() {
+        for adapter in ["claude", "codex", "opencode"] {
+            assert!(
+                provider_adapter_supports_policy_reload(adapter),
+                "{adapter} should relaunch when launch-time runtime config changes"
+            );
+            assert!(
+                provider_run_supports_policy_reload(&provider_run(adapter, adapter)),
+                "{adapter} runs should relaunch when launch-time runtime config changes"
+            );
+        }
+        for adapter in ["dev-stub", "unknown"] {
+            assert!(
+                !provider_adapter_supports_policy_reload(adapter),
+                "{adapter} should not use provider relaunch policy"
+            );
+            assert!(
+                !provider_run_supports_policy_reload(&provider_run(adapter, adapter)),
+                "{adapter} runs should not use provider relaunch policy"
+            );
+        }
     }
 
     #[test]
