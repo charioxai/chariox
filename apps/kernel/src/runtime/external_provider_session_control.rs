@@ -14,6 +14,8 @@ use crate::error::DaemonError;
 use crate::history::{
     external_provider_observed_state_merge_key, ExternalImportHistoryEntry, SessionHistoryEntry,
     SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -41,8 +43,6 @@ const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS: &str = "external_provider_history_updated";
-const EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON: &str = "active_prompt_started";
-const EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON: &str = "active_prompt_settled";
 
 #[derive(Debug, Default)]
 struct ExternalProviderSessionDiscoveryCache {
@@ -1191,10 +1191,7 @@ fn persist_observed_external_settlement_history_signal(
         Some(provider_turn_id.to_string()),
         observed_at_ms.or_else(|| Some(crate::session::unix_epoch_ms())),
     );
-    entry.external_observation = Some(SessionHistoryExternalObservation {
-        settles_active_prompt: true,
-        passive_telemetry: false,
-    });
+    entry.external_observation = Some(SessionHistoryExternalObservation::active_prompt_settled());
     app.replace_history_entry_by_merge_key_or_append(&target.session_id, &merge_key, entry);
 }
 
@@ -1355,12 +1352,8 @@ fn emit_observed_external_state_signal(
                 external_provider_session_id: Some(target.provider_session_id.clone()),
                 external_provider_turn_id: Some(reason.to_string()),
                 observed_at_ms: None,
-                external_observation: (reason == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON)
-                    .then_some(SessionHistoryExternalObservation {
-                        settles_active_prompt: reason
-                            == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-                        passive_telemetry: false,
-                    }),
+                external_observation:
+                    SessionHistoryExternalObservation::for_external_provider_state_reason(reason),
             },
         );
 }

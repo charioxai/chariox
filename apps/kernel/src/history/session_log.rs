@@ -61,7 +61,22 @@ pub struct SessionHistoryExternalObservation {
     pub passive_telemetry: bool,
 }
 
+pub const EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON: &str = "active_prompt_started";
+pub const EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON: &str = "active_prompt_settled";
+
 impl SessionHistoryExternalObservation {
+    pub fn active_prompt_settled() -> Self {
+        Self {
+            settles_active_prompt: true,
+            passive_telemetry: false,
+        }
+    }
+
+    pub fn for_external_provider_state_reason(reason: &str) -> Option<Self> {
+        (reason == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON)
+            .then(Self::active_prompt_settled)
+    }
+
     pub fn useful(self) -> Option<Self> {
         let normalized = Self {
             settles_active_prompt: self.settles_active_prompt,
@@ -804,5 +819,21 @@ mod tests {
             "thread-1",
             "external:codex:thread-1:item-1"
         ));
+    }
+
+    #[test]
+    fn external_provider_state_reasons_define_observation_metadata() {
+        assert_eq!(
+            SessionHistoryExternalObservation::for_external_provider_state_reason(
+                EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON
+            ),
+            None
+        );
+        assert_eq!(
+            SessionHistoryExternalObservation::for_external_provider_state_reason(
+                EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON
+            ),
+            Some(SessionHistoryExternalObservation::active_prompt_settled())
+        );
     }
 }

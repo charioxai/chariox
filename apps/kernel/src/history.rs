@@ -21,6 +21,7 @@ mod session_log;
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,
     ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
