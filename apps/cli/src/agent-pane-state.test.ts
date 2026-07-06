@@ -2,12 +2,16 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  type AgentPaneHistoryBlobEntry,
   refreshAgentPaneState,
   selectCurrentAgentPaneEntries,
   shouldRefreshAgentPanesForSessionChange,
   trimAgentPaneEntries,
 } from "@arroba/kernel-client/agent-pane-state"
-import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
+import {
+  applyTranscriptDisplayState,
+  type TranscriptDisplayEntry,
+} from "@arroba/kernel-client/transcript-display-state"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -578,7 +582,14 @@ test("refreshAgentPaneState can preserve collapsed turn ids during refresh", asy
 })
 
 test("refreshAgentPaneState preserves collapsed turn display across history refresh", async () => {
-  const result = await refreshAgentPaneState({
+  type DisplayEntry = AgentPaneHistoryBlobEntry & TranscriptDisplayEntry & { text: string }
+
+  const result = await refreshAgentPaneState<
+    { id: string },
+    DisplayEntry,
+    DisplayEntry,
+    null
+  >({
     session: {
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
