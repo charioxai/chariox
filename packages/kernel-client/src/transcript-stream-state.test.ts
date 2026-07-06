@@ -7,6 +7,7 @@ import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
   normalizeTranscriptProviderChunk,
+  transcriptStreamRuntimeOptions,
   transcriptStreamRuntimeTransition,
   type TranscriptStreamEntry,
 } from "./transcript-stream-state.js"
@@ -197,6 +198,23 @@ test("transcript stream helpers compute current turn and next ids", () => {
     entry(3, "assistant", "reply"),
     entry(7, "tool", "tool"),
   ]), 8)
+})
+
+test("transcript stream runtime options project caller counters", () => {
+  assert.deepEqual(transcriptStreamRuntimeOptions({
+    entryCounter: 9,
+    currentTurnId: 4,
+  }), {
+    nextEntryId: 10,
+    currentTurnId: 4,
+  })
+  assert.deepEqual(transcriptStreamRuntimeOptions({
+    entryCounter: 0,
+    currentTurnId: null,
+  }), {
+    nextEntryId: 1,
+    currentTurnId: null,
+  })
 })
 
 test("transcript stream state treats empty normalized chunks as no-op", () => {

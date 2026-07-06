@@ -70,6 +70,16 @@ export type TranscriptStreamRuntimeTransition = {
   readonly shouldScheduleConfirmedTurnCompletion: boolean
 }
 
+export type TranscriptStreamRuntimeState = {
+  readonly entryCounter: number
+  readonly currentTurnId: number | null
+}
+
+export type TranscriptStreamRuntimeOptions = {
+  readonly nextEntryId: number
+  readonly currentTurnId: number | null
+}
+
 type MutableTranscriptStreamEntry =
   Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "sourceAttachmentId"> & {
     text: string
@@ -95,6 +105,15 @@ export function transcriptStreamRuntimeTransition<TEntry extends TranscriptStrea
     working: shouldApplyRuntimeActivity ? true : null,
     submitting: shouldApplyRuntimeActivity ? false : null,
     shouldScheduleConfirmedTurnCompletion: shouldApplyRuntimeActivity,
+  }
+}
+
+export function transcriptStreamRuntimeOptions(
+  state: TranscriptStreamRuntimeState,
+): TranscriptStreamRuntimeOptions {
+  return {
+    nextEntryId: state.entryCounter + 1,
+    currentTurnId: state.currentTurnId,
   }
 }
 

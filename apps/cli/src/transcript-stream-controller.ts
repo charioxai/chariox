@@ -3,6 +3,7 @@ import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,
+  transcriptStreamRuntimeOptions,
   transcriptStreamRuntimeTransition,
   type TranscriptStreamApplyResult,
   type TranscriptStreamMetadata,
@@ -56,14 +57,17 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     metadata: TranscriptStreamMetadata = {},
   ) => {
     const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const runtimeOptions = transcriptStreamRuntimeOptions({
+      entryCounter: deps.entryCounter(),
+      currentTurnId: deps.currentTurnId(),
+    })
     const result = applyTranscriptProviderChunk(currentEntries, {
       role,
       chunk,
       mergeKey,
       sourceText,
       metadata,
-      nextEntryId: deps.entryCounter() + 1,
-      currentTurnId: deps.currentTurnId(),
+      ...runtimeOptions,
     })
     if (result.kind === "noop") {
       return
@@ -80,12 +84,16 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
 
   const appendToolUpdate = (chunk: string, metadata: TranscriptStreamMetadata = {}) => {
     const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const runtimeOptions = transcriptStreamRuntimeOptions({
+      entryCounter: deps.entryCounter(),
+      currentTurnId: deps.currentTurnId(),
+    })
     const result = applyTranscriptToolUpdate(
       currentEntries,
       chunk,
       deps.tools,
       metadata,
-      { nextEntryId: deps.entryCounter() + 1, currentTurnId: deps.currentTurnId() },
+      runtimeOptions,
     )
     if (result.kind === "noop") {
       return
