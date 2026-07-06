@@ -13,6 +13,7 @@ import {
   sessionShouldConfirmIdleTurnCompletion,
   sessionWorkingStateAfterPromptWork,
   turnCompletionDelayMs,
+  turnCompletionProviderActivityTransition,
 } from "./session-runtime-transition.js"
 import {
   makeAgent,
@@ -431,5 +432,16 @@ test("provider activity runtime transition marks active provider output as worki
     providerActivityActive: false,
     working: null,
     shouldUpdateSessionChrome: true,
+  })
+})
+
+test("turn completion provider activity transition cancels while active and schedules when inactive", () => {
+  assert.deepEqual(turnCompletionProviderActivityTransition(true), {
+    shouldCancelPendingCompletion: true,
+    shouldScheduleConfirmedCompletion: false,
+  })
+  assert.deepEqual(turnCompletionProviderActivityTransition(false), {
+    shouldCancelPendingCompletion: false,
+    shouldScheduleConfirmedCompletion: true,
   })
 })

@@ -101,6 +101,11 @@ export type ProviderActivityRuntimeTransition = {
   readonly shouldUpdateSessionChrome: boolean
 }
 
+export type TurnCompletionProviderActivityTransition = {
+  readonly shouldCancelPendingCompletion: boolean
+  readonly shouldScheduleConfirmedCompletion: boolean
+}
+
 export const DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE = "Cancellation requested."
 
 export function sessionFocusedAgentId<TAgent extends { id: string }>(
@@ -405,5 +410,14 @@ export function providerActivityRuntimeTransition(active: boolean): ProviderActi
     providerActivityActive: active,
     working: active ? true : null,
     shouldUpdateSessionChrome: true,
+  }
+}
+
+export function turnCompletionProviderActivityTransition(
+  active: boolean,
+): TurnCompletionProviderActivityTransition {
+  return {
+    shouldCancelPendingCompletion: active,
+    shouldScheduleConfirmedCompletion: !active,
   }
 }

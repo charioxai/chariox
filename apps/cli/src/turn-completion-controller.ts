@@ -1,3 +1,7 @@
+import {
+  turnCompletionProviderActivityTransition,
+} from "@arroba/kernel-client/session-runtime-transition"
+
 type TurnCompletionControllerOptions<TimerHandle> = {
   now: () => number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
@@ -84,11 +88,14 @@ export function createTurnCompletionController<TimerHandle>(
     },
     maybeScheduleConfirmed,
     handleProviderActivity(active) {
-      if (active) {
+      const transition = turnCompletionProviderActivityTransition(active)
+      if (transition.shouldCancelPendingCompletion) {
         cancelPending()
         return
       }
-      maybeScheduleConfirmed()
+      if (transition.shouldScheduleConfirmedCompletion) {
+        maybeScheduleConfirmed()
+      }
     },
     cancelPending,
     isConfirmed() {
