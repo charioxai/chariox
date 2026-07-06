@@ -29,13 +29,14 @@ test("authoritative idle controller clears local busy state when the session is 
   ])
 })
 
-test("authoritative idle controller leaves local state alone while prompt work remains", () => {
+test("authoritative idle controller leaves local state alone while active turn work remains", () => {
   const harness = idleHarness()
 
   const cleared = harness.controller.clear(session({
     active_prompt: {
       id: "prompt-1",
       source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
       prompt: "run",
       status: "Active",
     },
@@ -43,6 +44,44 @@ test("authoritative idle controller leaves local state alone while prompt work r
 
   assert.equal(cleared, false)
   assert.deepEqual(harness.calls, [])
+})
+
+test("authoritative idle controller clears local busy state when only queued prompts remain", () => {
+  const harness = idleHarness({ statusLine: "Cancellation requested." })
+
+  const cleared = harness.controller.clear(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "next",
+          status: "Queued",
+        }],
+      },
+    },
+  }))
+
+  assert.equal(cleared, true)
+  assert.deepEqual(harness.calls, [
+    "batch:start",
+    "turn:reset",
+    "tools:clear",
+    "activity:{}",
+    "streaming:null",
+    "submitting:false",
+    "submitting-agent:clear",
+    "stop:reset",
+    "busy:{}",
+    "provider:null",
+    "active:null",
+    "working:false",
+    "status:",
+    "batch:end",
+    "render",
+  ])
 })
 
 test("authoritative idle controller leaves local state alone while an agent is processing", () => {

@@ -406,7 +406,7 @@ export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnC
 export function sessionAuthoritativeIdleTransitionState(
   options: SessionAuthoritativeIdleTransitionInput,
 ): SessionAuthoritativeIdleTransitionState {
-  const shouldClearRuntimeResidue = !sessionHasPromptWork(options.nextSession)
+  const shouldClearRuntimeResidue = !sessionHasTurnWork(options.nextSession)
   const cancellationRequestedStatusLine =
     options.cancellationRequestedStatusLine ?? DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE
   return {

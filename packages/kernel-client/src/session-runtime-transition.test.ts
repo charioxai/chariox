@@ -381,9 +381,24 @@ test("session idle turn completion waits only for active turn snapshots", () => 
   }), false)
 })
 
-test("session authoritative idle transition clears only truly idle snapshots", () => {
+test("session authoritative idle transition clears snapshots without active turn work", () => {
   const idleSession = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
+  })
+  const queuedOnlySession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "next",
+          status: "Queued",
+        }],
+      },
+    },
   })
   const activeSession = makeSession({
     active_prompt: {
@@ -401,6 +416,13 @@ test("session authoritative idle transition clears only truly idle snapshots", (
 
   assert.deepEqual(sessionAuthoritativeIdleTransitionState({
     nextSession: idleSession,
+    currentStatusLine: "Cancellation requested.",
+  }), {
+    shouldClearRuntimeResidue: true,
+    shouldResetCancellationStatusLine: true,
+  })
+  assert.deepEqual(sessionAuthoritativeIdleTransitionState({
+    nextSession: queuedOnlySession,
     currentStatusLine: "Cancellation requested.",
   }), {
     shouldClearRuntimeResidue: true,
