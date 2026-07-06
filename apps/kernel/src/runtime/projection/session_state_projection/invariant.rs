@@ -163,6 +163,27 @@ pub(super) fn snapshot(
         });
     }
 
+    let mut active_turn_provider_runs_by_agent = BTreeMap::<(String, String), Vec<String>>::new();
+    for (provider_run_id, active_turn) in active_turns {
+        active_turn_provider_runs_by_agent
+            .entry((active_turn.session_id.clone(), active_turn.agent_id.clone()))
+            .or_default()
+            .push(provider_run_id.clone());
+    }
+    for ((session_id, agent_id), provider_run_ids) in active_turn_provider_runs_by_agent {
+        if provider_run_ids.len() > 1 {
+            mismatches.push(ProjectionInvariantMismatch {
+                kind: "duplicate_active_turns_for_agent".to_string(),
+                session_id,
+                agent_id: Some(agent_id),
+                details: format!(
+                    "agent has multiple active turns for provider runs {}",
+                    provider_run_ids.join(", ")
+                ),
+            });
+        }
+    }
+
     for (provider_run_id, active_turn) in active_turns {
         if provider_run_id != &active_turn.provider_run_id {
             mismatches.push(ProjectionInvariantMismatch {
@@ -569,6 +590,13 @@ mod tests {
             mismatch.kind == "active_turn_ended_provider_run"
                 && mismatch.session_id == session_id
                 && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains(ended_run.id())
+        }));
+        assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "duplicate_active_turns_for_agent"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains(valid_run.id())
                 && mismatch.details.contains(ended_run.id())
         }));
     }

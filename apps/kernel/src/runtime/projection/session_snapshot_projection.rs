@@ -160,16 +160,15 @@ pub(crate) fn agent_activity_for_session_projection(
             .map(|state| state.queued_prompts().len())
             .unwrap_or(0);
         let provider_run = provider_run_for_agent(agent.id());
-        let provider_prompt_activity = provider_run
-            .as_ref()
-            .and_then(|run| prompt_activity.get(run.id()));
-        let provider_turn_activity = provider_run.as_ref().and_then(|run| {
-            active_turns.get(run.id()).filter(|turn| {
-                turn.session_id == session.id()
-                    && turn.agent_id == agent.id()
-                    && turn.provider_run_id == run.id()
-            })
-        });
+        let provider_turn_activity =
+            active_turn_for_session_agent(active_turns, session.id(), agent.id());
+        let provider_prompt_activity = provider_turn_activity
+            .and_then(|turn| prompt_activity.get(&turn.provider_run_id))
+            .or_else(|| {
+                provider_run
+                    .as_ref()
+                    .and_then(|run| prompt_activity.get(run.id()))
+            });
         let prompt_status = match active_prompt.map(PromptQueueItem::status) {
             Some(PromptStatus::Cancelling) => AgentPromptRuntimeStatus::Cancelling,
             Some(PromptStatus::Dispatching) => AgentPromptRuntimeStatus::Dispatching,
@@ -197,12 +196,13 @@ pub(crate) fn agent_activity_for_session_projection(
                 }
             }
         };
-        let provider_busy = provider_run.as_ref().is_some_and(|run| {
-            matches!(
-                run.state(),
-                ProviderRunState::Starting | ProviderRunState::Running
-            ) && provider_turn_activity.is_some()
-        });
+        let provider_busy = provider_turn_activity.is_some()
+            && provider_run.as_ref().map_or(true, |run| {
+                matches!(
+                    run.state(),
+                    ProviderRunState::Starting | ProviderRunState::Running
+                )
+            });
         let active_turn = provider_turn_activity
             .map(|turn| {
                 let active_prompt_for_turn =
@@ -269,6 +269,21 @@ pub(crate) fn agent_activity_for_session_projection(
     }
 
     activity
+}
+
+fn active_turn_for_session_agent<'a>(
+    active_turns: &'a BTreeMap<String, ActiveTurnState>,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<&'a ActiveTurnState> {
+    active_turns
+        .values()
+        .filter(|turn| turn.session_id == session_id && turn.agent_id == agent_id)
+        .max_by(|left, right| {
+            left.started_at_ms
+                .cmp(&right.started_at_ms)
+                .then_with(|| left.provider_run_id.cmp(&right.provider_run_id))
+        })
 }
 
 fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatus) -> bool {
@@ -751,6 +766,71 @@ mod tests {
             Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
         );
         assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn session_snapshot_projection_projects_active_turn_when_provider_run_lookup_is_cold() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        app.active_turn_store().start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "external:codex:session-1:user-1".to_string(),
+                "cold-provider-run".to_string(),
+            )
+            .with_phase(crate::app::ActiveTurnPhase::Streaming),
+        );
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-cold-active-turn");
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "queued-behind-cold-external",
+                &attachment_id,
+                agent.id(),
+                "queued prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("prompt should queue behind cold external turn");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let active_turn = activity
+            .active_turn
+            .as_ref()
+            .expect("cold active turn should be projected");
+        let control = activity
+            .queued_prompt_controls
+            .values()
+            .next()
+            .expect("queued prompt control should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+        assert_eq!(activity.active_prompt_count, 1);
+        assert_eq!(
+            active_turn.provider_run_id.as_deref(),
+            Some("cold-provider-run")
+        );
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
+        assert!(!control.can_steer);
+        assert!(control.can_cancel);
+        assert_eq!(
+            control.steer_disabled_reason.as_deref(),
+            Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
+        );
     }
 
     #[test]
