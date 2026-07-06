@@ -105,7 +105,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           id: agent.id,
           alias: agent.alias,
           provider: agent.provider,
-          state: agentRuntimeDisplayStates[agent.id] ?? agent.state,
+          state: agentRuntimeDisplayStates[agent.id],
           isProcessing: agentRuntimeDisplayStates[agent.id] === "Working",
           badge,
         }

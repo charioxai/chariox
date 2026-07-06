@@ -4,7 +4,7 @@ import {
   sessionAgentIsBusy,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  sessionAgentRuntimeDisplayStates,
+  sessionAgentRuntimeDisplayStateByAgent,
 } from "@arroba/kernel-client/session-runtime-status"
 import { createEffect } from "solid-js"
 
@@ -296,7 +296,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     deps.streamingAgentId()
     deps.workspaceLiveSyncStatus()
     deps.agentBusyLatches()
-    sessionAgentRuntimeDisplayStates(deps.sessionState())
+    sessionAgentRuntimeDisplayStateByAgent(deps.sessionState())
     deps.agentActivityLabels()
     updateSessionChrome()
   })
