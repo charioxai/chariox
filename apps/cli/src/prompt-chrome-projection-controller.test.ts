@@ -28,7 +28,7 @@ test("prompt chrome projection derives status and footer from prompt state", () 
   assert.equal(controller.footerHint(), "Processing prompt-1; 2 queued.")
 })
 
-test("prompt chrome projection treats queued-only work as queued, not active turn work", () => {
+test("prompt chrome projection treats queued-only prompts as idle chrome with queued footer", () => {
   const controller = createPromptChromeProjectionController({
     daemonDisconnected: () => false,
     working: () => false,
@@ -48,7 +48,7 @@ test("prompt chrome projection treats queued-only work as queued, not active tur
     workflowBackground: () => "workflow",
   })
 
-  assert.equal(controller.sessionStatusMode(), "working")
+  assert.equal(controller.sessionStatusMode(), "idle")
   assert.equal(controller.footerHint(), "1 queued prompt.")
 })
 

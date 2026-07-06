@@ -71,7 +71,7 @@ export function sessionStatusMode(options: {
   if (options.daemonDisconnected) {
     return "disconnected"
   }
-  if (options.working || options.hasActiveTurnWork || options.submitting || options.queueDepth > 0) {
+  if (options.working || options.hasActiveTurnWork || options.submitting) {
     return "working"
   }
   return "idle"

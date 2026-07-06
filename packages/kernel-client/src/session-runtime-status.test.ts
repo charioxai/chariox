@@ -19,7 +19,7 @@ import {
   makeSession,
 } from "./shell-executor.test-support.js"
 
-test("session status mode follows disconnected and prompt-work precedence", () => {
+test("session status mode follows disconnected and active turn precedence", () => {
   assert.equal(sessionStatusMode({
     daemonDisconnected: true,
     working: true,
@@ -40,7 +40,7 @@ test("session status mode follows disconnected and prompt-work precedence", () =
     hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 1,
-  }), "working")
+  }), "idle")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,

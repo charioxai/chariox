@@ -80,7 +80,7 @@ test("session chrome projection derives status mode and footer hint together", (
     activePromptId: null,
     statusLine: "Connected.",
   }), {
-    sessionStatusMode: "working",
+    sessionStatusMode: "idle",
     footerHint: "1 queued prompt.",
   })
   assert.deepEqual(sessionChromeProjection({

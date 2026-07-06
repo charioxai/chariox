@@ -320,7 +320,7 @@ test("sessionAgentPaneStatusBadge projects explicit activity and prompt work", (
   }), { label: "IDLE", tone: "idle" })
 })
 
-test("session status mode and footer hint reflect prompt and queue work", () => {
+test("session status mode and footer hint reflect active turn work and queued prompts", () => {
   assert.equal(sessionStatusMode({
     daemonDisconnected: true,
     working: false,
@@ -341,7 +341,7 @@ test("session status mode and footer hint reflect prompt and queue work", () => 
     hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 1,
-  }), "working")
+  }), "idle")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
