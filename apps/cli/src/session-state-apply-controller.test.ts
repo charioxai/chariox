@@ -211,6 +211,8 @@ test("session state apply controller schedules turn completion when only queued 
   const harness = createHarness({
     session: current,
     working: true,
+    submitting: true,
+    submittingAgentId: "agent-a",
     streamingAgentId: "agent-a",
     agentActivityLabels: { "agent-a": "thinking" },
   })
@@ -218,9 +220,14 @@ test("session state apply controller schedules turn completion when only queued 
   harness.controller.apply(queuedOnly)
 
   assert.equal(harness.state.working, true)
+  assert.equal(harness.state.submitting, false)
+  assert.equal(harness.state.submittingAgentId, null)
   assert.deepEqual(harness.calls.filter((call) => call === "turnCompletion.reset"), [])
   assert.deepEqual(harness.calls.filter((call) => call === "confirmAndSchedule"), [
     "confirmAndSchedule",
+  ])
+  assert.deepEqual(harness.calls.filter((call) => call === "promptStop.reset"), [
+    "promptStop.reset",
   ])
 })
 

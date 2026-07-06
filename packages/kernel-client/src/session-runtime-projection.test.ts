@@ -1024,6 +1024,7 @@ test("sessionRuntimeTransitionState preserves active labels and clears idle labe
   }), {
     nextFocusedAgentId: "agent-2",
     nextHasPromptWork: true,
+    nextHasTurnWork: true,
     nextStreamingAgentId: "agent-2",
     nextFocusedActivityLabel: "writing",
     nextAgentActivityLabels: {
@@ -1069,6 +1070,7 @@ test("sessionRuntimeTransitionState clears stale streaming when projected activi
   }), {
     nextFocusedAgentId: "agent-1",
     nextHasPromptWork: false,
+    nextHasTurnWork: false,
     nextStreamingAgentId: null,
     nextFocusedActivityLabel: null,
     nextAgentActivityLabels: {
@@ -1115,6 +1117,7 @@ test("sessionRuntimeTransitionState does not preserve active runtime state for q
   }), {
     nextFocusedAgentId: "agent-1",
     nextHasPromptWork: true,
+    nextHasTurnWork: false,
     nextStreamingAgentId: null,
     nextFocusedActivityLabel: null,
     nextAgentActivityLabels: {
@@ -1194,6 +1197,7 @@ test("sessionRuntimeTransitionState treats empty prompt states as authoritative 
   })
 
   assert.equal(transition.nextHasPromptWork, false)
+  assert.equal(transition.nextHasTurnWork, false)
   assert.equal(transition.nextStreamingAgentId, null)
   assert.deepEqual(transition.nextAgentActivityLabels, {
     "agent-1": null,

@@ -78,6 +78,7 @@ test("session runtime transition preserves active labels and clears idle labels"
   }), {
     nextFocusedAgentId: "agent-2",
     nextHasPromptWork: true,
+    nextHasTurnWork: true,
     nextStreamingAgentId: "agent-2",
     nextFocusedActivityLabel: "writing",
     nextAgentActivityLabels: {
@@ -123,6 +124,7 @@ test("session runtime transition clears stale projected idle activity", () => {
   }), {
     nextFocusedAgentId: "agent-1",
     nextHasPromptWork: false,
+    nextHasTurnWork: false,
     nextStreamingAgentId: null,
     nextFocusedActivityLabel: null,
     nextAgentActivityLabels: {

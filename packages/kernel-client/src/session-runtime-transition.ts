@@ -62,6 +62,7 @@ export type SessionRuntimeTransitionOptions = {
 export type SessionRuntimeTransitionState = {
   readonly nextFocusedAgentId: string | null
   readonly nextHasPromptWork: boolean
+  readonly nextHasTurnWork: boolean
   readonly nextStreamingAgentId: string | null
   readonly nextFocusedActivityLabel: string | null
   readonly nextAgentActivityLabels: Record<string, string | null>
@@ -187,6 +188,7 @@ export function sessionRuntimeTransitionState(
   const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
   const nextFocusedAgentId = sessionFocusedAgentId(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
+  const nextHasTurnWork = sessionHasTurnWork(options.nextSession)
   const shouldConfirmIdleTurnCompletion = sessionShouldConfirmIdleTurnCompletion({
     nextSession: options.nextSession,
     currentWorking: options.currentWorking,
@@ -229,6 +231,7 @@ export function sessionRuntimeTransitionState(
   return {
     nextFocusedAgentId,
     nextHasPromptWork,
+    nextHasTurnWork,
     nextStreamingAgentId,
     nextFocusedActivityLabel,
     nextAgentActivityLabels,

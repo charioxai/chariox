@@ -103,6 +103,9 @@ export function createSessionStateApplyController(
       deps.setSubmitting(false)
       deps.clearSubmittingAgentId()
       deps.promptStop.reset()
+    } else if (!transition.nextHasTurnWork) {
+      deps.setSubmitting(false)
+      deps.promptStop.reset()
     }
     for (const settledAgentId of transition.settledAgentIds) {
       deps.clearAgentBusy(settledAgentId)
@@ -125,11 +128,6 @@ export function createSessionStateApplyController(
         deps.setWorking(false)
       }
     }
-    if (!transition.nextHasPromptWork) {
-      deps.setSubmitting(false)
-      deps.promptStop.reset()
-    }
-
     deps.syncVisibleActivityLabel()
     deps.updateSessionChrome()
 
