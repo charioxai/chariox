@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  QUEUED_PROMPT_STEER_EXTERNAL_REASON,
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
   projectedQueuedPromptListsMatch,
@@ -85,10 +84,12 @@ test("queued prompt actionability comparison includes status and controls", () =
 })
 
 test("queued prompt action state follows projected prompt ownership controls", () => {
+  const kernelProjectedExternalReason =
+    "Steering is unavailable while the active provider turn was started outside Arroba."
   const externalBlocked = queuedPromptActionability("queued", {
     can_steer: false,
     can_cancel: true,
-    steer_disabled_reason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+    steer_disabled_reason: kernelProjectedExternalReason,
     cancel_disabled_reason: null,
   })
 
@@ -96,7 +97,7 @@ test("queued prompt action state follows projected prompt ownership controls", (
     action: "steer",
     enabled: false,
     disabled: true,
-    disabledReason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+    disabledReason: kernelProjectedExternalReason,
   })
   assert.deepEqual(queuedPromptActionState(externalBlocked, "cancel"), {
     action: "cancel",
@@ -308,7 +309,7 @@ test("queued prompt projection returns display prompts with actionability", () =
   })
 })
 
-test("queued prompt projection disables steering behind external active turn without explicit controls", () => {
+test("queued prompt projection does not infer steering policy from external active turn", () => {
   const session = sessionWith({
     prompt_states: {
       "agent-1": {
@@ -350,10 +351,10 @@ test("queued prompt projection disables steering behind external active turn wit
       prompt: "queued-1",
       attachmentCount: 0,
       status: "queued",
-      steerDisabled: true,
-      canSteer: false,
+      steerDisabled: false,
+      canSteer: true,
       canCancel: true,
-      steerDisabledReason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+      steerDisabledReason: null,
       cancelDisabledReason: null,
     }],
   })
