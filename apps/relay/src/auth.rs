@@ -500,6 +500,11 @@ fn parse_cloud_action(action: String) -> Result<RelayAction, RelayAuthError> {
     }
 }
 
+// Accept a small amount of clock skew between the issuer and the relay so a
+// token minted moments ago on a slightly-ahead issuer clock is not rejected
+// as not-yet-valid.
+const RELAY_CLOCK_SKEW_TOLERANCE_MS: u64 = 60_000;
+
 fn validate_claims(
     claims: &RelayTokenClaims,
     action: RelayAction,
@@ -509,6 +514,11 @@ fn validate_claims(
     if let Some(now_ms) = now_ms {
         if claims.expires_at_ms <= now_ms {
             return Err(RelayAuthError::TokenExpired);
+        }
+        // Reject tokens whose issue time is implausibly far in the future
+        // (beyond clock skew): a sign of a forged or misissued token.
+        if claims.issued_at_ms > now_ms.saturating_add(RELAY_CLOCK_SKEW_TOLERANCE_MS) {
+            return Err(RelayAuthError::InvalidToken);
         }
     }
     if !claims.allows_action(action) {
@@ -762,6 +772,44 @@ mod tests {
             })
             .expect_err("wrong target should be rejected");
         assert_eq!(target_error, RelayAuthError::TargetNotAllowed);
+    }
+
+    #[test]
+    fn validate_claims_rejects_implausible_future_issue_times() {
+        let claims = RelayTokenClaims {
+            issuer: "issuer".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect],
+            allowed_targets: None,
+            issued_at_ms: 10_000_000,
+            expires_at_ms: 10_100_000,
+            token_id: "token-1".to_string(),
+            account_id: None,
+            organization_id: None,
+            user_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: None,
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        };
+        // Issued far in the future relative to now: reject.
+        assert_eq!(
+            validate_claims(&claims, RelayAction::ClientConnect, None, Some(1_000)),
+            Err(RelayAuthError::InvalidToken)
+        );
+        // Within the skew tolerance: accepted.
+        assert_eq!(
+            validate_claims(
+                &claims,
+                RelayAction::ClientConnect,
+                None,
+                Some(10_000_000 - RELAY_CLOCK_SKEW_TOLERANCE_MS + 1),
+            ),
+            Ok(())
+        );
     }
 
     #[test]
