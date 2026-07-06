@@ -22,7 +22,7 @@ impl ProviderRunRuntimeRegistry {
         self.clear_tombstone(&run_id);
         self.claude_runs
             .lock()
-            .expect("claude runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
@@ -30,7 +30,7 @@ impl ProviderRunRuntimeRegistry {
         self.clear_tombstone(&run_id);
         self.codex_runs
             .lock()
-            .expect("codex runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
@@ -38,7 +38,7 @@ impl ProviderRunRuntimeRegistry {
         self.clear_tombstone(&run_id);
         self.opencode_runs
             .lock()
-            .expect("opencode runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
@@ -46,28 +46,36 @@ impl ProviderRunRuntimeRegistry {
         if self
             .claude_runs
             .lock()
-            .expect("claude runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
-            .is_some_and(|slot| slot.lock().expect("claude runtime slot poisoned").is_some())
+            .is_some_and(|slot| {
+                slot.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            })
         {
             return true;
         }
         if self
             .codex_runs
             .lock()
-            .expect("codex runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
-            .is_some_and(|slot| slot.lock().expect("codex runtime slot poisoned").is_some())
+            .is_some_and(|slot| {
+                slot.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            })
         {
             return true;
         }
         self.opencode_runs
             .lock()
-            .expect("opencode runtime map poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
             .is_some_and(|slot| {
                 slot.lock()
-                    .expect("opencode runtime slot poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_some()
             })
     }
@@ -75,7 +83,7 @@ impl ProviderRunRuntimeRegistry {
     pub(super) fn clear_runtime(&self, run_id: &str, stop_opencode: bool) {
         self.cleared_runs
             .lock()
-            .expect("cleared provider run set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run_id.to_string());
         self.clear_runtime_state(run_id, stop_opencode);
     }
@@ -163,7 +171,7 @@ impl ProviderRunRuntimeRegistry {
     fn clear_tombstone(&self, run_id: &str) {
         self.cleared_runs
             .lock()
-            .expect("cleared provider run set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(run_id);
     }
 }
@@ -174,7 +182,7 @@ fn claude_slot(
 ) -> Result<ClaudeRuntimeSlot, DaemonError> {
     claude_runs
         .lock()
-        .expect("claude runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(run_id)
         .cloned()
         .ok_or_else(|| DaemonError::ProviderProtocol {
@@ -190,7 +198,7 @@ fn codex_slot(
 ) -> Result<CodexRuntimeSlot, DaemonError> {
     codex_runs
         .lock()
-        .expect("codex runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(run_id)
         .cloned()
         .ok_or_else(|| DaemonError::ProviderProtocol {
@@ -206,7 +214,7 @@ pub(super) fn opencode_slot(
 ) -> Result<OpenCodeRuntimeSlot, DaemonError> {
     opencode_runs
         .lock()
-        .expect("opencode runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(run_id)
         .cloned()
         .ok_or_else(|| DaemonError::ProviderProtocol {
@@ -223,7 +231,7 @@ pub(super) fn take_claude_runtime(
     let slot = claude_slot(claude_runs, run_id)?;
     let state = slot
         .lock()
-        .expect("claude runtime slot poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| DaemonError::ProviderProtocol {
             provider_run_id: run_id.to_string(),
@@ -240,7 +248,7 @@ pub(super) fn take_codex_runtime(
     let slot = codex_slot(codex_runs, run_id)?;
     let state = slot
         .lock()
-        .expect("codex runtime slot poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| DaemonError::ProviderProtocol {
             provider_run_id: run_id.to_string(),
@@ -257,7 +265,7 @@ pub(super) fn take_opencode_runtime(
     let slot = opencode_slot(opencode_runs, run_id)?;
     let state = slot
         .lock()
-        .expect("opencode runtime slot poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| DaemonError::ProviderProtocol {
             provider_run_id: run_id.to_string(),
@@ -272,7 +280,10 @@ pub(super) fn runtime_slot_missing_or_empty_claude(
     run_id: &str,
 ) -> bool {
     match claude_slot(claude_runs, run_id) {
-        Ok(slot) => slot.lock().expect("claude runtime slot poisoned").is_none(),
+        Ok(slot) => slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none(),
         Err(_) => true,
     }
 }
@@ -282,7 +293,10 @@ pub(super) fn runtime_slot_missing_or_empty_codex(
     run_id: &str,
 ) -> bool {
     match codex_slot(codex_runs, run_id) {
-        Ok(slot) => slot.lock().expect("codex runtime slot poisoned").is_none(),
+        Ok(slot) => slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none(),
         Err(_) => true,
     }
 }
@@ -294,7 +308,7 @@ pub(super) fn runtime_slot_missing_or_empty_opencode(
     match opencode_slot(opencode_runs, run_id) {
         Ok(slot) => slot
             .lock()
-            .expect("opencode runtime slot poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_none(),
         Err(_) => true,
     }
@@ -308,7 +322,9 @@ pub(super) fn restore_claude_runtime_if_live(
     state: ClaudeRuntimeState,
 ) {
     if runtime_should_restore(cleared_runs, claude_runs, run_id, slot) {
-        *slot.lock().expect("claude runtime slot poisoned") = Some(state);
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
     }
 }
 
@@ -320,7 +336,9 @@ pub(super) fn restore_codex_runtime_if_live(
     state: CodexRuntimeState,
 ) {
     if runtime_should_restore(cleared_runs, codex_runs, run_id, slot) {
-        *slot.lock().expect("codex runtime slot poisoned") = Some(state);
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
     }
 }
 
@@ -332,7 +350,9 @@ pub(super) fn restore_opencode_runtime_if_live(
     state: OpenCodeRuntimeState,
 ) {
     if runtime_should_restore(cleared_runs, opencode_runs, run_id, slot) {
-        *slot.lock().expect("opencode runtime slot poisoned") = Some(state);
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
     } else {
         state.stop();
     }
@@ -346,13 +366,13 @@ pub(super) fn runtime_should_restore<T>(
 ) -> bool {
     if cleared_runs
         .lock()
-        .expect("cleared provider run set poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(run_id)
     {
         return false;
     }
     runs.lock()
-        .expect("runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(run_id)
         .is_some_and(|current_slot| Arc::ptr_eq(current_slot, slot))
 }
@@ -366,24 +386,33 @@ pub(super) fn clear_runtime_state(
 ) {
     if let Some(slot) = claude_runs
         .lock()
-        .expect("claude runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(run_id)
     {
-        let _ = slot.lock().expect("claude runtime slot poisoned").take();
+        let _ = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
     if let Some(slot) = codex_runs
         .lock()
-        .expect("codex runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(run_id)
     {
-        let _ = slot.lock().expect("codex runtime slot poisoned").take();
+        let _ = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
     if let Some(slot) = opencode_runs
         .lock()
-        .expect("opencode runtime map poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(run_id)
     {
-        let state = slot.lock().expect("opencode runtime slot poisoned").take();
+        let state = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(state) = state {
             if stop_opencode {
                 state.stop();
@@ -397,7 +426,26 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
 
-    use super::runtime_should_restore;
+    use super::{runtime_should_restore, ProviderRunRuntimeRegistry};
+
+    #[test]
+    fn state_bound_recovers_from_a_poisoned_map_lock() {
+        // A panic while holding a provider-run map lock must not cascade into
+        // daemon-wide panics on every later registry access; the registry
+        // recovers the poisoned guard instead of re-panicking.
+        let registry = ProviderRunRuntimeRegistry::default();
+        let claude_runs = Arc::clone(&registry.claude_runs);
+        let poisoning = std::panic::catch_unwind(move || {
+            let _guard = claude_runs
+                .lock()
+                .expect("fresh registry lock should not be poisoned");
+            panic!("poison the claude runtime map lock");
+        });
+        assert!(poisoning.is_err());
+        assert!(registry.claude_runs.is_poisoned());
+        // Reads through the same registry must still succeed after poisoning.
+        assert!(!registry.state_bound("missing-run"));
+    }
 
     #[test]
     fn runtime_tombstone_rejects_stale_state_restore_after_cleanup() {
