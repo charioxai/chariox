@@ -117,7 +117,7 @@ test("refreshAgentPaneState loads the latest page and keeps only valid expanded 
       ],
       focused_agent_id: "agent-b",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {
       "agent-a": [2, 999],
     },
@@ -153,7 +153,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
       agents: [{ id: "agent-a" }, { id: "agent-b" }],
       focused_agent_id: "agent-b",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [
@@ -218,7 +218,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -280,7 +280,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
       }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -357,7 +357,7 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
       }],
       focused_agent_id: "agent-b",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [{
@@ -404,7 +404,7 @@ test("refreshAgentPaneState ignores stray external ids without observed source w
       }],
       focused_agent_id: "agent-b",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [{
@@ -444,7 +444,7 @@ test("refreshAgentPaneState ignores stale focused agent ids", async () => {
       agents: [{ id: "agent-a" }, { id: "agent-b" }],
       focused_agent_id: "stale-agent",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {},
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
     loadHistoryPage: async (agentId) => ({
@@ -468,7 +468,7 @@ test("refreshAgentPaneState can preserve expanded turn ids during refresh", asyn
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {
       "agent-a": [2, 999],
     },
@@ -497,7 +497,7 @@ test("refreshAgentPaneState preserves collapsed turn display across history refr
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {
       "agent-a": [1],
     },
@@ -555,7 +555,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: { "agent-a": [1] },
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -606,7 +606,7 @@ test("refreshAgentPaneState preserves completed turns when collapse is disabled"
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {},
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
     loadHistoryPage: async () => ({
@@ -648,7 +648,7 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -705,7 +705,7 @@ test("refreshAgentPaneState stops backfill when older cursor repeats without dup
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -754,7 +754,7 @@ test("refreshAgentPaneState preserves richer live pane entries while prompt work
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [

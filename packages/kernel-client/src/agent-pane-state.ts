@@ -229,7 +229,7 @@ export async function refreshAgentPaneState<
   TCursor,
 >(options: {
   readonly session: AgentPaneSession<TAgent>
-  readonly hasPromptWork: boolean
+  readonly hasPromptWorkForAgent: (agent: TAgent) => boolean
   readonly expandedTurnIdsByAgent: Record<string, readonly number[] | undefined>
   readonly currentPaneEntriesByAgent?: Record<string, readonly TEntry[] | undefined>
   readonly resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
@@ -255,6 +255,7 @@ export async function refreshAgentPaneState<
   let visibleCursor: TCursor | null = null
 
   for (const agent of options.session.agents) {
+    const agentHasPromptWork = options.hasPromptWorkForAgent(agent)
     const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
       .filter((entry) => entryBelongsToAgent(agent, entry))
     let historyPage = await options.loadHistoryPage(agent.id, null)
@@ -262,7 +263,7 @@ export async function refreshAgentPaneState<
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
     const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
-      !options.hasPromptWork
+      !agentHasPromptWork
       && historyPage.nextCursor
       && currentRenderableCount > countRenderablePaneEntries(resolvedHistoryEntries)
     ) {
@@ -308,7 +309,7 @@ export async function refreshAgentPaneState<
       applyExpandedTurns: options.applyExpandedTurns,
       reindexEntries: options.reindexEntries,
     })
-    if (options.hasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
+    if (agentHasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
       nextPaneEntries = currentPaneEntries.map((entry) => ({ ...entry }))
     }
     paneEntries[agent.id] = nextPaneEntries

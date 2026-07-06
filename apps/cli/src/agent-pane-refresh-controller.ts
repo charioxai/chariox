@@ -14,7 +14,7 @@ import {
   splitPaneAuxiliaryAgentIds,
 } from "@arroba/kernel-client/response-pane-selection"
 import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
-import { sessionHasPromptWork } from "@arroba/kernel-client/session-prompt-work"
+import { sessionAgentIsBusy } from "@arroba/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
 
@@ -62,7 +62,7 @@ export function createAgentPaneRefreshController(
       SessionHistoryOutlineCursor
     >({
       session,
-      hasPromptWork: sessionHasPromptWork(session),
+      hasPromptWorkForAgent: (agent) => sessionAgentIsBusy(session, agent.id),
       expandedTurnIdsByAgent: deps.getExpandedTurnIdsByAgent(),
       currentPaneEntriesByAgent: Object.fromEntries(
         session.agents.map((agent) => [agent.id, deps.currentAgentPaneEntries(agent.id)]),

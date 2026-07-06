@@ -247,7 +247,7 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -292,6 +292,84 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
   assert.equal(result.visibleCursor, null)
 })
 
+test("refreshAgentPaneState backfills idle panes while another agent has prompt work", async () => {
+  const requestedCursorsByAgent: Record<string, Array<string | null>> = {
+    "agent-a": [],
+    "agent-b": [],
+  }
+  const result = await refreshAgentPaneState<
+    { id: string },
+    { role: string; turnId?: number; text: string },
+    { id?: number; role: string; turnId?: number; text: string },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }, { id: "agent-b" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWorkForAgent: (agent) => agent.id === "agent-b",
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "idle older prompt" },
+        { role: "assistant", turnId: 1, text: "idle older reply" },
+        { role: "user", turnId: 2, text: "idle latest prompt" },
+        { role: "assistant", turnId: 2, text: "idle latest reply" },
+      ],
+      "agent-b": [
+        { role: "user", turnId: 3, text: "busy prompt" },
+        { role: "assistant", turnId: 3, text: "busy live reply with more text" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (agentId, cursor) => {
+      requestedCursorsByAgent[agentId]?.push(cursor)
+      if (agentId === "agent-a" && cursor === null) {
+        return {
+          entries: [
+            { role: "user", turnId: 2, text: "idle latest prompt" },
+            { role: "assistant", turnId: 2, text: "idle latest reply" },
+          ],
+          nextCursor: "older-idle",
+        }
+      }
+      if (agentId === "agent-a") {
+        return {
+          entries: [
+            { role: "user", turnId: 1, text: "idle older prompt" },
+            { role: "assistant", turnId: 1, text: "idle older reply" },
+          ],
+          nextCursor: null,
+        }
+      }
+      return {
+        entries: [
+          { role: "user", turnId: 3, text: "busy prompt" },
+        ],
+        nextCursor: "older-busy",
+      }
+    },
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(requestedCursorsByAgent["agent-a"], [null, "older-idle"])
+  assert.deepEqual(requestedCursorsByAgent["agent-b"], [null])
+  assert.deepEqual(result.paneEntries["agent-a"]?.map((entry) => entry.text), [
+    "idle older prompt",
+    "idle older reply",
+    "idle latest prompt",
+    "idle latest reply",
+  ])
+  assert.deepEqual(result.paneEntries["agent-b"]?.map((entry) => entry.text), [
+    "busy prompt",
+    "busy live reply with more text",
+  ])
+})
+
 test("refreshAgentPaneState prefers refreshed external history over queued prompt echoes", async () => {
   const result = await refreshAgentPaneState({
     session: {
@@ -305,7 +383,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
       }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: true,
+    hasPromptWorkForAgent: () => true,
     expandedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -382,7 +460,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWork: false,
+    hasPromptWorkForAgent: () => false,
     expandedTurnIdsByAgent: { "agent-a": [1] },
     currentPaneEntriesByAgent: {
       "agent-a": [
