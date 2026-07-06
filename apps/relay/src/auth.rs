@@ -126,8 +126,81 @@ pub enum RelayAuthError {
     TargetNotAllowed,
     #[error("relay token is expired")]
     TokenExpired,
+    #[error("relay token has been revoked")]
+    TokenRevoked,
     #[error("scoped relay tokens are not enabled")]
     ScopedTokensUnavailable,
+}
+
+/// Live, bounded denylist for scoped relay tokens. Cloud revocations are fed
+/// in keyed by token id (`jti`) or account id; each entry carries the moment
+/// past which it can be dropped (the underlying token would have expired
+/// anyway), keeping the registry bounded by outstanding-token count.
+#[derive(Debug, Clone, Default)]
+pub struct RelayRevocationRegistry {
+    inner: std::sync::Arc<std::sync::Mutex<RevocationState>>,
+}
+
+#[derive(Debug, Default)]
+struct RevocationState {
+    revoked_token_ids: BTreeMap<String, u64>,
+    revoked_accounts: BTreeMap<String, u64>,
+}
+
+impl RelayRevocationRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, RevocationState> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Revoke a specific token by its `jti`; `expires_at_ms` should be the
+    /// token's own expiry so the entry can be pruned once it is moot.
+    pub fn revoke_token_id(&self, token_id: impl Into<String>, expires_at_ms: u64) {
+        self.lock()
+            .revoked_token_ids
+            .insert(token_id.into(), expires_at_ms);
+    }
+
+    /// Revoke every token bound to an account until `expires_at_ms` (use the
+    /// furthest outstanding token expiry, or a bounded horizon).
+    pub fn revoke_account(&self, account_id: impl Into<String>, expires_at_ms: u64) {
+        self.lock()
+            .revoked_accounts
+            .insert(account_id.into(), expires_at_ms);
+    }
+
+    /// Drop entries whose expiry has passed so the registry stays bounded.
+    pub fn prune(&self, now_ms: u64) {
+        let mut state = self.lock();
+        state
+            .revoked_token_ids
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        state
+            .revoked_accounts
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+    }
+
+    fn is_revoked(&self, claims: &RelayTokenClaims, now_ms: u64) -> bool {
+        let state = self.lock();
+        if state
+            .revoked_token_ids
+            .get(&claims.token_id)
+            .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
+        {
+            return true;
+        }
+        claims.account_id.as_ref().is_some_and(|account_id| {
+            state
+                .revoked_accounts
+                .get(account_id)
+                .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +265,7 @@ pub struct ScopedTokenVerifier {
     accepted_tokens: BTreeMap<String, RelayTokenClaims>,
     issuer_secrets: BTreeMap<String, String>,
     now_ms: Option<u64>,
+    revocations: Option<RelayRevocationRegistry>,
 }
 
 impl ScopedTokenVerifier {
@@ -204,7 +278,15 @@ impl ScopedTokenVerifier {
             accepted_tokens,
             issuer_secrets,
             now_ms,
+            revocations: None,
         }
+    }
+
+    /// Attach a live revocation registry so verification rejects tokens whose
+    /// `jti` or account has been revoked by the hosted control plane.
+    pub fn with_revocations(mut self, revocations: RelayRevocationRegistry) -> Self {
+        self.revocations = Some(revocations);
+        self
     }
 
     pub fn verify(
@@ -218,12 +300,13 @@ impl ScopedTokenVerifier {
             Some(claims) => claims.clone(),
             None => self.verify_signed_token(request.token)?,
         };
-        validate_claims(
-            &claims,
-            request.action,
-            request.target,
-            Some(self.now_ms.unwrap_or_else(current_unix_ms)),
-        )?;
+        let now_ms = self.now_ms.unwrap_or_else(current_unix_ms);
+        validate_claims(&claims, request.action, request.target, Some(now_ms))?;
+        if let Some(revocations) = &self.revocations {
+            if revocations.is_revoked(&claims, now_ms) {
+                return Err(RelayAuthError::TokenRevoked);
+            }
+        }
         Ok(identity_from_claims(claims))
     }
 
@@ -679,6 +762,72 @@ mod tests {
             })
             .expect_err("wrong target should be rejected");
         assert_eq!(target_error, RelayAuthError::TargetNotAllowed);
+    }
+
+    #[test]
+    fn scoped_verifier_rejects_revoked_token_ids_and_accounts() {
+        let claims = RelayTokenClaims {
+            issuer: "issuer".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect],
+            allowed_targets: Some(vec!["daemon-1".to_string()]),
+            issued_at_ms: 10,
+            expires_at_ms: 1_000,
+            token_id: "token-1".to_string(),
+            account_id: Some("account-1".to_string()),
+            organization_id: None,
+            user_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: Some("client-1".to_string()),
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        };
+        let mut tokens = BTreeMap::new();
+        tokens.insert("client-token".to_string(), claims.clone());
+        let revocations = RelayRevocationRegistry::new();
+        let verifier = ScopedTokenVerifier::new(tokens.clone(), BTreeMap::new(), Some(100))
+            .with_revocations(revocations.clone());
+        let request = || RelayAuthRequest {
+            token: "client-token",
+            action: RelayAction::ClientConnect,
+            target: Some("daemon-1"),
+        };
+
+        verifier
+            .verify(request())
+            .expect("token verifies before revocation");
+
+        revocations.revoke_token_id("token-1", 1_000);
+        assert_eq!(
+            verifier
+                .verify(request())
+                .expect_err("revoked jti rejected"),
+            RelayAuthError::TokenRevoked
+        );
+
+        // Pruning past the token's expiry drops the entry.
+        revocations.prune(2_000);
+        verifier
+            .verify(request())
+            .expect("pruned jti revocation no longer applies");
+
+        // Account-level revocation blocks every token for that account.
+        revocations.revoke_account("account-1", 1_000);
+        assert_eq!(
+            verifier
+                .verify(request())
+                .expect_err("revoked account rejected"),
+            RelayAuthError::TokenRevoked
+        );
+
+        // A verifier without the registry is unaffected.
+        let unrevoked = ScopedTokenVerifier::new(tokens, BTreeMap::new(), Some(100));
+        unrevoked
+            .verify(request())
+            .expect("verifier without revocations still accepts the token");
     }
 
     #[test]

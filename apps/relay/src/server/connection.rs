@@ -1919,6 +1919,7 @@ fn relay_auth_error(error: RelayAuthError) -> std::io::Error {
         | RelayAuthError::ActionNotAllowed
         | RelayAuthError::TargetNotAllowed
         | RelayAuthError::TokenExpired
+        | RelayAuthError::TokenRevoked
         | RelayAuthError::ScopedTokensUnavailable => std::io::ErrorKind::PermissionDenied,
     };
     std::io::Error::new(kind, error.to_string())

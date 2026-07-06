@@ -6,8 +6,9 @@ pub mod server;
 mod registry;
 
 pub use auth::{
-    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelayRealm, RelaySubjectKind,
-    RelayTokenClaims, ScopedTokenVerifier, SharedTokenVerifier, VerifiedRelayIdentity,
+    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelayRealm,
+    RelayRevocationRegistry, RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
+    SharedTokenVerifier, VerifiedRelayIdentity,
 };
 pub use config::RelayConfig;
 pub use server::RelayServer;
