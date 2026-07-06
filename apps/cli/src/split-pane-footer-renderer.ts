@@ -8,13 +8,14 @@ import type {
   AgentInstance,
   MetaagentTask,
   RuntimeProviderRun,
+  RuntimeSession,
 } from "./cli-types.js"
 import type { PromptMetaTone } from "@arroba/kernel-client/prompt-meta"
 import {
   formatSplitPaneFooterParts,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
-import { sessionAgentPaneStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import { sessionAgentPaneStatusBadgeForSession } from "@arroba/kernel-client/session-runtime-status"
 import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
@@ -56,16 +57,15 @@ export type SplitPaneFooterRenderOptions = {
   auxiliaryBoxes: Array<BoxRenderable | undefined>
   showAgentFooters: boolean
   maxAgentsPerScreen: number
+  session: RuntimeSession | null
   visibleAgents: Array<AgentInstance | null | undefined>
   metaagentTasks: readonly MetaagentTask[]
   focusedAgentId: string | null
   providerRun: RuntimeProviderRun | null
   currentProviderSelection: ProviderSelection
   agentActivityLabels: Record<string, string | null>
-  hasPromptWorkByAgent: Record<string, boolean>
   streamingAgentId: string | null
   agentBusyLatch: (agentId: string) => boolean
-  hasProjectedRuntimeState: boolean
   sessionConfigValues: Record<string, string> | undefined
   agentLocationLabel: (agent: AgentInstance | null | undefined) => string | null
   badgeWidth: number
@@ -228,13 +228,12 @@ function renderFooter(
   const selectionOverride = agent?.id === options.focusedAgentId
     ? options.currentProviderSelection
     : null
-  const badge = sessionAgentPaneStatusBadge({
+  const badge = sessionAgentPaneStatusBadgeForSession({
+    session: options.session,
     agent: agent ?? null,
     activeLabel: agent ? options.agentActivityLabels[agent.id] ?? null : null,
-    hasPromptWork: agent ? options.hasPromptWorkByAgent[agent.id] ?? false : false,
     isStreaming: agent?.id === options.streamingAgentId,
     busyLatch: agent ? options.agentBusyLatch(agent.id) : false,
-    useLegacyAgentProcessingState: !options.hasProjectedRuntimeState,
   })
   const focused = agent?.id === options.focusedAgentId
   const task = agent?.meta_mode

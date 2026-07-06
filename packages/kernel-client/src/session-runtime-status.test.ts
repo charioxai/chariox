@@ -5,6 +5,7 @@ import {
   agentRuntimeStateFromProjection,
   sessionAgentHasUnreadIdleOutput,
   sessionAgentPaneStatusBadge,
+  sessionAgentPaneStatusBadgeForSession,
   sessionAgentRuntimeDisplayStateByAgent,
   sessionAgentRuntimeDisplayState,
   sessionAgentRuntimeDisplayStates,
@@ -119,6 +120,49 @@ test("session agent pane status badge projects activity and prompt work", () => 
     activeLabel: null,
     useLegacyAgentProcessingState: false,
   }), { label: "IDLE", tone: "idle" })
+})
+
+test("session agent pane status badge for session uses authoritative projection", () => {
+  const session = makeSession({
+    agents: [makeAgent({
+      id: "agent-1",
+      state: "Working",
+      is_processing: true,
+    })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionAgentPaneStatusBadgeForSession({
+    session,
+    agent: session.agents[0],
+    activeLabel: null,
+  }), { label: "IDLE", tone: "idle" })
+
+  assert.deepEqual(sessionAgentPaneStatusBadgeForSession({
+    session: makeSession({
+      agents: [makeAgent({ id: "agent-1", state: "Idle", is_processing: false })],
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attach-1",
+            target_agent_id: "agent-1",
+            prompt: "run",
+            status: "Running",
+          },
+        } as never,
+      },
+    }),
+    agent: makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
+    activeLabel: null,
+  }), { label: "THINKING", tone: "working" })
 })
 
 test("session runtime state prefers projected activity over stale legacy state", () => {

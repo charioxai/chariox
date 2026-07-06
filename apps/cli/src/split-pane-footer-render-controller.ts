@@ -1,4 +1,4 @@
-import type { AgentInstance } from "./cli-types.js"
+import type { AgentInstance, RuntimeSession } from "./cli-types.js"
 import type {
   SplitPaneFooterRenderOptions,
   SplitPaneFooterRenderState,
@@ -12,16 +12,15 @@ export type SplitPaneFooterRenderControllerDeps = {
   isAttached: () => boolean
   workflowScreenActive: () => boolean
   maxAgentsPerScreen: () => number
+  session: () => RuntimeSession | null
   visibleAgents: () => Array<AgentInstance | null | undefined>
   metaagentTasks: () => SplitPaneFooterRenderOptions["metaagentTasks"]
   focusedAgentId: () => string | null
   providerRun: () => SplitPaneFooterRenderOptions["providerRun"]
   currentProviderSelection: () => SplitPaneFooterRenderOptions["currentProviderSelection"]
   agentActivityLabels: () => SplitPaneFooterRenderOptions["agentActivityLabels"]
-  hasPromptWorkByAgent: () => SplitPaneFooterRenderOptions["hasPromptWorkByAgent"]
   streamingAgentId: () => string | null
   agentBusyLatch: SplitPaneFooterRenderOptions["agentBusyLatch"]
-  hasProjectedRuntimeState: () => boolean
   sessionConfigValues: () => SplitPaneFooterRenderOptions["sessionConfigValues"]
   agentLocationLabel: SplitPaneFooterRenderOptions["agentLocationLabel"]
   badgeWidth: number
@@ -42,16 +41,15 @@ export function createSplitPaneFooterRenderController(
         auxiliaryBoxes: deps.auxiliaryBoxes(),
         showAgentFooters: deps.isAttached() && !deps.workflowScreenActive() && visibleAgents.length > 0,
         maxAgentsPerScreen: deps.maxAgentsPerScreen(),
+        session: deps.session(),
         visibleAgents,
         metaagentTasks: deps.metaagentTasks(),
         focusedAgentId: deps.focusedAgentId(),
         providerRun: deps.providerRun(),
         currentProviderSelection: deps.currentProviderSelection(),
         agentActivityLabels: deps.agentActivityLabels(),
-        hasPromptWorkByAgent: deps.hasPromptWorkByAgent(),
         streamingAgentId: deps.streamingAgentId(),
         agentBusyLatch: deps.agentBusyLatch,
-        hasProjectedRuntimeState: deps.hasProjectedRuntimeState(),
         sessionConfigValues: deps.sessionConfigValues(),
         agentLocationLabel: deps.agentLocationLabel,
         badgeWidth: deps.badgeWidth,

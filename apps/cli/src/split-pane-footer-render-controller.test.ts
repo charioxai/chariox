@@ -9,8 +9,8 @@ test("split-pane footer render controller renders current footer projection", ()
   const rendered: SplitPaneFooterRenderOptions[] = []
   let attached = true
   let workflowActive = false
-  let hasProjectedRuntimeState = true
   let visibleAgents: Array<AgentInstance | null | undefined> = [agent("agent-a")]
+  const session = { id: "session-1", agents: visibleAgents } as SplitPaneFooterRenderOptions["session"]
   const controller = createSplitPaneFooterRenderController({
     renderer: "renderer" as unknown as SplitPaneFooterRenderOptions["renderer"],
     state: { primary: { parts: {}, taskParts: {}, badgeTexts: [] }, auxiliaries: [] },
@@ -19,16 +19,15 @@ test("split-pane footer render controller renders current footer projection", ()
     isAttached: () => attached,
     workflowScreenActive: () => workflowActive,
     maxAgentsPerScreen: () => 2,
+    session: () => session,
     visibleAgents: () => visibleAgents,
     metaagentTasks: () => [],
     focusedAgentId: () => "agent-a",
     providerRun: () => null,
     currentProviderSelection: () => ({ model: "default", effort: "" }),
     agentActivityLabels: () => ({ "agent-a": "working" }),
-    hasPromptWorkByAgent: () => ({ "agent-a": true }),
     streamingAgentId: () => "agent-a",
     agentBusyLatch: (agentId) => agentId === "agent-a",
-    hasProjectedRuntimeState: () => hasProjectedRuntimeState,
     sessionConfigValues: () => ({ sandbox: "workspace-write" }),
     agentLocationLabel: (value) => value?.id ?? null,
     badgeWidth: 8,
@@ -41,7 +40,6 @@ test("split-pane footer render controller renders current footer projection", ()
   controller.render()
   attached = false
   workflowActive = true
-  hasProjectedRuntimeState = false
   visibleAgents = []
   controller.render()
 
@@ -53,15 +51,14 @@ test("split-pane footer render controller renders current footer projection", ()
   assert.equal(first.focusedAgentId, "agent-a")
   assert.deepEqual(first.currentProviderSelection, { model: "default", effort: "" })
   assert.deepEqual(first.agentActivityLabels, { "agent-a": "working" })
-  assert.deepEqual(first.hasPromptWorkByAgent, { "agent-a": true })
-  assert.equal(first.hasProjectedRuntimeState, true)
+  assert.equal(first.session?.id, "session-1")
   assert.equal(first.agentBusyLatch("agent-a"), true)
   assert.deepEqual(first.sessionConfigValues, { sandbox: "workspace-write" })
   assert.equal(first.agentLocationLabel(agent("agent-a")), "agent-a")
   assert.equal(first.badgeWidth, 8)
   assert.equal(first.animationFrame, 4)
   assert.equal(rendered[1]!.showAgentFooters, false)
-  assert.equal(rendered[1]!.hasProjectedRuntimeState, false)
+  assert.equal(rendered[1]!.session?.id, "session-1")
 })
 
 function agent(id: string): AgentInstance {

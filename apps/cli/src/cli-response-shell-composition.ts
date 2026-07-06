@@ -1,6 +1,5 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
 import {
-  sessionHasAgentRuntimeProjection,
   sessionAgentIsBusy,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
@@ -77,7 +76,6 @@ export type CliResponseShellCompositionDeps = {
   providerRunState: AnyFn
   currentProviderSelection: AnyFn
   agentActivityLabels: AnyFn
-  hasPromptWorkByAgent: AnyFn
   streamingAgentId: AnyFn
   agentBusyLatch: AnyFn
   agentBusyLatches: AnyFn
@@ -148,16 +146,15 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     isAttached: deps.isAttached,
     workflowScreenActive: () => deps.workflowScreenActive(),
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
+    session: deps.sessionState,
     visibleAgents: deps.responseVisibleAgents,
     metaagentTasks: () => deps.sessionState().metaagent_tasks ?? [],
     focusedAgentId: deps.focusedAgentId,
     providerRun: deps.providerRunState,
     currentProviderSelection: deps.currentProviderSelection,
     agentActivityLabels: deps.agentActivityLabels,
-    hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
-    hasProjectedRuntimeState: () => sessionHasAgentRuntimeProjection(deps.sessionState()),
     sessionConfigValues: () => deps.sessionState().config_state?.values,
     agentLocationLabel: deps.agentLocationLabel,
     badgeWidth: STATUS_BADGE_WIDTH,

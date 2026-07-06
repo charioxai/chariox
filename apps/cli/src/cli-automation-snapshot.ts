@@ -3,10 +3,7 @@ import {
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@arroba/kernel-client/external-provider-observation"
 import {
-  sessionAllowsLegacyAgentProcessingState,
-} from "@arroba/kernel-client/session-prompt-work"
-import {
-  sessionAgentPaneStatusBadge,
+  sessionAgentPaneStatusBadgeForSession,
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@arroba/kernel-client/session-runtime-status"
 
@@ -42,7 +39,6 @@ export type CliAutomationSnapshotDeps = {
   sessionState: () => RuntimeSession
   focusedAgentId: () => string | null
   agentActivityLabels: () => Record<string, string | null>
-  hasPromptWorkByAgent: () => Record<string, boolean>
   streamingAgentId: () => string | null
   agentBusyLatch: (agentId: string) => boolean
   isAttached: () => boolean
@@ -93,13 +89,12 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       focusedAgentId: deps.focusedAgentId(),
       agentCount: session.agents.length,
       agents: session.agents.map((agent) => {
-        const badge = sessionAgentPaneStatusBadge({
+        const badge = sessionAgentPaneStatusBadgeForSession({
+          session,
           agent,
           activeLabel: deps.agentActivityLabels()[agent.id] ?? null,
-          hasPromptWork: deps.hasPromptWorkByAgent()[agent.id] ?? false,
           isStreaming: agent.id === deps.streamingAgentId(),
           busyLatch: deps.agentBusyLatch(agent.id),
-          useLegacyAgentProcessingState: sessionAllowsLegacyAgentProcessingState(session),
         })
         return {
           id: agent.id,

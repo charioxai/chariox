@@ -35,7 +35,6 @@ export type CliAutomationProcessCompositionDeps = {
   sessionState: AnyFn
   focusedAgentId: AnyFn
   agentActivityLabels: AnyFn
-  hasPromptWorkByAgent: AnyFn
   streamingAgentId: AnyFn
   agentBusyLatch: AnyFn
   isAttached: AnyFn
@@ -102,7 +101,6 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     sessionState: deps.sessionState,
     focusedAgentId: deps.focusedAgentId,
     agentActivityLabels: deps.agentActivityLabels,
-    hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
     isAttached: deps.isAttached,

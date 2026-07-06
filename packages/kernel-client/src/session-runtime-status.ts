@@ -164,6 +164,28 @@ export function sessionAgentPaneStatusBadge(options: {
   return { label: "IDLE", tone: "idle" }
 }
 
+export function sessionAgentPaneStatusBadgeForSession(options: {
+  readonly session: RuntimeSession | null | undefined
+  readonly agent: AgentInstance | null | undefined
+  readonly activeLabel: string | null
+  readonly isStreaming?: boolean
+  readonly busyLatch?: boolean
+}): SessionAgentPaneStatusBadge {
+  const agent = options.agent
+  if (!agent) {
+    return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
+  }
+  const runtimeState = sessionAgentRuntimeState(options.session, agent)
+  return sessionAgentPaneStatusBadge({
+    agent: { state: runtimeState, is_processing: false },
+    activeLabel: options.activeLabel,
+    hasPromptWork: runtimeState === "Working",
+    isStreaming: options.isStreaming ?? false,
+    busyLatch: options.busyLatch ?? false,
+    useLegacyAgentProcessingState: false,
+  })
+}
+
 export function sessionAgentRuntimeActivityProjection(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
