@@ -115,6 +115,34 @@ test("session state apply controller clears cancelled prompt residue when cancel
   assert.ok(harness.calls.includes("cancelPendingTurnCompletion"))
 })
 
+test("session state apply controller preserves unrelated status line when cancellation settles", () => {
+  const cancelledPrompt = prompt("prompt-1", "agent-a", "cancelling")
+  const harness = createHarness({
+    session: session({
+      active_prompt: cancelledPrompt,
+      agents: [agent("agent-a")],
+    }),
+    working: true,
+    submitting: true,
+    submittingAgentId: "agent-a",
+    busyLatches: { "agent-a": true },
+    streamingAgentId: "agent-a",
+    providerActivityLabel: "cancelling",
+    activeStatusLabel: "cancelling",
+    statusLine: "Reconnecting...",
+    agentActivityLabels: { "agent-a": "cancelling" },
+    activeToolLabels: ["tool-1"],
+  })
+
+  harness.controller.apply(session({
+    active_prompt: null,
+    agents: [agent("agent-a")],
+  }))
+
+  assert.equal(harness.state.statusLine, "Reconnecting...")
+  assert.deepEqual(harness.calls.filter((call) => call === "setStatusLine"), [])
+})
+
 test("session state apply controller clears agent busy when external prompt disappears from active state", () => {
   const externalWorkingPrompt = session({
     agent_activity: {

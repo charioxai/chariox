@@ -8,6 +8,7 @@ import {
   sessionResponseLayout,
 } from "@arroba/kernel-client/session-config-projection"
 import {
+  DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE,
   sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
 
@@ -112,7 +113,7 @@ export function createSessionStateApplyController(
       deps.setStreamingAgentId(transition.nextStreamingAgentIdAfterCancelledPromptSettlement)
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
-      if (deps.getStatusLine() === "Cancellation requested.") {
+      if (deps.getStatusLine() === DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE) {
         deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
       if (transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement) {
