@@ -162,8 +162,14 @@ impl SessionStateProjectionStore {
         &self,
         agent_runtime: &AgentRuntimeProjectionStore,
         canonical_agents: &[crate::agent::AgentInstance],
+        active_turns: &std::collections::BTreeMap<String, crate::app::ActiveTurnState>,
     ) -> ProjectionInvariantHealthSnapshot {
-        invariant::snapshot(self.projected_sessions(), agent_runtime, canonical_agents)
+        invariant::snapshot(
+            self.projected_sessions(),
+            agent_runtime,
+            canonical_agents,
+            active_turns,
+        )
     }
 
     pub(crate) fn resolve_session_ref_id(

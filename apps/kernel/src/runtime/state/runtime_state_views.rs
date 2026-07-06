@@ -81,6 +81,10 @@ impl KernelRuntimeState {
         self.agent_activity_for_session_with_unread(session, None)
     }
 
+    pub(crate) fn active_turn_snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
+        self.owned.active_turns.snapshot()
+    }
+
     pub(crate) fn agent_activity_for_session_with_unread(
         &self,
         session: &crate::session::RuntimeSession,
