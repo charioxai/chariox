@@ -138,7 +138,7 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
   ])
 
   const stopHarness = createHarness({
-    activePrompt: true,
+    activeTurnWork: true,
     parsedEvent: keyEvent("c", { ctrl: true }),
   })
   assert.equal(stopHarness.controller.handleData("x"), true)
@@ -244,7 +244,7 @@ function createHarness(options: {
   attached?: boolean
   workflowScreenActive?: boolean
   copyHandled?: boolean
-  activePrompt?: boolean
+  activeTurnWork?: boolean
   removeEditHandled?: boolean
   currentPromptText?: string
   pendingAttachmentCount?: number
@@ -308,7 +308,7 @@ function createHarness(options: {
       calls.push("copy")
       return options.copyHandled ?? false
     },
-    activePrompt: () => options.activePrompt ? { id: "prompt-1" } : null,
+    hasActiveTurnWork: () => options.activeTurnWork ?? false,
     requestPromptStop: () => {
       calls.push("stop")
     },

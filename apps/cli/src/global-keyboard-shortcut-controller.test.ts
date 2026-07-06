@@ -34,22 +34,22 @@ test("global keyboard shortcut controller exits on ctrl-e", () => {
   assert.deepEqual(harness.calls(), ["hotkeys:e", "exit"])
 })
 
-test("global keyboard shortcut controller maps ctrl-c to stop or exit", () => {
-  const stopHarness = createHarness({ activePrompt: true })
+test("global keyboard shortcut controller maps ctrl-c to stop while turn work is active", () => {
+  const stopHarness = createHarness({ activeTurnWork: true })
   assert.equal(stopHarness.controller.handleKey(keyEvent("c", { ctrl: true })), true)
   assert.deepEqual(stopHarness.calls(), ["hotkeys:c", "stop"])
 
-  const exitHarness = createHarness({ activePrompt: false })
+  const exitHarness = createHarness({ activeTurnWork: false })
   assert.equal(exitHarness.controller.handleKey(keyEvent("c", { ctrl: true })), true)
   assert.deepEqual(exitHarness.calls(), ["hotkeys:c", "exit"])
 })
 
-test("global keyboard shortcut controller maps SIGINT to stop or exit", () => {
-  const stopHarness = createHarness({ activePrompt: true })
+test("global keyboard shortcut controller maps SIGINT to stop while turn work is active", () => {
+  const stopHarness = createHarness({ activeTurnWork: true })
   stopHarness.controller.handleSigint()
   assert.deepEqual(stopHarness.calls(), ["stop"])
 
-  const exitHarness = createHarness({ activePrompt: false })
+  const exitHarness = createHarness({ activeTurnWork: false })
   exitHarness.controller.handleSigint()
   assert.deepEqual(exitHarness.calls(), ["exit"])
 })
@@ -74,7 +74,7 @@ test("global keyboard shortcut controller ignores unrelated keys", () => {
 function createHarness(options: {
   hotkeysHandled?: boolean
   dialogOpen?: boolean
-  activePrompt?: boolean
+  activeTurnWork?: boolean
 } = {}) {
   const calls: string[] = []
   const controller = createGlobalKeyboardShortcutController({
@@ -92,7 +92,7 @@ function createHarness(options: {
     requestPromptStop: () => {
       calls.push("stop")
     },
-    activePrompt: () => options.activePrompt ? { id: "prompt-1" } : null,
+    hasActiveTurnWork: () => options.activeTurnWork ?? false,
   })
 
   return {

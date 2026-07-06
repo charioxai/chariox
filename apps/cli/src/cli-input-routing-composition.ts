@@ -145,7 +145,7 @@ export type CliInputRoutingCompositionDeps = {
   handleHotkeysToggleShortcut: AnyFn
   dialogOverlayOpen: AnyFn
   closeActiveDialogOverlay: AnyFn
-  activePrompt: AnyFn
+  hasActiveTurnWork: AnyFn
   handleCommandCenterKey: AnyFn
   handleQueuedPromptKey: AnyFn
   commandCenterOpen: AnyFn
@@ -436,7 +436,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     requestPromptStop: () => {
       void requestPromptStop()
     },
-    activePrompt: deps.activePrompt,
+    hasActiveTurnWork: deps.hasActiveTurnWork,
   })
   useKeyboard(globalKeyboardShortcutController.handleKey)
   const handleSigint = globalKeyboardShortcutController.handleSigint
@@ -574,7 +574,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
-    activePrompt: deps.activePrompt,
+    hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()
     },

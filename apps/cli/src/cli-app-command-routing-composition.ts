@@ -55,6 +55,7 @@ export function createCliAppCommandRoutingComposition(
   const inputRouting = createCliInputRoutingComposition({
     ...deps,
     ...commandHandlers,
+    hasActiveTurnWork: deps.anyTurnWork,
   } as any)
   requestPromptStop = inputRouting.requestPromptStop
 

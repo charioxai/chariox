@@ -29,7 +29,7 @@ export type CliStdinKeyControllerDeps = {
   handleWorkflowDetailPaneKey: (event: CliStdinKeyEvent) => boolean
   cycleAgentFocus: () => void
   copyPromptSelection: () => boolean
-  activePrompt: () => unknown
+  hasActiveTurnWork: () => boolean
   requestPromptStop: () => void
   removePromptAttachmentsForEdit: (edit: "backspace" | "delete") => boolean
   currentPromptText: () => string
@@ -101,7 +101,7 @@ export function createCliStdinKeyController(
         return true
       }
       if (event.ctrl && event.name === "c") {
-        if (deps.activePrompt()) {
+        if (deps.hasActiveTurnWork()) {
           deps.requestPromptStop()
         } else {
           deps.requestExit()

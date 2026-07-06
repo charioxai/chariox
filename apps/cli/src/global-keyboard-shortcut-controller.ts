@@ -11,7 +11,7 @@ export type GlobalKeyboardShortcutControllerDeps = {
   closeActiveDialogOverlay: () => void
   requestExit: () => void
   requestPromptStop: () => void
-  activePrompt: () => unknown
+  hasActiveTurnWork: () => boolean
 }
 
 export type GlobalKeyboardShortcutController = {
@@ -27,7 +27,7 @@ export function createGlobalKeyboardShortcutController(
     event.stopPropagation()
   }
   const requestPromptStopOrExit = () => {
-    if (deps.activePrompt()) {
+    if (deps.hasActiveTurnWork()) {
       deps.requestPromptStop()
     } else {
       deps.requestExit()
