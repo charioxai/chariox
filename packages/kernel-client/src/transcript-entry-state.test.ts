@@ -6,6 +6,8 @@ import {
   computeMaxTranscriptEntryId,
   computeNextTranscriptEntryId,
   computeNextTranscriptTurnId,
+  createTranscriptSteeredPromptEntry,
+  createTranscriptUserPromptTurn,
   createNextTranscriptEntry,
   reindexTranscriptEntries,
   shouldSkipConsecutiveTranscriptEntry,
@@ -68,6 +70,32 @@ test("transcriptHasTrailingUserPrompt dedupes prompt echoes by prompt id before 
   assert.equal(transcriptHasTrailingUserPrompt([
     entry(1, "assistant", "hello"),
   ], "hello"), false)
+})
+
+test("createTranscriptUserPromptTurn projects prompt entry and turn identity", () => {
+  assert.deepEqual(createTranscriptUserPromptTurn("hello\n", 9), {
+    entry: {
+      role: "user",
+      text: "hello",
+      turnId: 9,
+    },
+    currentTurnId: 9,
+    nextTurnId: 10,
+  })
+})
+
+test("createTranscriptSteeredPromptEntry keeps steering out of turn tracking", () => {
+  assert.deepEqual(createTranscriptSteeredPromptEntry("steer\n", {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  }), {
+    role: "user",
+    text: "steer",
+    turnTracking: "none",
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  })
+  assert.equal(createTranscriptSteeredPromptEntry("\n"), null)
 })
 
 test("shouldSkipConsecutiveTranscriptEntry only deduplicates consecutive notices and errors", () => {

@@ -12,6 +12,29 @@ export type TranscriptEntryStateEntry = {
   readonly promptId?: string | null
 }
 
+export type TranscriptPromptMetadata = {
+  readonly promptId?: string | null | undefined
+  readonly sourceAttachmentId?: string | null | undefined
+}
+
+export type TranscriptUserPromptTurn = {
+  readonly entry: {
+    readonly role: "user"
+    readonly text: string
+    readonly turnId: number
+  }
+  readonly currentTurnId: number
+  readonly nextTurnId: number
+}
+
+export type TranscriptSteeredPromptEntry = {
+  readonly role: "user"
+  readonly text: string
+  readonly turnTracking: "none"
+  readonly promptId?: string | null
+  readonly sourceAttachmentId?: string | null
+}
+
 export type TranscriptRetentionSlice<TEntry extends Pick<TranscriptEntryStateEntry, "text">> = {
   readonly removed: TEntry[]
   readonly kept: TEntry[]
@@ -110,6 +133,38 @@ export function transcriptHasTrailingUserPrompt<TEntry extends Pick<TranscriptEn
     return lastEntry.promptId === promptId
   }
   return trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
+}
+
+export function createTranscriptUserPromptTurn(
+  text: string,
+  turnId: number,
+): TranscriptUserPromptTurn {
+  return {
+    entry: {
+      role: "user",
+      text: trimSingleTrailingNewline(text),
+      turnId,
+    },
+    currentTurnId: turnId,
+    nextTurnId: turnId + 1,
+  }
+}
+
+export function createTranscriptSteeredPromptEntry(
+  text: string,
+  metadata: TranscriptPromptMetadata = {},
+): TranscriptSteeredPromptEntry | null {
+  const normalized = trimSingleTrailingNewline(text)
+  if (!normalized) {
+    return null
+  }
+  return {
+    role: "user",
+    text: normalized,
+    turnTracking: "none",
+    ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+  }
 }
 
 export function shouldSkipConsecutiveTranscriptEntry(

@@ -1,7 +1,8 @@
 import type { AgentInstance, TranscriptEntry } from "./cli-types.js"
 import {
+  createTranscriptSteeredPromptEntry,
+  createTranscriptUserPromptTurn,
   computeNextTranscriptTurnId as computeNextTurnId,
-  trimSingleTrailingNewline,
 } from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptEventControllerDeps = {
@@ -55,21 +56,18 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
       && targetAgentId !== deps.responsePrimaryAgent()?.id
     ) {
       const paneEntries = deps.currentAgentPaneEntries(targetAgentId)
+      const promptTurn = createTranscriptUserPromptTurn(text, computeNextTurnId(paneEntries))
       const nextTurnIds = deps.collapseLatestTurnForAgent(targetAgentId, paneEntries)
-      deps.appendTranscriptEntryToAgentPane(targetAgentId, {
-        role: "user",
-        text: trimSingleTrailingNewline(text),
-        turnId: computeNextTurnId(paneEntries),
-      }, nextTurnIds)
+      deps.appendTranscriptEntryToAgentPane(targetAgentId, promptTurn.entry, nextTurnIds)
       setPromptWorkActive(deps)
       return
     }
 
-    const turnId = deps.nextTurnId()
-    deps.setNextTurnId(turnId + 1)
-    deps.setCurrentTurnId(turnId)
+    const promptTurn = createTranscriptUserPromptTurn(text, deps.nextTurnId())
+    deps.setNextTurnId(promptTurn.nextTurnId)
+    deps.setCurrentTurnId(promptTurn.currentTurnId)
     const nextTurnIds = deps.collapseLatestTurnForAgent(targetAgentId, deps.entries().filter(Boolean))
-    deps.appendEntry({ role: "user", text: trimSingleTrailingNewline(text), turnId }, nextTurnIds)
+    deps.appendEntry(promptTurn.entry, nextTurnIds)
     deps.syncVisibleTranscriptPreview()
     setPromptWorkActive(deps)
     deps.scrollTranscriptToBottom()
@@ -80,20 +78,13 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     agentId: string,
     metadata: { promptId?: string | null; sourceAttachmentId?: string | null } = {},
   ) => {
-    const normalized = trimSingleTrailingNewline(text)
-    if (!normalized) {
+    const entry = createTranscriptSteeredPromptEntry(text, metadata)
+    if (!entry) {
       return
     }
     deps.recordTurnActivity("queued_prompt_steer")
     deps.setStreamingAgentId(agentId)
     deps.markAgentBusy(agentId)
-    const entry: Omit<TranscriptEntry, "id"> = {
-      role: "user",
-      text: normalized,
-      turnTracking: "none",
-      ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
-      ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
-    }
 
     if (
       deps.splitAgentResponseMode()
