@@ -346,6 +346,7 @@ mod tests {
         AgentPromptRuntimeStatus, AgentRuntimeStatus, AgentTurnRuntimePhase,
         SessionSnapshotProjection,
     };
+    use crate::agent::CreateAgentRequest;
     use crate::runtime::projection::{
         test_support::{attach_cli, launch_dev_stub_provider, submit_prompt},
         QUEUED_PROMPT_STEER_EXTERNAL_REASON,
@@ -354,11 +355,14 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
-    fn session_snapshot_projection_includes_metadata_and_agents() {
+    fn session_snapshot_projection_includes_metadata_agents_and_idle_activity() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
+        let reviewer = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("reviewer should be created");
 
         let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
             .expect("projection should build");
@@ -366,7 +370,20 @@ mod tests {
         assert_eq!(projection.metadata.projection_version, 3);
         assert_eq!(projection.metadata.last_event_id, 42);
         assert_eq!(projection.session.id(), session.id());
-        assert_eq!(projection.session.agents().len(), 1);
+        assert_eq!(projection.session.agents().len(), 2);
+        assert_eq!(projection.agent_activity.len(), 2);
+        for agent_id in [agent.id(), reviewer.id()] {
+            let activity = projection
+                .agent_activity
+                .get(agent_id)
+                .expect("every visible agent should have projected runtime activity");
+            assert_eq!(activity.status, AgentRuntimeStatus::Idle);
+            assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::None);
+            assert!(!activity.busy);
+            assert_eq!(activity.active_prompt_count, 0);
+            assert_eq!(activity.queued_prompt_count, 0);
+            assert!(activity.active_turn.is_none());
+        }
     }
 
     #[test]
