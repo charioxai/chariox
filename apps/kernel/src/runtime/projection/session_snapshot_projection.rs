@@ -692,6 +692,68 @@ mod tests {
     }
 
     #[test]
+    fn session_snapshot_projection_blocks_steering_behind_sparse_external_active_turn() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        app.active_turn_store().start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "external:codex:session-1:user-1".to_string(),
+                provider_run.id().to_string(),
+            )
+            .with_phase(crate::app::ActiveTurnPhase::Streaming),
+        );
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-sparse-external-queue");
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "queued-behind-external",
+                &attachment_id,
+                agent.id(),
+                "queued prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("prompt should queue behind sparse external turn");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let active_turn = activity
+            .active_turn
+            .as_ref()
+            .expect("external active turn should be projected");
+        let control = activity
+            .queued_prompt_controls
+            .values()
+            .next()
+            .expect("queued prompt control should be projected");
+
+        assert_eq!(activity.active_prompt_count, 1);
+        assert_eq!(activity.queued_prompt_count, 1);
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(control.status, "queued");
+        assert!(!control.can_steer);
+        assert!(control.can_cancel);
+        assert_eq!(
+            control.steer_disabled_reason.as_deref(),
+            Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
+        );
+        assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
     fn session_snapshot_projection_keeps_queued_only_prompts_idle() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
