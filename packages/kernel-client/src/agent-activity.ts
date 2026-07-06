@@ -108,6 +108,11 @@ export function agentRuntimeActivityProjectionHasExternalActiveTurn(
   projection: AgentRuntimeActivityProjection,
 ): boolean {
   return promptOriginIsExternal(projection.activeTurnPromptOrigin)
+    || Boolean(
+      projection.activeTurnExternalProvider
+        || projection.activeTurnExternalProviderSessionId
+        || projection.activeTurnExternalProviderTurnId,
+    )
 }
 
 export function agentRuntimeActivityResolvedStatus(

@@ -349,6 +349,19 @@ test("agent activity projection exposes live active turn identity", () => {
       status: "running",
     },
   })), false)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn({
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: null,
+    activeTurnExternalProviderSessionId: "thread-1",
+    activePromptCount: 1,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  }), true)
 })
 
 test("agent activity projection exposes completed turn action metadata", () => {
