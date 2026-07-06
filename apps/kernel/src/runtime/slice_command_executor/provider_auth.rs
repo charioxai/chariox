@@ -9,9 +9,13 @@ pub(super) fn normalized_slice_provider(provider: &str) -> Result<String, Daemon
             message: "provider must not be empty".to_string(),
         });
     }
+    if provider == "all" {
+        return Ok(provider.to_string());
+    }
+    if let Some(provider_family) = crate::provider::canonical_provider_family(provider) {
+        return Ok(provider_family.to_string());
+    }
     match provider {
-        "all" | "codex" | "opencode" | "claude" => Ok(provider.to_string()),
-        "claude-headless" | "claude-p" => Ok("claude".to_string()),
         value if value.starts_with("opencode:") && value.len() > "opencode:".len() => {
             Ok(value.to_string())
         }
