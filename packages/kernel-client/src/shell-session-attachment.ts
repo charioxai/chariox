@@ -3,7 +3,7 @@ import {
   attachToSessionRequest,
   getSessionStateRequest,
 } from "./ipc-requests.js"
-import { sessionWithProjectedAgentActivity } from "./runtime-session.js"
+import { normalizeRuntimeSessionWithAgentActivity } from "./runtime-session-normalization.js"
 import type { ShellContext } from "./shell-core.js"
 
 type ShellSessionAttachmentDeps = {
@@ -49,14 +49,14 @@ export function expectSessionState(response: Record<string, unknown>): RuntimeSe
       agent_activity?: RuntimeSession["agent_activity"] | null
       agent_activity_revision?: number | null
     }
-    return sessionWithProjectedAgentActivity(payload)
+    return normalizeRuntimeSessionWithAgentActivity(payload)
   }
   const payload = expectVariant<{
     session: RuntimeSession
     agent_activity?: RuntimeSession["agent_activity"] | null
     agent_activity_revision?: number | null
   }>(response, "SessionStateLoaded")
-  return sessionWithProjectedAgentActivity(payload)
+  return normalizeRuntimeSessionWithAgentActivity(payload)
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
