@@ -54,15 +54,46 @@ test("runtime session normalization can apply projected agent activity payloads"
   assert.equal(normalized.agent_activity_revision, 7)
 })
 
-test("runtime session normalization leaves missing projected activity absent", () => {
+test("runtime session normalization clears stale embedded activity when projection is explicitly absent", () => {
   const normalized = normalizeRuntimeSessionWithAgentActivity({
-    session: session(),
+    session: {
+      ...session(),
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+      agent_activity_revision: 6,
+    },
     agent_activity: null,
     agent_activity_revision: 7,
   })
 
   assert.equal(normalized.agent_activity, undefined)
   assert.equal(normalized.agent_activity_revision, undefined)
+})
+
+test("runtime session normalization preserves embedded activity without a top-level projection override", () => {
+  const normalized = normalizeRuntimeSessionWithAgentActivity({
+    session: {
+      ...session(),
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+      agent_activity_revision: 6,
+    },
+  })
+
+  assert.equal(normalized.agent_activity?.["agent-1"]?.busy, true)
+  assert.equal(normalized.agent_activity_revision, 6)
 })
 
 test("runtime session normalization handles prompt state lists and session lists", () => {
