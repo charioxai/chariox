@@ -1141,7 +1141,9 @@ fn append_observed_external_turns_for_attached_target_with_options(
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
     let state_signal_observed_at_ms = last_cursor.last_observed_at_ms;
-    if outcome.external_active_prompt_settled && !active_prompt_sync.latest_observation_settles {
+    let persisted_hidden_settlement_signal =
+        outcome.external_active_prompt_settled && !active_prompt_sync.latest_observation_settles;
+    if persisted_hidden_settlement_signal {
         persist_observed_external_settlement_history_signal(
             app,
             &read.target,
@@ -1159,7 +1161,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     }
-    if active_prompt_changed {
+    if active_prompt_changed || persisted_hidden_settlement_signal {
         emit_observed_external_state_signal(
             app,
             &read.target,
@@ -2908,6 +2910,119 @@ mod tests {
         assert_ne!(active_prompt.id(), queued_prompt_id);
         assert_eq!(active_prompt.pending_prompt_id(), None);
         assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
+    }
+
+    #[test]
+    fn stable_external_settlement_with_lost_mirror_signals_hidden_history_refresh() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import,
+        );
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let assistant = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("assistant-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            text: "external reply".to_string(),
+            observed_at_ms: Some(84),
+        };
+
+        append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone()],
+            },
+        )
+        .expect("observed user turn should append");
+        append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone(), assistant.clone()],
+            },
+        )
+        .expect("observed assistant turn should append");
+        let _ = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+
+        let queued_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "queued Arroba prompt",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+            .expect("Arroba prompt should queue behind external active prompt")
+        else {
+            panic!("Arroba prompt should not start while external prompt is running");
+        };
+        app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
+            .expect("test drift should clear the external active prompt mirror");
+
+        let outcome = append_observed_external_turns_for_attached_target_with_options(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![prompt, assistant],
+            },
+            AttachedExternalObserverAppendOptions {
+                allow_external_active_prompt_settlement: true,
+            },
+        )
+        .expect("stable assistant turn should settle even when mirror is missing");
+
+        assert_eq!(outcome.changed_count, 0);
+        assert!(outcome.external_active_prompt_settled);
+        let records = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(
+            records.len(),
+            1,
+            "hidden settlement history signal should fan out to attached terminals"
+        );
+        assert_eq!(records[0].bytes, b"external_provider_history_updated");
+        assert!(records[0]
+            .merge_key
+            .as_deref()
+            .is_some_and(|merge_key| merge_key.contains(":state:active_prompt_settled:")));
+        assert_eq!(
+            records[0]
+                .external_observation_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.external_observation.as_ref())
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
+        );
     }
 
     #[test]
