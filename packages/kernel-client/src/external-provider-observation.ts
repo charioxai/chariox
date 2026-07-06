@@ -111,7 +111,7 @@ export function externalProviderObservedEntryBelongsToImport(
   if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return true
   }
-  const entryProvider = nonBlankString(entry.externalProvider)
+  const entryProvider = normalizeExternalProviderId(entry.externalProvider)
   const entrySessionId = nonBlankString(entry.externalProviderSessionId)
   if (!entryProvider && !entrySessionId) {
     return true
@@ -119,7 +119,7 @@ export function externalProviderObservedEntryBelongsToImport(
   if (!externalImport) {
     return true
   }
-  const importProvider = nonBlankString(externalImport.external_provider)
+  const importProvider = normalizeExternalProviderId(externalImport.external_provider)
   if (entryProvider && importProvider && entryProvider !== importProvider) {
     return false
   }
@@ -438,6 +438,10 @@ function nonBlankString(value: string | null | undefined): string | null {
 }
 
 function normalizeExternalProviderObservedSource(value: string | null | undefined): string | null {
+  return nonBlankString(value)?.toLowerCase() ?? null
+}
+
+function normalizeExternalProviderId(value: string | null | undefined): string | null {
   return nonBlankString(value)?.toLowerCase() ?? null
 }
 

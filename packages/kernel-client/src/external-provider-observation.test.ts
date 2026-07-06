@@ -320,13 +320,13 @@ test("external provider observed import scoping keeps ordinary and unknown obser
 
 test("external provider observed import scoping matches external and provider session ids", () => {
   const externalImport = {
-    external_provider: "codex",
+    external_provider: " Codex ",
     external_provider_session_id: "codex:thread-1",
     external_provider_session_provider_id: "thread-1",
   }
   assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: "codex",
+    externalProvider: " CODEX ",
     externalProviderSessionId: "codex:thread-1",
   }), true)
   assert.equal(externalProviderObservedEntryBelongsToImport(externalImport, {
