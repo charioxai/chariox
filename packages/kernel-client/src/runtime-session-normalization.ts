@@ -13,6 +13,7 @@ export function normalizeAgentPromptState(
 }
 
 export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
+  const { workflow_watchdogs: legacyWorkflowWatchdogs, ...sessionWithoutLegacyWorkflowWatchdogs } = session
   const promptStates = session.prompt_states
     ? Object.fromEntries(
       Object.entries(session.prompt_states).map(([agentId, state]) => [
@@ -21,9 +22,14 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
       ]),
     )
     : undefined
+  const workflowSchedules = Array.isArray(session.workflow_schedules)
+    ? session.workflow_schedules
+    : Array.isArray(legacyWorkflowWatchdogs)
+      ? legacyWorkflowWatchdogs
+      : []
 
   const normalized: RuntimeSession = {
-    ...session,
+    ...sessionWithoutLegacyWorkflowWatchdogs,
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
     active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
     metaagent_tasks: Array.isArray(session.metaagent_tasks) ? session.metaagent_tasks : [],
@@ -32,7 +38,7 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     workflow_runs: Array.isArray(session.workflow_runs) ? session.workflow_runs : [],
     workflow_prompt_queues: Array.isArray(session.workflow_prompt_queues) ? session.workflow_prompt_queues : [],
     workflow_queued_prompts: Array.isArray(session.workflow_queued_prompts) ? session.workflow_queued_prompts : [],
-    workflow_schedules: Array.isArray(session.workflow_schedules) ? session.workflow_schedules : [],
+    workflow_schedules: workflowSchedules,
     workflow_consoles: Array.isArray(session.workflow_consoles) ? session.workflow_consoles : [],
     workspace_links: Array.isArray(session.workspace_links) ? session.workspace_links : [],
     external_provider_imports: Array.isArray(session.external_provider_imports) ? session.external_provider_imports : [],

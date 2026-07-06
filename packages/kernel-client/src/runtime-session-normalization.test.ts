@@ -72,6 +72,26 @@ test("runtime session normalization can apply projected agent activity payloads"
   assert.equal(normalized.agent_activity_revision, 7)
 })
 
+test("runtime session normalization canonicalizes legacy workflow watchdog arrays", () => {
+  const legacyOnly = normalizeRuntimeSession({
+    ...session(),
+    workflow_schedules: null as never,
+    workflow_watchdogs: [{ id: "watchdog-legacy" }] as never,
+  })
+
+  assert.deepEqual(legacyOnly.workflow_schedules, [{ id: "watchdog-legacy" }])
+  assert.equal(Object.hasOwn(legacyOnly, "workflow_watchdogs"), false)
+
+  const canonicalWins = normalizeRuntimeSession({
+    ...session(),
+    workflow_schedules: [{ id: "schedule-1" }] as never,
+    workflow_watchdogs: [{ id: "watchdog-legacy" }] as never,
+  })
+
+  assert.deepEqual(canonicalWins.workflow_schedules, [{ id: "schedule-1" }])
+  assert.equal(Object.hasOwn(canonicalWins, "workflow_watchdogs"), false)
+})
+
 test("runtime session normalization clears stale activity revision when replacement has no revision", () => {
   const normalized = normalizeRuntimeSessionWithAgentActivity({
     session: {
