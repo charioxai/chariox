@@ -21,6 +21,13 @@ use crate::terminal::TerminalOutputKind;
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
 
+/// Delay between writing a prompt's visible text into the provider PTY and
+/// sending the Enter keystroke, giving the terminal time to register the
+/// (possibly multi-line, bracket-pasted) text before it is submitted. This
+/// wait is taken between short app-lock holds by the async dispatch retry
+/// loop rather than by sleeping inside the lock.
+const CLAUDE_SUBMIT_DELAY_MS: u64 = 250;
+
 struct ClaudeNativePromptInjection<'a> {
     id: &'a str,
     prompt: &'a str,
@@ -1241,9 +1248,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
             &prompt,
         )?;
-        if provider_run.provider() != "claude-headless" {
-            return Ok(ClaudeNativeDispatchAttempt::Completed);
-        }
+        // Injection completes once the Enter keystroke has been submitted and
+        // the marker reads `injected`. Both TUI and headless runs now defer
+        // that keystroke via `submit-wait`, so the async caller retries off
+        // the app lock until the PTY-settle delay elapses.
         if claude_native_marker(context_file).as_deref() == Some(&format!("injected:{}", prompt.id))
         {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
@@ -1325,6 +1333,28 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             );
             write_claude_native_marker(context_file, "");
             marker = None;
+        }
+        // A prior injection wrote the visible text and marked `submit-wait`;
+        // submit the Enter keystroke once the PTY-settle delay has elapsed.
+        // The wait itself happens off the app lock: the async dispatch retry
+        // loop (and the output pump for `process`) revisit this until the
+        // delay passes, so the daemon is never blocked mid-injection.
+        match submit_wait_state(marker.as_deref(), prompt.id, unix_epoch_ms()) {
+            SubmitWaitState::Waiting => {
+                append_claude_headless_debug(context_file, "submit_wait", prompt.id);
+                return Ok(());
+            }
+            SubmitWaitState::ReadyToSubmit => {
+                append_claude_headless_debug(context_file, "submit_enter", prompt.id);
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
+                if provider_run.provider() == "claude-headless" {
+                    write_claude_headless_submit_retry(context_file, prompt.id, 0, unix_epoch_ms());
+                }
+                return Ok(());
+            }
+            SubmitWaitState::NotSubmitWait => {}
         }
         let prompt_typed_for_headless = provider_run.provider() == "claude-headless"
             && marker.as_deref() == Some(&format!("typed:{}", prompt.id));
@@ -1471,23 +1501,46 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             append_claude_headless_debug(context_file, "inject_prompt", &input);
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
-            if provider_run.provider() == "claude-headless" {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-                write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
-                write_claude_headless_submit_retry(context_file, prompt.id, 0, unix_epoch_ms());
-            } else {
-                write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-            }
+            // Defer the Enter keystroke: mark `submit-wait` with the write
+            // time so a later pass (off the app lock) submits it once the PTY
+            // has had CLAUDE_SUBMIT_DELAY_MS to register the pasted text.
+            write_claude_native_marker(
+                context_file,
+                &format!("submit-wait:{}:{}", prompt.id, unix_epoch_ms()),
+            );
         } else {
             append_claude_headless_debug(context_file, "inject_empty", prompt.id);
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitWaitState {
+    NotSubmitWait,
+    Waiting,
+    ReadyToSubmit,
+}
+
+/// Decide whether a deferred Enter keystroke is due for the given prompt,
+/// based on a `submit-wait:{prompt_id}:{written_at_ms}` marker. An
+/// unparseable timestamp submits immediately rather than stalling forever.
+fn submit_wait_state(marker: Option<&str>, prompt_id: &str, now_ms: u64) -> SubmitWaitState {
+    let Some(rest) = marker.and_then(|value| value.strip_prefix("submit-wait:")) else {
+        return SubmitWaitState::NotSubmitWait;
+    };
+    let Some((marked_prompt_id, started_at)) = rest.rsplit_once(':') else {
+        return SubmitWaitState::NotSubmitWait;
+    };
+    if marked_prompt_id != prompt_id {
+        return SubmitWaitState::NotSubmitWait;
+    }
+    match started_at.parse::<u64>() {
+        Ok(started_at_ms) if now_ms.saturating_sub(started_at_ms) < CLAUDE_SUBMIT_DELAY_MS => {
+            SubmitWaitState::Waiting
+        }
+        _ => SubmitWaitState::ReadyToSubmit,
     }
 }
 
@@ -1772,6 +1825,40 @@ fn mime_for_path(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_wait_state_defers_enter_until_delay_elapses() {
+        let marker = format!("submit-wait:prompt-7:{}", 1_000);
+        // Before the settle delay: keep waiting (Enter stays off the lock).
+        assert_eq!(
+            submit_wait_state(
+                Some(&marker),
+                "prompt-7",
+                1_000 + CLAUDE_SUBMIT_DELAY_MS - 1
+            ),
+            SubmitWaitState::Waiting
+        );
+        // At/after the delay: submit the Enter keystroke.
+        assert_eq!(
+            submit_wait_state(Some(&marker), "prompt-7", 1_000 + CLAUDE_SUBMIT_DELAY_MS),
+            SubmitWaitState::ReadyToSubmit
+        );
+        // A marker for a different prompt is not a submit-wait for this one.
+        assert_eq!(
+            submit_wait_state(Some(&marker), "prompt-8", 10_000),
+            SubmitWaitState::NotSubmitWait
+        );
+        // Unrelated and malformed markers are ignored.
+        assert_eq!(
+            submit_wait_state(Some("injected:prompt-7"), "prompt-7", 10_000),
+            SubmitWaitState::NotSubmitWait
+        );
+        // An unparseable timestamp submits rather than stalling forever.
+        assert_eq!(
+            submit_wait_state(Some("submit-wait:prompt-7:bogus"), "prompt-7", 10_000),
+            SubmitWaitState::ReadyToSubmit
+        );
+    }
 
     #[test]
     fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
