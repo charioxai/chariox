@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  cloneCompactTranscriptDisplayEntries,
   compactTranscriptDisplayEntries,
   replaceCollapsedTranscriptTurnIds,
   projectCompactTranscriptDisplayState,
@@ -97,6 +98,18 @@ test("compactTranscriptDisplayEntries removes nullish placeholder entries", () =
     ]).map((entry) => entry.id),
     [1, 2],
   )
+})
+
+test("cloneCompactTranscriptDisplayEntries snapshots compact entries", () => {
+  const source = baseTurnEntries()
+  const snapshot = cloneCompactTranscriptDisplayEntries([
+    source[0],
+    null,
+    source[1],
+  ])
+
+  assert.deepEqual(snapshot.map((entry) => entry.id), [1, 2])
+  assert.notEqual(snapshot[0], source[0])
 })
 
 test("projectSettledTranscriptTurnDisplayState clears stale collapsed state for the active turn", () => {

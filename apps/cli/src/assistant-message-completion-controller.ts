@@ -1,5 +1,8 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { projectSettledTranscriptTurnDisplayState } from "@arroba/kernel-client/transcript-display-state"
+import {
+  cloneCompactTranscriptDisplayEntries,
+  projectSettledTranscriptTurnDisplayState,
+} from "@arroba/kernel-client/transcript-display-state"
 
 export type AssistantMessageCompletionControllerDeps = {
   entries: () => TranscriptEntry[]
@@ -30,8 +33,8 @@ export function createAssistantMessageCompletionController(
     const currentEntries = completionAgentId
       && deps.splitAgentResponseMode()
       && completionAgentId !== deps.visibleTranscriptAgentId()
-      ? deps.currentAgentPaneEntries(completionAgentId).filter(Boolean)
-      : deps.entries().filter(Boolean)
+      ? cloneCompactTranscriptDisplayEntries(deps.currentAgentPaneEntries(completionAgentId))
+      : cloneCompactTranscriptDisplayEntries(deps.entries())
 
     if (completionAgentId) {
       const projection = projectSettledTranscriptTurnDisplayState(

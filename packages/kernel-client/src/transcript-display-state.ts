@@ -124,6 +124,12 @@ export function compactTranscriptDisplayEntries<TEntry extends TranscriptDisplay
   return entries.filter((entry): entry is TEntry => Boolean(entry))
 }
 
+export function cloneCompactTranscriptDisplayEntries<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TranscriptDisplayEntryInput<TEntry>[],
+): TEntry[] {
+  return compactTranscriptDisplayEntries(entries).map((entry) => ({ ...entry }))
+}
+
 export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEntry>(
   entries: readonly TEntry[],
   collapsedTurnIds: readonly number[] = [],

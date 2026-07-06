@@ -1,4 +1,5 @@
 import type { AgentInstance, TranscriptEntry } from "./cli-types.js"
+import { compactTranscriptDisplayEntries } from "@arroba/kernel-client/transcript-display-state"
 import {
   createTranscriptSteeredPromptEntry,
   createTranscriptUserPromptTurn,
@@ -66,7 +67,10 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     const promptTurn = createTranscriptUserPromptTurn(text, deps.nextTurnId())
     deps.setNextTurnId(promptTurn.nextTurnId)
     deps.setCurrentTurnId(promptTurn.currentTurnId)
-    const nextTurnIds = deps.collapseLatestTurnForAgent(targetAgentId, deps.entries().filter(Boolean))
+    const nextTurnIds = deps.collapseLatestTurnForAgent(
+      targetAgentId,
+      compactTranscriptDisplayEntries(deps.entries()),
+    )
     deps.appendEntry(promptTurn.entry, nextTurnIds)
     deps.syncVisibleTranscriptPreview()
     setPromptWorkActive(deps)

@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
+import { cloneCompactTranscriptDisplayEntries } from "@arroba/kernel-client/transcript-display-state"
 import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyTranscriptProviderChunk,
@@ -56,7 +57,7 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     sourceText?: string,
     metadata: TranscriptStreamMetadata = {},
   ) => {
-    const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
     const runtimeOptions = transcriptStreamRuntimeOptions({
       entryCounter: deps.entryCounter(),
       currentTurnId: deps.currentTurnId(),
@@ -83,7 +84,7 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
   }
 
   const appendToolUpdate = (chunk: string, metadata: TranscriptStreamMetadata = {}) => {
-    const currentEntries = deps.entries().filter(Boolean).map((entry) => ({ ...entry }))
+    const currentEntries = cloneCompactTranscriptDisplayEntries(deps.entries())
     const runtimeOptions = transcriptStreamRuntimeOptions({
       entryCounter: deps.entryCounter(),
       currentTurnId: deps.currentTurnId(),
