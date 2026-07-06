@@ -261,23 +261,11 @@ impl DaemonApp {
                 agent.id(),
             );
         }
-        let resume_state = agent.provider_resume_state();
-        for (provider, provider_session_id) in [
-            ("codex", resume_state.codex_thread_id()),
-            ("opencode", resume_state.opencode_session_id()),
-            ("claude", resume_state.claude_session_id()),
-        ] {
-            let Some(provider_session_id) = provider_session_id else {
-                continue;
-            };
-            self.external_provider_sessions
-                .mark_provider_session_attached(
-                    provider,
-                    provider_session_id,
-                    agent.session_id(),
-                    agent.id(),
-                );
-        }
+        self.external_provider_sessions.mark_resume_state_attached(
+            agent.provider_resume_state(),
+            agent.session_id(),
+            agent.id(),
+        );
     }
 
     fn restore_local_kernel_external_provider_attachments(&self) {
@@ -376,24 +364,11 @@ impl DaemonApp {
             );
             count += 1;
         }
-        let resume_state = agent.provider_resume_state();
-        for (provider, provider_session_id) in [
-            ("codex", resume_state.codex_thread_id()),
-            ("opencode", resume_state.opencode_session_id()),
-            ("claude", resume_state.claude_session_id()),
-        ] {
-            let Some(provider_session_id) = provider_session_id else {
-                continue;
-            };
-            self.external_provider_sessions
-                .mark_provider_session_attached(
-                    provider,
-                    provider_session_id,
-                    agent.session_id(),
-                    agent.id(),
-                );
-            count += 1;
-        }
+        count += self.external_provider_sessions.mark_resume_state_attached(
+            agent.provider_resume_state(),
+            agent.session_id(),
+            agent.id(),
+        );
         count
     }
 

@@ -6,7 +6,7 @@ use crate::local::{
 };
 use crate::provider::{
     canonical_external_provider_session_id, ExternalProviderImportMetadata,
-    ExternalProviderObservedCursor,
+    ExternalProviderObservedCursor, ProviderResumeState,
 };
 use crate::session::unix_epoch_ms;
 
@@ -210,6 +210,25 @@ impl ExternalProviderSessionIndexStore {
         agent_id: &str,
     ) -> Option<ExternalProviderSessionRecord> {
         self.mark_attached(&import.external_provider_session_id, session_id, agent_id)
+    }
+
+    pub(crate) fn mark_resume_state_attached(
+        &self,
+        resume_state: &ProviderResumeState,
+        session_id: &str,
+        agent_id: &str,
+    ) -> usize {
+        let mut count = 0usize;
+        for (provider, provider_session_id) in resume_state.external_provider_sessions() {
+            self.mark_provider_session_attached(
+                provider,
+                provider_session_id,
+                session_id,
+                agent_id,
+            );
+            count += 1;
+        }
+        count
     }
 
     pub(crate) fn mark_attached(
@@ -473,6 +492,41 @@ mod tests {
         assert!(attached.is_attached_to_arroba());
         assert_eq!(attached.first_attached_session_id(), Some("session-1"));
         assert_eq!(attached.first_attached_agent_id(), Some("agent-1"));
+    }
+
+    #[test]
+    fn attachment_marker_can_be_applied_from_provider_resume_state() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 40));
+        store.upsert(record("claude", "thread-2", 30));
+        store.upsert(record("opencode", "thread-3", 20));
+        let mut resume_state = ProviderResumeState::from_codex_thread_id("thread-1");
+        resume_state.set_claude_session_id("thread-2");
+        resume_state.set_opencode_session_id("thread-3");
+
+        let attached_count =
+            store.mark_resume_state_attached(&resume_state, "session-1", "agent-1");
+
+        assert_eq!(attached_count, 3);
+        for external_session_id in ["codex:thread-1", "claude:thread-2", "opencode:thread-3"] {
+            let session = store
+                .get(external_session_id)
+                .expect("provider session should remain indexed");
+            assert!(session.is_attached_to_arroba());
+            assert_eq!(session.first_attached_session_id(), Some("session-1"));
+            assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
+        }
+        assert!(
+            store
+                .list(&ListExternalProviderSessionsRequest {
+                    provider: None,
+                    cursor: None,
+                    limit: None,
+                })
+                .sessions
+                .is_empty(),
+            "resume-state attached provider sessions should not be attachable"
+        );
     }
 
     #[test]

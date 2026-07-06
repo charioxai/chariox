@@ -1600,16 +1600,7 @@ pub(crate) fn mark_resume_state_external_provider_sessions_attached(
     session_id: &str,
     agent_id: &str,
 ) {
-    for (provider, provider_session_id) in [
-        ("codex", resume_state.codex_thread_id()),
-        ("opencode", resume_state.opencode_session_id()),
-        ("claude", resume_state.claude_session_id()),
-    ] {
-        let Some(provider_session_id) = provider_session_id else {
-            continue;
-        };
-        store.mark_provider_session_attached(provider, provider_session_id, session_id, agent_id);
-    }
+    store.mark_resume_state_attached(resume_state, session_id, agent_id);
 }
 
 impl DaemonApp {
