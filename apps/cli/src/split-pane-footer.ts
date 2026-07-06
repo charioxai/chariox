@@ -1,7 +1,4 @@
-import {
-  sessionAgentPaneStatusBadge,
-  type SessionStatusBadgeTone,
-} from "@arroba/kernel-client/session-runtime-status"
+import type { SessionStatusBadgeTone } from "@arroba/kernel-client/session-runtime-status"
 import {
   formatPromptMetaParts,
   type PromptMetaPart,
@@ -9,8 +6,6 @@ import {
 } from "@arroba/kernel-client/prompt-meta"
 
 export type StatusBadgeTone = SessionStatusBadgeTone
-
-export type SplitPaneFooterMode = "idle" | "working" | "disconnected"
 
 export type SplitPaneFooterAgent = {
   id: string
@@ -27,8 +22,6 @@ export type SplitPaneFooterAgent = {
   execution_mode?: "build" | "plan" | null
   permission_level?: "required" | "yolo" | null
   location_label?: string | null
-  state: "Idle" | "Working" | "Focused" | "Error"
-  is_processing: boolean
 }
 
 export type SplitPaneFooterActiveRun = {
@@ -52,26 +45,6 @@ export type SplitPaneFooterPart = PromptMetaPart | {
   kind: "mode" | "permission" | "location" | "role" | "substitute"
   text: string
   tone: PromptMetaTone
-}
-
-export type SplitPaneFooterPaneState = {
-  badge: {
-    label: string
-    tone: StatusBadgeTone
-  }
-  focused: boolean
-  info: string
-}
-
-export type SplitPaneFooterState<T extends SplitPaneFooterAgent> = {
-  primary: SplitPaneFooterPaneState
-  secondary: SplitPaneFooterPaneState
-  tertiary: SplitPaneFooterPaneState
-  selection: {
-    primary: T | null
-    secondary: T | null
-    tertiary: T | null
-  }
 }
 
 export function reflectedDistance(index: number, length: number, frame: number): number {
@@ -184,49 +157,6 @@ function compactParts(parts: readonly (SplitPaneFooterPart | null | undefined)[]
 function nonBlank(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
-}
-
-export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {
-  mode: SplitPaneFooterMode
-  selection: {
-    primary: T | null
-    secondary: T | null
-    tertiary: T | null
-  }
-  focusedAgentId: string | null
-  streamingAgentId: string | null
-  activityLabels: Record<string, string | null>
-  hasPromptWorkByAgent?: Record<string, boolean>
-  busyLatchesByAgent?: Record<string, boolean>
-  useLegacyAgentProcessingState?: boolean
-  activeRun?: SplitPaneFooterActiveRun | null
-  fallbackModel?: string | null
-}): SplitPaneFooterState<T> {
-  const buildPaneState = (agent: T | null): SplitPaneFooterPaneState => {
-    const focused = agent?.id === options.focusedAgentId
-    const badge = options.mode === "disconnected"
-      ? { label: "DISCONNECTED", tone: "disconnected" as const }
-      : sessionAgentPaneStatusBadge({
-        agent,
-        activeLabel: agent ? options.activityLabels[agent.id] ?? null : null,
-        hasPromptWork: agent ? options.hasPromptWorkByAgent?.[agent.id] ?? false : false,
-        isStreaming: agent?.id === options.streamingAgentId,
-        busyLatch: agent ? options.busyLatchesByAgent?.[agent.id] ?? false : false,
-        useLegacyAgentProcessingState: options.useLegacyAgentProcessingState ?? true,
-      })
-    return {
-      badge,
-      focused,
-      info: formatSplitPaneFooter(agent, options.activeRun, options.fallbackModel),
-    }
-  }
-
-  return {
-    primary: buildPaneState(options.selection.primary),
-    secondary: buildPaneState(options.selection.secondary),
-    tertiary: buildPaneState(options.selection.tertiary),
-    selection: options.selection,
-  }
 }
 
 function toneForAgent(value: string): PromptMetaTone {
