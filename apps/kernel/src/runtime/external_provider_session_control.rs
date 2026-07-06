@@ -932,6 +932,10 @@ fn append_observed_external_turns_for_attached_target_with_options(
     }
     let session = app.sessions().get_session(&read.target.session_id)?;
     let agent = app.agents.get_agent(&read.target.agent_id)?;
+    let queued_prompt_waiting = session
+        .prompt_states()
+        .get(agent.id())
+        .is_some_and(|state| !state.queued_prompts().is_empty());
     let provider_run_id = read.target.provider_run_id.clone().or_else(|| {
         app.providers()
             .get_latest_run_for_agent(session.id(), agent.id())
@@ -1089,8 +1093,9 @@ fn append_observed_external_turns_for_attached_target_with_options(
     } else {
         false
     };
-    outcome.external_active_prompt_settled =
-        active_prompt_changed && latest_active_prompt.is_none();
+    outcome.external_active_prompt_settled = active_prompt_sync.should_sync_active_prompt
+        && latest_active_prompt.is_none()
+        && (active_prompt_changed || queued_prompt_waiting);
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
     let state_signal_observed_at_ms = last_cursor.last_observed_at_ms;
@@ -2710,6 +2715,129 @@ mod tests {
             .queued_prompts_for_agent(agent.id())
             .map(|queued| queued.is_empty())
             .unwrap_or(true));
+    }
+
+    #[tokio::test]
+    async fn observed_external_completion_advances_queue_when_active_prompt_mirror_was_lost() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-external-lost-mirror",
+            "thread-external-lost-mirror",
+        );
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        let target = single_attached_target(&app);
+
+        append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-native".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    text: "native prompt outside Arroba".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("native user turn should mark active prompt");
+        let queued_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "queued Arroba prompt",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+            .expect("Arroba prompt should queue behind external active prompt")
+        else {
+            panic!("Arroba prompt should not start while external active prompt is running");
+        };
+        let queued_prompt_id = prompt.id().to_string();
+        app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
+            .expect("test drift should clear the external active prompt mirror");
+        let mirrored_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session mirror should load");
+        assert!(
+            mirrored_session
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "test fixture should model a lost external active prompt mirror"
+        );
+        assert_eq!(
+            mirrored_session
+                .queued_prompts_for_agent(agent.id())
+                .map(|queued| queued.len()),
+            Some(1)
+        );
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-native".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "native prompt outside Arroba".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("complete-native".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("completion should settle even when the mirror was already missing");
+        assert!(outcome.external_active_prompt_settled);
+
+        let app = Arc::new(tokio::sync::Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let dispatched = router
+            .runtime_state()
+            .dispatch_next_queued_prompt_after_external_settlement(
+                session.id(),
+                agent.id(),
+                run.id(),
+            )
+            .await
+            .expect("queued prompt should dispatch after external settlement");
+        assert!(dispatched);
+        let session = router
+            .runtime_state()
+            .session_snapshot(session.id())
+            .await
+            .expect("session should snapshot");
+        let active_prompt = session
+            .active_prompt_for_agent(agent.id())
+            .expect("promoted queued prompt should become active");
+        assert_ne!(active_prompt.id(), queued_prompt_id);
+        assert_eq!(active_prompt.pending_prompt_id(), None);
+        assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
     }
 
     #[test]
