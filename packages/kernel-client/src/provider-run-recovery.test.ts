@@ -151,13 +151,31 @@ test("session provider run recovery policy catches up active or prompt-owned wor
       },
     },
   })
+  const queuedOnlyPrompt = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+  })
 
   assert.equal(sessionNeedsAttachedRuntimeCatchUp(idle), false)
   assert.equal(sessionNeedsAttachedRuntimeCatchUp(activeProviderRun), true)
   assert.equal(sessionNeedsAttachedRuntimeCatchUp(activePromptWithoutProviderRun), true)
+  assert.equal(sessionNeedsAttachedRuntimeCatchUp(queuedOnlyPrompt), false)
 
   assert.equal(sessionShouldRecoverMissingActiveProviderRun(idle), false)
   assert.equal(sessionCanIgnoreMissingActiveProviderRun(idle), true)
   assert.equal(sessionShouldRecoverMissingActiveProviderRun(activePromptWithoutProviderRun), true)
   assert.equal(sessionCanIgnoreMissingActiveProviderRun(activePromptWithoutProviderRun), false)
+  assert.equal(sessionShouldRecoverMissingActiveProviderRun(queuedOnlyPrompt), false)
+  assert.equal(sessionCanIgnoreMissingActiveProviderRun(queuedOnlyPrompt), true)
 })

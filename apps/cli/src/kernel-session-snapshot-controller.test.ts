@@ -84,6 +84,35 @@ test("kernel session snapshot clears missing provider run and recovers polling t
   ])
 })
 
+test("kernel session snapshot does not recover missing provider run for queued-only prompts", async () => {
+  const harness = createHarness({
+    providerRun: providerRun("run-1"),
+    supportsKernelEventStream: false,
+  })
+
+  await harness.controller.apply(session({
+    agents: [agent()],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          ...activePrompt(),
+          id: "queued-1",
+          status: "Queued",
+        }],
+      },
+    },
+  }), null)
+
+  assert.equal(harness.providerRun, null)
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "providerDebug:kernel event cleared provider run:run-1:",
+    "setProviderRun:null",
+    "updateSessionChrome",
+  ])
+})
+
 test("kernel session snapshot refreshes panes when session shape changes", async () => {
   const harness = createHarness({
     shouldRefreshAgentPanesForSessionChange: () => true,
