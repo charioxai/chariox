@@ -230,27 +230,7 @@ impl KernelRuntimeOwnedState {
         self.restore_session_and_publish_projection(session)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
-        let resolution = if let Some(default_choice_id) = interaction.default_on_timeout() {
-            if let Some(choice) = interaction.choice(default_choice_id) {
-                super::PendingInteractionResolution {
-                    status: "answered",
-                    choice_id: Some(choice.id().to_string()),
-                    reply: Some(choice.reply().to_string()),
-                }
-            } else {
-                super::PendingInteractionResolution {
-                    status: "timed_out",
-                    choice_id: None,
-                    reply: None,
-                }
-            }
-        } else {
-            super::PendingInteractionResolution {
-                status: "timed_out",
-                choice_id: None,
-                reply: None,
-            }
-        };
+        let resolution = timeout_runtime_interaction_resolution(&interaction);
         if let Some(sender) = pending
             .responder
             .lock()
@@ -269,6 +249,30 @@ impl KernelRuntimeOwnedState {
             }),
         );
         Ok(())
+    }
+}
+
+fn timeout_runtime_interaction_resolution(
+    interaction: &crate::session::RuntimeInteraction,
+) -> super::PendingInteractionResolution {
+    let Some(default_choice_id) = interaction.default_on_timeout() else {
+        return super::PendingInteractionResolution {
+            status: "timed_out",
+            choice_id: None,
+            reply: None,
+        };
+    };
+    let Some(choice) = interaction.choice(default_choice_id) else {
+        return super::PendingInteractionResolution {
+            status: "timed_out",
+            choice_id: None,
+            reply: None,
+        };
+    };
+    super::PendingInteractionResolution {
+        status: "answered",
+        choice_id: Some(choice.id().to_string()),
+        reply: Some(choice.reply().to_string()),
     }
 }
 
@@ -295,4 +299,55 @@ fn validate_runtime_interaction_custom_reply(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interaction(default_on_timeout: Option<&str>) -> crate::session::RuntimeInteraction {
+        crate::session::RuntimeInteraction::new(
+            "interaction-1".to_string(),
+            "agent-1".to_string(),
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
+            Some("Pick".to_string()),
+            "Pick one".to_string(),
+            vec![
+                crate::session::RuntimeInteractionChoice::new(
+                    "yes".to_string(),
+                    "Yes".to_string(),
+                    "User picked yes.".to_string(),
+                    None,
+                ),
+                crate::session::RuntimeInteractionChoice::new(
+                    "no".to_string(),
+                    "No".to_string(),
+                    "User picked no.".to_string(),
+                    None,
+                ),
+            ],
+            None,
+            Some(1),
+            default_on_timeout.map(ToOwned::to_owned),
+        )
+    }
+
+    #[test]
+    fn timeout_without_default_returns_explicit_timeout_result() {
+        let resolution = timeout_runtime_interaction_resolution(&interaction(None));
+
+        assert_eq!(resolution.status, "timed_out");
+        assert_eq!(resolution.choice_id, None);
+        assert_eq!(resolution.reply, None);
+    }
+
+    #[test]
+    fn timeout_with_default_returns_default_choice_reply() {
+        let resolution = timeout_runtime_interaction_resolution(&interaction(Some("no")));
+
+        assert_eq!(resolution.status, "answered");
+        assert_eq!(resolution.choice_id.as_deref(), Some("no"));
+        assert_eq!(resolution.reply.as_deref(), Some("User picked no."));
+    }
 }
