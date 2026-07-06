@@ -11,8 +11,9 @@ use crate::runtime::history_requests::{
     execute_prompt_input_history_request as execute_prompt_input_history,
     execute_query_recall_request as execute_query_recall,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
-    execute_session_history_blob_content_request, execute_session_history_outline_request,
-    knn_semantic_recall_search, recall_query_from_request, recall_query_from_search_request,
+    execute_scoped_session_history_blob_content_request,
+    execute_scoped_session_history_outline_request, knn_semantic_recall_search,
+    recall_query_from_request, recall_query_from_search_request,
     semantic_recall_utility_input_from_search_request,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
@@ -27,12 +28,37 @@ pub(crate) async fn execute_history_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
-            let _ = runtime_state.session_snapshot(&request.session_id).await?;
-            execute_session_history_outline_request(operational_history_store, request).await
+            let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
+            let agent_imports = snapshot
+                .agents()
+                .iter()
+                .filter_map(|agent| {
+                    agent
+                        .external_provider_import()
+                        .cloned()
+                        .map(|import| (agent.id().to_string(), import))
+                })
+                .collect();
+            execute_scoped_session_history_outline_request(
+                operational_history_store,
+                request,
+                agent_imports,
+            )
+            .await
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
-            let _ = runtime_state.session_snapshot(&request.session_id).await?;
-            execute_session_history_blob_content_request(operational_history_store, request).await
+            let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
+            let agent_import = snapshot
+                .agents()
+                .iter()
+                .find(|agent| agent.id() == request.agent_id)
+                .and_then(|agent| agent.external_provider_import().cloned());
+            execute_scoped_session_history_blob_content_request(
+                operational_history_store,
+                request,
+                agent_import,
+            )
+            .await
         }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             execute_prompt_input_history_request(operational_history_store, request).await

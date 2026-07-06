@@ -1,6 +1,6 @@
 //! Hierarchical transcript history outline loading.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::DaemonError;
 use crate::history::{
@@ -12,6 +12,7 @@ use crate::local::{
     SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
     SessionHistoryOutlineTurn,
 };
+use crate::provider::ExternalProviderImportMetadata;
 use crate::session::PromptOrigin;
 use crate::session_history_page::SessionHistoryPageEntry;
 
@@ -23,6 +24,15 @@ pub(crate) async fn execute_session_history_outline_request(
     operational_history: OperationalHistoryStore,
     request: GetSessionHistoryOutlineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    execute_scoped_session_history_outline_request(operational_history, request, BTreeMap::new())
+        .await
+}
+
+pub(crate) async fn execute_scoped_session_history_outline_request(
+    operational_history: OperationalHistoryStore,
+    request: GetSessionHistoryOutlineRequest,
+    agent_imports: BTreeMap<String, ExternalProviderImportMetadata>,
+) -> Result<LocalDaemonResponse, DaemonError> {
     tokio::task::spawn_blocking(move || {
         let agent_ids = outline_agent_ids(&operational_history, &request)?;
         let latest_prompt_count = request
@@ -31,12 +41,13 @@ pub(crate) async fn execute_session_history_outline_request(
             .clamp(1, MAX_LATEST_PROMPT_COUNT);
         let mut agents = Vec::new();
         for agent_id in agent_ids {
-            agents.push(load_agent_outline(
+            agents.push(load_scoped_agent_outline(
                 &operational_history,
                 &request.session_id,
                 &agent_id,
                 latest_prompt_count,
                 request.cursor.as_ref().map(|cursor| cursor.before_sequence),
+                agent_imports.get(&agent_id),
             )?);
         }
         Ok(LocalDaemonResponse::SessionHistoryOutline { agents })
@@ -52,6 +63,14 @@ pub(crate) async fn execute_session_history_blob_content_request(
     operational_history: OperationalHistoryStore,
     request: GetSessionHistoryBlobContentRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    execute_scoped_session_history_blob_content_request(operational_history, request, None).await
+}
+
+pub(crate) async fn execute_scoped_session_history_blob_content_request(
+    operational_history: OperationalHistoryStore,
+    request: GetSessionHistoryBlobContentRequest,
+    agent_import: Option<ExternalProviderImportMetadata>,
+) -> Result<LocalDaemonResponse, DaemonError> {
     tokio::task::spawn_blocking(move || {
         let (sequence_start, sequence_end) = parse_blob_id(&request.blob_id)?;
         let events = operational_history.load_session_events_for_agent_sequence_range(
@@ -62,6 +81,7 @@ pub(crate) async fn execute_session_history_blob_content_request(
         )?;
         let entries = events
             .into_iter()
+            .filter(|event| event_belongs_to_external_import(agent_import.as_ref(), event))
             .filter_map(page_entry_from_event)
             .collect::<Vec<_>>();
         Ok(LocalDaemonResponse::SessionHistoryBlobContent {
@@ -102,11 +122,31 @@ fn load_agent_outline(
     latest_prompt_count: usize,
     before_sequence: Option<u64>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let mut prompts = operational_history.load_latest_user_prompt_events(
+    load_scoped_agent_outline(
+        operational_history,
+        session_id,
+        agent_id,
+        latest_prompt_count,
+        before_sequence,
+        None,
+    )
+}
+
+fn load_scoped_agent_outline(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    latest_prompt_count: usize,
+    before_sequence: Option<u64>,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<SessionHistoryOutlineAgent, DaemonError> {
+    let mut prompts = load_latest_scoped_user_prompt_events(
+        operational_history,
         session_id,
         agent_id,
         before_sequence,
         latest_prompt_count.saturating_add(1),
+        agent_import,
     )?;
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
@@ -119,6 +159,7 @@ fn load_agent_outline(
             agent_id,
             latest_prompt_count,
             before_sequence,
+            agent_import,
         );
     }
     let mut turns = Vec::new();
@@ -136,6 +177,7 @@ fn load_agent_outline(
             prompt.sequence,
             sequence_end,
         )?;
+        let events = scoped_history_events(events, agent_import);
         if let Some(mut turn) = outline_turn_from_events(prompt, events, has_newer_prompt) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
@@ -161,11 +203,13 @@ fn load_promptless_agent_outline(
     agent_id: &str,
     latest_prompt_count: usize,
     before_sequence: Option<u64>,
+    agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
     let events = operational_history
         .load_session_events(session_id, Some(agent_id))?
         .into_iter()
         .filter(|event| before_sequence.is_none_or(|sequence| event.sequence < sequence))
+        .filter(|event| event_belongs_to_external_import(agent_import, event))
         .collect::<Vec<_>>();
     let mut groups = promptless_turn_groups(events);
     let has_more = groups.len() > latest_prompt_count;
@@ -201,6 +245,109 @@ fn load_promptless_agent_outline(
         turns,
         next_cursor,
     })
+}
+
+fn load_latest_scoped_user_prompt_events(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    before_sequence: Option<u64>,
+    limit: usize,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    if agent_import.is_none() {
+        return operational_history.load_latest_user_prompt_events(
+            session_id,
+            agent_id,
+            before_sequence,
+            limit,
+        );
+    }
+    let mut selected_newest_first = Vec::new();
+    let batch_size = limit.max(1).saturating_mul(4).max(32);
+    let mut next_before_sequence = before_sequence;
+    loop {
+        let candidates = operational_history.load_latest_user_prompt_events(
+            session_id,
+            agent_id,
+            next_before_sequence,
+            batch_size,
+        )?;
+        if candidates.is_empty() {
+            break;
+        }
+        let oldest_sequence = candidates.first().map(|event| event.sequence);
+        for event in candidates.iter().rev() {
+            if event_belongs_to_external_import(agent_import, event) {
+                selected_newest_first.push(event.clone());
+                if selected_newest_first.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if selected_newest_first.len() >= limit || candidates.len() < batch_size {
+            break;
+        }
+        next_before_sequence = oldest_sequence;
+    }
+    selected_newest_first.reverse();
+    Ok(selected_newest_first)
+}
+
+fn scoped_history_events(
+    events: Vec<HistoryEvent>,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Vec<HistoryEvent> {
+    events
+        .into_iter()
+        .filter(|event| event_belongs_to_external_import(agent_import, event))
+        .collect()
+}
+
+fn event_belongs_to_external_import(
+    agent_import: Option<&ExternalProviderImportMetadata>,
+    event: &HistoryEvent,
+) -> bool {
+    let Some(entry) = event.to_session_history_entry() else {
+        return true;
+    };
+    if !entry.is_external_provider_observed() {
+        return true;
+    }
+    let entry_provider = normalize_external_provider(entry.external_provider.as_deref());
+    let entry_session_id = non_blank_trimmed(entry.external_provider_session_id.as_deref());
+    if entry_provider.is_none() && entry_session_id.is_none() {
+        return true;
+    }
+    let Some(agent_import) = agent_import else {
+        return true;
+    };
+    let import_provider = normalize_external_provider(Some(&agent_import.external_provider));
+    if entry_provider.is_some()
+        && import_provider.is_some()
+        && entry_provider.as_deref() != import_provider.as_deref()
+    {
+        return false;
+    }
+    let Some(entry_session_id) = entry_session_id else {
+        return true;
+    };
+    let import_session_id = non_blank_trimmed(Some(&agent_import.external_provider_session_id));
+    let import_provider_session_id =
+        non_blank_trimmed(Some(&agent_import.external_provider_session_provider_id));
+    Some(entry_session_id.as_str()) == import_session_id.as_deref()
+        || Some(entry_session_id.as_str()) == import_provider_session_id.as_deref()
+}
+
+fn normalize_external_provider(value: Option<&str>) -> Option<String> {
+    non_blank_trimmed(value).map(|value| value.to_ascii_lowercase())
+}
+
+fn non_blank_trimmed(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn promptless_turn_groups(events: Vec<HistoryEvent>) -> Vec<(String, Vec<HistoryEvent>)> {
@@ -935,6 +1082,154 @@ mod tests {
             .expect("older outline page should load");
         assert_eq!(older.turns.len(), 1);
         assert_eq!(older.turns[0].completed_at_ms, Some(1_100));
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn scoped_agent_outline_excludes_external_turns_outside_import() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-scoped-external-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let import =
+            ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+        for (sequence, provider, provider_session_id, prompt_text, output_text) in [
+            (
+                10,
+                "codex",
+                "thread-1",
+                "visible old prompt",
+                "visible old output",
+            ),
+            (
+                20,
+                "claude",
+                "claude-session-1",
+                "wrong provider prompt",
+                "wrong provider output",
+            ),
+            (
+                30,
+                "codex",
+                "thread-2",
+                "wrong codex prompt",
+                "wrong codex output",
+            ),
+            (
+                40,
+                "codex",
+                "thread-1",
+                "visible new prompt",
+                "visible new output",
+            ),
+        ] {
+            let context = HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some(format!("{provider_session_id}:{sequence}")),
+                prompt_id: Some(format!("prompt-{sequence}")),
+                provider_run_id: Some(format!("run-{sequence}")),
+                ..HistoryEventTurnContext::default()
+            };
+            let prompt = SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                Some(&format!("run-{sequence}")),
+                "agent-1",
+                SessionHistoryEntryKind::UserPrompt,
+                prompt_text,
+                provider,
+                provider_session_id,
+                Some(format!("turn-{sequence}")),
+                Some(sequence * 100),
+            );
+            let output = SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                Some(&format!("run-{sequence}")),
+                "agent-1",
+                SessionHistoryEntryKind::ProviderOutput,
+                output_text,
+                provider,
+                provider_session_id,
+                Some(format!("turn-{sequence}")),
+                Some(sequence * 100 + 1),
+            );
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &prompt,
+                    context.clone(),
+                ))
+                .expect("external prompt should append");
+            store
+                .append(&HistoryEvent::transcript(sequence + 1, &output, context))
+                .expect("external output should append");
+        }
+
+        let outline =
+            load_scoped_agent_outline(&store, "session-1", "agent-1", 2, None, Some(&import))
+                .expect("scoped outline should load");
+
+        assert_eq!(outline.turns.len(), 2);
+        assert_eq!(outline.next_cursor, None);
+        assert_eq!(
+            outline.turns[0].user_prompt.entry.text,
+            "visible old prompt"
+        );
+        assert_eq!(
+            outline.turns[0]
+                .summary
+                .as_ref()
+                .map(|entry| entry.entry.text.as_str()),
+            Some("visible old output")
+        );
+        assert_eq!(outline.turns[0].entries.len(), 0);
+        assert_eq!(
+            outline.turns[0].external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            outline.turns[1].user_prompt.entry.text,
+            "visible new prompt"
+        );
+        assert_eq!(
+            outline.turns[1]
+                .summary
+                .as_ref()
+                .map(|entry| entry.entry.text.as_str()),
+            Some("visible new output")
+        );
+        assert_eq!(
+            outline.turns[1].external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+
+        let wrong_blob_response = tokio::runtime::Runtime::new()
+            .expect("runtime should create")
+            .block_on(execute_scoped_session_history_blob_content_request(
+                store.clone(),
+                GetSessionHistoryBlobContentRequest {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    blob_id: blob_id(21, 21),
+                },
+                Some(import),
+            ))
+            .expect("scoped blob content should load");
+        let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } = wrong_blob_response
+        else {
+            panic!("unexpected response")
+        };
+        assert!(entries.is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(&path);
