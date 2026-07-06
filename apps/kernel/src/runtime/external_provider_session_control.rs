@@ -12,8 +12,7 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::history::{
-    ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntrySource,
-    SessionHistoryExternalObservation, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+    ExternalImportHistoryEntry, SessionHistoryEntry, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
     EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
 };
 use crate::local::{
@@ -1286,6 +1285,13 @@ fn emit_observed_external_history_signal(
     let provider_run_id = provider_run_id
         .map(str::to_string)
         .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
+    let Some(external_observation_metadata) =
+        crate::terminal::TerminalOutputExternalObservationMetadata::from_session_history_entry(
+            entry,
+        )
+    else {
+        return;
+    };
     app.terminal_stream_store()
         .fan_out_external_observed_output(
             &target.session_id,
@@ -1295,14 +1301,7 @@ fn emit_observed_external_history_signal(
             entry.merge_key.clone(),
             recipient_attachment_ids,
             EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
-            crate::terminal::TerminalOutputExternalObservationMetadata {
-                source: SessionHistoryEntrySource::ExternalProviderObserved,
-                external_provider: entry.external_provider.clone(),
-                external_provider_session_id: entry.external_provider_session_id.clone(),
-                external_provider_turn_id: entry.external_provider_turn_id.clone(),
-                observed_at_ms: entry.observed_at_ms,
-                external_observation: entry.external_observation.clone(),
-            },
+            external_observation_metadata,
         );
 }
 
@@ -1326,29 +1325,34 @@ fn emit_observed_external_state_signal(
         .map(str::to_string)
         .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
     let latest_merge_key = latest_merge_key.unwrap_or("none");
+    let state_entry = SessionHistoryEntry::external_provider_observed_state_signal(
+        &target.session_id,
+        Some(&provider_run_id),
+        &target.agent_id,
+        &target.provider,
+        &target.provider_session_id,
+        reason,
+        latest_merge_key,
+        reason.to_string(),
+        None,
+    );
+    let Some(external_observation_metadata) =
+        crate::terminal::TerminalOutputExternalObservationMetadata::from_session_history_entry(
+            &state_entry,
+        )
+    else {
+        return;
+    };
     app.terminal_stream_store()
         .fan_out_external_observed_output(
             &target.session_id,
             &provider_run_id,
             Some(&target.agent_id),
             crate::terminal::TerminalOutputKind::ProviderStatus,
-            Some(crate::history::external_provider_observed_state_merge_key(
-                &target.provider,
-                &target.provider_session_id,
-                reason,
-                latest_merge_key,
-            )),
+            state_entry.merge_key,
             recipient_attachment_ids,
             EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
-            crate::terminal::TerminalOutputExternalObservationMetadata {
-                source: SessionHistoryEntrySource::ExternalProviderObserved,
-                external_provider: Some(target.provider.clone()),
-                external_provider_session_id: Some(target.provider_session_id.clone()),
-                external_provider_turn_id: Some(reason.to_string()),
-                observed_at_ms: None,
-                external_observation:
-                    SessionHistoryExternalObservation::for_external_provider_state_reason(reason),
-            },
+            external_observation_metadata,
         );
 }
 
@@ -1733,7 +1737,7 @@ fn short_alias_suffix(slug: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::DaemonConfig;
-    use crate::history::SessionHistoryEntryKind;
+    use crate::history::{SessionHistoryEntryKind, SessionHistoryEntrySource};
     use crate::local::{
         ExternalProviderSessionCapabilities, ImportExternalProviderAgentRequest,
         ImportExternalProviderSessionRequest,

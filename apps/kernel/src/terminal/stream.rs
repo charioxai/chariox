@@ -68,6 +68,20 @@ pub struct TerminalOutputExternalObservationMetadata {
     pub external_observation: Option<SessionHistoryExternalObservation>,
 }
 
+impl TerminalOutputExternalObservationMetadata {
+    pub fn from_session_history_entry(entry: &crate::history::SessionHistoryEntry) -> Option<Self> {
+        let source = entry.source?;
+        Some(Self {
+            source,
+            external_provider: entry.external_provider.clone(),
+            external_provider_session_id: entry.external_provider_session_id.clone(),
+            external_provider_turn_id: entry.external_provider_turn_id.clone(),
+            observed_at_ms: entry.observed_at_ms,
+            external_observation: entry.external_observation.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalOutputAppend {
     pub session_id: String,
@@ -1656,25 +1670,30 @@ mod tests {
     #[test]
     fn external_observed_output_records_carry_metadata() {
         let mut terminal = TerminalStreamService::new();
+        let state_entry =
+            crate::history::SessionHistoryEntry::external_provider_observed_state_signal(
+                "session-1",
+                Some("provider-run-1"),
+                "agent-1",
+                "codex",
+                "thread-1",
+                crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+                "external:codex:thread-1:done",
+                "active_prompt_settled".to_string(),
+                Some(1_234),
+            );
+        let metadata =
+            TerminalOutputExternalObservationMetadata::from_session_history_entry(&state_entry)
+                .expect("external state history entry should produce terminal metadata");
         terminal.fan_out_external_observed_output(
             "session-1",
             "provider-run-1",
             Some("agent-1"),
             TerminalOutputKind::ProviderStatus,
-            Some("external:codex:thread-1:done".to_string()),
+            state_entry.merge_key.clone(),
             vec!["attachment-1".to_string()],
             b"external_provider_history_updated",
-            TerminalOutputExternalObservationMetadata {
-                source: SessionHistoryEntrySource::ExternalProviderObserved,
-                external_provider: Some("codex".to_string()),
-                external_provider_session_id: Some("thread-1".to_string()),
-                external_provider_turn_id: Some("done".to_string()),
-                observed_at_ms: Some(1_234),
-                external_observation: Some(SessionHistoryExternalObservation {
-                    settles_active_prompt: true,
-                    passive_telemetry: false,
-                }),
-            },
+            metadata,
         );
 
         let drained = terminal.drain_output_records("session-1", "attachment-1");
@@ -1691,14 +1710,14 @@ mod tests {
             metadata.external_provider_session_id.as_deref(),
             Some("thread-1")
         );
-        assert_eq!(metadata.external_provider_turn_id.as_deref(), Some("done"));
+        assert_eq!(
+            metadata.external_provider_turn_id.as_deref(),
+            Some("active_prompt_settled")
+        );
         assert_eq!(metadata.observed_at_ms, Some(1_234));
         assert_eq!(
-            metadata
-                .external_observation
-                .as_ref()
-                .map(|observation| observation.settles_active_prompt),
-            Some(true)
+            metadata.external_observation,
+            Some(SessionHistoryExternalObservation::active_prompt_settled())
         );
     }
 
