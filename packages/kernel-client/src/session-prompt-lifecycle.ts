@@ -27,7 +27,6 @@ export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIden
 export type PromptLifecycleTransition = {
   readonly activePromptChanged: boolean
   readonly cancelledPromptSettled: boolean
-  readonly settledPromptRecords: ActivePromptLifecycleRecord[]
   readonly settledAgentIds: string[]
 }
 
@@ -81,7 +80,6 @@ export function sessionPromptLifecycleTransition(
     activePromptChanged:
       previousPromptFingerprints.length !== nextPromptFingerprints.length
       || previousPromptFingerprints.some((fingerprint, index) => fingerprint !== nextPromptFingerprints[index]),
-    settledPromptRecords,
     settledAgentIds: settledPromptRecords
       .map((prompt) => prompt.target_agent_id)
       .filter((agentId): agentId is string => Boolean(agentId)),
