@@ -9,14 +9,14 @@ import {
 
 export type CollapsedTurnIdsByAgent = CollapsedTranscriptTurnIdsByAgent
 
-export type TranscriptTurnExpansionControllerDeps = {
+export type TranscriptTurnCollapseControllerDeps = {
   collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
   updateCollapsedTurnIdsByAgent: (
     updater: (current: CollapsedTurnIdsByAgent) => CollapsedTurnIdsByAgent,
   ) => void
 }
 
-export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpansionControllerDeps) {
+export function createTranscriptTurnCollapseController(deps: TranscriptTurnCollapseControllerDeps) {
   const setExpandedTurnState = (
     agentId: string | null | undefined,
     turnId: number | null | undefined,

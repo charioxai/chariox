@@ -17,7 +17,7 @@ import { createTranscriptEventController } from "./transcript-event-controller.j
 import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 import { createTranscriptStreamController } from "./transcript-stream-controller.js"
-import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
+import { createTranscriptTurnCollapseController } from "./transcript-turn-collapse-controller.js"
 import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTurnCompletionController } from "./turn-completion-controller.js"
 
@@ -165,14 +165,14 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
 
   const collapsedTurnIdsForAgent = (agentId: string | null | undefined) =>
     agentId ? (deps.collapsedTurnIdsByAgent()[agentId] ?? []) : []
-  const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
+  const transcriptTurnCollapseController = createTranscriptTurnCollapseController({
     collapsedTurnIdsForAgent: collapsedTurnIdsForAgent,
     updateCollapsedTurnIdsByAgent: (updater) => {
       deps.setCollapsedTurnIdsByAgent((current: any) => updater(current))
     },
   })
-  const setExpandedTurnState = transcriptTurnExpansionController.setExpandedTurnState
-  const applyCollapsedTurns = transcriptTurnExpansionController.applyCollapsedTurns
+  const setExpandedTurnState = transcriptTurnCollapseController.setExpandedTurnState
+  const applyCollapsedTurns = transcriptTurnCollapseController.applyCollapsedTurns
 
   const transcriptRetentionController = createTranscriptRetentionController({
     entries: () => deps.entries().slice(),
@@ -241,7 +241,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     clearAgentBusy: deps.clearAgentBusy,
     currentAgentPaneEntries: deps.currentAgentPaneEntries,
     collapseLatestTurnForAgent: (agentId, paneEntries) =>
-      transcriptTurnExpansionController.collapseLatestTurnForAgent(agentId, paneEntries),
+      transcriptTurnCollapseController.collapseLatestTurnForAgent(agentId, paneEntries),
     appendTranscriptEntryToAgentPane: (agentId, entry, turnIds) => {
       deps.appendTranscriptEntryToAgentPane(agentId, entry, turnIds ? [...turnIds] : undefined)
     },
