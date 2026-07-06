@@ -54,6 +54,13 @@ export type TranscriptTurnSettlementProjection<TEntry extends TranscriptDisplayE
     readonly collapsedTurnIds: number[]
   }
 
+export type TranscriptTurnToggleProjection<TEntry extends TranscriptDisplayEntry> =
+  TranscriptDisplayProjection<TEntry> & {
+    readonly turnId: number
+    readonly expanded: boolean
+    readonly collapsedTurnIds: number[]
+  }
+
 type MutableTranscriptDisplayEntry =
   Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
   turnId?: number | null | undefined
@@ -234,6 +241,42 @@ export function projectSettledTranscriptTurnDisplayState<TEntry extends Transcri
   }
 }
 
+export function projectTranscriptTurnToggleDisplayState<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TEntry[],
+  turnId: number | null | undefined,
+  collapsedTurnIds: readonly number[] = [],
+  preferredToggleEntryId?: number,
+  activeTurnId: number | null = null,
+  options: TranscriptDisplayStateOptions = {},
+): TranscriptTurnToggleProjection<TEntry> | null {
+  if (!turnId) {
+    return null
+  }
+  const toggleEntry = resolveVisibleTurnToggle(entries, turnId, preferredToggleEntryId)
+  if (!toggleEntry) {
+    return null
+  }
+  const expanded = toggleEntry.toggleMode === "expand"
+  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
+  if (expanded) {
+    nextCollapsedTurnIds.delete(turnId)
+  } else {
+    nextCollapsedTurnIds.add(turnId)
+  }
+  const projection = projectTranscriptDisplayState(
+    entries,
+    sortedTurnIds(nextCollapsedTurnIds),
+    activeTurnId,
+    options,
+  )
+  return {
+    ...projection,
+    turnId,
+    expanded,
+    collapsedTurnIds: sortedTurnIds(nextCollapsedTurnIds),
+  }
+}
+
 function inferredActiveHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {
@@ -250,7 +293,7 @@ export function setTranscriptTurnExpanded<TEntry extends TranscriptDisplayEntry>
   expanded: boolean,
   activeTurnId: number | null = null,
   options: TranscriptDisplayStateOptions = {},
-): TranscriptDisplayEntry[] {
+): TEntry[] {
   const nextCollapsedTurnIds = new Set(collapsedTurnIds)
   if (expanded) {
     nextCollapsedTurnIds.delete(turnId)
@@ -267,7 +310,7 @@ export function setTranscriptBlobCollapsed<TEntry extends TranscriptDisplayEntry
   collapsed: boolean,
   activeTurnId: number | null = null,
   options: TranscriptDisplayStateOptions = {},
-): TranscriptDisplayEntry[] {
+): TEntry[] {
   const updated = stripTranscriptDisplayEntries(entries).map((entry) => {
     if (entry.id !== entryId) {
       return { ...entry }
@@ -276,7 +319,7 @@ export function setTranscriptBlobCollapsed<TEntry extends TranscriptDisplayEntry
       ...entry,
       blobCollapsed: collapsed,
     }
-  }) as TranscriptDisplayEntry[]
+  }) as TEntry[]
   return applyTranscriptDisplayState(updated, collapsedTurnIds, activeTurnId, options)
 }
 
