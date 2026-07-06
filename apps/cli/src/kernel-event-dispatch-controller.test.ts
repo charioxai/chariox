@@ -33,6 +33,30 @@ test("kernel event dispatch applies normalized session snapshots with agent acti
   ])
 })
 
+test("kernel event dispatch clears stale embedded activity when snapshot activity is absent", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "session_snapshot",
+    session: {
+      ...session(),
+      agent_activity: { "agent-stale": { status: "working", busy: true } },
+      agent_activity_revision: 4,
+    } as unknown as Record<string, unknown>,
+    provider_run: null,
+    agent_activity: null as unknown as Record<string, unknown>,
+  })
+
+  assert.equal(harness.snapshots.length, 1)
+  assert.equal(harness.snapshots[0]?.session.agent_activity, undefined)
+  assert.equal(harness.snapshots[0]?.session.agent_activity_revision, undefined)
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_session_snapshot",
+    "refresh-prompt-input-history",
+    "apply-session-snapshot:session-1:none",
+  ])
+})
+
 test("kernel event dispatch refreshes waiting-room inventory asynchronously", async () => {
   const harness = createHarness()
 

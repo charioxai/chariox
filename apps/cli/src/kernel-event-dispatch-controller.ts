@@ -1,5 +1,5 @@
 import {
-  normalizeRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity,
   type RuntimeNoticeRecord,
   type RuntimeProviderRun,
   type RuntimeSession,
@@ -85,12 +85,12 @@ export function createKernelEventDispatchController(
     deps.recordDaemonActivity("kernel_session_snapshot")
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
-      normalizeRuntimeSession({
-        ...(event.session as RuntimeSession),
-        ...((event.agent_activity && typeof event.agent_activity === "object")
-          ? { agent_activity: event.agent_activity }
-          : {}),
-      } as RuntimeSession),
+      normalizeRuntimeSessionWithAgentActivity({
+        session: event.session as RuntimeSession,
+        agent_activity: isRecord(event.agent_activity)
+          ? event.agent_activity as RuntimeSession["agent_activity"]
+          : null,
+      }),
       (event.provider_run as RuntimeProviderRun | null) ?? null,
     )
   }
