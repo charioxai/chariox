@@ -231,6 +231,25 @@ impl ExternalProviderSessionIndexStore {
         count
     }
 
+    pub(crate) fn mark_provider_run_attached(
+        &self,
+        provider: &str,
+        provider_session_id: Option<&str>,
+        resume_state: &ProviderResumeState,
+        session_id: &str,
+        agent_id: &str,
+    ) {
+        self.mark_resume_state_attached(resume_state, session_id, agent_id);
+        if let Some(provider_session_id) = provider_session_id {
+            self.mark_provider_session_attached(
+                provider,
+                provider_session_id,
+                session_id,
+                agent_id,
+            );
+        }
+    }
+
     pub(crate) fn mark_attached(
         &self,
         external_session_id: &str,
@@ -527,6 +546,31 @@ mod tests {
                 .is_empty(),
             "resume-state attached provider sessions should not be attachable"
         );
+    }
+
+    #[test]
+    fn provider_run_attachment_marks_resume_state_and_direct_provider_session() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-from-resume", 40));
+        store.upsert(record("opencode", "session-from-run", 30));
+        let resume_state = ProviderResumeState::from_codex_thread_id("thread-from-resume");
+
+        store.mark_provider_run_attached(
+            "opencode",
+            Some("session-from-run"),
+            &resume_state,
+            "session-1",
+            "agent-1",
+        );
+
+        for external_session_id in ["codex:thread-from-resume", "opencode:session-from-run"] {
+            let session = store
+                .get(external_session_id)
+                .expect("provider session should remain indexed");
+            assert!(session.is_attached_to_arroba());
+            assert_eq!(session.first_attached_session_id(), Some("session-1"));
+            assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
+        }
     }
 
     #[test]

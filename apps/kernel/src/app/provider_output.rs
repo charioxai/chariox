@@ -1404,22 +1404,15 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return;
         };
-        mark_resume_state_external_provider_sessions_attached(
-            &self.app.external_provider_sessions,
-            provider_run.resume_state(),
-            provider_run.session_id(),
-            agent_id,
-        );
-        if let Some(provider_session_id) = provider_run.provider_session_id() {
-            self.app
-                .external_provider_sessions
-                .mark_provider_session_attached(
-                    provider_run.adapter_key(),
-                    provider_session_id,
-                    provider_run.session_id(),
-                    agent_id,
-                );
-        }
+        self.app
+            .external_provider_sessions
+            .mark_provider_run_attached(
+                provider_run.adapter_key(),
+                provider_run.provider_session_id(),
+                provider_run.resume_state(),
+                provider_run.session_id(),
+                agent_id,
+            );
     }
 
     fn trace_structured_poll_batch(
@@ -1592,15 +1585,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
             bytes,
         )
     }
-}
-
-pub(crate) fn mark_resume_state_external_provider_sessions_attached(
-    store: &crate::app::ExternalProviderSessionIndexStore,
-    resume_state: &crate::provider::ProviderResumeState,
-    session_id: &str,
-    agent_id: &str,
-) {
-    store.mark_resume_state_attached(resume_state, session_id, agent_id);
 }
 
 impl DaemonApp {

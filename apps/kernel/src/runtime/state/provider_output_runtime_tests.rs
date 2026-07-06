@@ -538,12 +538,18 @@ async fn rejected_owned_local_prompt_does_not_persist_history() {
             .all(|entry| entry.text != "rejected prompt must not be history"),
         "rejected prompt should not be visible after reload"
     );
+    assert!(
+        history_entries
+            .iter()
+            .all(|entry| !entry.text.starts_with("queued accepted prompt ")),
+        "queued-only prompts should become history when they start, not when they wait in queue"
+    );
     assert_eq!(
         history_entries
             .iter()
             .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt)
             .count(),
-        crate::runtime::prompt_state::PROMPT_QUEUE_LIMIT + 1
+        1
     );
 }
 
