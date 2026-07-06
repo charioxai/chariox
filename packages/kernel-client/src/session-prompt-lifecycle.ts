@@ -7,6 +7,7 @@ import {
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
 import {
+  externalProviderObservedIdentityKey,
   parseExternalProviderObservedId,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
@@ -138,16 +139,28 @@ function activePromptLifecycleRecordFromProjectedTurn(
 }
 
 function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {
+  const externalIdentityKey = activePromptLifecycleRecordExternalIdentityKey(prompt)
   return [
     prompt.id,
     prompt.status ?? "",
     prompt.promptOrigin ?? "",
     prompt.target_agent_id ?? "",
     prompt.providerRunId ?? "",
-    normalizeExternalProviderLifecycleProvider(prompt.externalProvider),
-    normalizeExternalProviderLifecycleIdentity(prompt.externalProviderSessionId),
-    normalizeExternalProviderLifecycleIdentity(prompt.externalProviderTurnId),
+    externalIdentityKey?.provider ?? normalizeExternalProviderLifecycleProvider(prompt.externalProvider),
+    externalIdentityKey?.providerSessionId ?? "",
+    externalIdentityKey?.providerTurnId ?? "",
   ].join("\u001f")
+}
+
+function activePromptLifecycleRecordExternalIdentityKey(prompt: ActivePromptLifecycleRecord) {
+  return externalProviderObservedIdentityKey({
+    promptId: prompt.promptOrigin === ARROBA_PROMPT_ORIGIN ? null : prompt.id,
+    ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
+    ...(prompt.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: prompt.externalProviderSessionId }
+      : {}),
+    ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
+  })
 }
 
 function compareActivePromptLifecycleRecords(
@@ -158,9 +171,5 @@ function compareActivePromptLifecycleRecords(
 }
 
 function normalizeExternalProviderLifecycleProvider(value: string | null | undefined): string {
-  return normalizeExternalProviderLifecycleIdentity(value).toLowerCase()
-}
-
-function normalizeExternalProviderLifecycleIdentity(value: string | null | undefined): string {
-  return value?.trim() ?? ""
+  return value?.trim().toLowerCase() ?? ""
 }

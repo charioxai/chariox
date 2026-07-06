@@ -309,7 +309,7 @@ test("session prompt lifecycle transition detects same prompt status changes", (
   })
 })
 
-test("session prompt lifecycle transition detects same prompt external identity changes", () => {
+test("session prompt lifecycle transition treats decomposed metadata fill-in as stable", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
       agents: [makeAgent({ id: "agent-1" })],
@@ -351,7 +351,7 @@ test("session prompt lifecycle transition detects same prompt external identity 
   )
 
   assert.deepEqual(transition, {
-    activePromptChanged: true,
+    activePromptChanged: false,
     cancelledPromptSettled: false,
     settledAgentIds: [],
   })
