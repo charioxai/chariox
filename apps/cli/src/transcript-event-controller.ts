@@ -60,7 +60,7 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
       const promptTurn = createTranscriptUserPromptTurn(text, computeNextTurnId(paneEntries))
       const nextTurnIds = deps.collapseLatestTurnForAgent(targetAgentId, paneEntries)
       deps.appendTranscriptEntryToAgentPane(targetAgentId, promptTurn.entry, nextTurnIds)
-      setPromptWorkActive(deps)
+      setTurnWorkActive(deps)
       return
     }
 
@@ -73,7 +73,7 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
     )
     deps.appendEntry(promptTurn.entry, nextTurnIds)
     deps.syncVisibleTranscriptPreview()
-    setPromptWorkActive(deps)
+    setTurnWorkActive(deps)
     deps.scrollTranscriptToBottom()
   }
 
@@ -147,7 +147,7 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
   }
 }
 
-function setPromptWorkActive(deps: Pick<TranscriptEventControllerDeps, "setSubmitting" | "setWorking" | "renderSessionChromeBoundary">) {
+function setTurnWorkActive(deps: Pick<TranscriptEventControllerDeps, "setSubmitting" | "setWorking" | "renderSessionChromeBoundary">) {
   deps.setSubmitting(true)
   deps.setWorking(true)
   deps.renderSessionChromeBoundary()

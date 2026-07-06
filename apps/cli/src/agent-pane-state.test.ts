@@ -829,7 +829,7 @@ test("refreshAgentPaneState stops backfill when older cursor repeats without dup
   assert.equal(result.visibleCursor, null)
 })
 
-test("refreshAgentPaneState preserves richer live pane entries while prompt work is active", async () => {
+test("refreshAgentPaneState preserves richer live pane entries while turn work is active", async () => {
   const result = await refreshAgentPaneState<
     { id: string },
     { role: string; turnId?: number; text: string },

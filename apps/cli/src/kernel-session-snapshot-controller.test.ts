@@ -8,7 +8,7 @@ import type {
 } from "./cli-types.js"
 import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
 
-test("kernel session snapshot refreshes changed provider run and panes after prompt completion", async () => {
+test("kernel session snapshot refreshes changed provider run and panes after turn completion", async () => {
   const nextRun = providerRun("run-2")
   const harness = createHarness({
     session: session({ active_prompt: activePrompt() }),
@@ -28,7 +28,7 @@ test("kernel session snapshot refreshes changed provider run and panes after pro
   ])
 })
 
-test("kernel session snapshot detects prompt completion from projected prompt states", async () => {
+test("kernel session snapshot detects turn completion from projected prompt states", async () => {
   const harness = createHarness({
     session: session({
       agents: [agent()],

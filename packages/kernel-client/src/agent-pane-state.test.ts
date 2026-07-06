@@ -292,7 +292,7 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
   assert.equal(result.visibleCursor, null)
 })
 
-test("refreshAgentPaneState backfills idle panes while another agent has prompt work", async () => {
+test("refreshAgentPaneState backfills idle panes while another agent has turn work", async () => {
   const requestedCursorsByAgent: Record<string, Array<string | null>> = {
     "agent-a": [],
     "agent-b": [],
