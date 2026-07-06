@@ -93,16 +93,32 @@ pub(crate) struct ActiveTurnStore {
 
 impl ActiveTurnStore {
     pub(crate) fn start(&self, turn: ActiveTurnState) {
-        let turn = {
+        let (turn, replaced) = {
             let mut guard = self.inner.lock().expect("active turn mutex poisoned");
             let turn = if let Some(existing) = guard.get(&turn.provider_run_id) {
                 merge_active_turn_start(existing, turn)
             } else {
                 turn
             };
+            let replaced_provider_run_ids = guard
+                .iter()
+                .filter_map(|(provider_run_id, existing)| {
+                    (provider_run_id != &turn.provider_run_id
+                        && existing.session_id == turn.session_id
+                        && existing.agent_id == turn.agent_id)
+                        .then(|| provider_run_id.clone())
+                })
+                .collect::<Vec<_>>();
+            let replaced = replaced_provider_run_ids
+                .into_iter()
+                .filter_map(|provider_run_id| guard.remove(&provider_run_id))
+                .collect::<Vec<_>>();
             guard.insert(turn.provider_run_id.clone(), turn.clone());
-            turn
+            (turn, replaced)
         };
+        for replaced_turn in replaced {
+            record_active_turn_clear(replaced_turn);
+        }
         crate::debug_trace::record_terminal_turn(
             &turn.session_id,
             "active_turn_start",
@@ -414,6 +430,45 @@ mod tests {
             .remove("run-1")
             .expect("turn should remain active");
         assert_eq!(turn.phase, ActiveTurnPhase::Streaming);
+    }
+
+    #[test]
+    fn active_turn_start_replaces_prior_turn_for_same_session_agent() {
+        let store = ActiveTurnStore::default();
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        ));
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-2".to_string(),
+            "prompt-2".to_string(),
+            "run-2".to_string(),
+        ));
+        store.start(ActiveTurnState::new(
+            "session-2".to_string(),
+            "agent-1".to_string(),
+            "prompt-3".to_string(),
+            "run-3".to_string(),
+        ));
+
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-4".to_string(),
+            "run-4".to_string(),
+        ));
+
+        let snapshot = store.snapshot();
+        assert!(!snapshot.contains_key("run-1"));
+        assert!(snapshot.contains_key("run-2"));
+        assert!(snapshot.contains_key("run-3"));
+        assert_eq!(
+            snapshot.get("run-4").map(|turn| turn.prompt_id.as_str()),
+            Some("prompt-4")
+        );
     }
 
     #[test]
