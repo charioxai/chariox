@@ -1536,6 +1536,114 @@ test("executeShellCommand waits for prompt and renders summary blob", async () =
   assert.match(result.message ?? "", /prompt-1 summary\n {24}done ok/)
 })
 
+test("executeShellCommand waits for queued prompts until they run and settle", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+  })
+  let stateCalls = 0
+  const queuedPrompt = {
+    id: "prompt-queued",
+    source_attachment_id: "attach-1",
+    target_agent_id: "agent-1",
+    prompt: "hello\n",
+    status: "Queued",
+  }
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent()] } }
+    }
+    if ("SubmitPrompt" in request) {
+      return {
+        PromptSubmitted: {
+          outcome: { Queued: { prompt: queuedPrompt } },
+          session: makeSession({
+            prompt_states: {
+              "agent-1": {
+                active_prompt: null,
+                queued_prompts: [queuedPrompt],
+              },
+            },
+          }),
+          agent_activity: {
+            "agent-1": {
+              status: "idle",
+              prompt_status: "queued",
+              busy: false,
+              queued_prompt_count: 1,
+            },
+          },
+        },
+      }
+    }
+    if ("PumpTerminalOutput" in request) {
+      return { TerminalOutputPumped: { records: [] } }
+    }
+    if ("GetSessionState" in request) {
+      stateCalls += 1
+      return {
+        SessionState: {
+          session: makeSession({
+            prompt_states: {
+              "agent-1": stateCalls === 1
+                ? {
+                    active_prompt: null,
+                    queued_prompts: [queuedPrompt],
+                  }
+                : {
+                    active_prompt: stateCalls === 2
+                      ? { ...queuedPrompt, status: "Running" }
+                      : null,
+                    queued_prompts: [],
+                  },
+            },
+          }),
+        },
+      }
+    }
+    if ("GetSessionHistoryOutline" in request) {
+      return {
+        SessionHistoryOutline: {
+          agents: [{
+            agent_id: "agent-1",
+            turns: [{
+              turn_id: "turn-1",
+              started_at_ms: 1,
+              user_prompt: {
+                entry_index: 1,
+                fragment_start: 0,
+                fragment_end: 5,
+                total_chars: 5,
+                entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
+              },
+              entries: [],
+              blobs: [],
+              summary: {
+                entry_index: 2,
+                fragment_start: 0,
+                fragment_end: 4,
+                total_chars: 4,
+                entry: { agent_id: "agent-1", kind: "provider_output", text: "done" },
+              },
+            }],
+            next_cursor: null,
+          }],
+        },
+      }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("prompt hello --wait"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /prompt prompt-queued completed/)
+  assert.equal(stateCalls, 3)
+})
+
 test("executeShellCommand wait trusts projected idle activity over stale prompt state", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

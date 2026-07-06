@@ -5,6 +5,7 @@ import {
   sessionActivePromptForAgent,
   sessionActivePromptIdForAgent,
   sessionHasActivePrompt,
+  sessionHasPendingPrompt,
   sessionPromptForAgent,
   sessionPromptStateForAgent,
 } from "./session-prompt-identity.js"
@@ -97,6 +98,7 @@ test("session active prompt identity excludes queued-only prompt state", () => {
   })
 
   assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-1"), false)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-1"), true)
   assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
   assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
@@ -116,10 +118,57 @@ test("session active prompt identity excludes legacy queued-only prompts", () =>
   })
 
   assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-legacy"), false)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-legacy"), true)
   assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
   assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
   assert.equal(sessionPromptStateForAgent(session, "agent-1")?.queued_prompts[0]?.id, "queued-legacy")
+})
+
+test("session pending prompt identity matches queued pending prompt ids", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-materialized",
+          pending_prompt_id: "queued-pending",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-pending"), false)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-pending"), true)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-materialized"), true)
+})
+
+test("session pending prompt identity respects projected idle as authoritative", () => {
+  const session = makeSession({
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "stale queued",
+      status: "Queued",
+    }],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-stale"), false)
 })
 
 test("session prompt identity suppresses stale legacy prompts under idle projection", () => {

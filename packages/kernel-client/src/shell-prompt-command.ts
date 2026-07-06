@@ -28,7 +28,7 @@ import {
   expectSessionState,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
-import { sessionHasActivePrompt, sessionPromptForAgent } from "./session-prompt-identity.js"
+import { sessionHasPendingPrompt, sessionPromptForAgent } from "./session-prompt-identity.js"
 import { sessionWithProjectedAgentActivity } from "./runtime-session.js"
 
 type ShellKernelClient = {
@@ -200,7 +200,7 @@ async function waitForPromptCompletion(
     await deps.client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => ({}))
     const response = await deps.client.send(getSessionStateRequest(sessionId))
     latest = expectSessionState(response)
-    if (!sessionHasActivePrompt(latest, agentId, promptId)) {
+    if (!sessionHasPendingPrompt(latest, agentId, promptId)) {
       return latest
     }
     await sleep(250)

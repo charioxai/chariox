@@ -49,6 +49,26 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
   return legacySessionHasPrompt(session, agentId, promptId)
 }
 
+export function sessionHasPendingPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (projected === "not_found" || projected === "idle") {
+    return false
+  }
+  if (projected?.activeTurnPromptId) {
+    return projected.activeTurnPromptId === promptId
+  }
+  const promptState = sessionPromptStateRecordForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return promptMatchesId(promptState?.active_prompt, promptId)
+      || Boolean(promptState?.queued_prompts?.some((prompt) => promptMatchesId(prompt, promptId)))
+  }
+  if (projected) {
+    return false
+  }
+  return legacySessionHasPrompt(session, agentId, promptId)
+    || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId && promptMatchesId(prompt, promptId))
+}
+
 export function sessionPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
   const projected = sessionProjectedPromptActivityForAgent(session, agentId)
   if (projected === "not_found" || projected === "idle") {
@@ -95,9 +115,9 @@ export function sessionActivePromptIdForAgent(
 function legacySessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
   const promptState = sessionPromptStateRecordForAgent(session, agentId)
   if (promptState !== undefined) {
-    return promptState?.active_prompt?.id === promptId
+    return promptMatchesId(promptState?.active_prompt, promptId)
   }
-  return Boolean(session.active_prompt?.target_agent_id === agentId && session.active_prompt.id === promptId)
+  return Boolean(session.active_prompt?.target_agent_id === agentId && promptMatchesId(session.active_prompt, promptId))
 }
 
 function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
@@ -117,4 +137,8 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
     return null
   }
   return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
+}
+
+function promptMatchesId(prompt: PromptQueueItem | null | undefined, promptId: string): boolean {
+  return prompt?.id === promptId || prompt?.pending_prompt_id === promptId
 }
