@@ -20,11 +20,13 @@ test("kernel event dispatch applies normalized session snapshots with agent acti
     session: nextSession as unknown as Record<string, unknown>,
     provider_run: run as unknown as Record<string, unknown>,
     agent_activity: { "agent-1": { working: true } },
+    agent_activity_revision: 7,
   })
 
   assert.equal(harness.snapshots.length, 1)
   assert.equal(harness.snapshots[0]?.session.id, "session-1")
   assert.deepEqual(harness.snapshots[0]?.session.agent_activity, { "agent-1": { working: true } })
+  assert.equal(harness.snapshots[0]?.session.agent_activity_revision, 7)
   assert.equal(harness.snapshots[0]?.providerRun?.id, "run-1")
   assert.deepEqual(harness.calls, [
     "activity:kernel_session_snapshot",
@@ -45,6 +47,7 @@ test("kernel event dispatch clears stale embedded activity when snapshot activit
     } as unknown as Record<string, unknown>,
     provider_run: null,
     agent_activity: null as unknown as Record<string, unknown>,
+    agent_activity_revision: 7,
   })
 
   assert.equal(harness.snapshots.length, 1)
@@ -53,7 +56,7 @@ test("kernel event dispatch clears stale embedded activity when snapshot activit
   assert.deepEqual(harness.calls, [
     "activity:kernel_session_snapshot",
     "refresh-prompt-input-history",
-    "apply-session-snapshot:session-1:none",
+    "apply-session-snapshot:session-1:null",
   ])
 })
 
@@ -219,11 +222,12 @@ test("kernel event dispatch applies agent activity deltas without resyncing", as
     event: "agent_activity_changed",
     session_id: "session-1",
     agent_activity: { "agent-1": { status: "working", busy: true } },
+    agent_activity_revision: 9,
   })
 
   assert.deepEqual(harness.calls, [
     "activity:kernel_agent_activity_changed",
-    "apply-agent-activity:session-1:agent-1",
+    "apply-agent-activity:session-1:agent-1:9",
   ])
 })
 
@@ -377,8 +381,8 @@ function createHarness() {
       snapshots.push({ session: nextSession, providerRun: nextProviderRun })
       calls.push(`apply-session-snapshot:${nextSession.id}:${nextProviderRun?.id ?? "null"}`)
     },
-    applyAgentActivityChanged: (sessionId, agentActivity) => {
-      calls.push(`apply-agent-activity:${sessionId}:${Object.keys(agentActivity).sort().join(",")}`)
+    applyAgentActivityChanged: (sessionId, agentActivity, agentActivityRevision) => {
+      calls.push(`apply-agent-activity:${sessionId}:${Object.keys(agentActivity).sort().join(",")}:${agentActivityRevision ?? "none"}`)
     },
     applyProviderRunChanged: (sessionId, providerRun) => {
       calls.push(`apply-provider-run:${sessionId}:${providerRun?.id ?? "null"}`)

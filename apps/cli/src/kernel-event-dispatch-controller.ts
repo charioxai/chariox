@@ -40,6 +40,7 @@ type KernelEventDispatchControllerDeps = {
   applyAgentActivityChanged: (
     sessionId: string,
     agentActivity: Record<string, unknown>,
+    agentActivityRevision: number | null,
   ) => Promise<void> | void
   applyProviderRunChanged: (
     sessionId: string,
@@ -89,6 +90,9 @@ export function createKernelEventDispatchController(
         session: event.session as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]
+          : null,
+        agent_activity_revision: typeof event.agent_activity_revision === "number"
+          ? event.agent_activity_revision
           : null,
       }),
       (event.provider_run as RuntimeProviderRun | null) ?? null,
@@ -191,7 +195,13 @@ export function createKernelEventDispatchController(
       deps.appendNotice(`Kernel sent malformed agent activity for session ${event.session_id}.`, "warning")
       return
     }
-    await deps.applyAgentActivityChanged(event.session_id, event.agent_activity)
+    await deps.applyAgentActivityChanged(
+      event.session_id,
+      event.agent_activity,
+      typeof event.agent_activity_revision === "number"
+        ? event.agent_activity_revision
+        : null,
+    )
   }
 
   async function applyProviderRunChanged(event: KernelEventProviderRunChanged) {

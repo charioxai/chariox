@@ -43,6 +43,7 @@ import type {
   RuntimeSession,
   WorkflowRun,
 } from "./cli-types.js"
+import { normalizeRuntimeSessionWithAgentActivity } from "./cli-types.js"
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
@@ -365,10 +366,12 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const applyAgentActivityChanged = (
     sessionId: string,
     agentActivity: Record<string, unknown>,
+    agentActivityRevision: number | null,
   ) => {
-    applyDeltaSessionState(sessionId, (session) => ({
-      ...session,
+    applyDeltaSessionState(sessionId, (session) => normalizeRuntimeSessionWithAgentActivity({
+      session,
       agent_activity: agentActivity as Record<string, AgentRuntimeActivity>,
+      agent_activity_revision: agentActivityRevision,
     }))
   }
   const applyProviderRunChanged = (

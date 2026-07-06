@@ -28,11 +28,13 @@ export type KernelEvent =
     session: Record<string, unknown>
     provider_run: Record<string, unknown> | null
     agent_activity: Record<string, unknown>
+    agent_activity_revision: number
   }
   | {
     event: "agent_activity_changed"
     session_id: string
     agent_activity: Record<string, unknown>
+    agent_activity_revision: number
   }
   | {
     event: "provider_run_changed"
