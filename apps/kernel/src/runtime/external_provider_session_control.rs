@@ -3,18 +3,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
     external_session_id_for_provider_session, normalized_observed_prompt_text,
+    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
 };
 use crate::error::DaemonError;
 use crate::history::{
-    ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntryKind,
-    SessionHistoryEntrySource, SessionHistoryExternalObservation,
-    external_provider_observed_state_merge_key,
+    external_provider_observed_state_merge_key, ExternalImportHistoryEntry, SessionHistoryEntry,
+    SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -1058,6 +1057,12 @@ fn append_observed_external_turns_for_attached_target_with_options(
                 active_relevant_appended += 1;
             }
         }
+        update_provider_run_usage_from_external_observation(
+            app,
+            provider_run_id.as_deref(),
+            &provider,
+            turn,
+        );
         last_cursor.last_observed_merge_key = Some(merge_key);
         last_cursor.last_observed_turn_id = Some(merge_turn_id);
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
@@ -1127,6 +1132,37 @@ fn append_observed_external_turns_for_attached_target_with_options(
         );
     }
     Ok(outcome)
+}
+
+fn update_provider_run_usage_from_external_observation(
+    app: &mut DaemonApp,
+    provider_run_id: Option<&str>,
+    provider: &str,
+    turn: &crate::app::ObservedExternalProviderTurn,
+) {
+    if turn.role != crate::app::ObservedExternalProviderTurnRole::Status {
+        return;
+    }
+    let Some(provider_run_id) = provider_run_id else {
+        return;
+    };
+    let Some(usage) =
+        ExternalProviderObservationPolicy::for_provider(provider).status_usage(&turn.text)
+    else {
+        return;
+    };
+    match app.providers.record_observed_usage(provider_run_id, usage) {
+        Ok(run) => app.update_provider_run_projection(run),
+        Err(error) => crate::logging::debug_with_fields(
+            "daemon.external_provider",
+            "ignored external provider usage update for missing provider run",
+            serde_json::json!({
+                "provider_run_id": provider_run_id,
+                "provider": provider,
+                "error": error.to_string(),
+            }),
+        ),
+    }
 }
 
 fn persist_observed_external_settlement_history_signal(
@@ -1917,12 +1953,10 @@ mod tests {
                     .external_provider,
                 "dev-stub"
             );
-            assert!(
-                store
-                    .get("dev-stub:external-1")
-                    .expect("record should remain indexed")
-                    .is_attached_to_arroba()
-            );
+            assert!(store
+                .get("dev-stub:external-1")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
         });
     }
 
@@ -2146,12 +2180,10 @@ mod tests {
             assert!(message.contains(&format!(
                 "already attached to Arroba session `{session_id}` agent `{agent_id}`"
             )));
-            assert!(
-                store
-                    .get("codex:thread-owned-by-resume")
-                    .expect("record should remain indexed")
-                    .is_attached_to_arroba()
-            );
+            assert!(store
+                .get("codex:thread-owned-by-resume")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
         });
     }
 
@@ -2221,12 +2253,10 @@ mod tests {
             assert!(message.contains(&format!(
                 "already attached to Arroba session `{session_id}` agent `{agent_id}`"
             )));
-            assert!(
-                store
-                    .get("codex:thread-owned-discovered")
-                    .expect("discovered record should remain indexed")
-                    .is_attached_to_arroba()
-            );
+            assert!(store
+                .get("codex:thread-owned-discovered")
+                .expect("discovered record should remain indexed")
+                .is_attached_to_arroba());
         });
 
         restore_env_var("CODEX_HOME", previous_codex_home);
@@ -2375,12 +2405,10 @@ mod tests {
             assert!(message.contains(&format!(
                 "already attached to Arroba session `{owner_session_id}` agent `{owner_agent_id}`"
             )));
-            assert!(
-                store
-                    .get("codex:thread-owned-by-run")
-                    .expect("record should remain indexed")
-                    .is_attached_to_arroba()
-            );
+            assert!(store
+                .get("codex:thread-owned-by-run")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
         });
     }
 
@@ -2477,13 +2505,12 @@ mod tests {
             target.cursor_source,
             AttachedExternalObserverCursorSource::ArrobaOwned(_)
         ));
-        assert!(
-            app.agents()
-                .get_agent(agent.id())
-                .expect("agent should load")
-                .external_provider_import()
-                .is_none()
-        );
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
     }
 
     #[test]
@@ -2553,13 +2580,12 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_external_provider_observed());
         assert_eq!(entries[0].text, "native prompt outside Arroba");
-        assert!(
-            app.agents()
-                .get_agent(agent.id())
-                .expect("agent should load")
-                .external_provider_import()
-                .is_none()
-        );
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
     }
 
     #[test]
@@ -2615,23 +2641,21 @@ mod tests {
         .expect("observed Arroba-owned prompt echo should be skipped");
 
         assert_eq!(outcome.changed_count, 0);
-        assert!(
-            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
-                .expect("active prompt should load")
-                .is_none()
-        );
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .is_none());
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "arroba owned prompt");
-        assert!(
-            app.agents()
-                .get_agent(agent.id())
-                .expect("agent should load")
-                .external_provider_import()
-                .is_none()
-        );
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .external_provider_import()
+            .is_none());
         let cursor = app
             .attached_provider_transcript_cursor_store()
             .get(&cursor_key);
@@ -2746,12 +2770,10 @@ mod tests {
         assert!(active_prompt.id().starts_with("prompt-"));
         assert_eq!(active_prompt.pending_prompt_id(), None);
         assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
-        assert!(
-            session
-                .queued_prompts_for_agent(agent.id())
-                .map(|queued| queued.is_empty())
-                .unwrap_or(true)
-        );
+        assert!(session
+            .queued_prompts_for_agent(agent.id())
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true));
     }
 
     #[test]
@@ -3080,11 +3102,9 @@ mod tests {
             .sessions()
             .get_session(session.id())
             .expect("session mirror should load");
-        assert!(
-            mirrored_session
-                .active_prompt_for_agent(agent.id())
-                .is_none()
-        );
+        assert!(mirrored_session
+            .active_prompt_for_agent(agent.id())
+            .is_none());
     }
 
     #[test]
@@ -3883,10 +3903,12 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
+        let run = test_codex_run(session.id(), agent.id(), "run-imported", "thread-observed");
+        app.providers_mut().insert_run_for_test(run.clone());
         let target = attached_external_observer_target_from_import(
             session.id().to_string(),
             agent.id().to_string(),
-            None,
+            Some(run.id().to_string()),
             import,
         );
         let prompt = crate::app::ObservedExternalProviderTurn {
@@ -3931,6 +3953,19 @@ mod tests {
                 .expect("active prompt should load")
                 .is_some(),
             "Codex token_count is telemetry and must not settle the external turn"
+        );
+        assert_eq!(
+            app.providers()
+                .get_run(run.id())
+                .expect("provider run should load")
+                .usage(),
+            crate::provider::ProviderRunTokenUsage {
+                total_tokens: Some(42),
+                last_tokens: Some(42),
+                context_tokens: None,
+                context_window: None,
+            },
+            "externally observed Codex token telemetry should update kernel provider-run usage"
         );
     }
 
@@ -4437,11 +4472,10 @@ mod tests {
 
         assert_eq!(outcome.changed_count, 0);
         assert!(!outcome.external_active_prompt_settled);
-        assert!(
-            app.load_session_history_entries(&session, Some(agent.id()))
-                .expect("history should load")
-                .is_empty()
-        );
+        assert!(app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load")
+            .is_empty());
         let active_prompt = app
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
             .expect("active prompt should load")

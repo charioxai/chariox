@@ -5,7 +5,7 @@ use crate::prompt_assembly::PromptAssemblyMode;
 use crate::provider::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
-    ProviderRegistry, ProviderRunOperationLanes, RuntimeProviderRun,
+    ProviderRegistry, ProviderRunOperationLanes, ProviderRunTokenUsage, RuntimeProviderRun,
 };
 use crate::session::PromptAttachment;
 
@@ -248,6 +248,14 @@ impl ProviderProcessServiceStore {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         self.write()
             .update_run_selection(provider_run_id, model, variant, clear_variant)
+    }
+
+    pub(crate) fn record_observed_usage(
+        &self,
+        provider_run_id: &str,
+        usage: ProviderRunTokenUsage,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write().record_observed_usage(provider_run_id, usage)
     }
 
     pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&self) {

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use super::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
 use crate::history::SessionHistoryExternalObservation;
+use crate::provider::ProviderRunTokenUsage;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExternalProviderObservationPolicy<'a> {
@@ -45,6 +46,47 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             return text.starts_with("claude last-prompt") || text.starts_with("claude ai-title");
         }
         false
+    }
+
+    pub(crate) fn status_usage(self, text: &str) -> Option<ProviderRunTokenUsage> {
+        if !self.provider_is("codex") {
+            return None;
+        }
+        let (header, payload) = text.split_once('\n')?;
+        if header.trim() != "codex token_count" {
+            return None;
+        }
+        let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
+        let context_tokens = first_u64_path(
+            &payload,
+            &[
+                &["info", "total_token_usage", "total_tokens"],
+                &["total_token_usage", "total_tokens"],
+                &["info", "totalTokenUsage", "totalTokens"],
+                &["totalTokenUsage", "totalTokens"],
+                &["last", "total_tokens"],
+                &["last", "totalTokens"],
+            ],
+        );
+        let context_window = first_u64_path(
+            &payload,
+            &[
+                &["info", "model_context_window"],
+                &["info", "modelContextWindow"],
+                &["model_context_window"],
+                &["modelContextWindow"],
+            ],
+        );
+        let context_tokens_with_window = match (context_tokens, context_window) {
+            (Some(tokens), Some(window)) if tokens <= window => Some(tokens),
+            _ => None,
+        };
+        (context_tokens.is_some() || context_window.is_some()).then_some(ProviderRunTokenUsage {
+            total_tokens: context_tokens,
+            last_tokens: context_tokens,
+            context_tokens: context_tokens_with_window,
+            context_window,
+        })
     }
 
     pub(crate) fn turn_is_passive_telemetry(self, turn: &ObservedExternalProviderTurn) -> bool {
@@ -127,6 +169,18 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         }
         .useful()
     }
+}
+
+fn first_u64_path(value: &serde_json::Value, paths: &[&[&str]]) -> Option<u64> {
+    paths.iter().find_map(|path| read_u64_path(value, path))
+}
+
+fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current.as_u64()
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
@@ -270,6 +324,37 @@ mod tests {
 
         let opencode = ExternalProviderObservationPolicy::for_provider(" OpenCode ");
         assert!(opencode.status_settles("opencode message completed\n{}"));
+    }
+
+    #[test]
+    fn codex_token_count_status_projects_provider_run_usage() {
+        assert_eq!(
+            ExternalProviderObservationPolicy::for_provider("codex").status_usage(
+                "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42000},\"model_context_window\":128000}}"
+            ),
+            Some(ProviderRunTokenUsage {
+                total_tokens: Some(42_000),
+                last_tokens: Some(42_000),
+                context_tokens: Some(42_000),
+                context_window: Some(128_000),
+            })
+        );
+        assert_eq!(
+            ExternalProviderObservationPolicy::for_provider("codex").status_usage(
+                "codex token_count\n{\"last\":{\"totalTokens\":160000},\"modelContextWindow\":128000}"
+            ),
+            Some(ProviderRunTokenUsage {
+                total_tokens: Some(160_000),
+                last_tokens: Some(160_000),
+                context_tokens: None,
+                context_window: Some(128_000),
+            })
+        );
+        assert_eq!(
+            ExternalProviderObservationPolicy::for_provider("claude")
+                .status_usage("codex token_count\n{\"last\":{\"totalTokens\":42}}"),
+            None
+        );
     }
 
     #[test]

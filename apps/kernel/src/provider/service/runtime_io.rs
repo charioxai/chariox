@@ -411,6 +411,16 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(crate) fn record_observed_usage(
+        &mut self,
+        provider_run_id: &str,
+        usage: ProviderRunTokenUsage,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        run.set_usage(usage);
+        Ok(run.clone())
+    }
+
     pub(crate) fn update_run_selection(
         &mut self,
         provider_run_id: &str,
