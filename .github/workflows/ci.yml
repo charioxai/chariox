@@ -58,16 +58,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Format check
-        run: cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+        run: cargo fmt --all --check
 
       - name: Performance drills
         run: node scripts/performance-drills.mjs
 
       - name: Client protocol conformance gate
-        run: cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture
+        run: cargo test -p arroba-kernel client_protocol_conformance -- --nocapture
 
       - name: Clippy
-        run: cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --manifest-path apps/kernel/Cargo.toml
+        run: cargo test --workspace

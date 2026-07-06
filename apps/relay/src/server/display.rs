@@ -377,9 +377,7 @@ fn parse_display_request(buffer: &[u8]) -> Option<(DisplayHttpRequest, usize)> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
-    if display_request_path(request_line.as_bytes()).is_none() {
-        return None;
-    }
+    display_request_path(request_line.as_bytes())?;
     let headers = lines
         .filter_map(|line| {
             let (name, value) = line.split_once(':')?;

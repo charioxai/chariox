@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/kernel",
+    "apps/relay",
+    "adapters/rust",
+]
+# Vendored upstreams and scratch worktrees carry their own Cargo manifests;
+# keep them out of this workspace.
+exclude = [
+    "codex-main",
+    "happy-main",
+    "opencode-dev",
+    "paseo",
+    "host-worktree",
+]
+
+# A [workspace.lints] section warning on unwrap_used/expect_used is a natural
+# next step, but it currently flags 2400+ pre-existing call sites; enabling it
+# needs a dedicated cleanup pass (or per-site allows) first, so it is left out
+# to keep `-D warnings` green.
