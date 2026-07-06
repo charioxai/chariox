@@ -127,15 +127,16 @@ export function queuedPromptControlForPrompt(
   controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
   promptId: string | null | undefined,
 ): QueuedPromptControlInput | null {
-  if (!controls || !promptId) {
+  const lookupPromptId = nonBlankString(promptId)
+  if (!controls || !lookupPromptId) {
     return null
   }
-  const control = controls[promptId] ?? null
+  const control = controls[lookupPromptId] ?? null
   if (!control) {
     return null
   }
   const projectedPromptId = nonBlankString(control.prompt_id)
-  if (projectedPromptId && projectedPromptId !== promptId) {
+  if (projectedPromptId && projectedPromptId !== lookupPromptId) {
     return null
   }
   return control
@@ -174,7 +175,7 @@ export function queuedPromptProjectionForAgent(
   return {
     action: "replace",
     prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
-      const promptId = prompt.pending_prompt_id ?? prompt.id
+      const promptId = nonBlankString(prompt.pending_prompt_id) ?? nonBlankString(prompt.id)
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
         control: queuedPromptControlForPrompt(controls, promptId),
@@ -191,15 +192,16 @@ export function projectQueuedPrompt(
     readonly control?: QueuedPromptControlInput | null
   } = {},
 ): ProjectedQueuedPrompt | null {
-  if (!prompt.id || !prompt.prompt) {
+  const promptId = nonBlankString(prompt.id)
+  if (!promptId || !prompt.prompt) {
     return null
   }
-  const pendingPromptId = prompt.pending_prompt_id ?? null
+  const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
   return {
-    id: pendingPromptId ?? prompt.id,
+    id: pendingPromptId ?? promptId,
     pendingPromptId,
-    sourceAttachmentId: prompt.source_attachment_id ?? "",
-    targetAgentId: prompt.target_agent_id ?? options.fallbackTargetAgentId ?? null,
+    sourceAttachmentId: nonBlankString(prompt.source_attachment_id) ?? "",
+    targetAgentId: nonBlankString(prompt.target_agent_id) ?? nonBlankString(options.fallbackTargetAgentId) ?? null,
     prompt: prompt.prompt,
     promptOrigin: promptOriginFromRecord(prompt),
     ...(prompt.created_at_ms !== undefined ? { createdAtMs: prompt.created_at_ms } : {}),

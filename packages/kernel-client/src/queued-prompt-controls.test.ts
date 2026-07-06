@@ -194,6 +194,7 @@ test("queued prompt control lookup requires matching projected prompt identity",
   })
   assert.equal(queuedPromptControlForPrompt(controls, "missing"), null)
   assert.equal(queuedPromptControlForPrompt(controls, null), null)
+  assert.equal(queuedPromptControlForPrompt(controls, " "), null)
   assert.equal(queuedPromptControlForPrompt(null, "prompt-1"), null)
 })
 
@@ -453,6 +454,41 @@ test("project queued prompt uses pending prompt id as action identity", () => {
     pendingPromptId: "pending-prompt-1",
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-1",
+    prompt: "queued",
+    promptOrigin: null,
+    attachmentCount: 0,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
+})
+
+test("project queued prompt ignores blank ids and pending ids", () => {
+  assert.equal(projectQueuedPrompt({
+    id: " ",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "queued",
+    status: "queued",
+  }), null)
+
+  assert.deepEqual(projectQueuedPrompt({
+    id: " queued-1 ",
+    pending_prompt_id: " ",
+    source_attachment_id: " ",
+    target_agent_id: " ",
+    prompt: "queued",
+    status: "queued",
+  }, {
+    fallbackTargetAgentId: " fallback-agent ",
+  }), {
+    id: "queued-1",
+    pendingPromptId: null,
+    sourceAttachmentId: "",
+    targetAgentId: "fallback-agent",
     prompt: "queued",
     promptOrigin: null,
     attachmentCount: 0,
