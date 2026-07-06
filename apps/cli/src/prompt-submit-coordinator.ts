@@ -2,6 +2,10 @@ import { SESSION_NEW_ERROR_HINT } from "./sessions.js"
 import { isWorkspaceShellCommand } from "./workspace-shell.js"
 import type { WaitingRoomPromptBootstrapResult } from "./waiting-room-prompt-bootstrap-controller.js"
 import { isWorkflowCommandInput } from "@arroba/kernel-client/workflow-prompt-state"
+import {
+  detachedPromptSubmitDecision,
+  promptSubmitPreparationDecision,
+} from "@arroba/kernel-client/prompt-submission"
 
 export type PromptSubmitCoordinatorDeps = {
   getPromptText: () => string | null | undefined
@@ -46,12 +50,19 @@ export function createPromptSubmitCoordinator(
 
       deps.ensureBackgroundPollersStarted()
 
-      const trimmed = rawPrompt.trim()
-      if (!trimmed && deps.getPendingAttachmentCount() === 0) {
+      const preparation = promptSubmitPreparationDecision({
+        rawPrompt,
+        pendingAttachmentCount: deps.getPendingAttachmentCount(),
+        workflowScreenShowing: deps.workflowScreenShowing(),
+        workspaceShellCommand: isWorkspaceShellCommand(rawPrompt),
+        workflowNodeInstructionsEditorOpen: deps.workflowNodeInstructionsEditorOpen(),
+        workflowCommandInput: isWorkflowCommandInput(rawPrompt),
+      })
+      if (preparation.action === "clear_empty") {
         deps.clearPromptText()
         return
       }
-      if (deps.workflowScreenShowing() && isWorkspaceShellCommand(rawPrompt)) {
+      if (preparation.action === "workspace_shell") {
         try {
           await deps.submitWorkspaceShellCommand(rawPrompt)
         } catch (error) {
@@ -61,18 +72,17 @@ export function createPromptSubmitCoordinator(
         }
         return
       }
-      if (deps.workflowNodeInstructionsEditorOpen() && !trimmed.startsWith("/")) {
+      if (preparation.action === "instructions_editor_open") {
         deps.flashFooter("instructions editor is open; type in the I/O panel and use /workflow node instructions save", "info")
         deps.clearPromptText()
         return
       }
-      const allowSlashCommandSubmission = !deps.workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
       if (!deps.isAttached() && await deps.submitDetachedSlashCommand?.(rawPrompt)) {
         return
       }
       const handledCommand = await deps.submitSlashCommand(rawPrompt, {
-        allowSlashCommandSubmission,
-        trimmedPrompt: trimmed,
+        allowSlashCommandSubmission: preparation.allowSlashCommandSubmission,
+        trimmedPrompt: preparation.trimmedPrompt,
       })
       if (handledCommand) {
         return
@@ -81,19 +91,29 @@ export function createPromptSubmitCoordinator(
         return
       }
       if (!deps.isAttached()) {
-        if (trimmed.startsWith("/")) {
+        const detachedDecision = detachedPromptSubmitDecision({
+          trimmedPrompt: preparation.trimmedPrompt,
+          pendingAttachmentCount: deps.getPendingAttachmentCount(),
+        })
+        if (detachedDecision.action === "flash_start_or_join_session") {
           deps.flashFooter("start or join a session first", "error")
           return
         }
-        if (deps.getPendingAttachmentCount() > 0) {
+        if (detachedDecision.action === "flash_attachments_require_session") {
           deps.flashFooter("attachments require an open session", "error")
           return
         }
         const bootstrapResult = await deps.bootstrapDetachedPrompt?.(rawPrompt) ?? "unhandled"
-        if (bootstrapResult === "handled") {
+        const bootstrapDecision = detachedPromptSubmitDecision({
+          trimmedPrompt: preparation.trimmedPrompt,
+          pendingAttachmentCount: deps.getPendingAttachmentCount(),
+          bootstrapResult,
+          attachedAfterBootstrap: deps.isAttached(),
+        })
+        if (bootstrapDecision.action === "keep_bootstrap_handled") {
           return
         }
-        if (bootstrapResult === "bootstrapped" && deps.isAttached()) {
+        if (bootstrapDecision.action === "submit_bootstrapped_prompt") {
           await deps.submitNormalPrompt(rawPrompt)
           return
         }

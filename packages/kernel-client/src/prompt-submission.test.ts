@@ -4,9 +4,11 @@ import test from "node:test"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
+  detachedPromptSubmitDecision,
   promptSubmissionFailureRuntimeState,
   promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
+  promptSubmitPreparationDecision,
   promptSubmissionSuccessTransition,
   promptSubmissionAttachmentsToParts,
   resolvePromptSubmissionTargetAgentId,
@@ -20,6 +22,76 @@ test("formatPromptSubmissionBody terminates non-empty prompts", () => {
   assert.equal(formatPromptSubmissionBody("hello"), "hello\n")
   assert.equal(formatPromptSubmissionBody("hello\n"), "hello\n")
   assert.equal(formatPromptSubmissionBody("  "), "")
+})
+
+test("prompt submit preparation decision handles empty, workspace, editor, and slash policy", () => {
+  assert.deepEqual(promptSubmitPreparationDecision({
+    rawPrompt: "  ",
+    pendingAttachmentCount: 0,
+    workflowScreenShowing: false,
+    workspaceShellCommand: false,
+    workflowNodeInstructionsEditorOpen: false,
+    workflowCommandInput: false,
+  }), { action: "clear_empty" })
+  assert.deepEqual(promptSubmitPreparationDecision({
+    rawPrompt: "@ status",
+    pendingAttachmentCount: 0,
+    workflowScreenShowing: true,
+    workspaceShellCommand: true,
+    workflowNodeInstructionsEditorOpen: false,
+    workflowCommandInput: false,
+  }), { action: "workspace_shell" })
+  assert.deepEqual(promptSubmitPreparationDecision({
+    rawPrompt: "new instructions",
+    pendingAttachmentCount: 0,
+    workflowScreenShowing: false,
+    workspaceShellCommand: false,
+    workflowNodeInstructionsEditorOpen: true,
+    workflowCommandInput: false,
+  }), { action: "instructions_editor_open" })
+  assert.deepEqual(promptSubmitPreparationDecision({
+    rawPrompt: "/session list",
+    pendingAttachmentCount: 0,
+    workflowScreenShowing: true,
+    workspaceShellCommand: false,
+    workflowNodeInstructionsEditorOpen: false,
+    workflowCommandInput: true,
+  }), {
+    action: "continue",
+    trimmedPrompt: "/session list",
+    allowSlashCommandSubmission: true,
+  })
+})
+
+test("detached prompt submit decision blocks unsupported input and routes bootstrap outcomes", () => {
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "/agent focus 1",
+    pendingAttachmentCount: 0,
+  }), { action: "flash_start_or_join_session" })
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "hello",
+    pendingAttachmentCount: 1,
+  }), { action: "flash_attachments_require_session" })
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "hello",
+    pendingAttachmentCount: 0,
+  }), { action: "bootstrap" })
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "hello",
+    pendingAttachmentCount: 0,
+    bootstrapResult: "handled",
+  }), { action: "keep_bootstrap_handled" })
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "hello",
+    pendingAttachmentCount: 0,
+    bootstrapResult: "bootstrapped",
+    attachedAfterBootstrap: true,
+  }), { action: "submit_bootstrapped_prompt" })
+  assert.deepEqual(detachedPromptSubmitDecision({
+    trimmedPrompt: "hello",
+    pendingAttachmentCount: 0,
+    bootstrapResult: "unhandled",
+  }), { action: "flash_no_session_and_clear" })
 })
 
 test("promptSubmissionAttachmentsToParts strips prompt-only attachment fields", () => {

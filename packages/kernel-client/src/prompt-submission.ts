@@ -10,8 +10,77 @@ import {
 
 export type PromptSubmissionAttachmentInput = Pick<PromptAttachmentPart, "url" | "mime" | "filename">
 
+export type PromptSubmitPreparationDecision =
+  | { readonly action: "clear_empty" }
+  | { readonly action: "workspace_shell" }
+  | { readonly action: "instructions_editor_open" }
+  | {
+    readonly action: "continue"
+    readonly trimmedPrompt: string
+    readonly allowSlashCommandSubmission: boolean
+  }
+
+export type DetachedPromptBootstrapResult = "unhandled" | "handled" | "bootstrapped"
+
+export type DetachedPromptSubmitDecision =
+  | { readonly action: "flash_start_or_join_session" }
+  | { readonly action: "flash_attachments_require_session" }
+  | { readonly action: "bootstrap" }
+  | { readonly action: "keep_bootstrap_handled" }
+  | { readonly action: "submit_bootstrapped_prompt" }
+  | { readonly action: "flash_no_session_and_clear" }
+
 export function formatPromptSubmissionBody(rawPrompt: string): string {
   return rawPrompt.trim() ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
+}
+
+export function promptSubmitPreparationDecision(options: {
+  readonly rawPrompt: string
+  readonly pendingAttachmentCount: number
+  readonly workflowScreenShowing: boolean
+  readonly workspaceShellCommand: boolean
+  readonly workflowNodeInstructionsEditorOpen: boolean
+  readonly workflowCommandInput: boolean
+}): PromptSubmitPreparationDecision {
+  const trimmedPrompt = options.rawPrompt.trim()
+  if (!trimmedPrompt && options.pendingAttachmentCount === 0) {
+    return { action: "clear_empty" }
+  }
+  if (options.workflowScreenShowing && options.workspaceShellCommand) {
+    return { action: "workspace_shell" }
+  }
+  if (options.workflowNodeInstructionsEditorOpen && !trimmedPrompt.startsWith("/")) {
+    return { action: "instructions_editor_open" }
+  }
+  return {
+    action: "continue",
+    trimmedPrompt,
+    allowSlashCommandSubmission: !options.workflowScreenShowing || options.workflowCommandInput,
+  }
+}
+
+export function detachedPromptSubmitDecision(options: {
+  readonly trimmedPrompt: string
+  readonly pendingAttachmentCount: number
+  readonly bootstrapResult?: DetachedPromptBootstrapResult | null
+  readonly attachedAfterBootstrap?: boolean
+}): DetachedPromptSubmitDecision {
+  if (options.trimmedPrompt.startsWith("/")) {
+    return { action: "flash_start_or_join_session" }
+  }
+  if (options.pendingAttachmentCount > 0) {
+    return { action: "flash_attachments_require_session" }
+  }
+  if (!options.bootstrapResult) {
+    return { action: "bootstrap" }
+  }
+  if (options.bootstrapResult === "handled") {
+    return { action: "keep_bootstrap_handled" }
+  }
+  if (options.bootstrapResult === "bootstrapped" && options.attachedAfterBootstrap) {
+    return { action: "submit_bootstrapped_prompt" }
+  }
+  return { action: "flash_no_session_and_clear" }
 }
 
 export function promptSubmissionAttachmentsToParts(
