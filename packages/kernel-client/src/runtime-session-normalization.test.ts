@@ -15,6 +15,15 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
     queued_prompts: null as never,
     active_interactions: null as never,
     metaagent_tasks: null as never,
+    workflows: null as never,
+    workflow_publications: null as never,
+    workflow_runs: null as never,
+    workflow_prompt_queues: null as never,
+    workflow_queued_prompts: null as never,
+    workflow_schedules: null as never,
+    workflow_consoles: null as never,
+    workspace_links: null as never,
+    external_provider_imports: null as never,
     prompt_states: {
       "agent-1": {
         active_prompt: { id: "prompt-1" } as never,
@@ -26,6 +35,15 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
   assert.deepEqual(normalized.queued_prompts, [])
   assert.deepEqual(normalized.active_interactions, [])
   assert.deepEqual(normalized.metaagent_tasks, [])
+  assert.deepEqual(normalized.workflows, [])
+  assert.deepEqual(normalized.workflow_publications, [])
+  assert.deepEqual(normalized.workflow_runs, [])
+  assert.deepEqual(normalized.workflow_prompt_queues, [])
+  assert.deepEqual(normalized.workflow_queued_prompts, [])
+  assert.deepEqual(normalized.workflow_schedules, [])
+  assert.deepEqual(normalized.workflow_consoles, [])
+  assert.deepEqual(normalized.workspace_links, [])
+  assert.deepEqual(normalized.external_provider_imports, [])
   assert.deepEqual(normalized.prompt_states?.["agent-1"], {
     active_prompt: { id: "prompt-1" },
     queued_prompts: [],

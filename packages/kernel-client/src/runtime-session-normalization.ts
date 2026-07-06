@@ -27,6 +27,15 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
     active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
     metaagent_tasks: Array.isArray(session.metaagent_tasks) ? session.metaagent_tasks : [],
+    workflows: Array.isArray(session.workflows) ? session.workflows : [],
+    workflow_publications: Array.isArray(session.workflow_publications) ? session.workflow_publications : [],
+    workflow_runs: Array.isArray(session.workflow_runs) ? session.workflow_runs : [],
+    workflow_prompt_queues: Array.isArray(session.workflow_prompt_queues) ? session.workflow_prompt_queues : [],
+    workflow_queued_prompts: Array.isArray(session.workflow_queued_prompts) ? session.workflow_queued_prompts : [],
+    workflow_schedules: Array.isArray(session.workflow_schedules) ? session.workflow_schedules : [],
+    workflow_consoles: Array.isArray(session.workflow_consoles) ? session.workflow_consoles : [],
+    workspace_links: Array.isArray(session.workspace_links) ? session.workspace_links : [],
+    external_provider_imports: Array.isArray(session.external_provider_imports) ? session.external_provider_imports : [],
   }
   if (promptStates) {
     normalized.prompt_states = promptStates
