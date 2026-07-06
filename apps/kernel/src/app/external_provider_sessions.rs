@@ -144,7 +144,6 @@ impl ExternalProviderSessionAttachment {
 }
 
 impl ExternalProviderSessionIndexStore {
-    #[allow(dead_code)]
     pub(crate) fn replace_provider_sessions(
         &self,
         provider: &str,
@@ -188,7 +187,6 @@ impl ExternalProviderSessionIndexStore {
         index.sessions.extend(replacement);
     }
 
-    #[allow(dead_code)]
     pub(crate) fn upsert(&self, session: ExternalProviderSessionRecord) {
         let mut index = self
             .inner
