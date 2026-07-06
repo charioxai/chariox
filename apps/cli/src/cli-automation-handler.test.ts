@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
+import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
 import type { AgentInstance, CliOptions, ExternalProviderSessionRecord, RuntimeSession } from "./cli-types.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
@@ -442,6 +443,43 @@ test("automation action handler can target queued prompt action by prompt id", a
   assert.deepEqual(actions, [{ promptId: "prompt-1", action: "steer" }])
 })
 
+test("automation action handler refuses disabled queued prompt actions", async () => {
+  const actions: Array<{ promptId: string; action: "steer" | "cancel" }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-1"
+      ? [queuedPromptItem("prompt-1", {
+        canSteer: false,
+        steerDisabled: true,
+        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+      })]
+      : [],
+    onQueuedPromptAction: (item, action) => {
+      actions.push({ promptId: item.promptId, action })
+    },
+    snapshot: () => ({ actions }),
+  })
+
+  await assert.rejects(
+    handler({
+      action: "queued_prompt_action",
+      agentId: "agent-1",
+      promptId: "prompt-1",
+      queuedPromptAction: "steer",
+    }),
+    /started outside Arroba/,
+  )
+
+  await handler({
+    action: "queued_prompt_action",
+    agentId: "agent-1",
+    promptId: "prompt-1",
+    queuedPromptAction: "cancel",
+  })
+
+  assert.deepEqual(actions, [{ promptId: "prompt-1", action: "cancel" }])
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -480,7 +518,10 @@ function baseDeps() {
   }
 }
 
-function queuedPromptItem(promptId: string) {
+function queuedPromptItem(
+  promptId: string,
+  overrides: Partial<QueuedPromptStripItem> = {},
+) {
   return {
     promptId,
     agentId: "agent-1",
@@ -493,6 +534,7 @@ function queuedPromptItem(promptId: string) {
     canCancel: true,
     steerDisabledReason: null,
     cancelDisabledReason: null,
+    ...overrides,
   }
 }
 

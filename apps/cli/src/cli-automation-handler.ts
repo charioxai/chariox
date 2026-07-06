@@ -1,4 +1,5 @@
 import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
+import { queuedPromptActionState } from "@arroba/kernel-client/queued-prompt-controls"
 import type {
   CliOptions,
   ExternalProviderSessionRecord,
@@ -313,6 +314,10 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           : items[deps.selectedQueuedPromptIndexForAgent(agentId)] ?? items[0]
         if (!item) {
           throw new Error("queued_prompt_action could not find a queued prompt strip item")
+        }
+        const actionState = queuedPromptActionState(item, queuedPromptAction)
+        if (actionState.disabled) {
+          throw new Error(actionState.disabledReason ?? "queued prompt action is unavailable")
         }
         await deps.onQueuedPromptAction(item, queuedPromptAction)
         return deps.snapshot()
