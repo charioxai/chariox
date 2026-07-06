@@ -147,6 +147,22 @@ pub(crate) fn provider_adapter_supports_policy_reload(adapter_key: &str) -> bool
     matches!(adapter_key, "claude" | "codex" | "opencode")
 }
 
+pub(crate) fn provider_batch_launch_concurrency_limit(
+    adapter_key: &str,
+    provider: &str,
+    default_limit: usize,
+) -> usize {
+    if adapter_key == "dev-stub" || provider == "dev-stub" {
+        return 64;
+    }
+    if matches!(adapter_key, "codex" | "opencode" | "claude" | "claude-code")
+        || matches!(provider, "codex" | "opencode" | "claude" | "claude-code")
+    {
+        return 16;
+    }
+    default_limit
+}
+
 pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> bool {
     provider_adapter_supports_policy_reload(run.adapter_key())
 }
@@ -194,7 +210,7 @@ pub(crate) use workspace_write_fence::{
 mod tests {
     use super::{
         adapter_key_for_provider, provider_adapter_supports_policy_reload,
-        provider_id_for_launch,
+        provider_batch_launch_concurrency_limit, provider_id_for_launch,
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
         provider_run_refreshes_selection_on_read, provider_run_supports_policy_reload,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
@@ -327,6 +343,26 @@ mod tests {
                 "{adapter} runs should not use provider relaunch policy"
             );
         }
+    }
+
+    #[test]
+    fn provider_batch_launch_concurrency_limit_is_provider_policy() {
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("codex", "codex", 99),
+            16
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("default-adapter", "opencode", 99),
+            16
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("dev-stub", "codex", 99),
+            64
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("custom", "custom", 99),
+            99
+        );
     }
 
     #[test]

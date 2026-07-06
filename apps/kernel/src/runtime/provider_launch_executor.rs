@@ -24,8 +24,6 @@ use crate::runtime::state::{KernelRuntimeState, ProviderLaunchStartOutcome};
 const DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY: usize = 8;
 const DEFAULT_PROVIDER_BATCH_LAUNCH_CONCURRENCY_PER_SESSION: usize = 8;
 const DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT: usize = 16;
-const DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT: usize = 64;
-const PROVIDER_CLI_BATCH_LAUNCH_LIMIT: usize = 16;
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchCommandExecutor {
@@ -305,15 +303,11 @@ fn provider_batch_launch_effective_concurrency(
 }
 
 fn provider_batch_launch_concurrency_limit(launch: &LaunchProviderRunRequest) -> usize {
-    match launch.adapter_key.as_str() {
-        "dev-stub" => DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT,
-        "codex" | "opencode" | "claude" | "claude-code" => PROVIDER_CLI_BATCH_LAUNCH_LIMIT,
-        _ => match launch.provider.as_str() {
-            "dev-stub" => DEV_STUB_PROVIDER_BATCH_LAUNCH_LIMIT,
-            "codex" | "opencode" | "claude" | "claude-code" => PROVIDER_CLI_BATCH_LAUNCH_LIMIT,
-            _ => DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT,
-        },
-    }
+    crate::provider::provider_batch_launch_concurrency_limit(
+        &launch.adapter_key,
+        &launch.provider,
+        DEFAULT_PROVIDER_BATCH_LAUNCH_PROVIDER_LIMIT,
+    )
 }
 
 fn interleave_batch_launches_by_session(
@@ -571,7 +565,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             provider_batch_launch_effective_concurrency(Some(50), &codex_launches),
-            PROVIDER_CLI_BATCH_LAUNCH_LIMIT
+            crate::provider::provider_batch_launch_concurrency_limit("codex", "codex", 50)
         );
 
         let dev_stub_launches = (0..64)
@@ -605,7 +599,7 @@ mod tests {
 
         assert_eq!(
             provider_batch_launch_effective_concurrency(Some(40), &launches),
-            PROVIDER_CLI_BATCH_LAUNCH_LIMIT
+            crate::provider::provider_batch_launch_concurrency_limit("codex", "codex", 40)
         );
     }
 
