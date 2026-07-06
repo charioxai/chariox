@@ -904,8 +904,8 @@ fn publication_runtime_observability_applies_trace_exposure() {
             None,
         )
         .expect("runtime status should update");
-    let hidden_text = serde_json::to_string(&hidden_publication)
-        .expect("publication should serialize");
+    let hidden_text =
+        serde_json::to_string(&hidden_publication).expect("publication should serialize");
     assert!(hidden_text.contains("TRACE_FINAL"));
     assert!(!hidden_text.contains("TRACE_SUMMARY"));
     assert!(!hidden_text.contains("TRACE_ASSISTANT"));
@@ -945,8 +945,8 @@ fn publication_runtime_observability_applies_trace_exposure() {
             None,
         )
         .expect("runtime status should update");
-    let exposed_text = serde_json::to_string(&exposed_publication)
-        .expect("publication should serialize");
+    let exposed_text =
+        serde_json::to_string(&exposed_publication).expect("publication should serialize");
     assert!(exposed_text.contains("TRACE_SUMMARY"));
     assert!(exposed_text.contains("TRACE_ASSISTANT"));
     assert!(exposed_text.contains("TRACE_THINKING"));

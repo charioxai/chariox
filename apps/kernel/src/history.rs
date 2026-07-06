@@ -21,12 +21,12 @@ mod session_log;
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,
     ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
-    SessionHistoryStore,
+    SessionHistoryStore, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -359,7 +359,9 @@ impl HistoryEvent {
         })
     }
 
-    pub fn session_history_external_observation(&self) -> Option<SessionHistoryExternalObservation> {
+    pub fn session_history_external_observation(
+        &self,
+    ) -> Option<SessionHistoryExternalObservation> {
         self.to_session_history_entry()?.external_observation
     }
 
@@ -1491,9 +1493,8 @@ mod tests {
                 Some("assistant-1".to_string()),
                 Some(sequence * 100),
             );
-            entry.external_observation = settles_active_prompt.then(
-                crate::history::SessionHistoryExternalObservation::active_prompt_settled,
-            );
+            entry.external_observation = settles_active_prompt
+                .then(crate::history::SessionHistoryExternalObservation::active_prompt_settled);
             store
                 .append(&HistoryEvent::transcript(
                     sequence,

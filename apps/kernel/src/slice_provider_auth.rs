@@ -1,7 +1,16 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// How long a home-directory provider-auth scan is reused before re-reading
+/// the auth files. `relay_registration` calls the scan on every registration
+/// and peer request while holding the app lock, so caching keeps that path
+/// off the disk without meaningfully staling login state.
+const HOME_PROVIDER_AUTH_CACHE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +52,17 @@ impl SliceProviderAuthSummary {
 }
 
 pub fn inspect_home_provider_auth(home_dir: &Path) -> Vec<SliceProviderAuthSummary> {
+    let cache_key = home_dir.to_string_lossy().to_string();
+    if let Some(cached) = cached_home_provider_auth(&cache_key) {
+        return cached;
+    }
+    let summaries = read_home_provider_auth(home_dir);
+    store_home_provider_auth(cache_key, &summaries);
+    summaries
+}
+
+/// Uncached read of the home-directory provider-auth files.
+pub fn read_home_provider_auth(home_dir: &Path) -> Vec<SliceProviderAuthSummary> {
     let mut summaries = Vec::new();
     if let Ok(text) = std::fs::read_to_string(home_dir.join(".codex").join("auth.json")) {
         if let Some(summary) = parse_codex_auth_json(&text) {
@@ -69,6 +89,46 @@ pub fn inspect_home_provider_auth(home_dir: &Path) -> Vec<SliceProviderAuthSumma
         }
     }
     merge_provider_auth_summaries(summaries)
+}
+
+struct HomeProviderAuthCacheEntry {
+    read_at: Instant,
+    summaries: Vec<SliceProviderAuthSummary>,
+}
+
+fn home_provider_auth_cache() -> &'static Mutex<HashMap<String, HomeProviderAuthCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, HomeProviderAuthCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_home_provider_auth(cache_key: &str) -> Option<Vec<SliceProviderAuthSummary>> {
+    let cache = home_provider_auth_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let entry = cache.get(cache_key)?;
+    (entry.read_at.elapsed() < HOME_PROVIDER_AUTH_CACHE_TTL).then(|| entry.summaries.clone())
+}
+
+fn store_home_provider_auth(cache_key: String, summaries: &[SliceProviderAuthSummary]) {
+    home_provider_auth_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            cache_key,
+            HomeProviderAuthCacheEntry {
+                read_at: Instant::now(),
+                summaries: summaries.to_vec(),
+            },
+        );
+}
+
+/// Drop cached home-directory provider-auth scans so the next inspection
+/// re-reads the auth files (used when auth is known to have just changed).
+pub fn clear_home_provider_auth_cache() {
+    home_provider_auth_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
 }
 
 pub fn parse_codex_auth_json(text: &str) -> Option<SliceProviderAuthSummary> {
@@ -425,5 +485,33 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn inspect_home_provider_auth_caches_until_explicitly_cleared() {
+        let home = unique_test_home("slice-provider-auth-cache");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex").join("auth.json"),
+            r#"{"auth_mode":"api_key","OPENAI_API_KEY":"sk-test"}"#,
+        )
+        .unwrap();
+
+        let first = inspect_home_provider_auth(&home);
+        assert!(first.iter().any(|summary| summary.provider == "codex"));
+
+        // Removing the auth file does not change the cached result within TTL.
+        std::fs::remove_file(home.join(".codex").join("auth.json")).unwrap();
+        let cached = inspect_home_provider_auth(&home);
+        assert_eq!(cached, first, "scan should be served from cache");
+
+        // The uncached reader always reflects the current files.
+        assert!(read_home_provider_auth(&home).is_empty());
+
+        // Clearing the cache forces a fresh read that sees the removal.
+        clear_home_provider_auth_cache();
+        assert!(inspect_home_provider_auth(&home).is_empty());
+
+        let _ = std::fs::remove_dir_all(home);
     }
 }

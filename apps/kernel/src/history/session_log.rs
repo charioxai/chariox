@@ -73,8 +73,7 @@ impl SessionHistoryExternalObservation {
     }
 
     pub fn for_external_provider_state_reason(reason: &str) -> Option<Self> {
-        (reason == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON)
-            .then(Self::active_prompt_settled)
+        (reason == EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON).then(Self::active_prompt_settled)
     }
 
     pub fn useful(self) -> Option<Self> {
