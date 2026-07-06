@@ -7,6 +7,7 @@ import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
   normalizeTranscriptProviderChunk,
+  transcriptStreamRuntimeTransition,
   type TranscriptStreamEntry,
 } from "./transcript-stream-state.js"
 import type { ToolTranscriptUpdate } from "@arroba/tool-display"
@@ -206,6 +207,41 @@ test("transcript stream state treats empty normalized chunks as no-op", () => {
 
   assert.equal(result.kind, "noop")
   assert.deepEqual(result.entries, [entry(1, "assistant", "reply")])
+})
+
+test("transcript stream runtime transition marks only changed streams active", () => {
+  assert.deepEqual(transcriptStreamRuntimeTransition({
+    kind: "noop",
+    entries: [],
+  }), {
+    shouldApplyRuntimeActivity: false,
+    shouldCancelPendingTurnCompletion: false,
+    working: null,
+    submitting: null,
+    shouldScheduleConfirmedTurnCompletion: false,
+  })
+  assert.deepEqual(transcriptStreamRuntimeTransition({
+    kind: "appended",
+    entries: [entry(1, "assistant", "reply")],
+    updatedEntryId: 1,
+  }), {
+    shouldApplyRuntimeActivity: true,
+    shouldCancelPendingTurnCompletion: true,
+    working: true,
+    submitting: false,
+    shouldScheduleConfirmedTurnCompletion: true,
+  })
+  assert.deepEqual(transcriptStreamRuntimeTransition({
+    kind: "merged",
+    entries: [entry(1, "assistant", "reply")],
+    updatedEntryId: 1,
+  }), {
+    shouldApplyRuntimeActivity: true,
+    shouldCancelPendingTurnCompletion: true,
+    working: true,
+    submitting: false,
+    shouldScheduleConfirmedTurnCompletion: true,
+  })
 })
 
 function entry(

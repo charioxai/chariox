@@ -62,6 +62,14 @@ export type TranscriptToolUpdateApplyResult<TEntry extends TranscriptStreamEntry
     readonly mergedUpdate?: ToolTranscriptUpdate
   }
 
+export type TranscriptStreamRuntimeTransition = {
+  readonly shouldApplyRuntimeActivity: boolean
+  readonly shouldCancelPendingTurnCompletion: boolean
+  readonly working: boolean | null
+  readonly submitting: boolean | null
+  readonly shouldScheduleConfirmedTurnCompletion: boolean
+}
+
 type MutableTranscriptStreamEntry =
   Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "sourceAttachmentId"> & {
     text: string
@@ -75,6 +83,19 @@ type MutableTranscriptStreamEntry =
 
 export function normalizeTranscriptProviderChunk(chunk: string): string {
   return chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+}
+
+export function transcriptStreamRuntimeTransition<TEntry extends TranscriptStreamEntry>(
+  result: TranscriptStreamApplyResult<TEntry>,
+): TranscriptStreamRuntimeTransition {
+  const shouldApplyRuntimeActivity = result.kind !== "noop"
+  return {
+    shouldApplyRuntimeActivity,
+    shouldCancelPendingTurnCompletion: shouldApplyRuntimeActivity,
+    working: shouldApplyRuntimeActivity ? true : null,
+    submitting: shouldApplyRuntimeActivity ? false : null,
+    shouldScheduleConfirmedTurnCompletion: shouldApplyRuntimeActivity,
+  }
 }
 
 export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntry>(

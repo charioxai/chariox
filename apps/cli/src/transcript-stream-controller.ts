@@ -3,6 +3,7 @@ import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
 import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,
+  transcriptStreamRuntimeTransition,
   type TranscriptStreamApplyResult,
   type TranscriptStreamMetadata,
 } from "@arroba/kernel-client/transcript-stream-state"
@@ -68,13 +69,13 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
       return
     }
 
-    deps.cancelPendingTurnCompletion()
-    deps.setWorking(true)
-    deps.setSubmitting(false)
+    const transition = applyStreamRuntimeActivity(result)
 
     commitStreamResult(role, currentEntries, result, mergeKey)
     deps.enforceTranscriptRetention()
-    deps.maybeScheduleConfirmedTurnCompletion()
+    if (transition.shouldScheduleConfirmedTurnCompletion) {
+      deps.maybeScheduleConfirmedTurnCompletion()
+    }
   }
 
   const appendToolUpdate = (chunk: string, metadata: TranscriptStreamMetadata = {}) => {
@@ -90,9 +91,7 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
       return
     }
 
-    deps.cancelPendingTurnCompletion()
-    deps.setWorking(true)
-    deps.setSubmitting(false)
+    const transition = applyStreamRuntimeActivity(result)
     deps.updateSessionChrome()
 
     if (result.mergedUpdate) {
@@ -102,7 +101,23 @@ export function createTranscriptStreamController(deps: TranscriptStreamControlle
     const updatedEntry = findUpdatedEntry(result.entries as TranscriptEntry[], result.updatedEntryId)
     commitStreamResult("tool", currentEntries, result, updatedEntry?.mergeKey ?? undefined)
     deps.enforceTranscriptRetention()
-    deps.maybeScheduleConfirmedTurnCompletion()
+    if (transition.shouldScheduleConfirmedTurnCompletion) {
+      deps.maybeScheduleConfirmedTurnCompletion()
+    }
+  }
+
+  const applyStreamRuntimeActivity = (result: TranscriptStreamApplyResult<TranscriptEntry>) => {
+    const transition = transcriptStreamRuntimeTransition(result)
+    if (transition.shouldCancelPendingTurnCompletion) {
+      deps.cancelPendingTurnCompletion()
+    }
+    if (transition.working !== null) {
+      deps.setWorking(transition.working)
+    }
+    if (transition.submitting !== null) {
+      deps.setSubmitting(transition.submitting)
+    }
+    return transition
   }
 
   const commitStreamResult = (
