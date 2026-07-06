@@ -164,7 +164,7 @@ impl ExternalProviderSessionIndexStore {
             {
                 continue;
             }
-            session.provider = provider.clone();
+            normalize_external_provider_session_record(&mut session);
             if let Some(attachment) = index.attached.get(&session.external_session_id) {
                 apply_attachment_marker(&mut session, attachment);
             }
@@ -173,7 +173,10 @@ impl ExternalProviderSessionIndexStore {
         let current = index
             .sessions
             .iter()
-            .filter(|(_, session)| session.provider == provider)
+            .filter(|(_, session)| {
+                normalize_external_provider_filter(&session.provider).as_deref()
+                    == Some(provider.as_str())
+            })
             .map(|(id, session)| (id.clone(), session.clone()))
             .collect::<BTreeMap<_, _>>();
         if current == replacement {
@@ -192,6 +195,7 @@ impl ExternalProviderSessionIndexStore {
             .write()
             .expect("external provider session index poisoned");
         let mut session = session;
+        normalize_external_provider_session_record(&mut session);
         if let Some(attachment) = index.attached.get(&session.external_session_id) {
             apply_attachment_marker(&mut session, attachment);
         }
@@ -269,15 +273,16 @@ impl ExternalProviderSessionIndexStore {
             .inner
             .write()
             .expect("external provider session index poisoned");
+        let external_session_id = normalize_external_session_id_key(external_session_id);
         let attachment = {
             let attachment = index
                 .attached
-                .entry(external_session_id.to_string())
+                .entry(external_session_id.clone())
                 .or_default();
             attachment.insert(session_id, agent_id);
             attachment.clone()
         };
-        if let Some(session) = index.sessions.get_mut(external_session_id) {
+        if let Some(session) = index.sessions.get_mut(&external_session_id) {
             apply_attachment_marker(session, &attachment);
             return Some(session.clone());
         }
@@ -333,11 +338,12 @@ impl ExternalProviderSessionIndexStore {
     }
 
     pub(crate) fn get(&self, external_session_id: &str) -> Option<ExternalProviderSessionRecord> {
+        let external_session_id = normalize_external_session_id_key(external_session_id);
         self.inner
             .read()
             .expect("external provider session index poisoned")
             .sessions
-            .get(external_session_id)
+            .get(&external_session_id)
             .cloned()
     }
 
@@ -430,6 +436,33 @@ fn normalize_external_provider_filter(provider: &str) -> Option<String> {
         .then_some(provider)
 }
 
+fn normalize_external_session_id_key(external_session_id: &str) -> String {
+    let external_session_id = external_session_id.trim();
+    external_session_id
+        .split_once(':')
+        .and_then(|(provider, provider_session_id)| {
+            canonical_external_provider_session_id(provider, provider_session_id)
+        })
+        .unwrap_or_else(|| external_session_id.to_string())
+}
+
+fn normalize_external_provider_session_record(session: &mut ExternalProviderSessionRecord) {
+    if let Some(provider) = normalize_external_provider_filter(&session.provider) {
+        session.provider = provider.clone();
+        session.provider_session_id = session.provider_session_id.trim().to_string();
+        if let Some(external_session_id) =
+            canonical_external_provider_session_id(&provider, &session.provider_session_id)
+        {
+            session.external_session_id = external_session_id;
+        } else {
+            session.external_session_id =
+                normalize_external_session_id_key(&session.external_session_id);
+        }
+        return;
+    }
+    session.external_session_id = session.external_session_id.trim().to_string();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +527,52 @@ mod tests {
             vec!["codex:thread-fresh"]
         );
         assert!(store.get("codex:thread-stale").is_none());
+    }
+
+    #[test]
+    fn upsert_canonicalizes_known_provider_session_records() {
+        let store = ExternalProviderSessionIndexStore::default();
+
+        store.upsert(record(" CODEX ", " thread-1 ", 20));
+
+        assert!(store.get(" CODEX : thread-1 ").is_some());
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some(" codex ".to_string()),
+            cursor: None,
+            limit: None,
+        });
+        assert_eq!(page.sessions.len(), 1);
+        assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+        assert_eq!(page.sessions[0].provider, "codex");
+        assert_eq!(page.sessions[0].provider_session_id, "thread-1");
+    }
+
+    #[test]
+    fn attached_markers_match_canonicalized_provider_session_records() {
+        let store = ExternalProviderSessionIndexStore::default();
+        assert!(store
+            .mark_attached(" CODEX : thread-1 ", "session-1", "agent-1")
+            .is_none());
+
+        store.upsert(record("Codex", " thread-1 ", 20));
+
+        let session = store
+            .get("codex:thread-1")
+            .expect("session should be indexed with canonical id");
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.first_attached_session_id(), Some("session-1"));
+        assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
+        assert!(
+            store
+                .list(&ListExternalProviderSessionsRequest {
+                    provider: Some("codex".to_string()),
+                    cursor: None,
+                    limit: None,
+                })
+                .sessions
+                .is_empty(),
+            "canonicalized attached provider session should not appear as attachable"
+        );
     }
 
     #[test]
