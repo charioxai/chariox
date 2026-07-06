@@ -25,6 +25,7 @@ import {
   getPromptInputHistory,
   getSessionHistoryOutline,
 } from "./session-history-api.js"
+import { entryBelongsToAgent } from "@arroba/kernel-client/agent-pane-state"
 import {
   getProviderCatalog,
   getProviderCommandCatalogs,
@@ -313,7 +314,11 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     },
     prepareHistoryOutlineAgent: (agent, _session) =>
       reindexTranscriptEntries(
-        hydrateSessionHistoryOutlineAgentEntries(agent),
+        hydrateSessionHistoryOutlineAgentEntries(agent)
+          .filter((entry) => {
+            const sessionAgent = _session.agents.find((candidate) => candidate.id === agent.agent_id)
+            return !sessionAgent || entryBelongsToAgent(sessionAgent, entry)
+          }),
         0,
       ),
   })

@@ -270,6 +270,7 @@ export async function refreshAgentPaneState<
       .filter((entry) => entryBelongsToAgent(agent, entry))
     let historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
+      .filter((entry) => entryBelongsToAgent(agent, entry))
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
     const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
@@ -285,7 +286,7 @@ export async function refreshAgentPaneState<
       requestedHistoryCursorKeys.add(cursorKey)
       historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
       resolvedHistoryEntries = prependHistoryEntriesWithoutDuplicates(
-        options.hydrateEntries(historyPage.entries),
+        options.hydrateEntries(historyPage.entries).filter((entry) => entryBelongsToAgent(agent, entry)),
         resolvedHistoryEntries,
       )
     }

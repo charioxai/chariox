@@ -196,6 +196,110 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
   assert.equal(result[1]?.id, 2)
 })
 
+test("refreshAgentPaneState scopes loaded external history pages to imported agents", async () => {
+  const pages = new Map<string, Array<{
+    entries: Array<{
+      role: string
+      text: string
+      source?: string
+      externalProvider?: string
+      externalProviderSessionId?: string
+      externalProviderTurnId?: string
+      turnId?: number
+    }>
+    nextCursor: string | null
+  }>>([
+    ["agent-a:head", [{
+      entries: [
+        {
+          role: "assistant",
+          text: "codex current output",
+          source: "external_provider_observed",
+          externalProvider: "codex",
+          externalProviderSessionId: "thread-1",
+          externalProviderTurnId: "assistant-2",
+          turnId: 2,
+        },
+        {
+          role: "assistant",
+          text: "opencode current output",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-2",
+          externalProviderTurnId: "assistant-2",
+          turnId: 2,
+        },
+      ],
+      nextCursor: "older",
+    }]],
+    ["agent-a:older", [{
+      entries: [
+        {
+          role: "user",
+          text: "codex older prompt",
+          source: "external_provider_observed",
+          externalProvider: "codex",
+          externalProviderSessionId: "thread-1",
+          externalProviderTurnId: "user-1",
+          turnId: 1,
+        },
+        {
+          role: "user",
+          text: "opencode older prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-2",
+          externalProviderTurnId: "user-1",
+          turnId: 1,
+        },
+      ],
+      nextCursor: null,
+    }]],
+  ])
+
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-a",
+        external_provider_import: {
+          external_provider: "codex",
+          external_provider_session_id: "codex:thread-1",
+          external_provider_session_provider_id: "thread-1",
+        },
+      }],
+      focused_agent_id: "agent-a",
+    },
+    hasTurnWorkForAgent: () => false,
+    collapsedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", text: "existing prompt", turnId: 0 },
+        { role: "assistant", text: "existing answer", turnId: 0 },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (agentId, cursor) => {
+      const key = `${agentId}:${cursor ?? "head"}`
+      const page = pages.get(key)?.shift()
+      assert.ok(page, `missing page for ${key}`)
+      return page
+    },
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
+    "codex older prompt",
+    "codex current output",
+  ])
+  assert.equal(result.visibleEntries.some((entry) => entry.text.includes("opencode")), false)
+  assert.equal(result.visibleCursor, null)
+  assert.equal(result.previews["agent-a"], "codex older prompt | codex current output")
+})
+
 test("entryBelongsToAgent scopes external observed entries to imported agents", () => {
   const agent = {
     external_provider_import: {
