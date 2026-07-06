@@ -12,8 +12,8 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::history::{
-    ExternalImportHistoryEntry, SessionHistoryEntry, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
+    ExternalImportHistoryEntry, SessionHistoryEntry,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -979,7 +979,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
     let mut appended = 0usize;
     let mut active_relevant_appended = 0usize;
     let mut last_cursor = read.target.observed_cursor.clone();
-    let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
+    let mut visible_provider_turn_id = None;
     let mut current_observed_turn_is_arroba_owned = false;
     let mut arroba_owned_provider_turn_ids = BTreeSet::new();
     let candidate_turns =
@@ -1256,16 +1256,6 @@ fn external_active_prompt_from_turn(
         target.agent_id.clone(),
         latest.text.clone(),
     )
-}
-
-fn latest_observed_user_turn_id(
-    turns: &[crate::app::ObservedExternalProviderTurn],
-) -> Option<String> {
-    turns
-        .iter()
-        .rev()
-        .find(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)
-        .map(|turn| turn.provider_turn_id_or_fallback())
 }
 
 fn emit_observed_external_history_signal(
@@ -2896,6 +2886,75 @@ mod tests {
             SessionHistoryEntryKind::ProviderReasoning
         );
         assert_eq!(turn.blobs[1].kind, SessionHistoryEntryKind::ProviderTool);
+    }
+
+    #[test]
+    fn append_observed_external_turns_do_not_attribute_leading_blobs_to_future_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
+                    import,
+                ),
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("status-before-user".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
+                            .to_string(),
+                        observed_at_ms: Some(21),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "external prompt".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "external answer".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("observed external turn should append");
+
+        assert_eq!(outcome.changed_count, 3);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].kind, SessionHistoryEntryKind::ProviderStatus);
+        assert_eq!(
+            entries[0].external_provider_turn_id.as_deref(),
+            Some("status-before-user")
+        );
+        assert_eq!(
+            entries[1].external_provider_turn_id.as_deref(),
+            Some("user-1")
+        );
+        assert_eq!(
+            entries[2].external_provider_turn_id.as_deref(),
+            Some("user-1")
+        );
     }
 
     #[test]

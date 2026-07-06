@@ -294,9 +294,7 @@ mod tests {
 
     #[test]
     fn codex_and_opencode_require_explicit_completion() {
-        assert!(
-            ExternalProviderObservationPolicy::for_provider("codex").uses_explicit_completion()
-        );
+        assert!(ExternalProviderObservationPolicy::for_provider("codex").uses_explicit_completion());
         assert!(
             ExternalProviderObservationPolicy::for_provider("opencode").uses_explicit_completion()
         );
@@ -547,11 +545,9 @@ mod tests {
             }],
         ]
         .concat();
-        assert!(
-            policy
-                .active_external_prompt_turn(&settled, false, &BTreeSet::new())
-                .is_none()
-        );
+        assert!(policy
+            .active_external_prompt_turn(&settled, false, &BTreeSet::new())
+            .is_none());
     }
 
     #[test]
@@ -560,20 +556,18 @@ mod tests {
         let mut arroba_owned = BTreeSet::new();
         arroba_owned.insert("user-1".to_string());
 
-        assert!(
-            policy
-                .active_external_prompt_turn(
-                    &[ObservedExternalProviderTurn {
-                        role: ObservedExternalProviderTurnRole::User,
-                        text: "same   prompt".to_string(),
-                        provider_turn_id: Some("user-1".to_string()),
-                        observed_at_ms: None,
-                    }],
-                    true,
-                    &arroba_owned,
-                )
-                .is_none()
-        );
+        assert!(policy
+            .active_external_prompt_turn(
+                &[ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "same   prompt".to_string(),
+                    provider_turn_id: Some("user-1".to_string()),
+                    observed_at_ms: None,
+                }],
+                true,
+                &arroba_owned,
+            )
+            .is_none());
     }
 
     #[test]
