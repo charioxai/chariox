@@ -113,7 +113,7 @@ impl ProviderProcessService {
 
     pub fn enqueue_run_selection_sync(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
         let run = self.get_run(provider_run_id)?;
-        if run.adapter_key() != "opencode" {
+        if !crate::provider::provider_run_supports_selection_sync(&run) {
             return Ok(());
         }
         self.run_actor_mailbox

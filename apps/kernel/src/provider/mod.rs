@@ -114,6 +114,14 @@ pub(crate) fn provider_run_finalizes_cancellation_on_abort_dispatch(
 ) -> bool {
     run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
 }
+
+pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "opencode"
+}
+
+pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun) -> bool {
+    provider_run_supports_selection_sync(run) && run.client_interface().is_arroba()
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
@@ -123,6 +131,7 @@ pub(crate) use workspace_write_fence::{
 mod tests {
     use super::{
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
+        provider_run_refreshes_selection_on_read, provider_run_supports_selection_sync,
         provider_run_uses_claude_native_bridge, AgentEndpointMode, LaunchProviderRequest,
         ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
@@ -161,6 +170,25 @@ mod tests {
         assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
             &codex
         ));
+    }
+
+    #[test]
+    fn opencode_selection_refresh_is_provider_policy() {
+        let arroba_opencode = provider_run("opencode", "opencode");
+        let native_opencode = provider_run_with_client_interface(
+            "opencode",
+            "opencode",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+
+        assert!(provider_run_supports_selection_sync(&arroba_opencode));
+        assert!(provider_run_supports_selection_sync(&native_opencode));
+        assert!(!provider_run_supports_selection_sync(&codex));
+
+        assert!(provider_run_refreshes_selection_on_read(&arroba_opencode));
+        assert!(!provider_run_refreshes_selection_on_read(&native_opencode));
+        assert!(!provider_run_refreshes_selection_on_read(&codex));
     }
 
     fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
