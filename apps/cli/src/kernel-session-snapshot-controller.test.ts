@@ -156,7 +156,7 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     queued_prompts: [],
     focused_agent_id: null,
     max_agents: 1,
-    agents: [],
+    agents: [agent()],
     config_state: { values: {} } as RuntimeSession["config_state"],
     ...overrides,
   }
@@ -188,6 +188,7 @@ function activePrompt() {
   return {
     id: "prompt-1",
     source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
     prompt: "build",
     status: "running",
   }

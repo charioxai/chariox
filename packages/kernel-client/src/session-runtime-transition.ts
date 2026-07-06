@@ -114,7 +114,7 @@ export type SessionSnapshotRefreshTransitionInput = {
 }
 
 export type SessionSnapshotRefreshTransition = {
-  readonly promptJustCompleted: boolean
+  readonly turnJustCompleted: boolean
   readonly reasonRequiresPaneRefresh: boolean
   readonly shouldRefreshAgentPanes: boolean
   readonly shouldRefreshWorkspaceLiveSyncStatus: boolean
@@ -437,7 +437,7 @@ export function providerActivityRuntimeTransition(active: boolean): ProviderActi
 export function sessionSnapshotRefreshTransition(
   options: SessionSnapshotRefreshTransitionInput,
 ): SessionSnapshotRefreshTransition {
-  const promptJustCompleted = sessionTurnWorkJustCompleted(
+  const turnJustCompleted = sessionTurnWorkJustCompleted(
     options.previousSession,
     options.nextSession,
   )
@@ -446,13 +446,13 @@ export function sessionSnapshotRefreshTransition(
       && (options.forcePaneRefreshReasons ?? []).includes(options.reason),
   )
   return {
-    promptJustCompleted,
+    turnJustCompleted,
     reasonRequiresPaneRefresh,
     shouldRefreshAgentPanes:
       options.sessionChangeRequiresPaneRefresh
-      || promptJustCompleted
+      || turnJustCompleted
       || reasonRequiresPaneRefresh,
-    shouldRefreshWorkspaceLiveSyncStatus: promptJustCompleted,
+    shouldRefreshWorkspaceLiveSyncStatus: turnJustCompleted,
   }
 }
 

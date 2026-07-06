@@ -516,7 +516,7 @@ test("provider activity runtime transition marks active provider output as worki
   })
 })
 
-test("session snapshot refresh transition refreshes panes for prompt settlement, shape changes, and recovery reasons", () => {
+test("session snapshot refresh transition refreshes panes for turn settlement, shape changes, and recovery reasons", () => {
   const activeSession = makeSession({
     active_prompt: {
       id: "prompt-1",
@@ -542,7 +542,7 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     nextSession: idleSession,
     sessionChangeRequiresPaneRefresh: false,
   }), {
-    promptJustCompleted: true,
+    turnJustCompleted: true,
     reasonRequiresPaneRefresh: false,
     shouldRefreshAgentPanes: true,
     shouldRefreshWorkspaceLiveSyncStatus: true,
@@ -552,7 +552,7 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     nextSession: queuedOnlySession,
     sessionChangeRequiresPaneRefresh: false,
   }), {
-    promptJustCompleted: true,
+    turnJustCompleted: true,
     reasonRequiresPaneRefresh: false,
     shouldRefreshAgentPanes: true,
     shouldRefreshWorkspaceLiveSyncStatus: true,
@@ -562,7 +562,7 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     nextSession: idleSession,
     sessionChangeRequiresPaneRefresh: false,
   }), {
-    promptJustCompleted: false,
+    turnJustCompleted: false,
     reasonRequiresPaneRefresh: false,
     shouldRefreshAgentPanes: false,
     shouldRefreshWorkspaceLiveSyncStatus: false,
@@ -572,7 +572,7 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     nextSession: idleSession,
     sessionChangeRequiresPaneRefresh: true,
   }), {
-    promptJustCompleted: false,
+    turnJustCompleted: false,
     reasonRequiresPaneRefresh: false,
     shouldRefreshAgentPanes: true,
     shouldRefreshWorkspaceLiveSyncStatus: false,
@@ -584,7 +584,7 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     reason: "replay_gap",
     forcePaneRefreshReasons: ["transport_resumed", "replay_gap"],
   }), {
-    promptJustCompleted: false,
+    turnJustCompleted: false,
     reasonRequiresPaneRefresh: true,
     shouldRefreshAgentPanes: true,
     shouldRefreshWorkspaceLiveSyncStatus: false,
