@@ -239,7 +239,7 @@ export async function refreshAgentPaneState<
   TCursor,
 >(options: {
   readonly session: AgentPaneSession<TAgent>
-  readonly hasPromptWorkForAgent: (agent: TAgent) => boolean
+  readonly hasTurnWorkForAgent: (agent: TAgent) => boolean
   readonly collapsedTurnIdsByAgent: Record<string, readonly number[] | undefined>
   readonly currentPaneEntriesByAgent?: Record<string, readonly TEntry[] | undefined>
   readonly resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
@@ -265,7 +265,7 @@ export async function refreshAgentPaneState<
   let visibleCursor: TCursor | null = null
 
   for (const agent of options.session.agents) {
-    const agentHasPromptWork = options.hasPromptWorkForAgent(agent)
+    const agentHasTurnWork = options.hasTurnWorkForAgent(agent)
     const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
       .filter((entry) => entryBelongsToAgent(agent, entry))
     let historyPage = await options.loadHistoryPage(agent.id, null)
@@ -273,7 +273,7 @@ export async function refreshAgentPaneState<
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
     const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
-      !agentHasPromptWork
+      !agentHasTurnWork
       && historyPage.nextCursor
       && currentRenderableCount > countRenderablePaneEntries(resolvedHistoryEntries)
     ) {
@@ -319,7 +319,7 @@ export async function refreshAgentPaneState<
       applyCollapsedTurns: options.applyCollapsedTurns,
       reindexEntries: options.reindexEntries,
     })
-    if (agentHasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
+    if (agentHasTurnWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
       nextPaneEntries = currentPaneEntries.map((entry) => ({ ...entry }))
     }
     paneEntries[agent.id] = nextPaneEntries

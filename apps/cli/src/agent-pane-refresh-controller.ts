@@ -62,7 +62,7 @@ export function createAgentPaneRefreshController(
       SessionHistoryOutlineCursor
     >({
       session,
-      hasPromptWorkForAgent: (agent) => sessionAgentHasTurnWork(session, agent.id),
+      hasTurnWorkForAgent: (agent) => sessionAgentHasTurnWork(session, agent.id),
       collapsedTurnIdsByAgent: deps.getCollapsedTurnIdsByAgent(),
       currentPaneEntriesByAgent: Object.fromEntries(
         session.agents.map((agent) => [agent.id, deps.currentAgentPaneEntries(agent.id)]),

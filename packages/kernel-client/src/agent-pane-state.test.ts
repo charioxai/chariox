@@ -247,7 +247,7 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWorkForAgent: () => false,
+    hasTurnWorkForAgent: () => false,
     collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -307,7 +307,7 @@ test("refreshAgentPaneState backfills idle panes while another agent has prompt 
       agents: [{ id: "agent-a" }, { id: "agent-b" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWorkForAgent: (agent) => agent.id === "agent-b",
+    hasTurnWorkForAgent: (agent) => agent.id === "agent-b",
     collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -383,7 +383,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
       }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWorkForAgent: () => true,
+    hasTurnWorkForAgent: () => true,
     collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
@@ -460,7 +460,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
-    hasPromptWorkForAgent: () => false,
+    hasTurnWorkForAgent: () => false,
     collapsedTurnIdsByAgent: { "agent-a": [1] },
     currentPaneEntriesByAgent: {
       "agent-a": [
