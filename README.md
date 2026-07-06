@@ -6,51 +6,14 @@ The project is intentionally local-first. A daemon node owns live sessions on th
 
 ## Status
 
-M0, "Foundations", is complete in this repository.
-M1, "Core Session Runtime", is complete.
-M2, "End-to-End Local OpenCode Baseline", is complete.
-M3 is largely delivered for the local baseline hardening work.
-M4 is now in progress with the first manual multi-agent session runtime slice landed in `main`.
-M4.5, "Kernel Runtime Refactor", is now in progress in parallel with the remaining M4 stabilization work.
+M0–M2 are complete; M3 is largely delivered; M4 (manual multi-agent
+sessions) and M4.5 (kernel runtime refactor) are in progress. v1 scope is
+single-agent sessions, manually directed multi-agent sessions, and
+multi-agent workflow execution.
 
-v1 scope includes both:
-
-- single-agent sessions
-- manually directed multi-agent sessions
-- multi-agent workflow execution
-
-Current delivery priority:
-
-- first: close the OpenCode-first runtime cycle, including capabilities, agent harnessing behavior, and multi-machine session work
-- then: finish the kernel runtime refactor so interactive commands stay responsive while background work, provider I/O, history reads, and replay/reconnect paths run concurrently
-- then: polish the TypeScript CLI as the reference client
-- then: add multi-platform clients such as web and iOS/Android on the same daemon/protocol model
-- finally: add more providers such as Claude Code and Codex and harden the generic provider-adapter/protocol shape
-
-The current codebase provides:
-
-- a pnpm workspace for TypeScript packages
-- a minimal Fastify server with a health endpoint
-- a shared domain package for workflow-oriented core v1 entities
-- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
-- a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
-- a kernel-hosted WebSocket transport for the TypeScript CLI, including pushed events, resumable subscriptions, heartbeat/liveness, and reconnect-friendly behavior
-- the first M4.5 kernel runtime slices: normalized kernel commands, an event log service with replay-gap handling, a command router, bounded interactive routing, safe command-id retry handling, typed CLI replay-gap notices, provider-run actor coverage for structured submit/cancel/poll paths, `KernelSessionService` for session lifecycle/focus/resize/end/delete operations, `KernelAgentService` for prompt submit/cancel/complete/queue-advance lifecycle behavior, per-agent prompt command mailboxes including prompt completion/cancellation routing with owner-backed active-prompt resolution, per-session UI/lifecycle command mailboxes with projected delete/detach lane lookup, projected focused-agent fallback for untargeted prompt routing, projection-first reads for warmed session/list/resolve/history/provider-run/process/catalog and agent/workflow inspection state, list-hydrated session-state projection reads, a shared kernel `PromptStateOwner` for active/queued prompt mutation, direct owner-backed and agent-runtime active/queued prompt reads including queue-advance and provider-settlement inspection, agent-mailbox prompt submit/cancel/complete projection publication through one shared prompt read model, agent-mailbox completion consuming lifecycle-published session projections, a dedicated `PromptRuntimeState` module for flattened compatibility prompt mirroring/projections, provider actor enqueue error propagation, prompt lifecycle projection publication for complete/cancel, session response-borne projection refresh/removal from the session mailbox, trimmed router-side snapshots for non-state terminal control commands, canonical agent-runtime prompt-count projections in daemon health, daemon health queue snapshots, explicit file-writing capability worktree claims, local provider prompt dispatch writes/enqueues running behind spawned provider-operation dispatch, kernel prompt submit history appends and remote relay prompt dispatch deferred out of the acknowledgement path with failure cleanup, terminal stream cleanup on session end/delete, session, agent, and workflow request handling consolidated behind their runtime boundaries, workflow lane missing-session rejection from warmed projections, workflow response-borne projection refresh, runtime-tool workflow projection refresh, workflow node blocking/retry on workspace claims, relay-client daemon/workflow requests routed through the kernel command router instead of direct compatibility request handling, local/forwarded runtime MCP tool calls routed through the same router boundary, relay config/remote-machine registry mutations handled explicitly by the router, exhaustive normal/background router dispatch without the old generic local compatibility fallback, and direct named router helpers instead of production `handle_local_request` calls
-- a real manual multi-agent session slice in the daemon and TypeScript CLI: agent records, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/agent ...` management commands, `Ctrl+A` focus cycling, and `individual`/`split` response views
-- a Rust compatibility launcher for the TypeScript CLI
-- a local daemon smoke harness for managed-session flows
-- a Prisma schema aligned with workflow-oriented runtime entities
-- baseline CI for TypeScript and Rust checks
-
-Current implementation caveat:
-
-- the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
-- the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
-- the M4.5 ownership refactor is closed: the direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, runtime fallback deletion, and dead-code purge are complete; `DaemonApp` remains as bootstrap/composition scaffolding, not the command-state owner
-- current workspace claims are a bounded safety and scheduling layer, while M4.6 managed artifact I/O coordinates Arroba-managed provider-session writes; remaining coordination work is port claims, policy commands for unsafe mode, optional integration checks, and post-v1 artifact-specific region models
-- generic agent transport is intentionally deferred for now; OpenCode continues to use its native local HTTP + SSE adapter path
-
-The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
+See [`docs/STATUS.md`](docs/STATUS.md) for the full milestone breakdown,
+delivery priority, current capabilities, and caveats. The project
+specification and architecture docs remain the source of truth for behavior.
 
 ## Repository Structure
 
