@@ -11,9 +11,6 @@ import {
   sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
-  sessionPromptLifecycleTransition,
-} from "@arroba/kernel-client/session-prompt-lifecycle"
-import {
   sessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
@@ -71,7 +68,6 @@ export function createSessionStateApplyController(
     const currentSession = deps.getSession()
     const previousFocusedAgentId = deps.getFocusedAgentId()
     const previousLayout = deps.getCurrentResponseLayout()
-    const promptLifecycle = sessionPromptLifecycleTransition(currentSession, nextSession)
     const transition = sessionRuntimeTransitionState({
       currentSession,
       nextSession,
@@ -108,18 +104,18 @@ export function createSessionStateApplyController(
     deps.setProviderActivityLabel(transition.nextFocusedActivityLabel)
     deps.setActiveStatusLabel(transition.nextFocusedActivityLabel)
 
-    if (promptLifecycle.activePromptChanged) {
+    if (transition.activePromptChanged) {
       deps.setSubmitting(false)
       deps.clearSubmittingAgentId()
       deps.promptStop.reset()
     }
-    for (const settledAgentId of promptLifecycle.settledAgentIds) {
+    for (const settledAgentId of transition.settledAgentIds) {
       deps.clearAgentBusy(settledAgentId)
     }
-    if (promptLifecycle.settledAgentIds.length > 0 && !transition.nextHasPromptWork) {
+    if (transition.shouldClearWorkingAfterPromptSettlement) {
       deps.setWorking(false)
     }
-    if (promptLifecycle.cancelledPromptSettled) {
+    if (transition.cancelledPromptSettled) {
       deps.clearActiveToolLabels()
       deps.setAgentActivityLabels({})
       deps.setStreamingAgentId(sessionProjectedStreamingAgentId(nextSession))

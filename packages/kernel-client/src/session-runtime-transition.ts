@@ -16,6 +16,9 @@ import {
   sessionHasPromptStateProjection,
 } from "./session-agent-prompt-state.js"
 import {
+  sessionPromptLifecycleTransition,
+} from "./session-prompt-lifecycle.js"
+import {
   getToolActivityLabel,
 } from "./provider-status.js"
 
@@ -44,6 +47,10 @@ export type SessionRuntimeTransitionState = {
   readonly nextFocusedActivityLabel: string | null
   readonly nextAgentActivityLabels: Record<string, string | null>
   readonly nextWorking: boolean
+  readonly activePromptChanged: boolean
+  readonly cancelledPromptSettled: boolean
+  readonly settledAgentIds: string[]
+  readonly shouldClearWorkingAfterPromptSettlement: boolean
   readonly previousAgentSignature: string
   readonly nextAgentSignature: string
 }
@@ -129,6 +136,7 @@ export function sessionRuntimeTransitionState(
   const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
   const nextFocusedAgentId = sessionFocusedAgentId(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
+  const promptLifecycle = sessionPromptLifecycleTransition(options.currentSession, options.nextSession)
   const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.nextSession)
   const nextHasAgentActivityProjection = sessionHasAgentActivityProjection(options.nextSession)
   const nextHasPromptStateProjection = sessionHasPromptStateProjection(options.nextSession)
@@ -168,6 +176,11 @@ export function sessionRuntimeTransitionState(
       currentWorking: options.currentWorking,
       nextSession: options.nextSession,
     }),
+    activePromptChanged: promptLifecycle.activePromptChanged,
+    cancelledPromptSettled: promptLifecycle.cancelledPromptSettled,
+    settledAgentIds: promptLifecycle.settledAgentIds,
+    shouldClearWorkingAfterPromptSettlement:
+      promptLifecycle.settledAgentIds.length > 0 && !nextHasPromptWork,
     previousAgentSignature,
     nextAgentSignature,
   }

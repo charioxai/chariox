@@ -81,6 +81,10 @@ test("session runtime transition preserves active labels and clears idle labels"
       "agent-2": "writing",
     },
     nextWorking: true,
+    activePromptChanged: true,
+    cancelledPromptSettled: false,
+    settledAgentIds: [],
+    shouldClearWorkingAfterPromptSettlement: false,
     previousAgentSignature: "agent-1,agent-2",
     nextAgentSignature: "agent-1,agent-2",
   })
@@ -117,9 +121,57 @@ test("session runtime transition clears stale projected idle activity", () => {
       "agent-1": null,
     },
     nextWorking: true,
+    activePromptChanged: false,
+    cancelledPromptSettled: false,
+    settledAgentIds: [],
+    shouldClearWorkingAfterPromptSettlement: false,
     previousAgentSignature: "agent-1",
     nextAgentSignature: "agent-1",
   })
+})
+
+test("session runtime transition reports active prompt settlement", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+          prompt_origin: "external",
+        },
+      },
+    },
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "thinking" },
+  })
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+  assert.equal(transition.shouldClearWorkingAfterPromptSettlement, true)
 })
 
 test("session streaming resolution can ignore legacy processing for projected sessions", () => {
