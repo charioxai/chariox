@@ -81,6 +81,7 @@ test("attached session prime scopes external observed history to imported agents
           external_provider_session_id: "thread-1",
           external_provider_turn_id: "user-1",
           started_at_ms: 1,
+          completed_at_ms: 2,
           user_prompt: historyEntry(1, "user_prompt", "codex prompt\n", "agent-1", externalObserved("codex", "thread-1", "user-1")),
           entries: [
             historyEntry(2, "provider_output", "codex output", "agent-1", externalObserved("codex", "thread-1", "assistant-1")),
@@ -96,11 +97,7 @@ test("attached session prime scopes external observed history to imported agents
 
   await harness.controller.prime(session({
     agents: [agent("agent-1", {
-      external_provider_import: {
-        external_provider: "codex",
-        external_provider_session_id: "codex:thread-1",
-        external_provider_session_provider_id: "thread-1",
-      },
+      external_provider_import: externalProviderImport("codex", "codex:thread-1", "thread-1"),
     })],
   }))
 
@@ -274,6 +271,7 @@ function outlineForAgents(
         turn_id: `${agentId}-turn-1`,
         prompt_id: `${agentId}-prompt-1`,
         started_at_ms: 1,
+        completed_at_ms: 2,
         user_prompt: historyEntry(index * 2, "user_prompt", prompt, agentId),
         entries: [],
         summary: historyEntry(index * 2 + 1, "provider_output", summaryPrefix === "world" ? "world" : `${summaryPrefix} ${agentId}`, agentId),
@@ -281,5 +279,19 @@ function outlineForAgents(
       }],
       next_cursor: nextCursor,
     })),
+  }
+}
+
+function externalProviderImport(
+  provider: string,
+  externalSessionId: string,
+  providerSessionId: string,
+) {
+  return {
+    external_provider: provider,
+    external_provider_session_id: externalSessionId,
+    external_provider_session_provider_id: providerSessionId,
+    observed_cursor: {},
+    imported_at_ms: 1,
   }
 }
