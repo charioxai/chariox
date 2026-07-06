@@ -20,6 +20,16 @@ export function promptSubmissionAttachmentsToParts(
   }))
 }
 
+export function resolvePromptSubmissionTargetAgentId(options: {
+  readonly requestedTargetAgentId?: string | null
+  readonly hasAgent: (agentId: string) => boolean
+}): string | null {
+  const requestedTargetAgentId = options.requestedTargetAgentId ?? null
+  return requestedTargetAgentId && options.hasAgent(requestedTargetAgentId)
+    ? requestedTargetAgentId
+    : null
+}
+
 export function formatPromptSubmissionStatusLine(options: {
   readonly outcomeName: string
   readonly activePromptId?: string | null

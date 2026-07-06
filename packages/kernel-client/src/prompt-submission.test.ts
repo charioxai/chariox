@@ -8,6 +8,7 @@ import {
   promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
+  resolvePromptSubmissionTargetAgentId,
 } from "./prompt-submission.js"
 import {
   makeAgent,
@@ -39,6 +40,26 @@ test("promptSubmissionAttachmentsToParts strips prompt-only attachment fields", 
       filename: "a.txt",
     },
   ])
+})
+
+test("resolvePromptSubmissionTargetAgentId keeps only live requested agents", () => {
+  const hasAgent = (agentId: string) => agentId === "agent-1"
+
+  assert.equal(resolvePromptSubmissionTargetAgentId({
+    requestedTargetAgentId: "agent-1",
+    hasAgent,
+  }), "agent-1")
+  assert.equal(resolvePromptSubmissionTargetAgentId({
+    requestedTargetAgentId: "stale-agent",
+    hasAgent,
+  }), null)
+  assert.equal(resolvePromptSubmissionTargetAgentId({
+    requestedTargetAgentId: null,
+    hasAgent,
+  }), null)
+  assert.equal(resolvePromptSubmissionTargetAgentId({
+    hasAgent,
+  }), null)
 })
 
 test("formatPromptSubmissionStatusLine describes queued and submitted outcomes", () => {

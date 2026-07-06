@@ -14,6 +14,7 @@ import {
 import {
   promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
+  resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
@@ -90,7 +91,10 @@ export function createProviderNamespaceSubmitController(
       try {
         await deps.waitForPendingAgentFocusTransition()
         const focusedAgentId = deps.getFocusedAgentId()
-        const targetAgentId = focusedAgentId && deps.hasAgent(focusedAgentId) ? focusedAgentId : null
+        const targetAgentId = resolvePromptSubmissionTargetAgentId({
+          requestedTargetAgentId: focusedAgentId,
+          hasAgent: deps.hasAgent,
+        })
         deps.clearActiveToolLabels()
         deps.setProviderActivityLabel(null)
         deps.setActiveStatusLabel(null)

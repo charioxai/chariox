@@ -12,6 +12,7 @@ import {
   promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
+  resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import {
@@ -80,9 +81,10 @@ export function createNormalPromptSubmitController(
       try {
         await deps.waitForPendingAgentFocusTransition()
         const requestedTargetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
-        const targetAgentId = requestedTargetAgentId && deps.hasAgent(requestedTargetAgentId)
-          ? requestedTargetAgentId
-          : null
+        const targetAgentId = resolvePromptSubmissionTargetAgentId({
+          requestedTargetAgentId,
+          hasAgent: deps.hasAgent,
+        })
         deps.logInfo?.("submitting prompt", {
           chars: prompt.length,
           attachments: rawAttachments.length,
