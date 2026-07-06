@@ -79,6 +79,49 @@ test("session prompt identity falls back to prompt state for sparse busy activit
   assert.equal(sessionPromptStateForAgent(session, "agent-1")?.active_prompt?.id, "state-prompt")
 })
 
+test("session active prompt identity excludes queued-only prompt state", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-1"), false)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+  assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-1")?.queued_prompts[0]?.id, "queued-1")
+})
+
+test("session active prompt identity excludes legacy queued-only prompts", () => {
+  const session = makeSession({
+    queued_prompts: [{
+      id: "queued-legacy",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "queued",
+      status: "Queued",
+    }],
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-legacy"), false)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), null)
+  assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-1")?.queued_prompts[0]?.id, "queued-legacy")
+})
+
 test("session prompt identity suppresses stale legacy prompts under idle projection", () => {
   const session = makeSession({
     active_prompt: {
