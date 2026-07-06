@@ -14,7 +14,7 @@ import {
 } from "@arroba/kernel-client/session-history-transcript"
 import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
-import { entryBelongsToAgent } from "@arroba/kernel-client/agent-pane-state"
+import { entriesBelongingToAgent } from "@arroba/kernel-client/agent-pane-state"
 
 export type AttachedSessionPrimeControllerDeps = {
   promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">
@@ -54,8 +54,10 @@ export function createAttachedSessionPrimeController(
     const agentsById = new Map(session.agents.map((agent) => [agent.id, agent]))
     const entriesByAgent = new Map(outline.agents.map((agent) => {
       const sessionAgent = agentsById.get(agent.agent_id)
-      const entries = hydrateSessionHistoryOutlineAgentEntries(agent)
-        .filter((entry) => !sessionAgent || entryBelongsToAgent(sessionAgent, entry))
+      const hydratedEntries = hydrateSessionHistoryOutlineAgentEntries(agent)
+      const entries = sessionAgent
+        ? entriesBelongingToAgent(sessionAgent, hydratedEntries)
+        : hydratedEntries
       return [
         agent.agent_id,
         reindexTranscriptEntries(entries, 0),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  entriesBelongingToAgent,
   entryBelongsToAgent,
   focusedAgentIdForAgentPaneSession,
   preserveLoadedHistoryBlobs,
@@ -326,6 +327,27 @@ test("entryBelongsToAgent scopes external observed entries to imported agents", 
     externalProvider: "opencode",
     externalProviderSessionId: "thread-b",
   }), true)
+
+  assert.deepEqual(entriesBelongingToAgent(agent, [
+    {
+      text: "matching",
+      source: "external_provider_observed",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-a",
+    },
+    {
+      text: "other",
+      source: "external_provider_observed",
+      externalProvider: "opencode",
+      externalProviderSessionId: "thread-b",
+    },
+    {
+      text: "ordinary",
+      source: "provider_output",
+      externalProvider: "opencode",
+      externalProviderSessionId: "thread-b",
+    },
+  ]).map((entry) => entry.text), ["matching", "ordinary"])
 })
 
 test("focusedAgentIdForAgentPaneSession ignores stale focus", () => {

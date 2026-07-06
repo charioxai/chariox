@@ -210,6 +210,19 @@ export function entryBelongsToAgent(
   return externalProviderObservedEntryBelongsToImport(agent.external_provider_import, entry)
 }
 
+export function entriesBelongingToAgent<
+  TEntry extends {
+    readonly source?: string | null
+    readonly externalProvider?: string | null
+    readonly externalProviderSessionId?: string | null
+  },
+>(
+  agent: { readonly external_provider_import?: AgentPaneExternalProviderImport | null },
+  entries: readonly TEntry[],
+): TEntry[] {
+  return entries.filter((entry) => entryBelongsToAgent(agent, entry))
+}
+
 export function historyBlobSourceKey(
   agentId: string | null | undefined,
   blobId: string,
@@ -266,11 +279,9 @@ export async function refreshAgentPaneState<
 
   for (const agent of options.session.agents) {
     const agentHasTurnWork = options.hasTurnWorkForAgent(agent)
-    const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
-      .filter((entry) => entryBelongsToAgent(agent, entry))
+    const currentPaneEntries = entriesBelongingToAgent(agent, options.currentPaneEntriesByAgent?.[agent.id] ?? [])
     let historyPage = await options.loadHistoryPage(agent.id, null)
-    let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
-      .filter((entry) => entryBelongsToAgent(agent, entry))
+    let resolvedHistoryEntries = entriesBelongingToAgent(agent, options.hydrateEntries(historyPage.entries))
     const currentRenderableCount = countRenderablePaneEntries(currentPaneEntries)
     const requestedHistoryCursorKeys = new Set<string>([historyCursorKey(null)])
     while (
@@ -286,7 +297,7 @@ export async function refreshAgentPaneState<
       requestedHistoryCursorKeys.add(cursorKey)
       historyPage = await options.loadHistoryPage(agent.id, historyPage.nextCursor)
       resolvedHistoryEntries = prependHistoryEntriesWithoutDuplicates(
-        options.hydrateEntries(historyPage.entries).filter((entry) => entryBelongsToAgent(agent, entry)),
+        entriesBelongingToAgent(agent, options.hydrateEntries(historyPage.entries)),
         resolvedHistoryEntries,
       )
     }
