@@ -13,6 +13,7 @@ import type {
 import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
 import {
   queuedPromptActionLabel,
+  queuedPromptActionState,
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
 } from "@arroba/kernel-client/queued-prompt-controls"
@@ -163,16 +164,16 @@ function renderQueuedPromptAction(
   action: "steer" | "cancel",
   label: string,
 ): TextRenderable {
-  const disabled = action === "steer" ? item.canSteer !== true : item.canCancel !== true
+  const actionState = queuedPromptActionState(item, action)
   const text = new TextRenderable(options.renderer, {
-    content: disabled ? label : `[${label}]`,
-    fg: disabled ? theme.textMuted : theme.primary,
-    attributes: disabled ? TextAttributes.NONE : TextAttributes.BOLD,
+    content: actionState.disabled ? label : `[${label}]`,
+    fg: actionState.disabled ? theme.textMuted : theme.primary,
+    attributes: actionState.disabled ? TextAttributes.NONE : TextAttributes.BOLD,
     wrapMode: "none",
   })
   text.flexShrink = 0
   text.onMouseUp = (event) => {
-    if (disabled || event.button !== MouseButton.LEFT) {
+    if (actionState.disabled || event.button !== MouseButton.LEFT) {
       return
     }
     event.stopPropagation()

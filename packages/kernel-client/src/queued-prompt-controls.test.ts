@@ -10,6 +10,7 @@ import {
   queuedPromptActionability,
   queuedPromptActionabilityMatches,
   queuedPromptActionLabel,
+  queuedPromptActionState,
   queuedPromptControlForPrompt,
   queuedPromptMetaLabel,
   queuedPromptProjectionForAgent,
@@ -81,6 +82,45 @@ test("queued prompt actionability comparison includes status and controls", () =
     ...current,
     steerDisabledReason: "kernel reason",
   }), false)
+})
+
+test("queued prompt action state follows projected prompt ownership controls", () => {
+  const externalBlocked = queuedPromptActionability("queued", {
+    can_steer: false,
+    can_cancel: true,
+    steer_disabled_reason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+    cancel_disabled_reason: null,
+  })
+
+  assert.deepEqual(queuedPromptActionState(externalBlocked, "steer"), {
+    action: "steer",
+    enabled: false,
+    disabled: true,
+    disabledReason: QUEUED_PROMPT_STEER_EXTERNAL_REASON,
+  })
+  assert.deepEqual(queuedPromptActionState(externalBlocked, "cancel"), {
+    action: "cancel",
+    enabled: true,
+    disabled: false,
+    disabledReason: null,
+  })
+})
+
+test("queued prompt action state treats stale prompts as disabled actions", () => {
+  const stale = queuedPromptActionability("dispatching")
+
+  assert.deepEqual(queuedPromptActionState(stale, "steer"), {
+    action: "steer",
+    enabled: false,
+    disabled: true,
+    disabledReason: QUEUED_PROMPT_STALE_REASON,
+  })
+  assert.deepEqual(queuedPromptActionState(stale, "cancel"), {
+    action: "cancel",
+    enabled: false,
+    disabled: true,
+    disabledReason: QUEUED_PROMPT_STALE_REASON,
+  })
 })
 
 test("projected queued prompt comparison includes identity and actionability", () => {

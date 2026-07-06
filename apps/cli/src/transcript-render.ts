@@ -8,7 +8,10 @@ import {
 } from "@opentui/core"
 import { setTimeout as startTimeout } from "node:timers"
 
-import { queuedPromptMetaLabel } from "@arroba/kernel-client/queued-prompt-controls"
+import {
+  queuedPromptActionState,
+  queuedPromptMetaLabel,
+} from "@arroba/kernel-client/queued-prompt-controls"
 
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
@@ -268,16 +271,18 @@ function buildQueuedPromptActionLabel(
   action: QueuedPromptAction,
   onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
-  const disabled = action === "steer"
-    ? entry.queuedPrompt?.canSteer !== true
-    : entry.queuedPrompt?.canCancel !== true
+  const actionState = entry.queuedPrompt
+    ? queuedPromptActionState(entry.queuedPrompt, action)
+    : {
+        disabled: true,
+      }
   const text = new TextRenderable(renderer, {
-    content: disabled ? label : `[${label}]`,
-    fg: disabled ? theme.textMuted : theme.primary,
-    attributes: disabled ? TextAttributes.NONE : TextAttributes.BOLD,
+    content: actionState.disabled ? label : `[${label}]`,
+    fg: actionState.disabled ? theme.textMuted : theme.primary,
+    attributes: actionState.disabled ? TextAttributes.NONE : TextAttributes.BOLD,
   })
   text.onMouseUp = (event) => {
-    if (disabled || event.button !== MouseButton.LEFT) {
+    if (actionState.disabled || event.button !== MouseButton.LEFT) {
       return
     }
     event.stopPropagation()

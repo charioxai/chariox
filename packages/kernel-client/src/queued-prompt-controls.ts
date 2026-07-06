@@ -32,6 +32,15 @@ export type QueuedPromptActionability = {
   readonly cancelDisabledReason: string | null
 }
 
+export type QueuedPromptAction = "steer" | "cancel"
+
+export type QueuedPromptActionState = {
+  readonly action: QueuedPromptAction
+  readonly enabled: boolean
+  readonly disabled: boolean
+  readonly disabledReason: string | null
+}
+
 export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly id: string
   readonly pendingPromptId: string | null
@@ -80,6 +89,19 @@ export function queuedPromptActionabilityMatches(
     && current.canCancel === next.canCancel
     && current.steerDisabledReason === next.steerDisabledReason
     && current.cancelDisabledReason === next.cancelDisabledReason
+}
+
+export function queuedPromptActionState(
+  item: Pick<QueuedPromptActionability, "canSteer" | "canCancel" | "steerDisabledReason" | "cancelDisabledReason">,
+  action: QueuedPromptAction,
+): QueuedPromptActionState {
+  const enabled = action === "steer" ? item.canSteer === true : item.canCancel === true
+  return {
+    action,
+    enabled,
+    disabled: !enabled,
+    disabledReason: action === "steer" ? item.steerDisabledReason : item.cancelDisabledReason,
+  }
 }
 
 export function projectedQueuedPromptMatches(
@@ -233,7 +255,7 @@ export function queuedPromptTitleLabel(count: number, focused: boolean): string 
     : countLabel
 }
 
-export function queuedPromptActionLabel(action: "steer" | "cancel", focusedPrimary: boolean): string {
+export function queuedPromptActionLabel(action: QueuedPromptAction, focusedPrimary: boolean): string {
   if (!focusedPrimary) {
     return action
   }
