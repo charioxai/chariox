@@ -7,6 +7,7 @@ import {
   promptSubmissionFailureRuntimeState,
   promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
+  promptSubmissionSuccessTransition,
   promptSubmissionAttachmentsToParts,
   resolvePromptSubmissionTargetAgentId,
 } from "./prompt-submission.js"
@@ -111,6 +112,58 @@ test("promptSubmissionRuntimeState follows session work for queued submissions",
     submittedTargetAgentId: "agent-queued",
   }), {
     streamingAgentId: "agent-active",
+    working: true,
+  })
+})
+
+test("promptSubmissionSuccessTransition projects queued prompt metadata", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-active" }), makeAgent({ id: "agent-queued" })],
+    active_prompt: {
+      id: "prompt-active",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-active",
+      prompt: "running",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "prompt-queued",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-queued",
+      prompt: "queued",
+      status: "queued",
+    }],
+  })
+
+  assert.deepEqual(promptSubmissionSuccessTransition({
+    session,
+    outcomeName: "Queued",
+    submittedTargetAgentId: "agent-queued",
+  }), {
+    shouldAppendUserPrompt: false,
+    activePromptId: null,
+    queuedPromptCount: 1,
+    statusLine: "Prompt queued behind the active turn.",
+    streamingAgentId: "agent-active",
+    working: true,
+  })
+})
+
+test("promptSubmissionSuccessTransition projects started prompt metadata", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-started" })],
+  })
+
+  assert.deepEqual(promptSubmissionSuccessTransition({
+    session,
+    outcomeName: "Started",
+    submittedTargetAgentId: "agent-started",
+  }), {
+    shouldAppendUserPrompt: true,
+    activePromptId: null,
+    queuedPromptCount: 0,
+    statusLine: "Prompt submitted.",
+    streamingAgentId: "agent-started",
     working: true,
   })
 })

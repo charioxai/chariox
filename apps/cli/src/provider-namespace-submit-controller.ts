@@ -13,7 +13,7 @@ import {
 } from "@arroba/kernel-client/provider-namespace-submit-policy"
 import {
   promptSubmissionFailureTransition,
-  promptSubmissionRuntimeState,
+  promptSubmissionSuccessTransition,
   resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
@@ -113,13 +113,13 @@ export function createProviderNamespaceSubmitController(
         )
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(submission.payload.session)
-        const runtimeState = promptSubmissionRuntimeState({
+        const transition = promptSubmissionSuccessTransition({
           session: submission.payload.session,
           outcomeName: submission.outcomeName,
           submittedTargetAgentId,
         })
-        deps.setStreamingAgentId(runtimeState.streamingAgentId)
-        deps.setWorking(runtimeState.working)
+        deps.setStreamingAgentId(transition.streamingAgentId)
+        deps.setWorking(transition.working)
         deps.updateSessionChrome()
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
         deps.clearCommandCenter()

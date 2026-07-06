@@ -8,17 +8,12 @@ import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
-  formatPromptSubmissionStatusLine,
   promptSubmissionFailureTransition,
-  promptSubmissionRuntimeState,
+  promptSubmissionSuccessTransition,
   promptSubmissionAttachmentsToParts,
   resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
-import {
-  sessionActivePromptIdForAgent,
-} from "@arroba/kernel-client/session-prompt-identity"
-import { sessionQueuedPromptCount } from "@arroba/kernel-client/session-prompt-work"
 
 export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
@@ -107,28 +102,23 @@ export function createNormalPromptSubmitController(
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(payload.session)
         const outcomeName = submission.outcomeName
-        if (outcomeName !== "Queued") {
-          deps.appendUserPrompt(deps.renderPromptTranscript(prompt), submittedTargetAgentId)
-        }
-        const runtimeState = promptSubmissionRuntimeState({
+        const transition = promptSubmissionSuccessTransition({
           session: payload.session,
           outcomeName,
           submittedTargetAgentId,
         })
-        deps.setStreamingAgentId(runtimeState.streamingAgentId)
-        deps.setWorking(runtimeState.working)
+        if (transition.shouldAppendUserPrompt) {
+          deps.appendUserPrompt(deps.renderPromptTranscript(prompt), submittedTargetAgentId)
+        }
+        deps.setStreamingAgentId(transition.streamingAgentId)
+        deps.setWorking(transition.working)
         deps.updateSessionChrome()
-        const activePromptId = sessionActivePromptIdForAgent(payload.session, submittedTargetAgentId)
-        const queuedPromptCount = sessionQueuedPromptCount(payload.session, submittedTargetAgentId)
         deps.logInfo?.("prompt submitted", {
           outcome: outcomeName,
-          active_prompt_id: activePromptId,
-          queued_prompts: queuedPromptCount,
+          active_prompt_id: transition.activePromptId,
+          queued_prompts: transition.queuedPromptCount,
         })
-        deps.setStatusLine(formatPromptSubmissionStatusLine({
-          outcomeName,
-          activePromptId,
-        }))
+        deps.setStatusLine(transition.statusLine)
         deps.updateSessionChrome()
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       } catch (error) {

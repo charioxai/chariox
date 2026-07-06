@@ -1,7 +1,11 @@
 import type { PromptAttachmentPart, RuntimeSession } from "./kernel-types.js"
 import {
+  sessionActivePromptIdForAgent,
+} from "./session-prompt-identity.js"
+import {
   sessionHasPromptWork,
   sessionProjectedStreamingAgentId,
+  sessionQueuedPromptCount,
 } from "./session-prompt-work.js"
 
 export type PromptSubmissionAttachmentInput = Pick<PromptAttachmentPart, "url" | "mime" | "filename">
@@ -57,6 +61,33 @@ export function promptSubmissionRuntimeState(options: {
   return {
     streamingAgentId: projectedStreamingAgentId ?? options.submittedTargetAgentId ?? null,
     working: sessionHasPromptWork(options.session) || options.submittedTargetAgentId != null,
+  }
+}
+
+export function promptSubmissionSuccessTransition(options: {
+  readonly session: RuntimeSession
+  readonly outcomeName: string
+  readonly submittedTargetAgentId?: string | null
+}): {
+  readonly shouldAppendUserPrompt: boolean
+  readonly activePromptId: string | null
+  readonly queuedPromptCount: number
+  readonly statusLine: string
+  readonly streamingAgentId: string | null
+  readonly working: boolean
+} {
+  const activePromptId = sessionActivePromptIdForAgent(options.session, options.submittedTargetAgentId)
+  const runtimeState = promptSubmissionRuntimeState(options)
+  return {
+    shouldAppendUserPrompt: options.outcomeName !== "Queued",
+    activePromptId,
+    queuedPromptCount: sessionQueuedPromptCount(options.session, options.submittedTargetAgentId),
+    statusLine: formatPromptSubmissionStatusLine({
+      outcomeName: options.outcomeName,
+      activePromptId,
+    }),
+    streamingAgentId: runtimeState.streamingAgentId,
+    working: runtimeState.working,
   }
 }
 
