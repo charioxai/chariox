@@ -290,8 +290,7 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        if run.adapter_key() != "claude" || !self.provider_store.run_uses_structured_prompt_io(&run)
-        {
+        if !crate::provider::provider_run_waits_for_workflow_publication_completion(&run) {
             return Ok(false);
         }
         let agent_id = node_run.agent_id().to_string();

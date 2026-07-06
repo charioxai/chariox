@@ -122,6 +122,18 @@ pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> 
 pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun) -> bool {
     provider_run_supports_selection_sync(run) && run.client_interface().is_arroba()
 }
+
+pub(crate) fn provider_run_waits_for_workflow_publication_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
+}
+
+pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "opencode"
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
@@ -131,9 +143,11 @@ pub(crate) use workspace_write_fence::{
 mod tests {
     use super::{
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
-        provider_run_refreshes_selection_on_read, provider_run_supports_selection_sync,
-        provider_run_uses_claude_native_bridge, AgentEndpointMode, LaunchProviderRequest,
-        ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+        provider_run_refreshes_selection_on_read,
+        provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
+        provider_run_uses_claude_native_bridge,
+        provider_run_waits_for_workflow_publication_completion, AgentEndpointMode,
+        LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
 
     #[test]
@@ -189,6 +203,42 @@ mod tests {
         assert!(provider_run_refreshes_selection_on_read(&arroba_opencode));
         assert!(!provider_run_refreshes_selection_on_read(&native_opencode));
         assert!(!provider_run_refreshes_selection_on_read(&codex));
+    }
+
+    #[test]
+    fn workflow_publication_completion_wait_is_provider_policy() {
+        let structured_claude = provider_run("claude", "claude");
+        let headless_claude = provider_run("claude", "claude-headless");
+        let codex = provider_run("codex", "codex");
+        let opencode = provider_run("opencode", "opencode");
+
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &structured_claude
+        ));
+        assert!(!provider_run_waits_for_workflow_publication_completion(
+            &headless_claude
+        ));
+        assert!(!provider_run_waits_for_workflow_publication_completion(
+            &codex
+        ));
+        assert!(!provider_run_waits_for_workflow_publication_completion(
+            &opencode
+        ));
+    }
+
+    #[test]
+    fn mcp_continuation_reload_run_reuse_is_provider_policy() {
+        let opencode = provider_run("opencode", "opencode");
+        let codex = provider_run("codex", "codex");
+        let claude = provider_run("claude", "claude");
+
+        assert!(provider_run_reuses_run_for_mcp_continuation_reload(
+            &opencode
+        ));
+        assert!(!provider_run_reuses_run_for_mcp_continuation_reload(&codex));
+        assert!(!provider_run_reuses_run_for_mcp_continuation_reload(
+            &claude
+        ));
     }
 
     fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
