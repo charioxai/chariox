@@ -135,11 +135,14 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 attachment_id,
                 provider_prompt.as_bytes(),
             );
-            return self.app.process_claude_native_bridge_for_runtime(
-                session_id,
-                provider_run_id,
-                &provider_run,
-            );
+            return self
+                .app
+                .process_claude_native_bridge_for_runtime(
+                    session_id,
+                    provider_run_id,
+                    &provider_run,
+                )
+                .map(|_| ());
         }
         crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
             session_id,

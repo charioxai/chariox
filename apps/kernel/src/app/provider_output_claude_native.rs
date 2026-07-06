@@ -689,6 +689,15 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
     AwaitingInjection,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ClaudeNativeProcessOutcome {
+    /// A claude-headless run reported Stop/SessionEnd this pass. The caller
+    /// should drain its transcripts once more after a short delay taken off
+    /// the app lock, to capture the final assistant flush without blocking
+    /// the whole daemon inside `process`.
+    pub(crate) needs_deferred_headless_drain: bool,
+}
+
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
@@ -704,15 +713,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<ClaudeNativeProcessOutcome, DaemonError> {
+        let mut outcome = ClaudeNativeProcessOutcome::default();
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
-            return Ok(());
+            return Ok(outcome);
         };
         let Some(events_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_EVENTS") else {
-            return Ok(());
+            return Ok(outcome);
         };
         let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
-            return Ok(());
+            return Ok(outcome);
         };
 
         for input in take_claude_permission_inputs(context_file) {
@@ -734,7 +744,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
         if raw.trim().is_empty() {
-            return Ok(());
+            return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
         let attachment_id = self
@@ -813,12 +823,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             } else if matches!(event_name, "Stop" | "StopFailure" | "SessionEnd") {
                 if provider_run.provider() == "claude-headless" {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    // Drain whatever the transcript holds now; the final flush
+                    // can land shortly after Stop, so ask the caller to drain
+                    // again after a brief delay taken off the app lock rather
+                    // than sleeping here and stalling the daemon.
                     self.drain_known_headless_transcripts(
                         session_id,
                         provider_run_id,
                         context_file,
                     )?;
+                    outcome.needs_deferred_headless_drain = true;
                 }
                 let _ = fs::write(context_file, "");
                 write_claude_native_marker(context_file, "");
@@ -860,7 +874,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if provider_run.provider() == "claude-headless" {
             self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
         }
-        Ok(())
+        Ok(outcome)
+    }
+
+    pub(crate) fn drain_headless_transcripts_for_context(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        if provider_run.provider() != "claude-headless" {
+            return Ok(());
+        }
+        let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
+            return Ok(());
+        };
+        self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)
     }
 
     fn drain_known_headless_transcripts(

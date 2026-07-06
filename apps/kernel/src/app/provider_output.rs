@@ -1464,12 +1464,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self.app).process(
-            session_id,
-            provider_run_id,
-            provider_run,
-            self.provider_store.native_interaction_bridge(),
-        )
+        // The interactive TUI pump revisits transcripts on its own cadence, so
+        // the deferred-drain hint is not needed on this path.
+        ProviderOutputClaudeNativeBridge::new(self.app)
+            .process(
+                session_id,
+                provider_run_id,
+                provider_run,
+                self.provider_store.native_interaction_bridge(),
+            )
+            .map(|_| ())
     }
 
     fn process_claude_native_terminal_output_bridge(
@@ -1593,13 +1597,26 @@ impl DaemonApp {
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<crate::app::ClaudeNativeProcessOutcome, DaemonError> {
         let native_interaction_bridge = self.providers.native_interaction_bridge();
         ProviderOutputClaudeNativeBridge::new(self).process(
             session_id,
             provider_run_id,
             provider_run,
             native_interaction_bridge,
+        )
+    }
+
+    pub(crate) fn drain_claude_native_headless_transcripts_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).drain_headless_transcripts_for_context(
+            session_id,
+            provider_run_id,
+            provider_run,
         )
     }
 

@@ -65,14 +65,29 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
-            self.with_app_side_effect(|app| {
-                app.process_claude_native_bridge_for_runtime(
-                    session_id,
-                    provider_run_id,
-                    &provider_run,
-                )
-            })
-            .await?;
+            let outcome = self
+                .with_app_side_effect(|app| {
+                    app.process_claude_native_bridge_for_runtime(
+                        session_id,
+                        provider_run_id,
+                        &provider_run,
+                    )
+                })
+                .await?;
+            if outcome.needs_deferred_headless_drain {
+                // The final claude-headless transcript flush can trail the Stop
+                // event; wait for it off the app lock so the whole daemon stays
+                // responsive, then drain once more.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                self.with_app_side_effect(|app| {
+                    app.drain_claude_native_headless_transcripts_for_runtime(
+                        session_id,
+                        provider_run_id,
+                        &provider_run,
+                    )
+                })
+                .await?;
+            }
         }
 
         let chunks = match self

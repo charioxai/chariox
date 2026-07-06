@@ -735,7 +735,12 @@ fn sha256_hex(value: &str) -> String {
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
