@@ -12,6 +12,10 @@ import {
   type TranscriptRoleEntry,
   type TranscriptTurnDisplayEntry,
 } from "./transcript-entry-lineage.js"
+import {
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptTurnId,
+} from "./transcript-entry-state.js"
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
 type TranscriptDisplayKernelFields = Pick<
@@ -35,6 +39,13 @@ export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription
 
 export type TranscriptDisplayStateOptions = {
   readonly describeCollapsedBlob?: (entry: TranscriptDisplayEntry) => TranscriptBlobDescription
+}
+
+export type TranscriptDisplayProjection<TEntry extends TranscriptDisplayEntry> = {
+  readonly entries: TEntry[]
+  readonly currentTurnId: number | null
+  readonly nextTurnId: number
+  readonly entryCounter: number
 }
 
 type MutableTranscriptDisplayEntry =
@@ -178,6 +189,21 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
   return normalized as TEntry[]
 }
 
+export function projectTranscriptDisplayState<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TEntry[],
+  collapsedTurnIds: readonly number[] = [],
+  activeTurnId: number | null = null,
+  options: TranscriptDisplayStateOptions = {},
+): TranscriptDisplayProjection<TEntry> {
+  const projectedEntries = applyTranscriptDisplayState(entries, collapsedTurnIds, activeTurnId, options)
+  return {
+    entries: projectedEntries,
+    currentTurnId: computeCurrentTranscriptTurnId(projectedEntries),
+    nextTurnId: computeNextTranscriptTurnId(projectedEntries),
+    entryCounter: maxTranscriptEntryId(projectedEntries),
+  }
+}
+
 function inferredActiveHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {
@@ -251,4 +277,8 @@ export function resolveVisibleTurnToggle<TEntry extends TranscriptDisplayEntry>(
 
 function sortedTurnIds(turnIds: Iterable<number>) {
   return [...turnIds].sort((left, right) => left - right)
+}
+
+function maxTranscriptEntryId(entries: readonly { readonly id: number }[]) {
+  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }

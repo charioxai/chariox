@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
+import { projectTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 import { computeCurrentTranscriptTurnId as computeCurrentTurnId } from "@arroba/kernel-client/transcript-entry-state"
 
 export type AssistantMessageCompletionControllerDeps = {
@@ -36,11 +36,11 @@ export function createAssistantMessageCompletionController(
 
       if (completionAgentId === deps.visibleTranscriptAgentId()) {
         const currentEntries = deps.entries().filter(Boolean)
-        const nextEntries = applyTranscriptDisplayState(currentEntries, nextExpandedTurnIds)
-        deps.setEntries(nextEntries)
-        deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
-        deps.persistVisibleTranscriptEntries(nextEntries)
-        deps.reconcileMountedTranscript(currentEntries, nextEntries)
+        const projection = projectTranscriptDisplayState(currentEntries, nextExpandedTurnIds)
+        deps.setEntries(projection.entries)
+        deps.setEntryCounter(projection.entryCounter)
+        deps.persistVisibleTranscriptEntries(projection.entries)
+        deps.reconcileMountedTranscript(currentEntries, projection.entries)
       } else {
         deps.setAgentTranscriptEntries(completionAgentId, deps.currentAgentPaneEntries(completionAgentId))
       }
@@ -54,8 +54,4 @@ export function createAssistantMessageCompletionController(
   return {
     markCompleted,
   }
-}
-
-function maxTranscriptEntryId(entries: readonly TranscriptEntry[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }

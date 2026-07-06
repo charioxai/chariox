@@ -6,6 +6,7 @@ import {
 } from "@arroba/kernel-client/session-history-transcript"
 import {
   applyTranscriptDisplayState,
+  projectTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "@arroba/kernel-client/transcript-display-state"
@@ -34,10 +35,10 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     agentId: string | null | undefined = deps.visibleTranscriptAgentId(),
     turnIds = deps.expandedTurnIdsForAgent(agentId),
   ) => {
-    const preparedEntries = applyTranscriptDisplayState(nextEntries, turnIds)
-    deps.setEntries(preparedEntries)
-    deps.setEntryCounter(maxTranscriptEntryId(preparedEntries))
-    return preparedEntries
+    const projection = projectTranscriptDisplayState(nextEntries, turnIds)
+    deps.setEntries(projection.entries)
+    deps.setEntryCounter(projection.entryCounter)
+    return projection.entries
   }
 
   const toggleTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {

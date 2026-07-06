@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  projectTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
   type TranscriptDisplayEntry,
@@ -34,6 +35,26 @@ test("applyTranscriptDisplayState keeps completed turns expanded by default", ()
   assert.equal(entries.find((entry) => entry.id === 2)?.blobCollapsible, true)
   assert.equal(entries.find((entry) => entry.id === 2)?.blobCollapsed, true)
   assert.equal(entries.find((entry) => entry.id === 3)?.blobCollapsible, true)
+})
+
+test("projectTranscriptDisplayState returns display entries with derived transcript state", () => {
+  const projection = projectTranscriptDisplayState([
+    ...baseTurnEntries(),
+    { id: 5, role: "user", text: "Next prompt", turnId: 4 },
+  ], [1])
+
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => [entry.turnId ?? null, entry.role]),
+    [
+      [1, "user"],
+      [1, "turn_toggle"],
+      [1, "assistant"],
+      [4, "user"],
+    ],
+  )
+  assert.equal(projection.currentTurnId, 4)
+  assert.equal(projection.nextTurnId, 5)
+  assert.equal(projection.entryCounter, 6)
 })
 
 test("applyTranscriptDisplayState uses shared collapsed blob descriptions by default", () => {

@@ -1,11 +1,10 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { computeTranscriptRebuildScrollTop } from "./background-effects.js"
-import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
-import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
 import {
-  computeCurrentTranscriptTurnId as computeCurrentTurnId,
-  computeNextTranscriptTurnId as computeNextTurnId,
-} from "@arroba/kernel-client/transcript-entry-state"
+  projectTranscriptDisplayState,
+  type TranscriptDisplayProjection,
+} from "@arroba/kernel-client/transcript-display-state"
+import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
 
 export type PrimaryTranscriptEntryScrollbox = {
   scrollTop: number
@@ -42,11 +41,11 @@ export type PrimaryTranscriptEntryControllerDeps = {
 }
 
 export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEntryControllerDeps) {
-  const applyEntries = (nextEntries: TranscriptEntry[]) => {
-    deps.setCurrentTurnId(computeCurrentTurnId(nextEntries))
-    deps.setNextTurnId(computeNextTurnId(nextEntries))
-    deps.setEntries(nextEntries)
-    deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
+  const applyProjection = (projection: TranscriptDisplayProjection<TranscriptEntry>) => {
+    deps.setCurrentTurnId(projection.currentTurnId)
+    deps.setNextTurnId(projection.nextTurnId)
+    deps.setEntries(projection.entries)
+    deps.setEntryCounter(projection.entryCounter)
   }
 
   const replaceEntries = (
@@ -57,12 +56,12 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousScrollHeight = scrollbox?.scrollHeight ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
-    const sanitizedEntries = applyTranscriptDisplayState(
+    const projection = projectTranscriptDisplayState(
       nextEntries.filter(Boolean),
       deps.expandedTurnIdsForAgent(transcriptAgentId),
     )
     deps.clearToolState()
-    applyEntries(sanitizedEntries)
+    applyProjection(projection)
     deps.rebuildTranscript()
     deps.setMountedTranscriptAgentId(transcriptAgentId)
 
@@ -79,7 +78,7 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     } else {
       deps.setLastScrollTop(deps.getScrollbox()?.scrollTop ?? 0)
     }
-    deps.syncVisibleTranscriptPreview(transcriptAgentId, sanitizedEntries)
+    deps.syncVisibleTranscriptPreview(transcriptAgentId, projection.entries)
   }
 
   const prependEntries = async (nextEntries: TranscriptEntry[]) => {
@@ -93,11 +92,11 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousScrollHeight = scrollbox?.scrollHeight ?? 0
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
-    const nextCombinedEntries = applyTranscriptDisplayState(
+    const projection = projectTranscriptDisplayState(
       stitchPrependedHistoryTranscript(sanitizedEntries, currentEntries) as TranscriptEntry[],
       deps.expandedTurnIdsForAgent(deps.getVisibleTranscriptAgentId()),
     )
-    applyEntries(nextCombinedEntries)
+    applyProjection(projection)
     deps.rebuildTranscript()
 
     const nextScrollbox = deps.getScrollbox()
@@ -115,8 +114,4 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     replaceEntries,
     prependEntries,
   }
-}
-
-function maxTranscriptEntryId(entries: TranscriptEntry[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }
