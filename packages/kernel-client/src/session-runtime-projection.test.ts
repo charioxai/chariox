@@ -1035,6 +1035,9 @@ test("sessionRuntimeTransitionState preserves active labels and clears idle labe
     cancelledPromptSettled: false,
     settledAgentIds: [],
     shouldClearWorkingAfterPromptSettlement: false,
+    shouldClearCancelledPromptRuntimeResidue: false,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: "agent-2",
     previousAgentSignature: "agent-1,agent-2",
     nextAgentSignature: "agent-1,agent-2",
   })
@@ -1075,6 +1078,9 @@ test("sessionRuntimeTransitionState clears stale streaming when projected activi
     cancelledPromptSettled: false,
     settledAgentIds: [],
     shouldClearWorkingAfterPromptSettlement: false,
+    shouldClearCancelledPromptRuntimeResidue: false,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: null,
     previousAgentSignature: "agent-1",
     nextAgentSignature: "agent-1",
   })
@@ -1117,6 +1123,9 @@ test("sessionRuntimeTransitionState does not stream queued-only projected activi
     cancelledPromptSettled: false,
     settledAgentIds: [],
     shouldClearWorkingAfterPromptSettlement: false,
+    shouldClearCancelledPromptRuntimeResidue: false,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: null,
     previousAgentSignature: "agent-1",
     nextAgentSignature: "agent-1",
   })

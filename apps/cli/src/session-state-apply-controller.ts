@@ -8,9 +8,6 @@ import {
   sessionResponseLayout,
 } from "@arroba/kernel-client/session-config-projection"
 import {
-  sessionProjectedStreamingAgentId,
-} from "@arroba/kernel-client/session-prompt-work"
-import {
   sessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
@@ -115,16 +112,16 @@ export function createSessionStateApplyController(
     if (transition.shouldClearWorkingAfterPromptSettlement) {
       deps.setWorking(false)
     }
-    if (transition.cancelledPromptSettled) {
+    if (transition.shouldClearCancelledPromptRuntimeResidue) {
       deps.clearActiveToolLabels()
       deps.setAgentActivityLabels({})
-      deps.setStreamingAgentId(sessionProjectedStreamingAgentId(nextSession))
+      deps.setStreamingAgentId(transition.nextStreamingAgentIdAfterCancelledPromptSettlement)
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       if (deps.getStatusLine() === "Cancellation requested.") {
         deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
-      if (!transition.nextHasPromptWork) {
+      if (transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement) {
         deps.turnCompletion.confirm()
         deps.cancelPendingTurnCompletion()
         deps.setWorking(false)

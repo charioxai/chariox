@@ -51,6 +51,9 @@ export type SessionRuntimeTransitionState = {
   readonly cancelledPromptSettled: boolean
   readonly settledAgentIds: string[]
   readonly shouldClearWorkingAfterPromptSettlement: boolean
+  readonly shouldClearCancelledPromptRuntimeResidue: boolean
+  readonly shouldConfirmTurnCompletionAfterCancelledPromptSettlement: boolean
+  readonly nextStreamingAgentIdAfterCancelledPromptSettlement: string | null
   readonly previousAgentSignature: string
   readonly nextAgentSignature: string
 }
@@ -181,6 +184,10 @@ export function sessionRuntimeTransitionState(
     settledAgentIds: promptLifecycle.settledAgentIds,
     shouldClearWorkingAfterPromptSettlement:
       promptLifecycle.settledAgentIds.length > 0 && !nextHasPromptWork,
+    shouldClearCancelledPromptRuntimeResidue: promptLifecycle.cancelledPromptSettled,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement:
+      promptLifecycle.cancelledPromptSettled && !nextHasPromptWork,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: projectedStreamingAgentId,
     previousAgentSignature,
     nextAgentSignature,
   }

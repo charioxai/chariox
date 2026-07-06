@@ -85,6 +85,9 @@ test("session runtime transition preserves active labels and clears idle labels"
     cancelledPromptSettled: false,
     settledAgentIds: [],
     shouldClearWorkingAfterPromptSettlement: false,
+    shouldClearCancelledPromptRuntimeResidue: false,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: "agent-2",
     previousAgentSignature: "agent-1,agent-2",
     nextAgentSignature: "agent-1,agent-2",
   })
@@ -125,6 +128,9 @@ test("session runtime transition clears stale projected idle activity", () => {
     cancelledPromptSettled: false,
     settledAgentIds: [],
     shouldClearWorkingAfterPromptSettlement: false,
+    shouldClearCancelledPromptRuntimeResidue: false,
+    shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
+    nextStreamingAgentIdAfterCancelledPromptSettlement: null,
     previousAgentSignature: "agent-1",
     nextAgentSignature: "agent-1",
   })
@@ -172,6 +178,53 @@ test("session runtime transition reports active prompt settlement", () => {
   assert.equal(transition.cancelledPromptSettled, false)
   assert.deepEqual(transition.settledAgentIds, ["agent-1"])
   assert.equal(transition.shouldClearWorkingAfterPromptSettlement, true)
+  assert.equal(transition.shouldClearCancelledPromptRuntimeResidue, false)
+  assert.equal(transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement, false)
+  assert.equal(transition.nextStreamingAgentIdAfterCancelledPromptSettlement, null)
+})
+
+test("session runtime transition reports cancelled prompt settlement cleanup", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "cancelling",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "cancelling",
+          phase: "settling",
+          prompt_origin: "external",
+        },
+      },
+    },
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "cancelling" },
+  })
+
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.equal(transition.shouldClearCancelledPromptRuntimeResidue, true)
+  assert.equal(transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement, true)
+  assert.equal(transition.nextStreamingAgentIdAfterCancelledPromptSettlement, null)
 })
 
 test("session streaming resolution can ignore legacy processing for projected sessions", () => {
