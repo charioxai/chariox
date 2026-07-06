@@ -95,6 +95,12 @@ export type TurnCompletionDelayInput = {
   readonly quietWindowMs: number
 }
 
+export type ProviderActivityRuntimeTransition = {
+  readonly providerActivityActive: boolean
+  readonly working: boolean | null
+  readonly shouldUpdateSessionChrome: boolean
+}
+
 export const DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE = "Cancellation requested."
 
 export function sessionFocusedAgentId<TAgent extends { id: string }>(
@@ -392,4 +398,12 @@ export function turnCompletionDelayMs(options: TurnCompletionDelayInput): number
     return null
   }
   return Math.max(0, options.quietWindowMs - Math.max(0, options.now - options.lastTurnActivityAt))
+}
+
+export function providerActivityRuntimeTransition(active: boolean): ProviderActivityRuntimeTransition {
+  return {
+    providerActivityActive: active,
+    working: active ? true : null,
+    shouldUpdateSessionChrome: true,
+  }
 }

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   nextAgentBusyLatches,
+  providerActivityRuntimeTransition,
   readAgentBusyLatch,
   resolveSessionStreamingAgentId,
   resolveVisibleTranscriptAgentId,
@@ -418,4 +419,17 @@ test("turn completion delay waits for prompt work and record flushes", () => {
     now: 1_000,
     quietWindowMs: 1_500,
   }), 1_400)
+})
+
+test("provider activity runtime transition marks active provider output as working", () => {
+  assert.deepEqual(providerActivityRuntimeTransition(true), {
+    providerActivityActive: true,
+    working: true,
+    shouldUpdateSessionChrome: true,
+  })
+  assert.deepEqual(providerActivityRuntimeTransition(false), {
+    providerActivityActive: false,
+    working: null,
+    shouldUpdateSessionChrome: true,
+  })
 })
