@@ -83,8 +83,55 @@ test("agent pane store mirrors primary and auxiliary split panes", () => {
   }])
 })
 
-function entry(id: number, role: TranscriptEntry["role"], text: string): TranscriptEntry {
-  return { id, role, text }
+test("agent pane store uses shared projection for collapsed turn state", () => {
+  let paneEntries: Record<string, TranscriptEntry[]> = {}
+  let panePreviews: Record<string, string> = {}
+  const controller = createAgentPaneStoreController({
+    isAttached: () => true,
+    getVisibleTranscriptAgentId: () => "agent-a",
+    getVisibleTranscriptEntries: () => [],
+    getPaneEntriesByAgent: () => paneEntries,
+    updatePaneEntries: (updater) => {
+      paneEntries = updater(paneEntries)
+    },
+    updatePanePreviews: (updater) => {
+      panePreviews = updater(panePreviews)
+    },
+    getSessionAgents: () => [agent("agent-a")],
+    getFocusedAgentId: () => "agent-a",
+    getMaxAgentsPerScreen: () => 2,
+    splitAgentResponseMode: () => false,
+    getPrimaryAgentId: () => "agent-a",
+    expandedTurnIdsForAgent: () => [1],
+    replaceTranscriptEntries: () => {},
+    reconcileMountedAuxiliaryTranscript: () => {},
+  })
+
+  controller.setAgentTranscriptEntries("agent-a", [
+    entry(1, "user", "prompt", { turnId: 1 }),
+    entry(2, "reasoning", "thinking", { turnId: 1 }),
+    entry(3, "assistant", "summary", { turnId: 1 }),
+  ])
+
+  assert.deepEqual(
+    paneEntries["agent-a"]?.map((item) => [item.id, item.role, item.hidden ?? false, item.toggleMode ?? null]),
+    [
+      [1, "user", false, null],
+      [4, "turn_toggle", false, "expand"],
+      [2, "reasoning", true, null],
+      [3, "assistant", false, null],
+    ],
+  )
+  assert.equal(panePreviews["agent-a"], "You: prompt\nAsst: summary")
+})
+
+function entry(
+  id: number,
+  role: TranscriptEntry["role"],
+  text: string,
+  overrides: Partial<TranscriptEntry> = {},
+): TranscriptEntry {
+  return { id, role, text, ...overrides }
 }
 
 function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {

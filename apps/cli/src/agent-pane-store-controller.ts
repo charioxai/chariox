@@ -8,7 +8,7 @@ import type {
   AgentInstance,
   TranscriptEntry,
 } from "./cli-types.js"
-import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
+import { projectTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
 
 export type AgentPaneStoreControllerDeps = {
@@ -75,7 +75,7 @@ export function createAgentPaneStoreController(deps: AgentPaneStoreControllerDep
       turnIds = deps.expandedTurnIdsForAgent(agentId),
     ) {
       const previousPaneEntries = deps.getPaneEntriesByAgent()[agentId] ?? []
-      const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), turnIds)
+      const sanitizedEntries = projectTranscriptDisplayState(nextEntries.filter(Boolean), turnIds).entries
       commitAgentPaneEntries(agentId, sanitizedEntries)
       if (deps.splitAgentResponseMode() && agentId === deps.getPrimaryAgentId()) {
         deps.replaceTranscriptEntries(cloneEntries(sanitizedEntries), agentId)

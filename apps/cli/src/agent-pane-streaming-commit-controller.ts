@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { applyTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
+import { projectTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
 
 export type AgentPaneStreamingCommitControllerDeps = {
   trimLiveAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => TranscriptEntry[]
@@ -26,10 +26,10 @@ export function createAgentPaneStreamingCommitController(
     nextEntries: TranscriptEntry[],
     updatedEntryId: number,
   ) => {
-    const sanitizedEntries = applyTranscriptDisplayState(
+    const sanitizedEntries = projectTranscriptDisplayState(
       deps.trimLiveAgentPaneEntries(agentId, nextEntries).filter(Boolean),
       deps.expandedTurnIdsForAgent(agentId),
-    )
+    ).entries
     deps.commitAgentPaneEntries(agentId, sanitizedEntries)
     if (deps.splitAgentResponseMode() && agentId === deps.getResponsePrimaryAgentId()) {
       deps.replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
