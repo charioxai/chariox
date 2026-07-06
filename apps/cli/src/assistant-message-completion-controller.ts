@@ -1,6 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { projectTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
-import { computeCurrentTranscriptTurnId as computeCurrentTurnId } from "@arroba/kernel-client/transcript-entry-state"
+import { projectSettledTranscriptTurnDisplayState } from "@arroba/kernel-client/transcript-display-state"
 
 export type AssistantMessageCompletionControllerDeps = {
   entries: () => TranscriptEntry[]
@@ -13,7 +12,11 @@ export type AssistantMessageCompletionControllerDeps = {
   setEntryCounter: (value: number) => void
   persistVisibleTranscriptEntries: (entries: TranscriptEntry[]) => void
   reconcileMountedTranscript: (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => void
-  setAgentTranscriptEntries: (agentId: string, entries: TranscriptEntry[]) => void
+  setAgentTranscriptEntries: (
+    agentId: string,
+    entries: TranscriptEntry[],
+    turnIds?: readonly number[],
+  ) => void
   clearAgentBusy: (agentId: string | null | undefined) => void
   confirmTurnCompletion: () => void
   maybeScheduleConfirmedTurnCompletion: () => void
@@ -24,25 +27,33 @@ export function createAssistantMessageCompletionController(
 ) {
   const markCompleted = (agentId: string | null | undefined) => {
     const completionAgentId = agentId ?? deps.visibleTranscriptAgentId()
-    const turnId = completionAgentId && deps.splitAgentResponseMode() && completionAgentId !== deps.visibleTranscriptAgentId()
-      ? computeCurrentTurnId(deps.currentAgentPaneEntries(completionAgentId))
-      : computeCurrentTurnId(deps.entries().filter(Boolean))
+    const currentEntries = completionAgentId
+      && deps.splitAgentResponseMode()
+      && completionAgentId !== deps.visibleTranscriptAgentId()
+      ? deps.currentAgentPaneEntries(completionAgentId).filter(Boolean)
+      : deps.entries().filter(Boolean)
 
-    if (completionAgentId && turnId !== null) {
-      const nextExpandedTurnIds = [...new Set([...deps.expandedTurnIdsForAgent(completionAgentId), turnId])]
-        .filter((value) => value !== turnId)
-        .sort((left, right) => left - right)
-      deps.setExpandedTurnIdsForAgent(completionAgentId, nextExpandedTurnIds)
+    if (completionAgentId) {
+      const projection = projectSettledTranscriptTurnDisplayState(
+        currentEntries,
+        deps.expandedTurnIdsForAgent(completionAgentId),
+      )
 
-      if (completionAgentId === deps.visibleTranscriptAgentId()) {
-        const currentEntries = deps.entries().filter(Boolean)
-        const projection = projectTranscriptDisplayState(currentEntries, nextExpandedTurnIds)
+      if (projection.settledTurnId !== null) {
+        deps.setExpandedTurnIdsForAgent(completionAgentId, projection.collapsedTurnIds)
+      }
+
+      if (projection.settledTurnId !== null && completionAgentId === deps.visibleTranscriptAgentId()) {
         deps.setEntries(projection.entries)
         deps.setEntryCounter(projection.entryCounter)
         deps.persistVisibleTranscriptEntries(projection.entries)
         deps.reconcileMountedTranscript(currentEntries, projection.entries)
-      } else {
-        deps.setAgentTranscriptEntries(completionAgentId, deps.currentAgentPaneEntries(completionAgentId))
+      } else if (projection.settledTurnId !== null) {
+        deps.setAgentTranscriptEntries(
+          completionAgentId,
+          projection.entries,
+          projection.collapsedTurnIds,
+        )
       }
     }
 

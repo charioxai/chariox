@@ -48,6 +48,12 @@ export type TranscriptDisplayProjection<TEntry extends TranscriptDisplayEntry> =
   readonly entryCounter: number
 }
 
+export type TranscriptTurnSettlementProjection<TEntry extends TranscriptDisplayEntry> =
+  TranscriptDisplayProjection<TEntry> & {
+    readonly settledTurnId: number | null
+    readonly collapsedTurnIds: number[]
+  }
+
 type MutableTranscriptDisplayEntry =
   Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
   turnId?: number | null | undefined
@@ -201,6 +207,30 @@ export function projectTranscriptDisplayState<TEntry extends TranscriptDisplayEn
     currentTurnId: computeCurrentTranscriptTurnId(projectedEntries),
     nextTurnId: computeNextTranscriptTurnId(projectedEntries),
     entryCounter: maxTranscriptEntryId(projectedEntries),
+  }
+}
+
+export function projectSettledTranscriptTurnDisplayState<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TEntry[],
+  collapsedTurnIds: readonly number[] = [],
+  options: TranscriptDisplayStateOptions = {},
+): TranscriptTurnSettlementProjection<TEntry> {
+  const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries))
+  const settledTurnId = computeCurrentTranscriptTurnId(normalized)
+  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
+  if (settledTurnId !== null) {
+    nextCollapsedTurnIds.delete(settledTurnId)
+  }
+  const projection = projectTranscriptDisplayState(
+    normalized,
+    sortedTurnIds(nextCollapsedTurnIds),
+    null,
+    options,
+  )
+  return {
+    ...projection,
+    settledTurnId,
+    collapsedTurnIds: sortedTurnIds(nextCollapsedTurnIds),
   }
 }
 

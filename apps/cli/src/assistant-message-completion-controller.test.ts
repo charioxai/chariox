@@ -41,7 +41,8 @@ test("assistant completion controller finalizes an off-focus split pane", () => 
   assert.deepEqual(harness.expandedTurnIdsByAgent["agent-2"], [])
   assert.deepEqual(harness.agentTranscriptEntries, [{
     agentId: "agent-2",
-    entries: ["auxiliary", "tool output", "done"],
+    entries: ["auxiliary", "click to collapse", "tool output", "done"],
+    turnIds: [],
   }])
   assert.deepEqual(harness.setEntryBatches, [])
   assert.deepEqual(harness.calls.slice(-3), ["busy:agent-2", "turn:confirm", "turn:schedule"])
@@ -76,7 +77,7 @@ function completionHarness(options: {
     setEntryBatches: [] as TranscriptEntry[][],
     persistedEntries: [] as TranscriptEntry[][],
     reconciled: [] as Array<{ current: string[]; next: string[] }>,
-    agentTranscriptEntries: [] as Array<{ agentId: string; entries: string[] }>,
+    agentTranscriptEntries: [] as Array<{ agentId: string; entries: string[]; turnIds?: readonly number[] }>,
     entryCounter: 0,
     calls: [] as string[],
     controller: null as ReturnType<typeof createAssistantMessageCompletionController> | null,
@@ -106,11 +107,15 @@ function completionHarness(options: {
         next: nextEntries.map((entry) => entry.text),
       })
     },
-    setAgentTranscriptEntries: (agentId, entries) => {
-      harness.agentTranscriptEntries.push({
+    setAgentTranscriptEntries: (agentId, entries, turnIds) => {
+      const record: { agentId: string; entries: string[]; turnIds?: readonly number[] } = {
         agentId,
         entries: entries.map((entry) => entry.text),
-      })
+      }
+      if (turnIds !== undefined) {
+        record.turnIds = turnIds
+      }
+      harness.agentTranscriptEntries.push(record)
     },
     clearAgentBusy: (agentId) => {
       harness.calls.push(`busy:${agentId ?? "null"}`)

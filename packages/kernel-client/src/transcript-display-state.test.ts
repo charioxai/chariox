@@ -5,6 +5,7 @@ import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
   projectTranscriptDisplayState,
+  projectSettledTranscriptTurnDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
   type TranscriptDisplayEntry,
@@ -55,6 +56,41 @@ test("projectTranscriptDisplayState returns display entries with derived transcr
   assert.equal(projection.currentTurnId, 4)
   assert.equal(projection.nextTurnId, 5)
   assert.equal(projection.entryCounter, 6)
+})
+
+test("projectSettledTranscriptTurnDisplayState clears stale collapsed state for the active turn", () => {
+  const projection = projectSettledTranscriptTurnDisplayState(baseTurnEntries(), [1, 7])
+
+  assert.equal(projection.settledTurnId, 1)
+  assert.deepEqual(projection.collapsedTurnIds, [7])
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Investigate the transcript UI"],
+      ["turn_toggle", "click to collapse"],
+      ["reasoning", "Thinking through the render model"],
+      ["tool", "tool output"],
+      ["assistant", "I changed the transcript layout."],
+    ],
+  )
+})
+
+test("projectSettledTranscriptTurnDisplayState keeps incomplete history turns expanded", () => {
+  const projection = projectSettledTranscriptTurnDisplayState(
+    baseTurnEntries().map((entry) => ({
+      ...entry,
+      historyTurnCompletedAtMs: null,
+    })),
+    [1],
+  )
+
+  assert.equal(projection.settledTurnId, 1)
+  assert.deepEqual(projection.collapsedTurnIds, [])
+  assert.equal(projection.entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => entry.role),
+    ["user", "reasoning", "tool", "assistant"],
+  )
 })
 
 test("applyTranscriptDisplayState uses shared collapsed blob descriptions by default", () => {
