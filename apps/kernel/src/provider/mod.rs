@@ -95,6 +95,15 @@ pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -
     run.adapter_key() == "claude"
         && (!run.client_interface().is_arroba() || run.provider() == "claude-headless")
 }
+
+pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "codex"
+        || (run.adapter_key() == "claude"
+            && run.client_interface().is_arroba()
+            && !provider_run_uses_claude_native_bridge(run))
+        || run.adapter_key() == "opencode"
+        || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,

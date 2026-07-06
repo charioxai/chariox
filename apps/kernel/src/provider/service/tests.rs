@@ -193,6 +193,38 @@ fn claude_headless_runs_use_pty_output_pumping() {
 }
 
 #[test]
+fn managed_structured_providers_use_structured_prompt_io() {
+    let providers = ProviderProcessService::new();
+    for (adapter_key, provider, expected) in [
+        ("codex", "codex", true),
+        ("opencode", "opencode", true),
+        ("claude", "claude", true),
+        ("dev-stub", "slow-structured", true),
+        ("dev-stub", "plain", false),
+    ] {
+        let request =
+            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model");
+        let run = RuntimeProviderRun::new(
+            format!("provider-run-{adapter_key}-{provider}"),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: provider.to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert_eq!(providers.run_uses_structured_prompt_io(&run), expected);
+    }
+}
+
+#[test]
 fn provider_only_start_run_returns_outcome_without_session_mutation() {
     let mut sessions = sessions();
     let session = sessions

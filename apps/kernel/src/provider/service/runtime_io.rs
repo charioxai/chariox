@@ -93,12 +93,7 @@ impl ProviderProcessService {
     }
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
-        run.adapter_key() == "codex"
-            || (run.adapter_key() == "claude"
-                && run.client_interface().is_arroba()
-                && !crate::provider::provider_run_uses_claude_native_bridge(run))
-            || run.adapter_key() == "opencode"
-            || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        crate::provider::provider_run_uses_structured_prompt_io(run)
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
