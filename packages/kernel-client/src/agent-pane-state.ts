@@ -19,7 +19,9 @@ export type AgentPaneSession<TAgent extends { id: string }> = {
   readonly focused_agent_id: string | null
 }
 
-export type AgentPaneLineageEntry = TranscriptLineageEntry
+export type AgentPaneLineageEntry = TranscriptLineageEntry & {
+  readonly queuedPrompt?: unknown
+}
 
 export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly historyBlobLoaded?: boolean
@@ -80,18 +82,20 @@ export function shouldPreferCurrentPaneEntries<TEntry extends AgentPaneLineageEn
   currentEntries: readonly TEntry[],
   refreshedEntries: readonly TEntry[],
 ): boolean {
-  if (currentEntries.length === 0) {
+  const stableCurrentEntries = stableRefreshPreferenceEntries(currentEntries)
+  const stableRefreshedEntries = stableRefreshPreferenceEntries(refreshedEntries)
+  if (stableCurrentEntries.length === 0) {
     return false
   }
-  if (!entriesShareLineage(currentEntries, refreshedEntries)) {
+  if (!entriesShareLineage(stableCurrentEntries, stableRefreshedEntries)) {
     return false
   }
-  if (!refreshedEntriesAreContainedInCurrent(currentEntries, refreshedEntries)) {
+  if (!refreshedEntriesAreContainedInCurrent(stableCurrentEntries, stableRefreshedEntries)) {
     return false
   }
 
-  const currentRenderableCount = countRenderablePaneEntries(currentEntries)
-  const refreshedRenderableCount = countRenderablePaneEntries(refreshedEntries)
+  const currentRenderableCount = countRenderablePaneEntries(stableCurrentEntries)
+  const refreshedRenderableCount = countRenderablePaneEntries(stableRefreshedEntries)
   if (currentRenderableCount > refreshedRenderableCount) {
     return true
   }
@@ -100,7 +104,13 @@ export function shouldPreferCurrentPaneEntries<TEntry extends AgentPaneLineageEn
     return false
   }
 
-  return totalPaneTextLength(currentEntries) > totalPaneTextLength(refreshedEntries)
+  return totalPaneTextLength(stableCurrentEntries) > totalPaneTextLength(stableRefreshedEntries)
+}
+
+export function stableRefreshPreferenceEntries<TEntry extends AgentPaneLineageEntry>(
+  entries: readonly TEntry[],
+): TEntry[] {
+  return entries.filter((entry) => entry.queuedPrompt === undefined)
 }
 
 export function refreshedEntriesAreContainedInCurrent<TEntry extends AgentPaneLineageEntry>(

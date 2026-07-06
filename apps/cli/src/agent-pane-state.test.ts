@@ -344,6 +344,92 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
   ])
 })
 
+test("refreshAgentPaneState does not preserve stale queued prompt rows over caught-up history", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-a",
+        external_provider_import: {
+          external_provider: "opencode",
+          external_provider_session_id: "opencode:thread-a",
+          external_provider_session_provider_id: "thread-a",
+        },
+      }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWorkForAgent: () => true,
+    collapsedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "assistant",
+          text: "external assistant settled",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "user",
+          text: "queued arroba prompt with enough text to make stale current entries look richer",
+          queuedPrompt: {
+            promptId: "prompt-1",
+            agentId: "agent-a",
+            status: "queued",
+            attachmentCount: 0,
+            steerDisabled: true,
+            canSteer: false,
+            canCancel: true,
+            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+            cancelDisabledReason: null,
+          },
+        },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "assistant",
+          text: "external assistant settled",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    collapseHistoricalTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
+    "external prompt",
+    "external assistant settled",
+  ])
+  assert.equal(result.visibleEntries.some((entry) => entry.queuedPrompt), false)
+})
+
 test("refreshAgentPaneState does not preserve another imported agent when refreshed history is empty", async () => {
   const result = await refreshAgentPaneState({
     session: {
