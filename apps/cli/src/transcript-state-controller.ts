@@ -10,8 +10,11 @@ import {
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
 } from "@arroba/kernel-client/transcript-display-state"
-import { createNextTranscriptEntry } from "@arroba/kernel-client/transcript-entry-state"
-import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
+import {
+  computeMaxTranscriptEntryId,
+  createNextTranscriptEntry,
+  shouldSkipConsecutiveTranscriptEntry,
+} from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptStateControllerDeps = {
   entries: () => TranscriptEntry[]
@@ -86,7 +89,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
             deps.expandedTurnIdsForAgent(agentId),
           ) as TranscriptEntry[]
           deps.setEntries(nextEntries)
-          deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
+          deps.setEntryCounter(computeMaxTranscriptEntryId(nextEntries))
           deps.persistVisibleTranscriptEntries(nextEntries)
           deps.reconcileMountedTranscript(latestEntries, nextEntries)
           deps.retainPromptFocus()
@@ -156,8 +159,4 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     toggleBlob,
     toggleTurn,
   }
-}
-
-function maxTranscriptEntryId(entries: readonly TranscriptEntry[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }

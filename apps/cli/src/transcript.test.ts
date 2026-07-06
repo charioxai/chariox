@@ -8,7 +8,6 @@ import {
   normalizeMarkdownFenceInfoStrings,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
-  shouldSkipConsecutiveTranscriptEntry,
   shouldRenderProviderStatus,
   shouldRenderTranscriptAsMarkdown,
   splitInlineCodeSpans,
@@ -21,37 +20,6 @@ test("parseToolTranscriptUpdate reads structured tool payloads", () => {
     tool: "bash",
     status: "running",
   })
-})
-
-test("shouldSkipConsecutiveTranscriptEntry only deduplicates consecutive notices and errors", () => {
-  assert.equal(
-    shouldSkipConsecutiveTranscriptEntry(
-      { role: "notice", text: "same", emphasis: "warning" },
-      { role: "notice", text: "same", emphasis: "warning" },
-    ),
-    true,
-  )
-  assert.equal(
-    shouldSkipConsecutiveTranscriptEntry(
-      { role: "error", text: "same", emphasis: "error" },
-      { role: "error", text: "same", emphasis: "error" },
-    ),
-    true,
-  )
-  assert.equal(
-    shouldSkipConsecutiveTranscriptEntry(
-      { role: "notice", text: "same", emphasis: "warning" },
-      { role: "notice", text: "different", emphasis: "warning" },
-    ),
-    false,
-  )
-  assert.equal(
-    shouldSkipConsecutiveTranscriptEntry(
-      { role: "assistant", text: "same" },
-      { role: "assistant", text: "same" },
-    ),
-    false,
-  )
 })
 
 test("formatToolTranscriptUpdate renders bash command inline with output", () => {

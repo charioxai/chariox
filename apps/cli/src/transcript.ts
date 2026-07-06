@@ -6,7 +6,6 @@ export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
-  shouldSkipConsecutiveTranscriptEntry,
   splitInlineCodeSpans,
   type ApplyPatchFile,
   type InlineCodeSpan,

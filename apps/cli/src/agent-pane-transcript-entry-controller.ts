@@ -3,9 +3,9 @@ import {
   appendTranscriptPreviewLine as appendPreviewLine,
   formatTranscriptPreview,
 } from "@arroba/kernel-client/session-history-preview"
-import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 import {
   createNextTranscriptEntry,
+  shouldSkipConsecutiveTranscriptEntry,
   transcriptHasTrailingUserPrompt,
 } from "@arroba/kernel-client/transcript-entry-state"
 

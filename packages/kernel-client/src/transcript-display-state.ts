@@ -14,6 +14,7 @@ import {
 } from "./transcript-entry-lineage.js"
 import {
   computeCurrentTranscriptTurnId,
+  computeMaxTranscriptEntryId,
   computeNextTranscriptTurnId,
 } from "./transcript-entry-state.js"
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
@@ -219,7 +220,7 @@ export function projectTranscriptDisplayState<TEntry extends TranscriptDisplayEn
     entries: projectedEntries,
     currentTurnId: computeCurrentTranscriptTurnId(projectedEntries),
     nextTurnId: computeNextTranscriptTurnId(projectedEntries),
-    entryCounter: maxTranscriptEntryId(projectedEntries),
+    entryCounter: computeMaxTranscriptEntryId(projectedEntries),
   }
 }
 
@@ -386,8 +387,4 @@ export function resolveVisibleTurnToggle<TEntry extends TranscriptDisplayEntry>(
 
 function sortedTurnIds(turnIds: Iterable<number>) {
   return [...turnIds].sort((left, right) => left - right)
-}
-
-function maxTranscriptEntryId(entries: readonly { readonly id: number }[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }

@@ -3,10 +3,12 @@ import test from "node:test"
 
 import {
   computeCurrentTranscriptTurnId,
+  computeMaxTranscriptEntryId,
   computeNextTranscriptEntryId,
   computeNextTranscriptTurnId,
   createNextTranscriptEntry,
   reindexTranscriptEntries,
+  shouldSkipConsecutiveTranscriptEntry,
   transcriptHasTrailingUserPrompt,
   transcriptRetentionSlice,
   trimSingleTrailingNewline,
@@ -47,6 +49,11 @@ test("transcript turn id helpers project current and next turn identity", () => 
     entry(8, "user", "first"),
     entry(14, "assistant", "reply"),
   ]), 15)
+  assert.equal(computeMaxTranscriptEntryId([
+    entry(8, "user", "first"),
+    entry(14, "assistant", "reply"),
+  ]), 14)
+  assert.equal(computeMaxTranscriptEntryId([]), 0)
 })
 
 test("transcriptHasTrailingUserPrompt dedupes prompt echoes by prompt id before text", () => {
@@ -61,6 +68,37 @@ test("transcriptHasTrailingUserPrompt dedupes prompt echoes by prompt id before 
   assert.equal(transcriptHasTrailingUserPrompt([
     entry(1, "assistant", "hello"),
   ], "hello"), false)
+})
+
+test("shouldSkipConsecutiveTranscriptEntry only deduplicates consecutive notices and errors", () => {
+  assert.equal(
+    shouldSkipConsecutiveTranscriptEntry(
+      { role: "notice", text: "same", emphasis: "warning" },
+      { role: "notice", text: "same", emphasis: "warning" },
+    ),
+    true,
+  )
+  assert.equal(
+    shouldSkipConsecutiveTranscriptEntry(
+      { role: "error", text: "same", emphasis: "error" },
+      { role: "error", text: "same", emphasis: "error" },
+    ),
+    true,
+  )
+  assert.equal(
+    shouldSkipConsecutiveTranscriptEntry(
+      { role: "notice", text: "same", emphasis: "warning" },
+      { role: "notice", text: "different", emphasis: "warning" },
+    ),
+    false,
+  )
+  assert.equal(
+    shouldSkipConsecutiveTranscriptEntry(
+      { role: "assistant", text: "same" },
+      { role: "assistant", text: "same" },
+    ),
+    false,
+  )
 })
 
 test("createNextTranscriptEntry assigns ids and inherits the active turn", () => {

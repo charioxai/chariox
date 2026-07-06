@@ -52,7 +52,13 @@ export function computeNextTranscriptTurnId<TEntry extends Pick<TranscriptEntryS
 export function computeNextTranscriptEntryId<TEntry extends Pick<TranscriptEntryStateEntry, "id">>(
   entries: readonly TEntry[],
 ): number {
-  return entries.reduce((max, entry) => Math.max(max, entry.id), 0) + 1
+  return computeMaxTranscriptEntryId(entries) + 1
+}
+
+export function computeMaxTranscriptEntryId<TEntry extends Pick<TranscriptEntryStateEntry, "id">>(
+  entries: readonly TEntry[],
+): number {
+  return entries.reduce((max, entry) => Math.max(max, entry.id), 0)
 }
 
 export function transcriptRetentionSlice<TEntry extends Pick<TranscriptEntryStateEntry, "text">>(
@@ -104,6 +110,21 @@ export function transcriptHasTrailingUserPrompt<TEntry extends Pick<TranscriptEn
     return lastEntry.promptId === promptId
   }
   return trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
+}
+
+export function shouldSkipConsecutiveTranscriptEntry(
+  previous: { readonly role: string; readonly text: string; readonly emphasis?: string | undefined } | null | undefined,
+  next: { readonly role: string; readonly text: string; readonly emphasis?: string | undefined },
+) {
+  if (!previous) {
+    return false
+  }
+  if (next.role !== "error" && next.role !== "notice") {
+    return false
+  }
+  return previous.role === next.role
+    && previous.text === next.text
+    && previous.emphasis === next.emphasis
 }
 
 export function createNextTranscriptEntry<

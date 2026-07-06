@@ -61,7 +61,6 @@ export type {
 export {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
-  shouldSkipConsecutiveTranscriptEntry,
   splitInlineCodeSpans,
 } from "./transcript-update.js"
 

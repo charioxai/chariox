@@ -66,21 +66,6 @@ export function splitInlineCodeSpans(text: string): InlineCodeSpan[] {
   return spans.filter((span) => span.text.length > 0)
 }
 
-export function shouldSkipConsecutiveTranscriptEntry(
-  previous: { role: string; text: string; emphasis?: string | undefined } | null | undefined,
-  next: { role: string; text: string; emphasis?: string | undefined },
-) {
-  if (!previous) {
-    return false
-  }
-  if (next.role !== "error" && next.role !== "notice") {
-    return false
-  }
-  return previous.role === next.role
-    && previous.text === next.text
-    && previous.emphasis === next.emphasis
-}
-
 export function parseToolTranscriptUpdate(chunk: string): ToolTranscriptUpdate | null {
   try {
     const parsed = JSON.parse(chunk) as Partial<ToolTranscriptUpdate>
