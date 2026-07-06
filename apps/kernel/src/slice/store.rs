@@ -40,7 +40,11 @@ pub struct SliceOperationGuard {
 
 impl Drop for SliceOperationGuard {
     fn drop(&mut self) {
-        let mut state = self.store.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .store
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .active_operations
             .get(&self.slice_id)
@@ -68,7 +72,10 @@ impl SliceStore {
         input: CreateSliceInput,
     ) -> Result<SliceRecord, DaemonError> {
         validate_slice_name(&input.name)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .records
             .values()
@@ -163,12 +170,18 @@ impl SliceStore {
     }
 
     pub fn list(&self) -> Vec<SliceRecord> {
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.records.values().cloned().collect()
     }
 
     pub fn restore_records(&self, records: Vec<SliceRecord>) {
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.records.clear();
         state.next_slice_number = 0;
         for record in records {
@@ -191,7 +204,10 @@ impl SliceStore {
                 message: "saved state reference must not be empty".to_string(),
             });
         }
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .saved_states
             .values()
@@ -208,7 +224,10 @@ impl SliceStore {
         slice_ref: &str,
     ) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
         let slice = self.resolve(slice_ref)?;
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(slice
             .saved_state_ref
             .as_ref()
@@ -219,7 +238,7 @@ impl SliceStore {
     pub fn list_saved_states(&self) -> Vec<SliceSavedStateRecord> {
         self.inner
             .lock()
-            .expect("slice store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .saved_states
             .values()
             .cloned()
@@ -229,7 +248,7 @@ impl SliceStore {
     pub fn list_backups(&self) -> Vec<SliceBackupRecord> {
         self.inner
             .lock()
-            .expect("slice store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .backups
             .values()
             .cloned()
@@ -241,7 +260,10 @@ impl SliceStore {
         states: Vec<SliceSavedStateRecord>,
         backups: Vec<SliceBackupRecord>,
     ) {
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.saved_states.clear();
         state.backups.clear();
         for saved in states {
@@ -259,7 +281,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .saved_states
             .insert(saved_state.id.clone(), saved_state.clone());
@@ -289,7 +314,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -313,7 +341,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<(SliceRecord, Option<SliceSavedStateRecord>), DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (updated_record, removed_state_ref) =
             {
                 let record = state.records.get_mut(&resolved.id).ok_or_else(|| {
@@ -337,7 +368,10 @@ impl SliceStore {
     }
 
     pub fn upsert_backup(&self, backup: SliceBackupRecord) -> SliceBackupRecord {
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.backups.insert(backup.id.clone(), backup.clone());
         backup
     }
@@ -353,7 +387,10 @@ impl SliceStore {
         now_ms: u64,
         inspect_host_runtime: impl Fn(&SliceRecord) -> SliceHostRuntimeState,
     ) -> Vec<SliceRecord> {
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = Vec::new();
         for record in state.records.values_mut() {
             let host_runtime = inspect_host_runtime(record);
@@ -419,7 +456,10 @@ impl SliceStore {
                 message: "slice reference must not be empty".to_string(),
             });
         }
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut matches = state
             .records
             .values()
@@ -472,7 +512,10 @@ impl SliceStore {
                 message: "slice reference must not be empty".to_string(),
             });
         }
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut matches = state
             .records
             .values()
@@ -499,7 +542,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -522,7 +568,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -546,7 +595,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -569,7 +621,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -592,7 +647,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -625,7 +683,10 @@ impl SliceStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -651,7 +712,10 @@ impl SliceStore {
 
     pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !resolved.agent_ids.is_empty() {
             return Err(DaemonError::LocalTransport {
                 operation: "slice.delete",
@@ -678,7 +742,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -702,7 +769,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -727,7 +797,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -762,7 +835,10 @@ impl SliceStore {
                     .map(|slice| (slice.id, attachment.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (slice_id, attachment) in &resolved {
             if !state.records.contains_key(slice_id) {
                 return Err(DaemonError::LocalTransport {
@@ -810,7 +886,10 @@ impl SliceStore {
         now_ms: u64,
     ) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
-        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record =
             state
                 .records
@@ -857,7 +936,10 @@ impl SliceStore {
     }
 
     pub fn list_by_session(&self, session_id: &str) -> Vec<SliceRecord> {
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .records
             .values()
@@ -882,7 +964,10 @@ impl SliceStore {
         if kernel_ref.is_empty() {
             return None;
         }
-        let state = self.inner.lock().expect("slice store poisoned");
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .records
             .values()
