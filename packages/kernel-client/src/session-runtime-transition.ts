@@ -11,7 +11,6 @@ import {
   sessionAgentIsBusy,
   sessionHasPromptWork,
   sessionHasTurnWork,
-  sessionPromptWorkJustCompleted,
   sessionTurnWorkJustCompleted,
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
@@ -439,9 +438,6 @@ export function sessionSnapshotRefreshTransition(
   options: SessionSnapshotRefreshTransitionInput,
 ): SessionSnapshotRefreshTransition {
   const promptJustCompleted = sessionTurnWorkJustCompleted(
-    options.previousSession,
-    options.nextSession,
-  ) || sessionPromptWorkJustCompleted(
     options.previousSession,
     options.nextSession,
   )

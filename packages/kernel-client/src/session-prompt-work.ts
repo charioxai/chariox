@@ -162,13 +162,6 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
   return summary.active > 0 || summary.queued > 0 || summary.busyAgents > 0
 }
 
-export function sessionPromptWorkJustCompleted(
-  previousSession: RuntimeSession,
-  nextSession: RuntimeSession,
-): boolean {
-  return sessionHasPromptWork(previousSession) && !sessionHasPromptWork(nextSession)
-}
-
 export function sessionHasTurnWork(session: RuntimeSession): boolean {
   return session.agents.some((agent) => sessionAgentHasTurnWork(session, agent.id))
 }

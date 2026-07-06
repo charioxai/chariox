@@ -8,7 +8,6 @@ import {
   sessionAgentIsBusy,
   sessionHasAgentRuntimeProjection,
   sessionHasTurnWork,
-  sessionPromptWorkJustCompleted,
   sessionProjectedStreamingAgentId,
   sessionQueuedPromptCount,
   sessionPromptWorkByAgent,
@@ -128,54 +127,6 @@ test("session prompt work prefers projected activity over stale prompt state", (
   assert.equal(sessionQueuedPromptCount(session, "agent-1"), 0)
   assert.equal(sessionAgentBusyForProviderRunRecovery(session, "agent-1"), false)
   assert.equal(sessionAgentBusyForProviderRunRecovery(session, "agent-2"), true)
-})
-
-test("session prompt work transition detects completed prompt work", () => {
-  const activeSession = makeSession({
-    active_prompt: {
-      id: "prompt-1",
-      source_attachment_id: "attach-1",
-      target_agent_id: "agent-1",
-      prompt: "run",
-      status: "running",
-    },
-    agents: [makeAgent({ id: "agent-1" })],
-  })
-  const idleSession = makeSession({
-    agents: [makeAgent({ id: "agent-1" })],
-  })
-  const projectedActiveSession = makeSession({
-    agents: [makeAgent({ id: "agent-1" })],
-    agent_activity: {
-      "agent-1": {
-        status: "working",
-        prompt_status: "running",
-        busy: true,
-        unread_idle_output: false,
-        active_turn: {
-          prompt_id: "prompt-1",
-          status: "running",
-          phase: "streaming",
-        },
-      },
-    },
-  })
-  const projectedIdleSession = makeSession({
-    agents: [makeAgent({ id: "agent-1" })],
-    agent_activity: {
-      "agent-1": {
-        status: "idle",
-        prompt_status: "none",
-        busy: false,
-        unread_idle_output: false,
-      },
-    },
-  })
-
-  assert.equal(sessionPromptWorkJustCompleted(activeSession, idleSession), true)
-  assert.equal(sessionPromptWorkJustCompleted(projectedActiveSession, projectedIdleSession), true)
-  assert.equal(sessionPromptWorkJustCompleted(idleSession, projectedIdleSession), false)
-  assert.equal(sessionPromptWorkJustCompleted(activeSession, projectedActiveSession), false)
 })
 
 test("session provider run recovery busy state falls back only without runtime projection", () => {

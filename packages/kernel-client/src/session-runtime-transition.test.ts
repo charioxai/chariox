@@ -558,6 +558,16 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     shouldRefreshWorkspaceLiveSyncStatus: true,
   })
   assert.deepEqual(sessionSnapshotRefreshTransition({
+    previousSession: queuedOnlySession,
+    nextSession: idleSession,
+    sessionChangeRequiresPaneRefresh: false,
+  }), {
+    promptJustCompleted: false,
+    reasonRequiresPaneRefresh: false,
+    shouldRefreshAgentPanes: false,
+    shouldRefreshWorkspaceLiveSyncStatus: false,
+  })
+  assert.deepEqual(sessionSnapshotRefreshTransition({
     previousSession: idleSession,
     nextSession: idleSession,
     sessionChangeRequiresPaneRefresh: true,
