@@ -86,7 +86,7 @@ function streamingCommitHarness(options: {
   }
   harness.controller = createAgentPaneStreamingCommitController({
     trimLiveAgentPaneEntries: options.trim ?? ((_agentId, entries) => entries),
-    expandedTurnIdsForAgent: () => [],
+    collapsedTurnIdsForAgent: () => [],
     commitAgentPaneEntries: (agentId, entries) => {
       harness.committed.push({ agentId, entries })
     },

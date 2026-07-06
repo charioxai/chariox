@@ -24,7 +24,7 @@ test("agent pane store persists visible transcript entries and preview", () => {
     getMaxAgentsPerScreen: () => 2,
     splitAgentResponseMode: () => false,
     getPrimaryAgentId: () => "agent-a",
-    expandedTurnIdsForAgent: () => [],
+    collapsedTurnIdsForAgent: () => [],
     replaceTranscriptEntries: () => {},
     reconcileMountedAuxiliaryTranscript: () => {},
   })
@@ -60,7 +60,7 @@ test("agent pane store mirrors primary and auxiliary split panes", () => {
     getMaxAgentsPerScreen: () => 2,
     splitAgentResponseMode: () => true,
     getPrimaryAgentId: () => "agent-a",
-    expandedTurnIdsForAgent: () => [],
+    collapsedTurnIdsForAgent: () => [],
     replaceTranscriptEntries: (entries, agentId) => {
       replaced.push({ agentId, entries })
     },
@@ -102,7 +102,7 @@ test("agent pane store uses shared projection for collapsed turn state", () => {
     getMaxAgentsPerScreen: () => 2,
     splitAgentResponseMode: () => false,
     getPrimaryAgentId: () => "agent-a",
-    expandedTurnIdsForAgent: () => [1],
+    collapsedTurnIdsForAgent: () => [1],
     replaceTranscriptEntries: () => {},
     reconcileMountedAuxiliaryTranscript: () => {},
   })

@@ -14,7 +14,7 @@ import {
 
 export type AgentPaneTranscriptInteractionControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
   setExpandedTurnState: (
     agentId: string | null | undefined,
     turnId: number | null | undefined,
@@ -46,7 +46,7 @@ export function createAgentPaneTranscriptInteractionController(
     const projection = projectTranscriptTurnToggleDisplayState(
       currentEntries,
       turnId,
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
       toggleEntryId,
     )
     if (!projection) {
@@ -71,7 +71,7 @@ export function createAgentPaneTranscriptInteractionController(
             latestEntries,
             entryId,
             content,
-            deps.expandedTurnIdsForAgent(agentId),
+            deps.collapsedTurnIdsForAgent(agentId),
           ) as TranscriptEntry[]
           commitAndRefocus(deps, agentId, latestEntries, nextEntries)
         })
@@ -90,7 +90,7 @@ export function createAgentPaneTranscriptInteractionController(
     const projection = projectTranscriptBlobToggleDisplayState(
       currentEntries,
       entryId,
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
       collapsed,
     )
     if (!projection) {

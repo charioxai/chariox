@@ -45,9 +45,9 @@ export type CliAgentPaneCompositionDeps = {
   splitAgentResponseMode: AnyFn
   responsePrimaryAgent: AnyFn
   expandedTurnIdsByAgent: AnyFn
-  expandedTurnIdsForAgent: AnyFn
+  collapsedTurnIdsForAgent: AnyFn
   setExpandedTurnState: AnyFn
-  applyExpandedTurns: AnyFn
+  applyCollapsedTurns: AnyFn
   retainPromptFocus: AnyFn
   formatError: AnyFn
   agentPaneRuntimeStore: {
@@ -88,7 +88,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     getMaxAgentsPerScreen: deps.maxAgentsPerScreen,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     getPrimaryAgentId: () => deps.responsePrimaryAgent()?.id ?? null,
-    expandedTurnIdsForAgent: deps.expandedTurnIdsForAgent,
+    collapsedTurnIdsForAgent: deps.collapsedTurnIdsForAgent,
     replaceTranscriptEntries: (nextEntries, agentId) => {
       deps.replaceTranscriptEntries(nextEntries, agentId)
     },
@@ -107,7 +107,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     currentAgentPaneEntries,
     visibleTranscriptAgentId: deps.visibleTranscriptAgentId,
     visibleTranscriptEntries: deps.visibleTranscriptEntries,
-    expandedTurnIdsForAgent: deps.expandedTurnIdsForAgent,
+    collapsedTurnIdsForAgent: deps.collapsedTurnIdsForAgent,
     setAgentPanePreview,
     updateAgentPanePreviews: (updater) => {
       deps.setAgentPanePreviews((current: any) => updater(current))
@@ -121,7 +121,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
 
   const agentPaneTranscriptInteractionController = createAgentPaneTranscriptInteractionController({
     currentAgentPaneEntries,
-    expandedTurnIdsForAgent: deps.expandedTurnIdsForAgent,
+    collapsedTurnIdsForAgent: deps.collapsedTurnIdsForAgent,
     setExpandedTurnState: deps.setExpandedTurnState,
     commitAgentPaneEntries: (agentId, nextEntries) => {
       commitAgentPaneEntries(agentId, nextEntries)
@@ -185,7 +185,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
 
   const agentPaneStreamingCommitController = createAgentPaneStreamingCommitController({
     trimLiveAgentPaneEntries,
-    expandedTurnIdsForAgent: deps.expandedTurnIdsForAgent,
+    collapsedTurnIdsForAgent: deps.collapsedTurnIdsForAgent,
     commitAgentPaneEntries,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     getResponsePrimaryAgentId: () => deps.responsePrimaryAgent()?.id ?? null,
@@ -248,7 +248,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     setAgentPanePreviews: deps.setAgentPanePreviews,
     setAgentPaneEntries: deps.setAgentPaneEntries,
     setNextHistoryCursor: deps.setNextHistoryCursor,
-    applyCollapsedTurns: deps.applyExpandedTurns,
+    applyCollapsedTurns: deps.applyCollapsedTurns,
     replaceTranscriptEntries: (entries, agentId) => deps.replaceTranscriptEntries(entries, agentId),
     applyResponseLayout: deps.applyResponseLayout,
     rebuildAuxiliaryAgentPane,

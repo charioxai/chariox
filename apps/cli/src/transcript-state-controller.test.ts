@@ -149,7 +149,7 @@ function transcriptHarness(options: {
     },
     currentTurnId: () => harness.currentTurnId,
     visibleTranscriptAgentId: () => "agent-1",
-    expandedTurnIdsForAgent: () => harness.expandedTurnIds,
+    collapsedTurnIdsForAgent: () => harness.expandedTurnIds,
     setExpandedTurnState: (agentId, turnId, expanded) => {
       harness.expandedTurnUpdates.push({ agentId, turnId, expanded })
     },

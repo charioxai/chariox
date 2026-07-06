@@ -25,7 +25,7 @@ export type TranscriptStateControllerDeps = {
   setEntryCounter: (value: number) => void
   currentTurnId: () => number | null
   visibleTranscriptAgentId: () => string | null | undefined
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
   setExpandedTurnState: (agentId: string | null | undefined, turnId: number, expanded: boolean) => void
   persistVisibleTranscriptEntries: (entries: TranscriptEntry[]) => void
   reconcileMountedTranscript: (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => void
@@ -39,7 +39,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
   const applyVisibleState = (
     nextEntries: TranscriptEntry[],
     agentId: string | null | undefined = deps.visibleTranscriptAgentId(),
-    turnIds = deps.expandedTurnIdsForAgent(agentId),
+    turnIds = deps.collapsedTurnIdsForAgent(agentId),
   ) => {
     const projection = projectCompactTranscriptDisplayState(nextEntries, turnIds)
     deps.setEntries(projection.entries)
@@ -56,7 +56,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     const projection = projectTranscriptTurnToggleDisplayState(
       currentEntries,
       turnId,
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
       toggleEntryId,
     )
     if (!projection) {
@@ -88,7 +88,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
             latestEntries,
             entryId,
             content,
-            deps.expandedTurnIdsForAgent(agentId),
+            deps.collapsedTurnIdsForAgent(agentId),
           ) as TranscriptEntry[]
           deps.setEntries(nextEntries)
           deps.setEntryCounter(computeMaxTranscriptEntryId(nextEntries))
@@ -114,7 +114,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     const projection = projectTranscriptBlobToggleDisplayState(
       currentEntries,
       entryId,
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
       collapsed,
     )
     if (!projection) {
@@ -129,7 +129,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
 
   const appendEntry = (
     entry: Omit<TranscriptEntry, "id">,
-    turnIds = deps.expandedTurnIdsForAgent(deps.visibleTranscriptAgentId()),
+    turnIds = deps.collapsedTurnIdsForAgent(deps.visibleTranscriptAgentId()),
   ) => {
     const previousEntry = deps.entries().at(-1)
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {

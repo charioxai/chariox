@@ -94,7 +94,7 @@ function entryHarness(options: {
     getScrollbox: () => harness.scrollbox,
     getEntries: () => harness.entries,
     getVisibleTranscriptAgentId: () => harness.visibleAgentId,
-    expandedTurnIdsForAgent: () => [],
+    collapsedTurnIdsForAgent: () => [],
     clearToolState: () => {
       harness.toolsCleared += 1
     },

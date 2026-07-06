@@ -87,8 +87,8 @@ function completionHarness(options: {
     visibleTranscriptAgentId: () => harness.visibleAgentId,
     splitAgentResponseMode: () => harness.split,
     currentAgentPaneEntries: (agentId) => harness.paneEntries[agentId] ?? [],
-    expandedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
-    setExpandedTurnIdsForAgent: (agentId, turnIds) => {
+    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
+    setCollapsedTurnIdsForAgent: (agentId, turnIds) => {
       harness.expandedTurnIdsByAgent[agentId] = turnIds
     },
     setEntries: (entries) => {

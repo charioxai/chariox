@@ -53,7 +53,7 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
   }
 
   return {
-    applyExpandedTurns: applyCollapsedTurns,
+    applyCollapsedTurns: applyCollapsedTurns,
     collapseLatestTurnForAgent,
     setExpandedTurnState,
   }

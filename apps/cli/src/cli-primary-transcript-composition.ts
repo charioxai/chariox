@@ -99,7 +99,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
     setCurrentTurnId: AnyFn
     setNextTurnId: AnyFn
   }
-  expandedTurnIdsForAgent: AnyFn
+  collapsedTurnIdsForAgent: AnyFn
   syncVisibleTranscriptPreview: AnyFn
   toggleTurn: AnyFn
   toggleBlob: AnyFn
@@ -194,7 +194,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEntries: deps.transcriptEntryProjectionController.renderableEntries,
     getVisibleTranscriptAgentId: deps.visibleTranscriptAgentId,
-    expandedTurnIdsForAgent: deps.expandedTurnIdsForAgent,
+    collapsedTurnIdsForAgent: deps.collapsedTurnIdsForAgent,
     clearToolState: deps.primaryTranscriptRuntimeStore.clearTools,
     setEntries: deps.setEntries,
     setEntryCounter: deps.setEntryCounter,

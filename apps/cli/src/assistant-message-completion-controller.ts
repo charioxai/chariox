@@ -9,8 +9,8 @@ export type AssistantMessageCompletionControllerDeps = {
   visibleTranscriptAgentId: () => string | null | undefined
   splitAgentResponseMode: () => boolean
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
-  setExpandedTurnIdsForAgent: (agentId: string, turnIds: number[]) => void
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  setCollapsedTurnIdsForAgent: (agentId: string, turnIds: number[]) => void
   setEntries: (entries: TranscriptEntry[]) => void
   setEntryCounter: (value: number) => void
   persistVisibleTranscriptEntries: (entries: TranscriptEntry[]) => void
@@ -39,11 +39,11 @@ export function createAssistantMessageCompletionController(
     if (completionAgentId) {
       const projection = projectSettledTranscriptTurnDisplayState(
         currentEntries,
-        deps.expandedTurnIdsForAgent(completionAgentId),
+        deps.collapsedTurnIdsForAgent(completionAgentId),
       )
 
       if (projection.settledTurnId !== null) {
-        deps.setExpandedTurnIdsForAgent(completionAgentId, projection.collapsedTurnIds)
+        deps.setCollapsedTurnIdsForAgent(completionAgentId, projection.collapsedTurnIds)
       }
 
       if (projection.settledTurnId !== null && completionAgentId === deps.visibleTranscriptAgentId()) {

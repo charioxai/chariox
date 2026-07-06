@@ -13,7 +13,7 @@ export type AgentPaneTranscriptEntryControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
   visibleTranscriptAgentId: () => string | null | undefined
   visibleTranscriptEntries: () => TranscriptEntry[]
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
   setAgentPanePreview: (agentId: string, text: string) => void
   updateAgentPanePreviews: (
     updater: (current: Record<string, string>) => Record<string, string>,
@@ -60,7 +60,7 @@ export function createAgentPaneTranscriptEntryController(
   const appendEntry = (
     agentId: string,
     entry: Omit<TranscriptEntry, "id">,
-    turnIds = deps.expandedTurnIdsForAgent(agentId),
+    turnIds = deps.collapsedTurnIdsForAgent(agentId),
   ) => {
     const currentEntries = deps.currentAgentPaneEntries(agentId).map((item) => ({ ...item }))
     const previousEntry = currentEntries.at(-1)

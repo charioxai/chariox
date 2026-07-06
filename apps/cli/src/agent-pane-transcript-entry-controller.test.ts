@@ -88,7 +88,7 @@ function entryHarness(options: {
     currentAgentPaneEntries: (agentId) => harness.paneEntriesByAgent[agentId] ?? [],
     visibleTranscriptAgentId: () => harness.visibleAgentId,
     visibleTranscriptEntries: () => harness.visibleEntries,
-    expandedTurnIdsForAgent: () => [],
+    collapsedTurnIdsForAgent: () => [],
     setAgentPanePreview: (agentId, text) => {
       harness.previews[agentId] = text
     },

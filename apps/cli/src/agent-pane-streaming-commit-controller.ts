@@ -3,7 +3,7 @@ import { projectCompactTranscriptDisplayState } from "@arroba/kernel-client/tran
 
 export type AgentPaneStreamingCommitControllerDeps = {
   trimLiveAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => TranscriptEntry[]
-  expandedTurnIdsForAgent: (agentId: string) => readonly number[]
+  collapsedTurnIdsForAgent: (agentId: string) => readonly number[]
   commitAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
   splitAgentResponseMode: () => boolean
   getResponsePrimaryAgentId: () => string | null | undefined
@@ -28,7 +28,7 @@ export function createAgentPaneStreamingCommitController(
   ) => {
     const sanitizedEntries = projectCompactTranscriptDisplayState(
       deps.trimLiveAgentPaneEntries(agentId, nextEntries),
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
     ).entries
     deps.commitAgentPaneEntries(agentId, sanitizedEntries)
     if (deps.splitAgentResponseMode() && agentId === deps.getResponsePrimaryAgentId()) {

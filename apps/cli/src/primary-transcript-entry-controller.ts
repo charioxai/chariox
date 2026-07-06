@@ -20,7 +20,7 @@ export type PrimaryTranscriptEntryControllerDeps = {
   getScrollbox: () => PrimaryTranscriptEntryScrollbox | undefined
   getEntries: () => TranscriptEntry[]
   getVisibleTranscriptAgentId: () => string | null
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
   clearToolState: () => void
   setEntries: (entries: TranscriptEntry[]) => void
   setEntryCounter: (counter: number) => void
@@ -59,7 +59,7 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousViewportHeight = scrollbox?.height ?? 0
     const projection = projectCompactTranscriptDisplayState(
       nextEntries,
-      deps.expandedTurnIdsForAgent(transcriptAgentId),
+      deps.collapsedTurnIdsForAgent(transcriptAgentId),
     )
     deps.clearToolState()
     applyProjection(projection)
@@ -95,7 +95,7 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousViewportHeight = scrollbox?.height ?? 0
     const projection = projectCompactTranscriptDisplayState(
       stitchPrependedHistoryTranscript(sanitizedEntries, currentEntries) as TranscriptEntry[],
-      deps.expandedTurnIdsForAgent(deps.getVisibleTranscriptAgentId()),
+      deps.collapsedTurnIdsForAgent(deps.getVisibleTranscriptAgentId()),
     )
     applyProjection(projection)
     deps.rebuildTranscript()

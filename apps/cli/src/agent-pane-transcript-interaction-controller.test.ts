@@ -99,7 +99,7 @@ function interactionHarness(
   }
   harness.controller = createAgentPaneTranscriptInteractionController({
     currentAgentPaneEntries: (agentId) => harness.paneEntriesByAgent[agentId] ?? [],
-    expandedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
+    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
     setExpandedTurnState: (agentId, turnId, expanded) => {
       harness.expandedTurnUpdates.push({ agentId, turnId, expanded })
     },

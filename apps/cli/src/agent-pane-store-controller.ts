@@ -27,7 +27,7 @@ export type AgentPaneStoreControllerDeps = {
   getMaxAgentsPerScreen: () => number
   splitAgentResponseMode: () => boolean
   getPrimaryAgentId: () => string | null
-  expandedTurnIdsForAgent: (agentId: string) => number[]
+  collapsedTurnIdsForAgent: (agentId: string) => number[]
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string) => void
   reconcileMountedAuxiliaryTranscript: (
     agentId: string,
@@ -72,7 +72,7 @@ export function createAgentPaneStoreController(deps: AgentPaneStoreControllerDep
     setAgentTranscriptEntries(
       agentId: string,
       nextEntries: TranscriptEntry[],
-      turnIds = deps.expandedTurnIdsForAgent(agentId),
+      turnIds = deps.collapsedTurnIdsForAgent(agentId),
     ) {
       const previousPaneEntries = deps.getPaneEntriesByAgent()[agentId] ?? []
       const sanitizedEntries = projectCompactTranscriptDisplayState(nextEntries, turnIds).entries
