@@ -9,6 +9,8 @@ import {
   externalProviderObservedCompletionAtMs,
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedHistoryRefreshSignal,
+  externalProviderObservedIdentityIsPresent,
+  externalProviderObservedIdentityMatches,
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
   historyEntryExternalProviderObservedMetadata,
@@ -35,6 +37,53 @@ test("external provider observed id parser follows runtime merge key shape", () 
   assert.equal(parseExternalProviderObservedId("external:codex:thread-1:"), null)
   assert.equal(parseExternalProviderObservedId("prompt-1"), null)
   assert.equal(parseExternalProviderObservedId(null), null)
+})
+
+test("external provider observed identity matching normalizes provider and trims ids", () => {
+  assert.equal(externalProviderObservedIdentityIsPresent({
+    externalProvider: "codex",
+  }), false)
+  assert.equal(externalProviderObservedIdentityIsPresent({
+    externalProviderSessionId: " thread-1 ",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    promptId: "external: CODEX : thread-1 : user-1",
+  }, {
+    externalProvider: " codex ",
+    externalProviderSessionId: "thread-1",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " user-1 ",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "user-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+  }, {
+    externalProvider: "codex",
+  }), false)
 })
 
 test("external provider observed predicate requires kernel observed source", () => {

@@ -36,6 +36,13 @@ export type ExternalProviderObservedTranscriptMetadata = {
   externalObservation: SessionHistoryExternalObservation | null
 }
 
+export type ExternalProviderObservedIdentityFields = {
+  readonly promptId?: string | null
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
+}
+
 export function sessionHistoryEntryIsExternalProviderObserved(
   entry: { readonly source?: string | null | undefined },
 ): boolean {
@@ -60,6 +67,45 @@ export function parseExternalProviderObservedId(
     providerSessionId,
     providerTurnId,
   }
+}
+
+export function externalProviderObservedIdentityIsPresent(
+  value: ExternalProviderObservedIdentityFields,
+): boolean {
+  return Boolean(nonBlankString(value.externalProviderSessionId) || nonBlankString(value.externalProviderTurnId))
+}
+
+export function externalProviderObservedIdentityMatches(
+  candidate: ExternalProviderObservedIdentityFields,
+  expected: ExternalProviderObservedIdentityFields,
+): boolean {
+  const expectedProvider = normalizeExternalProviderId(expected.externalProvider)
+  const expectedSessionId = nonBlankString(expected.externalProviderSessionId)
+  const expectedTurnId = nonBlankString(expected.externalProviderTurnId)
+  if (!expectedSessionId && !expectedTurnId) {
+    return false
+  }
+
+  const promptIdentity = parseExternalProviderObservedId(candidate.promptId)
+  if (
+    promptIdentity
+    && (!expectedProvider || normalizeExternalProviderId(promptIdentity.provider) === expectedProvider)
+    && (!expectedSessionId || promptIdentity.providerSessionId === expectedSessionId)
+  ) {
+    return true
+  }
+
+  const candidateProvider = normalizeExternalProviderId(candidate.externalProvider)
+  if (expectedProvider && candidateProvider && candidateProvider !== expectedProvider) {
+    return false
+  }
+  if (expectedSessionId && nonBlankString(candidate.externalProviderSessionId) !== expectedSessionId) {
+    return false
+  }
+  if (expectedTurnId && nonBlankString(candidate.externalProviderTurnId) !== expectedTurnId) {
+    return false
+  }
+  return true
 }
 
 export function historyEntryExternalProviderObservedMetadata(
