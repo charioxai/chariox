@@ -26,6 +26,29 @@ impl KernelRuntimeState {
                 .connector_adapter_processes
                 .shutdown_run(provider_run_id)
                 .await;
+            let session_outcome = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+                .await?;
+            if session_outcome.had_active_prompt {
+                let recipients = owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id);
+                owned.record_notice(
+                    session_id,
+                    Some(provider_run_id),
+                    recipients,
+                    format!(
+                        "Provider run `{}` for `{}` was already ended during liveness reconciliation. {}",
+                        provider_run_id,
+                        exit.ended_run.provider(),
+                        if session_outcome.started_next_prompt {
+                            "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
+                        } else {
+                            "The active prompt was closed without starting the queued backlog."
+                        }
+                    ),
+                );
+            }
             return Ok(exit.already_ended);
         }
 
@@ -54,6 +77,9 @@ impl KernelRuntimeState {
             .shutdown_run(provider_run_id)
             .await;
         if exit.already_ended {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+                .await?;
             return Ok(true);
         }
 

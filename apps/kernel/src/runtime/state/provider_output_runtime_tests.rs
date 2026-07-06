@@ -2596,6 +2596,79 @@ async fn owned_end_session_clears_stale_prompt_runtime_state_for_already_ended_s
 }
 
 #[tokio::test]
+async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "do work\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should be marked ended")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let already_ended = runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("already-ended liveness reconciliation should succeed");
+
+    assert!(already_ended);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_none(),
+        "already-ended provider reconciliation should close the active prompt"
+    );
+    let app = app.lock().await;
+    assert!(
+        !app.prompt_activity_store().read().contains_key(run.id()),
+        "already-ended provider reconciliation should clear prompt activity"
+    );
+    assert!(
+        !app.active_turn_store().snapshot().contains_key(run.id()),
+        "already-ended provider reconciliation should clear active turn state"
+    );
+}
+
+#[tokio::test]
 async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provider_runs() {
     let mut app =
         DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
