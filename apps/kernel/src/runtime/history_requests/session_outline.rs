@@ -113,14 +113,13 @@ fn load_agent_outline(
         prompts.remove(0);
     }
     if prompts.is_empty() {
-        if before_sequence.is_some() {
-            return Ok(SessionHistoryOutlineAgent {
-                agent_id: agent_id.to_string(),
-                turns: Vec::new(),
-                next_cursor: None,
-            });
-        }
-        return load_promptless_agent_outline(operational_history, session_id, agent_id);
+        return load_promptless_agent_outline(
+            operational_history,
+            session_id,
+            agent_id,
+            latest_prompt_count,
+            before_sequence,
+        );
     }
     let mut turns = Vec::new();
     let mut seen_turn_ids = BTreeSet::new();
@@ -160,36 +159,79 @@ fn load_promptless_agent_outline(
     operational_history: &OperationalHistoryStore,
     session_id: &str,
     agent_id: &str,
+    latest_prompt_count: usize,
+    before_sequence: Option<u64>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let events = operational_history.load_session_events(session_id, Some(agent_id))?;
-    let Some(latest_event) = events.last() else {
-        return Ok(SessionHistoryOutlineAgent {
-            agent_id: agent_id.to_string(),
-            turns: Vec::new(),
-            next_cursor: None,
-        });
-    };
-    let latest_key = promptless_turn_group_key(latest_event);
-    let turn_events = events
+    let events = operational_history
+        .load_session_events(session_id, Some(agent_id))?
         .into_iter()
-        .filter(|event| promptless_turn_group_key(event) == latest_key)
+        .filter(|event| before_sequence.is_none_or(|sequence| event.sequence < sequence))
         .collect::<Vec<_>>();
-    let Some(first_event) = turn_events.first() else {
+    let mut groups = promptless_turn_groups(events);
+    let has_more = groups.len() > latest_prompt_count;
+    if has_more {
+        groups = groups.split_off(groups.len().saturating_sub(latest_prompt_count));
+    }
+    if groups.is_empty() {
         return Ok(SessionHistoryOutlineAgent {
             agent_id: agent_id.to_string(),
             turns: Vec::new(),
             next_cursor: None,
         });
-    };
+    }
+    let mut turns = Vec::new();
+    let mut seen_turn_ids = BTreeSet::new();
+    for (latest_key, turn_events) in &groups {
+        if let Some(mut turn) =
+            promptless_outline_turn(session_id, agent_id, latest_key, turn_events)
+        {
+            ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
+            turns.push(turn);
+        }
+    }
+    let next_cursor = has_more
+        .then(|| groups.first())
+        .flatten()
+        .and_then(|(_, events)| events.first())
+        .map(|event| SessionHistoryOutlineCursor {
+            before_sequence: event.sequence,
+        });
+    Ok(SessionHistoryOutlineAgent {
+        agent_id: agent_id.to_string(),
+        turns,
+        next_cursor,
+    })
+}
+
+fn promptless_turn_groups(events: Vec<HistoryEvent>) -> Vec<(String, Vec<HistoryEvent>)> {
+    let mut groups = Vec::<(String, Vec<HistoryEvent>)>::new();
+    for event in events {
+        let key = promptless_turn_group_key(&event);
+        if let Some((_, events)) = groups.iter_mut().find(|(candidate, _)| candidate == &key) {
+            events.push(event);
+        } else {
+            groups.push((key, vec![event]));
+        }
+    }
+    groups
+}
+
+fn promptless_outline_turn(
+    session_id: &str,
+    agent_id: &str,
+    latest_key: &str,
+    turn_events: &[HistoryEvent],
+) -> Option<SessionHistoryOutlineTurn> {
+    let first_event = turn_events.first()?;
     let synthetic_prompt_entry =
-        promptless_synthetic_prompt_entry(session_id, agent_id, &turn_events);
+        promptless_synthetic_prompt_entry(session_id, agent_id, turn_events);
     let synthetic_prompt = HistoryEvent::transcript(
         first_event.sequence.saturating_sub(1),
         &synthetic_prompt_entry,
         HistoryEventTurnContext {
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
-            turn_id: Some(latest_key),
+            turn_id: Some(latest_key.to_string()),
             provider_run_id: first_event.provider_run_id.clone(),
             provider_session_id: first_event.provider_session_id.clone(),
             provider: first_event.provider.clone(),
@@ -203,15 +245,8 @@ fn load_promptless_agent_outline(
     );
     let mut events_with_prompt = Vec::with_capacity(turn_events.len() + 1);
     events_with_prompt.push(synthetic_prompt.clone());
-    events_with_prompt.extend(turn_events);
-    let turns = outline_turn_from_events(&synthetic_prompt, events_with_prompt, false)
-        .into_iter()
-        .collect::<Vec<_>>();
-    Ok(SessionHistoryOutlineAgent {
-        agent_id: agent_id.to_string(),
-        turns,
-        next_cursor: None,
-    })
+    events_with_prompt.extend(turn_events.iter().cloned());
+    outline_turn_from_events(&synthetic_prompt, events_with_prompt, false)
 }
 
 fn promptless_synthetic_prompt_entry(
@@ -1366,6 +1401,81 @@ mod tests {
         );
         assert_eq!(outline.turns[0].blobs[0].summary, "$ cargo test");
 
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn agent_outline_pages_promptless_provider_activity_groups() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-promptless-outline-pages-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        for index in 1..=3 {
+            let context = HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some(format!("turn-{index}")),
+                provider_run_id: Some(format!("run-{index}")),
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5".to_string()),
+                ..HistoryEventTurnContext::default()
+            };
+            let output = HistoryEvent::transcript(
+                index * 10,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    &format!("run-{index}"),
+                    Some("agent-1"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some(format!("merge-{index}")),
+                    format!("promptless output {index}"),
+                ),
+                context,
+            );
+            store
+                .append(&output)
+                .expect("promptless provider activity should append");
+        }
+
+        let latest = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+            .expect("latest outline should load");
+
+        assert_eq!(latest.turns.len(), 2);
+        assert_eq!(latest.turns[0].turn_id, "turn-2");
+        assert_eq!(latest.turns[1].turn_id, "turn-3");
+        assert_eq!(
+            latest
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+            Some(20)
+        );
+
+        let older = load_agent_outline(
+            &store,
+            "session-1",
+            "agent-1",
+            2,
+            latest
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+        )
+        .expect("older promptless outline page should load");
+
+        assert_eq!(older.turns.len(), 1);
+        assert_eq!(older.turns[0].turn_id, "turn-1");
+        assert_eq!(older.next_cursor, None);
+
+        drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
