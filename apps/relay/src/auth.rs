@@ -61,6 +61,8 @@ pub struct RelayTokenClaims {
     pub device_id: Option<String>,
     pub machine_id: Option<String>,
     pub client_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub public_key_thumbprint: Option<String>,
     pub entitlements_version: Option<String>,
 }
@@ -392,6 +394,8 @@ struct CloudJwtClaims {
     #[serde(default)]
     client_id: Option<String>,
     #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
     public_key_thumbprint: Option<String>,
     #[serde(default)]
     entitlements_version: Option<String>,
@@ -482,6 +486,7 @@ fn parse_cloud_jwt_claims(payload: &[u8]) -> Result<RelayTokenClaims, RelayAuthE
         device_id: claims.device_id,
         machine_id: claims.machine_id,
         client_id: claims.client_id,
+        session_id: claims.session_id,
         public_key_thumbprint: claims.public_key_thumbprint,
         entitlements_version: claims.entitlements_version,
     })
@@ -653,6 +658,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: Some("client-1".to_string()),
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         };
@@ -687,6 +693,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: None,
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         };
@@ -731,6 +738,7 @@ mod tests {
                 device_id: None,
                 machine_id: None,
                 client_id: Some("client-1".to_string()),
+                session_id: None,
                 public_key_thumbprint: Some("thumbprint".to_string()),
                 entitlements_version: None,
             },
@@ -774,6 +782,52 @@ mod tests {
         assert_eq!(target_error, RelayAuthError::TargetNotAllowed);
     }
 
+    // Cross-implementation conformance: this JWT was minted by the
+    // arroba-cloud @arroba-cloud/relay-tokens issuer (the canonical issuer)
+    // with the fixed secret/timestamps below. The identical fixture is checked
+    // by the TypeScript suite; if either side's claim wire shape drifts, one
+    // of the two conformance tests fails. Keep in sync with
+    // arroba-cloud/packages/relay-tokens/src/conformance-vectors.json.
+    const CONFORMANCE_SECRET: &str = "conformance-shared-secret";
+    const CONFORMANCE_ISSUER: &str = "arroba-cloud-conformance";
+    const CONFORMANCE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhcnJvYmEtY2xvdWQtY29uZm9ybWFuY2UiLCJzdWIiOiJjbGllbnQtMSIsInJlYWxtX2lkIjoicmVhbG0tMSIsInN1YmplY3Rfa2luZCI6ImNsaWVudCIsImFsbG93ZWRfYWN0aW9ucyI6WyJjbGllbnQuY29ubmVjdCIsImNsaWVudC5tZXRhZGF0YS5yZWFkIiwicGFja2V0LnJvdXRlIl0sImFsbG93ZWRfdGFyZ2V0cyI6WyJkYWVtb24tMSJdLCJpYXQiOjEwMDAwMDAwMDAsImV4cCI6MTAwMDAwMzYwMCwianRpIjoiY29uZm9ybWFuY2UtdG9rZW4tMSIsImFjY291bnRfaWQiOiJhY2NvdW50LTEiLCJ1c2VyX2lkIjoidXNlci0xIiwiY2xpZW50X2lkIjoiY2xpZW50LTEiLCJzZXNzaW9uX2lkIjoic2Vzc2lvbi0xIiwicHVibGljX2tleV90aHVtYnByaW50IjoidGh1bWItMSJ9.jrT5UtSBvvHbr26_lQqVWA2dC41THlz8PdpMlb0yxRo";
+
+    #[test]
+    fn verifies_conformance_token_issued_by_the_typescript_issuer() {
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([(
+                CONFORMANCE_ISSUER.to_string(),
+                CONFORMANCE_SECRET.to_string(),
+            )]),
+            Some(1_000_001_800_000),
+        );
+
+        let identity = verifier
+            .verify(RelayAuthRequest {
+                token: CONFORMANCE_TOKEN,
+                action: RelayAction::ClientConnect,
+                target: Some("daemon-1"),
+            })
+            .expect("cross-issued conformance token should verify");
+
+        assert_eq!(identity.realm_id, "realm-1");
+        assert_eq!(identity.subject, "client-1");
+        assert_eq!(identity.subject_kind, RelaySubjectKind::Client);
+        assert_eq!(identity.token_id.as_deref(), Some("conformance-token-1"));
+        assert_eq!(identity.user_id.as_deref(), Some("user-1"));
+        assert_eq!(identity.public_key_thumbprint.as_deref(), Some("thumb-1"));
+    }
+
+    #[test]
+    fn conformance_token_carries_session_id_through_claim_parsing() {
+        let parts = CONFORMANCE_TOKEN.split('.').collect::<Vec<_>>();
+        let claims_payload = URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .expect("conformance claims decode");
+        let claims = parse_cloud_jwt_claims(&claims_payload).expect("conformance claims parse");
+        assert_eq!(claims.session_id.as_deref(), Some("session-1"));
+    }
+
     #[test]
     fn validate_claims_rejects_implausible_future_issue_times() {
         let claims = RelayTokenClaims {
@@ -792,6 +846,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: None,
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         };
@@ -830,6 +885,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: Some("client-1".to_string()),
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         };
@@ -896,6 +952,7 @@ mod tests {
             device_id: Some("device-1".to_string()),
             machine_id: None,
             client_id: Some("client-1".to_string()),
+            session_id: None,
             public_key_thumbprint: Some("thumbprint".to_string()),
             entitlements_version: Some("entitlements-1".to_string()),
         };
@@ -943,6 +1000,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: Some("client-1".to_string()),
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         };

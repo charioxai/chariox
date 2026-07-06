@@ -215,6 +215,7 @@ mod tests {
             device_id: None,
             machine_id: None,
             client_id: None,
+            session_id: None,
             public_key_thumbprint: None,
             entitlements_version: None,
         }
