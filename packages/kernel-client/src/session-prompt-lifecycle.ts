@@ -6,8 +6,15 @@ import {
   type AgentRuntimeActivityProjection,
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
-import type { ExternalProviderObservedTranscriptIdentityFields } from "./external-provider-observation.js"
-import { promptOriginFromRecord } from "./prompt-origin.js"
+import {
+  parseExternalProviderObservedId,
+  type ExternalProviderObservedTranscriptIdentityFields,
+} from "./external-provider-observation.js"
+import {
+  ARROBA_PROMPT_ORIGIN,
+  EXTERNAL_PROMPT_ORIGIN,
+  promptOriginFromRecord,
+} from "./prompt-origin.js"
 import {
   sessionHasAgentActivityProjection,
   sessionHasPromptStateProjection,
@@ -89,10 +96,21 @@ export function sessionPromptLifecycleTransition(
 }
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
+  const promptOrigin = promptOriginFromRecord(prompt)
+  const externalObservedId = promptOrigin === ARROBA_PROMPT_ORIGIN
+    ? null
+    : parseExternalProviderObservedId(prompt.id)
   return {
     ...prompt,
     status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
-    promptOrigin: promptOriginFromRecord(prompt),
+    promptOrigin: promptOrigin ?? (externalObservedId ? EXTERNAL_PROMPT_ORIGIN : null),
+    ...(externalObservedId
+      ? {
+        externalProvider: externalObservedId.provider,
+        externalProviderSessionId: externalObservedId.providerSessionId,
+        externalProviderTurnId: externalObservedId.providerTurnId,
+      }
+      : {}),
   }
 }
 

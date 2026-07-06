@@ -17,12 +17,26 @@ import {
   mergeExternalProviderObservedSource,
   mergeExternalProviderObservedTranscriptFields,
   mergeExternalProviderObservation,
+  parseExternalProviderObservedId,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
   transcriptExternalProviderObservedTurnMarker,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedMutableKernelFields,
 } from "./external-provider-observation.js"
+
+test("external provider observed id parser follows runtime merge key shape", () => {
+  assert.deepEqual(parseExternalProviderObservedId("external: codex : thread-1 : item:with:colon "), {
+    provider: "codex",
+    providerSessionId: "thread-1",
+    providerTurnId: "item:with:colon",
+  })
+  assert.equal(parseExternalProviderObservedId(" external:codex:thread-1:item-1"), null)
+  assert.equal(parseExternalProviderObservedId("external:codex"), null)
+  assert.equal(parseExternalProviderObservedId("external:codex:thread-1:"), null)
+  assert.equal(parseExternalProviderObservedId("prompt-1"), null)
+  assert.equal(parseExternalProviderObservedId(null), null)
+})
 
 test("external provider observed predicate requires kernel observed source", () => {
   assert.equal(sessionHistoryEntryIsExternalProviderObserved({

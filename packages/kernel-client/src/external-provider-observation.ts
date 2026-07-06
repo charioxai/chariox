@@ -16,6 +16,12 @@ export type ExternalProviderObservedTurnMetadata = {
   externalProviderTurnId: string | null
 }
 
+export type ExternalProviderObservedId = {
+  provider: string
+  providerSessionId: string
+  providerTurnId: string
+}
+
 export type ExternalProviderObservedTurnMarker = {
   provider: string
   providerSessionId: string
@@ -40,6 +46,26 @@ export function sessionHistoryEntryIsExternalProviderObserved(
   entry: { readonly source?: string | null | undefined },
 ): boolean {
   return normalizeExternalProviderObservedSource(entry.source) === EXTERNAL_PROVIDER_OBSERVED_SOURCE
+}
+
+export function parseExternalProviderObservedId(
+  value: string | null | undefined,
+): ExternalProviderObservedId | null {
+  const parts = value?.split(":")
+  if (!parts || parts.length < 4 || parts[0] !== "external") {
+    return null
+  }
+  const provider = parts[1]?.trim() ?? ""
+  const providerSessionId = parts[2]?.trim() ?? ""
+  const providerTurnId = parts.slice(3).join(":").trim()
+  if (!provider || !providerSessionId || !providerTurnId) {
+    return null
+  }
+  return {
+    provider,
+    providerSessionId,
+    providerTurnId,
+  }
 }
 
 export function historyEntryExternalProviderObservedMetadata(

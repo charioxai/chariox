@@ -130,6 +130,67 @@ test("session prompt lifecycle falls back to prompt state for sparse active acti
   }])
 })
 
+test("session prompt lifecycle records external prompt-state identity from runtime id", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:turn:with:colon",
+          source_attachment_id: "external:codex",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          prompt_origin: " External ",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "external:codex:thread-1:turn:with:colon",
+    source_attachment_id: "external:codex",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    prompt_origin: " External ",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn:with:colon",
+  }])
+})
+
+test("session prompt lifecycle keeps explicit arroba ownership over external-shaped ids", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    active_prompt: {
+      id: "external:codex:thread-1:turn-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "running",
+      prompt_origin: "arroba",
+    },
+  })), [{
+    id: "external:codex:thread-1:turn-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    prompt_origin: "arroba",
+    promptOrigin: "arroba",
+  }])
+})
+
 test("session prompt lifecycle records external active turn metadata", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
