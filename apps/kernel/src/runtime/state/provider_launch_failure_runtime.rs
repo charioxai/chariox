@@ -47,7 +47,8 @@ impl KernelRuntimeState {
             {
                 owned.provider_run_projection.update(run);
             }
-            if let Some(agent) = clear_failed_codex_resume_state_for_runtime(owned, started, error)
+            if let Some(agent) =
+                clear_failed_provider_resume_state_for_runtime(owned, started, error)
             {
                 durable_agent_update = Some(agent);
             }
@@ -183,17 +184,26 @@ impl KernelRuntimeState {
     }
 }
 
-fn clear_failed_codex_resume_state_for_runtime(
+fn clear_failed_provider_resume_state_for_runtime(
     owned: &KernelRuntimeOwnedState,
     started: &crate::app::StartedProviderLaunch,
     error: &DaemonError,
 ) -> Option<crate::agent::AgentInstance> {
     let replacement_resume_state =
-        crate::app::failed_codex_resume_state_replacement(&started.run, error)?;
+        crate::app::failed_provider_resume_state_replacement(&started.run, error)?;
     let agent_id = started.run.agent_instance_id()?;
-    let stale_thread_id = started.run.resume_state().codex_thread_id()?.to_string();
+    let provider = started.run.adapter_key();
+    let stale_provider_session_id = started
+        .run
+        .resume_state()
+        .provider_session_id(provider)?
+        .to_string();
     let current = owned.agent_store.get_agent(agent_id).ok()?;
-    if current.provider_resume_state().codex_thread_id() != Some(stale_thread_id.as_str()) {
+    if current
+        .provider_resume_state()
+        .provider_session_id(provider)
+        != Some(stale_provider_session_id.as_str())
+    {
         return None;
     }
     let agent = owned
@@ -212,9 +222,12 @@ fn clear_failed_codex_resume_state_for_runtime(
         owned
             .attachment_store
             .list_session_attachment_ids(started.run.session_id()),
-        format!(
-            "Codex resume thread `{stale_thread_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
-        ),
+        crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
+            .unwrap_or_else(|| {
+                format!(
+                    "Provider session `{stale_provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable provider session."
+                )
+            }),
     );
     Some(agent)
 }

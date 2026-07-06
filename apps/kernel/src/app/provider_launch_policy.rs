@@ -115,20 +115,15 @@ pub(crate) fn apply_metaagent_launch_policy(
     request
 }
 
-pub(crate) fn failed_codex_resume_state_replacement(
+pub(crate) fn failed_provider_resume_state_replacement(
     run: &RuntimeProviderRun,
     error: &DaemonError,
 ) -> Option<ProviderResumeState> {
-    if run.adapter_key() != "codex" || run.resume_state().codex_thread_id().is_none() {
-        return None;
-    }
     let DaemonError::ProviderProtocol { operation, .. } = error else {
         return None;
     };
-    if *operation != "codex_thread_resume" {
-        return None;
-    }
-    Some(run.resume_state().without_codex_thread_id())
+    run.resume_state()
+        .replacement_after_provider_resume_failure(run.adapter_key(), operation)
 }
 
 pub(crate) fn generate_runtime_mcp_auth_token() -> String {

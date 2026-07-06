@@ -50,6 +50,15 @@ pub fn normalize_provider_resume_model(provider: &str, model: &str) -> String {
     }
 }
 
+pub fn provider_resume_failure_notice(provider: &str, provider_session_id: &str) -> Option<String> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => Some(format!(
+            "Codex resume thread `{provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
+        )),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderResumeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,6 +157,23 @@ impl ProviderResumeState {
             "opencode" => self.without_opencode_session_id(),
             "claude" => self.without_claude_session_id(),
             _ => self.clone(),
+        }
+    }
+
+    pub fn replacement_after_provider_resume_failure(
+        &self,
+        provider: &str,
+        operation: &str,
+    ) -> Option<Self> {
+        if self.provider_session_id(provider).is_none() {
+            return None;
+        }
+        match (
+            provider.trim().to_ascii_lowercase().as_str(),
+            operation.trim(),
+        ) {
+            ("codex", "codex_thread_resume") => Some(self.without_provider_session_id(provider)),
+            _ => None,
         }
     }
 
@@ -634,7 +660,8 @@ pub struct ProviderLaunchResult {
 mod tests {
     use super::{
         external_provider_import_model, normalize_provider_resume_model,
-        ExternalProviderImportMetadata, LaunchProviderRequest, ProviderResumeState,
+        provider_resume_failure_notice, ExternalProviderImportMetadata, LaunchProviderRequest,
+        ProviderResumeState,
     };
 
     #[test]
@@ -773,6 +800,33 @@ mod tests {
         );
         assert!(
             ProviderResumeState::from_external_provider_session("unknown", "session-1").is_empty()
+        );
+    }
+
+    #[test]
+    fn provider_resume_state_replacement_after_resume_failure_is_provider_policy() {
+        let mut state = ProviderResumeState::from_codex_thread_id("codex-thread");
+        state.set_opencode_session_id("opencode-session");
+
+        let replacement = state
+            .replacement_after_provider_resume_failure("codex", "codex_thread_resume")
+            .expect("Codex resume failures should clear the stale Codex thread id");
+
+        assert_eq!(replacement.codex_thread_id(), None);
+        assert_eq!(replacement.opencode_session_id(), Some("opencode-session"));
+        assert_eq!(
+            state.replacement_after_provider_resume_failure("codex", "other_operation"),
+            None
+        );
+        assert_eq!(
+            state.replacement_after_provider_resume_failure("opencode", "codex_thread_resume"),
+            None
+        );
+        assert!(provider_resume_failure_notice("codex", "codex-thread")
+            .is_some_and(|message| message.contains("codex-thread")));
+        assert_eq!(
+            provider_resume_failure_notice("opencode", "session-1"),
+            None
         );
     }
 

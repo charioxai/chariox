@@ -105,7 +105,7 @@ pub(crate) use provider_first_output_watchdog::{
     ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
 };
 pub(crate) use provider_launch_policy::{
-    apply_metaagent_launch_policy, failed_codex_resume_state_replacement,
+    apply_metaagent_launch_policy, failed_provider_resume_state_replacement,
     generate_runtime_mcp_auth_token, granted_mcp_servers_for_agent_launch,
     resolve_mcp_credentials_for_launch, sanitize_resume_state_for_launch,
     workspace_live_sync_protected_roots,

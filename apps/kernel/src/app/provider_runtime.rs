@@ -8,7 +8,7 @@ use crate::provider::{
 
 use super::provider_activation::ProviderRunActivationState;
 pub(crate) use super::provider_activation::StartedProviderLaunch;
-use super::provider_launch_policy::failed_codex_resume_state_replacement;
+use super::provider_launch_policy::failed_provider_resume_state_replacement;
 use super::provider_liveness::clear_active_provider_run_session_pointer;
 pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
@@ -162,14 +162,14 @@ impl DaemonApp {
         {
             self.update_provider_run_projection(run);
         }
-        if let Some(agent) = self.clear_failed_codex_resume_state(started, error) {
+        if let Some(agent) = self.clear_failed_provider_resume_state(started, error) {
             let _ = self.durable_state_store().append_event(
                 "agent.runtime_profile_updated",
                 Some(agent.id().to_string()),
                 serde_json::json!({
                     "agent": &agent,
                     "provider_run_id": started.run.id(),
-                    "reason": "failed_codex_resume_state_cleared",
+                    "reason": "failed_provider_resume_state_cleared",
                 }),
             );
         }
@@ -218,16 +218,26 @@ impl DaemonApp {
             .session_snapshot(started.run.session_id());
     }
 
-    fn clear_failed_codex_resume_state(
+    fn clear_failed_provider_resume_state(
         &mut self,
         started: &StartedProviderLaunch,
         error: &DaemonError,
     ) -> Option<AgentInstance> {
-        let replacement_resume_state = failed_codex_resume_state_replacement(&started.run, error)?;
+        let replacement_resume_state =
+            failed_provider_resume_state_replacement(&started.run, error)?;
         let agent_id = started.run.agent_instance_id()?;
-        let stale_thread_id = started.run.resume_state().codex_thread_id()?.to_string();
+        let provider = started.run.adapter_key();
+        let stale_provider_session_id = started
+            .run
+            .resume_state()
+            .provider_session_id(provider)?
+            .to_string();
         let current = self.agents.get_agent(agent_id).ok()?;
-        if current.provider_resume_state().codex_thread_id() != Some(stale_thread_id.as_str()) {
+        if current
+            .provider_resume_state()
+            .provider_session_id(provider)
+            != Some(stale_provider_session_id.as_str())
+        {
             return None;
         }
         let agent = self
@@ -245,9 +255,12 @@ impl DaemonApp {
             Some(started.run.id()),
             self.attachments
                 .list_session_attachment_ids(started.run.session_id()),
-            format!(
-                "Codex resume thread `{stale_thread_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
-            ),
+            crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
+                .unwrap_or_else(|| {
+                    format!(
+                        "Provider session `{stale_provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable provider session."
+                    )
+                }),
         );
         Some(agent)
     }
@@ -562,7 +575,7 @@ mod tests {
             message: "Codex could not resume thread `thread-1`: no rollout found".to_string(),
         };
 
-        let replacement = failed_codex_resume_state_replacement(&run, &error)
+        let replacement = failed_provider_resume_state_replacement(&run, &error)
             .expect("failed Codex resume should clear the stale thread id");
 
         assert_eq!(replacement.codex_thread_id(), None);
