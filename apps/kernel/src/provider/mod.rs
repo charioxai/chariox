@@ -36,9 +36,10 @@ pub use command_catalog::{
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
 };
 pub use launch_contract::{
-    canonical_external_provider_session_id, external_provider_import_model,
-    external_provider_session_providers, normalize_provider_resume_model,
-    provider_resume_failure_notice, AgentExecutionMode, AgentPermissionLevel,
+    canonical_external_provider_session_id, default_provider_control_capabilities,
+    external_provider_import_model, external_provider_session_providers,
+    normalize_provider_resume_model, provider_resume_failure_notice,
+    provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode, AgentPermissionLevel,
     ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
     ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };

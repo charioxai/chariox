@@ -8,13 +8,14 @@ use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::unix_epoch_ms;
 
 use super::launch_contract::{
-    default_provider_owner_user_id, AgentExecutionMode, AgentPermissionLevel,
+    default_provider_control_capabilities, default_provider_owner_user_id,
+    provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode, AgentPermissionLevel,
     ExternalProviderImportMetadata, LaunchProviderRequest, ProviderLaunchResult,
     ProviderResumeState, ProviderWriteAccessMode,
 };
 use super::types::{
-    AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
-    ProviderClientInterface, ProviderRunState,
+    AgentEndpointMode, ControlCapability, ControlOperation, ProviderClientInterface,
+    ProviderRunState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,9 +128,8 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
-            control_capabilities: default_control_capabilities(
+            control_capabilities: default_provider_control_capabilities(
                 &request.adapter_key,
-                launch_result.endpoint_mode,
                 request.runtime_mcp_binding.is_some(),
             ),
             resume_state: request.resume_state.clone().unwrap_or_default(),
@@ -152,7 +152,7 @@ impl RuntimeProviderRun {
         adapter_key: String,
     ) -> Self {
         let inferred_has_runtime_mcp_binding =
-            matches!(adapter_key.as_str(), "claude" | "codex" | "opencode");
+            provider_uses_inferred_runtime_mcp_binding(&adapter_key);
         let now = unix_epoch_ms();
         Self {
             id: id.into(),
@@ -187,9 +187,8 @@ impl RuntimeProviderRun {
             workspace_live_sync_roots: Vec::new(),
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
-            control_capabilities: default_control_capabilities(
+            control_capabilities: default_provider_control_capabilities(
                 &adapter_key,
-                AgentEndpointMode::Managed,
                 inferred_has_runtime_mcp_binding,
             ),
             resume_state: ProviderResumeState::default(),
@@ -503,47 +502,6 @@ fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
         ProviderRunState::Starting => 1,
         ProviderRunState::Ended => 0,
     }
-}
-
-fn default_control_capabilities(
-    adapter_key: &str,
-    _endpoint_mode: AgentEndpointMode,
-    has_runtime_mcp_binding: bool,
-) -> Vec<ControlCapability> {
-    let mut capabilities = Vec::new();
-
-    if matches!(adapter_key, "claude" | "codex" | "opencode") {
-        capabilities.push(ControlCapability::new(
-            ControlOperation::InterruptTurn,
-            ControlCapabilityMode::Native,
-        ));
-        capabilities.push(ControlCapability::new(
-            ControlOperation::CancelPrompt,
-            ControlCapabilityMode::Native,
-        ));
-    }
-
-    if adapter_key == "dev-stub" {
-        capabilities.push(ControlCapability::new(
-            ControlOperation::AckWorkflowTurn,
-            ControlCapabilityMode::AdapterEmulated,
-        ));
-        capabilities.push(ControlCapability::new(
-            ControlOperation::ValidateWorkflowHandoff,
-            ControlCapabilityMode::AdapterEmulated,
-        ));
-    } else if has_runtime_mcp_binding {
-        capabilities.push(ControlCapability::new(
-            ControlOperation::AckWorkflowTurn,
-            ControlCapabilityMode::Mcp,
-        ));
-        capabilities.push(ControlCapability::new(
-            ControlOperation::ValidateWorkflowHandoff,
-            ControlCapabilityMode::Mcp,
-        ));
-    }
-
-    capabilities
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

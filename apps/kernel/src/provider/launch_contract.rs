@@ -8,7 +8,10 @@ use serde_json::Value;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
-use super::types::{AgentEndpointMode, ProviderClientInterface};
+use super::types::{
+    AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
+    ProviderClientInterface,
+};
 
 pub(super) fn default_provider_owner_user_id() -> String {
     DEFAULT_LOCAL_USER_ID.to_string()
@@ -57,6 +60,54 @@ pub fn provider_resume_failure_notice(provider: &str, provider_session_id: &str)
         )),
         _ => None,
     }
+}
+
+pub fn provider_uses_inferred_runtime_mcp_binding(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "claude" | "codex" | "opencode"
+    )
+}
+
+pub fn default_provider_control_capabilities(
+    provider: &str,
+    has_runtime_mcp_binding: bool,
+) -> Vec<ControlCapability> {
+    let provider = provider.trim().to_ascii_lowercase();
+    let mut capabilities = Vec::new();
+
+    if provider_uses_inferred_runtime_mcp_binding(&provider) {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::InterruptTurn,
+            ControlCapabilityMode::Native,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::CancelPrompt,
+            ControlCapabilityMode::Native,
+        ));
+    }
+
+    if provider == "dev-stub" {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::AckWorkflowTurn,
+            ControlCapabilityMode::AdapterEmulated,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::ValidateWorkflowHandoff,
+            ControlCapabilityMode::AdapterEmulated,
+        ));
+    } else if has_runtime_mcp_binding {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::AckWorkflowTurn,
+            ControlCapabilityMode::Mcp,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::ValidateWorkflowHandoff,
+            ControlCapabilityMode::Mcp,
+        ));
+    }
+
+    capabilities
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,10 +710,12 @@ pub struct ProviderLaunchResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        external_provider_import_model, normalize_provider_resume_model,
-        provider_resume_failure_notice, ExternalProviderImportMetadata, LaunchProviderRequest,
-        ProviderResumeState,
+        default_provider_control_capabilities, external_provider_import_model,
+        normalize_provider_resume_model, provider_resume_failure_notice,
+        provider_uses_inferred_runtime_mcp_binding, ExternalProviderImportMetadata,
+        LaunchProviderRequest, ProviderResumeState,
     };
+    use crate::provider::{ControlCapabilityMode, ControlOperation};
 
     #[test]
     fn launch_request_tracks_managed_workspace_live_sync_mode() {
@@ -840,5 +893,38 @@ mod tests {
             normalize_provider_resume_model("claude", " claude/sonnet "),
             "claude/sonnet"
         );
+    }
+
+    #[test]
+    fn provider_control_capability_defaults_are_provider_contract_policy() {
+        assert!(provider_uses_inferred_runtime_mcp_binding("codex"));
+        assert!(provider_uses_inferred_runtime_mcp_binding("CLAUDE"));
+        assert!(provider_uses_inferred_runtime_mcp_binding("opencode"));
+        assert!(!provider_uses_inferred_runtime_mcp_binding("dev-stub"));
+
+        let codex = default_provider_control_capabilities("codex", true);
+        assert!(codex.iter().any(|capability| {
+            capability.operation() == ControlOperation::InterruptTurn
+                && capability.mode() == ControlCapabilityMode::Native
+        }));
+        assert!(codex.iter().any(|capability| {
+            capability.operation() == ControlOperation::CancelPrompt
+                && capability.mode() == ControlCapabilityMode::Native
+        }));
+        assert!(codex.iter().any(|capability| {
+            capability.operation() == ControlOperation::AckWorkflowTurn
+                && capability.mode() == ControlCapabilityMode::Mcp
+        }));
+
+        let dev_stub = default_provider_control_capabilities("dev-stub", true);
+        assert_eq!(
+            dev_stub
+                .iter()
+                .filter(|capability| capability.mode() == ControlCapabilityMode::AdapterEmulated)
+                .count(),
+            2
+        );
+
+        assert!(default_provider_control_capabilities("unknown", false).is_empty());
     }
 }
