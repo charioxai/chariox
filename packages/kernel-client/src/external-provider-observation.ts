@@ -393,6 +393,8 @@ export type ExternalProviderObservedImportScopedEntryFields = Pick<
 }
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
+  readonly external_provider?: string | null | undefined
+  readonly external_provider_session_id?: string | null | undefined
   readonly external_provider_turn_id?: string | null | undefined
 }
 

@@ -142,6 +142,7 @@ test("session prompt lifecycle records external active turn metadata", () => {
         active_turn: {
           prompt_id: "external:codex:thread-1:turn-1",
           provider_run_id: "run-1",
+          prompt_origin: "external",
           external_provider: "codex",
           external_provider_session_id: "thread-1",
           external_provider_turn_id: "turn-1",
@@ -176,6 +177,7 @@ test("session prompt lifecycle transition settles external active turns", () => 
           unread_idle_output: false,
           active_turn: {
             prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
             external_provider: "codex",
             external_provider_session_id: "thread-1",
             external_provider_turn_id: "turn-1",

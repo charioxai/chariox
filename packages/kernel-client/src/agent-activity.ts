@@ -108,11 +108,6 @@ export function agentRuntimeActivityProjectionHasExternalActiveTurn(
   projection: AgentRuntimeActivityProjection,
 ): boolean {
   return promptOriginIsExternal(projection.activeTurnPromptOrigin)
-    || Boolean(
-      projection.activeTurnExternalProvider
-        || projection.activeTurnExternalProviderSessionId
-        || projection.activeTurnExternalProviderTurnId,
-    )
 }
 
 export function agentRuntimeActivityResolvedStatus(
@@ -310,9 +305,6 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
   const activeTurnPromptOrigin = promptOriginFromRecord({
     prompt_origin: readStringField(activeTurn, "prompt_origin"),
-    external_provider: readStringField(activeTurn, "external_provider"),
-    external_provider_session_id: readStringField(activeTurn, "external_provider_session_id"),
-    external_provider_turn_id: readStringField(activeTurn, "external_provider_turn_id"),
   }) ?? undefined
   const activeTurnExternalProvider = readNonBlankStringField(activeTurn, "external_provider") ?? undefined
   const activeTurnExternalProviderSessionId = readNonBlankStringField(activeTurn, "external_provider_session_id") ?? undefined

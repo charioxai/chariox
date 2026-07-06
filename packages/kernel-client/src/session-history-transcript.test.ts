@@ -333,6 +333,7 @@ test("session history outline hydration carries prompt identity into entries and
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
+      prompt_origin: "external",
       external_provider: " codex ",
       external_provider_session_id: " thread-1 ",
       external_provider_turn_id: " user-1 ",
@@ -555,6 +556,7 @@ test("session history blob replacement preserves prompt and external turn metada
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
+      prompt_origin: "external",
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
