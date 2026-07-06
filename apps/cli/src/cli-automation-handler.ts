@@ -119,6 +119,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
             deps.focusedAgentId(),
             prompt.endsWith("\n") ? prompt : `${prompt}\n`,
             attachments,
+            deps.sessionState,
             deps.options,
             deps.appLogger,
           )

@@ -6,6 +6,7 @@ import {
   isCompleteSessionSnapshot,
   resolveAttachTimeProviderLaunch,
   resolveLaunchTargetAgent,
+  resolvePromptRecoveryProviderLaunch,
   resolveSessionAgentDefaults,
   resolveStoredAgentLaunch,
   sessionListEntryFromSession,
@@ -279,6 +280,74 @@ test("resolveAttachTimeProviderLaunch skips attach-time launches that cannot be 
   assert.equal(
     resolveAttachTimeProviderLaunch(makeSession({ agents: [] }), fallback, true).action,
     "launch_provider_run",
+  )
+})
+
+test("resolvePromptRecoveryProviderLaunch uses the explicit prompt target agent", () => {
+  const session = makeSession({
+    focused_agent_id: "agent-a",
+    agents: [
+      makeAgent("agent-a", {
+        provider: "codex",
+        model: "codex/gpt-5",
+        effort: "medium",
+      }),
+      makeAgent("agent-b", {
+        provider: "claude",
+        model: "claude/sonnet-4.6",
+        effort: "high",
+      }),
+    ],
+    active_provider_run_id: "stale-run",
+  })
+
+  assert.deepEqual(
+    resolvePromptRecoveryProviderLaunch(
+      session,
+      { provider: "opencode", model: "kimi/k2.6", effort: "low" },
+      "agent-b",
+    ),
+    {
+      action: "launch_provider_run",
+      launch: { provider: "claude", model: "claude/sonnet-4.6", effort: "high" },
+      targetAgent: session.agents[1],
+      targetAgentId: "agent-b",
+    },
+  )
+})
+
+test("resolvePromptRecoveryProviderLaunch skips local recovery for non-local targets", () => {
+  const fallback = { provider: "codex", model: "codex/gpt-5", effort: "low" }
+  const remoteAgent = makeAgent("agent-a", {
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "worker-agent-1",
+    },
+  })
+
+  assert.deepEqual(
+    resolvePromptRecoveryProviderLaunch(makeSession({ agents: [] }), fallback, null),
+    { action: "skip_launch", reason: "no_visible_agents", launch: fallback, targetAgent: null },
+  )
+  assert.deepEqual(
+    resolvePromptRecoveryProviderLaunch(makeSession({ focused_agent_id: "agent-a" }), fallback, "missing"),
+    {
+      action: "skip_launch",
+      reason: "missing_target_agent",
+      launch: { provider: "codex", model: "codex/gpt-5", effort: "low" },
+      targetAgent: null,
+    },
+  )
+  assert.deepEqual(
+    resolvePromptRecoveryProviderLaunch(makeSession({ agents: [remoteAgent] }), fallback, "agent-a"),
+    {
+      action: "skip_launch",
+      reason: "remote_backed_agent",
+      launch: { provider: "codex", model: "codex/gpt-5", effort: "medium" },
+      targetAgent: remoteAgent,
+    },
   )
 })
 

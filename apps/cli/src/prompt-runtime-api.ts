@@ -21,6 +21,7 @@ import { expectVariant, firstVariantName } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
+import { resolvePromptRecoveryProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
 
 export type PromptSubmissionResult = {
   payload: PromptSubmittedPayload
@@ -35,6 +36,7 @@ export async function submitPromptWithRecovery(
   targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
+  getSession: () => RuntimeSession,
   options: CliOptions,
   logger?: ArrobaLogger | null,
 ): Promise<PromptSubmissionResult> {
@@ -49,14 +51,28 @@ export async function submitPromptWithRecovery(
       error: describeCliError(error),
       session_id: sessionId,
     })
+    const session = getSession()
+    const recoveryLaunch = resolvePromptRecoveryProviderLaunch(session, {
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    }, targetAgentId)
+    if (recoveryLaunch.action === "skip_launch") {
+      logger?.warn("skipping provider recovery launch", {
+        session_id: sessionId,
+        reason: recoveryLaunch.reason,
+        target_agent_id: targetAgentId,
+      })
+      throw error
+    }
     await launchProviderRun(
       client,
       sessionId,
-      options.provider ?? "opencode",
+      recoveryLaunch.launch.provider,
       options.accountProfile,
-      options.model,
-      options.effort,
-      targetAgentId,
+      recoveryLaunch.launch.model,
+      recoveryLaunch.launch.effort,
+      recoveryLaunch.targetAgentId,
     )
     await resizeSessionTerminal(client, sessionId)
     logger?.info("relaunched provider after recoverable prompt failure", {

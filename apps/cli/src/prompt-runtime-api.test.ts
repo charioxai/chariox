@@ -45,6 +45,7 @@ test("submitPromptWithRecovery merges projected agent activity into returned ses
     "agent-1",
     "hello",
     [],
+    () => runtimeSession("session-1"),
     {} as CliOptions,
   )
 
@@ -57,6 +58,91 @@ test("submitPromptWithRecovery merges projected agent activity into returned ses
   })
   assert.equal(result.payload.session.agent_activity_revision, 42)
   assert.equal(result.targetAgentId, "agent-1")
+})
+
+test("submitPromptWithRecovery recovers with the stored provider for the prompt target", async () => {
+  const requests: Record<string, unknown>[] = []
+  let submitAttempts = 0
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      if ("SubmitPrompt" in request) {
+        submitAttempts += 1
+        if (submitAttempts === 1) {
+          throw new Error("session has no active provider run")
+        }
+        return {
+          PromptSubmitted: {
+            outcome: {
+              Started: {
+                prompt: {
+                  id: "prompt-1",
+                  source_attachment_id: "attachment-1",
+                  target_agent_id: "agent-b",
+                  prompt: "hello",
+                  status: "Running",
+                },
+              },
+            },
+            session: runtimeSession("session-1"),
+          },
+        }
+      }
+      if ("LaunchProviderRun" in request) {
+        return {
+          ProviderRunLaunched: {
+            provider_run: {
+              id: "run-1",
+              session_id: "session-1",
+              provider: "claude",
+              model: "claude/sonnet-4.6",
+              variant: "high",
+              status: "Running",
+            },
+          },
+        }
+      }
+      throw new Error(`unexpected request ${JSON.stringify(request)}`)
+    },
+  } as unknown as LocalIpcClient
+
+  await submitPromptWithRecovery(
+    client,
+    "session-1",
+    "attachment-1",
+    "agent-b",
+    "hello",
+    [],
+    () => runtimeSession("session-1", {
+      focused_agent_id: "agent-a",
+      agents: [
+        agent("agent-a", { provider: "codex", model: "codex/gpt-5", effort: "medium" }),
+        agent("agent-b", { provider: "claude", model: "claude/sonnet-4.6", effort: "high" }),
+      ],
+    }),
+    {
+      provider: "opencode",
+      accountProfile: "default",
+      model: "kimi/k2.6",
+      effort: "low",
+    } as CliOptions,
+  )
+
+  const launchRequest = requests.find((request) => "LaunchProviderRun" in request)
+  assert.deepEqual(launchRequest, {
+    LaunchProviderRun: {
+      session_id: "session-1",
+      agent_id: "agent-b",
+      adapter_key: "claude",
+      provider: "claude",
+      account_profile: "default",
+      model: "sonnet-4.6",
+      variant: "high",
+      structured_endpoint: null,
+      provider_session_id: null,
+      native_tui: false,
+    },
+  })
 })
 
 test("steerQueuedPrompt merges projected agent activity into returned session", async () => {
@@ -133,7 +219,7 @@ function fakeClient(response: Record<string, unknown>): LocalIpcClient {
   } as unknown as LocalIpcClient
 }
 
-function runtimeSession(id: string): RuntimeSession {
+function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id,
     workspace_id: "/workspace",
@@ -146,26 +232,33 @@ function runtimeSession(id: string): RuntimeSession {
     queued_prompts: [],
     focused_agent_id: "agent-1",
     max_agents: 1,
-    agents: [{
-      id: "agent-1",
-      agent_ref: "agent-1",
-      session_id: id,
-      alias: "agent-1",
-      provider: "codex",
-      model: "gpt-5.2",
-      worktree_id: "/workspace/tree",
-      state: "Idle",
-      is_processing: false,
-      grid_row: 0,
-      grid_col: 0,
-      grid_row_span: 1,
-      grid_col_span: 1,
-      created_at_ms: 1,
-      last_activity_at_ms: 1,
-    }],
+    agents: [agent("agent-1")],
     config_state: {
       version: 1,
       values: {},
     },
+    ...overrides,
+  }
+}
+
+function agent(id: string, overrides: Partial<RuntimeSession["agents"][number]> = {}): RuntimeSession["agents"][number] {
+  return {
+    id,
+    agent_ref: id,
+    session_id: "session-1",
+    alias: id,
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "medium",
+    worktree_id: "/workspace/tree",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
+    ...overrides,
   }
 }

@@ -80,6 +80,20 @@ export type SessionLifecycleAttachProviderLaunchDecision<TAgent extends SessionL
     readonly targetAgent: TAgent | null
   }
 
+export type SessionLifecyclePromptRecoveryLaunchDecision<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  | {
+    readonly action: "launch_provider_run"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent
+    readonly targetAgentId: string
+  }
+  | {
+    readonly action: "skip_launch"
+    readonly reason: "no_visible_agents" | "missing_target_agent" | "remote_backed_agent"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+  }
+
 export function upsertSessionListEntry<TEntry extends { id: string }>(
   current: readonly TEntry[],
   next: TEntry,
@@ -174,31 +188,43 @@ export function resolveLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAg
   return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
 }
 
+function resolvePromptLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  targetAgentId: string | null | undefined,
+): TAgent | null {
+  const normalizedTargetAgentId = targetAgentId?.trim()
+  if (normalizedTargetAgentId) {
+    return session.agents.find((agent) => agent.id === normalizedTargetAgentId) ?? null
+  }
+  return resolveLaunchTargetAgent(session)
+}
+
+function resolveAgentLaunchSelection<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  createdSession: boolean,
+  targetAgent: TAgent | null,
+): SessionLifecycleLaunchSelection {
+  const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
+  if (createdSession || !targetAgent) {
+    return sessionDefaults
+  }
+
+  return {
+    provider: targetAgent.provider && targetAgent.provider !== "default"
+      ? targetAgent.provider
+      : sessionDefaults.provider,
+    model: targetAgent.model?.trim() || sessionDefaults.model,
+    effort: targetAgent.effort?.trim() || sessionDefaults.effort,
+  }
+}
+
 export function resolveStoredAgentLaunch(
   session: SessionLifecycleLaunchSession,
   fallback: SessionLifecycleLaunchSelection,
   createdSession: boolean,
 ): SessionLifecycleLaunchSelection {
-  if (createdSession) {
-    return resolveSessionAgentDefaults(session, fallback)
-  }
-
-  const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
-  const focusedAgentId = sessionFocusedAgentId(session)
-  const focusedAgent = focusedAgentId
-    ? session.agents.find((agent) => agent.id === focusedAgentId)
-    : null
-  if (!focusedAgent) {
-    return sessionDefaults
-  }
-
-  return {
-    provider: focusedAgent.provider && focusedAgent.provider !== "default"
-      ? focusedAgent.provider
-      : sessionDefaults.provider,
-    model: focusedAgent.model?.trim() || sessionDefaults.model,
-    effort: focusedAgent.effort?.trim() || sessionDefaults.effort,
-  }
+  return resolveAgentLaunchSelection(session, fallback, createdSession, resolveLaunchTargetAgent(session))
 }
 
 export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleLaunchAgent>(
@@ -228,6 +254,30 @@ export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleL
     launch,
     targetAgent,
     targetAgentId: targetAgent?.id ?? null,
+  }
+}
+
+export function resolvePromptRecoveryProviderLaunch<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  targetAgentId: string | null | undefined,
+): SessionLifecyclePromptRecoveryLaunchDecision<TAgent> {
+  const targetAgent = resolvePromptLaunchTargetAgent(session, targetAgentId)
+  const launch = resolveAgentLaunchSelection(session, fallback, false, targetAgent)
+  if (session.agents.length === 0) {
+    return { action: "skip_launch", reason: "no_visible_agents", launch, targetAgent: null }
+  }
+  if (!targetAgent) {
+    return { action: "skip_launch", reason: "missing_target_agent", launch, targetAgent: null }
+  }
+  if (targetAgent.remote_execution) {
+    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
+  }
+  return {
+    action: "launch_provider_run",
+    launch,
+    targetAgent,
+    targetAgentId: targetAgent.id,
   }
 }
 
