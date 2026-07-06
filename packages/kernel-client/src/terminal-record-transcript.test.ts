@@ -138,6 +138,7 @@ test("terminalRecordTranscriptProjection classifies external history refresh wit
   assert.equal(projection.marksAgentBusy, false)
   assert.equal(projection.updatesProviderActivity, false)
   assert.equal(projection.appendsLiveTranscript, false)
+  assert.equal(projection.renderProviderStatus, false)
   assert.equal(projection.transcriptRole, "status")
   assert.equal(projection.statusMergeKey, null)
 })
