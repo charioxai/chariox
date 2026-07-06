@@ -495,15 +495,31 @@ impl KernelRuntimeState {
                 steering: dispatch.steering,
             };
             let provider_run = provider_run.clone();
-            self.with_app_side_effect(|app| {
-                app.process_claude_native_prompt_dispatch_for_runtime(
-                    &dispatch.session_id,
-                    &dispatch.provider_run_id,
-                    &provider_run,
-                    &dispatch_with_handoff,
-                )
-            })
-            .await?;
+            // Claude-headless confirms injection asynchronously via the
+            // context-file marker; retry with the app lock released between
+            // attempts so a slow provider cannot stall the whole daemon.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(12_000);
+            loop {
+                let attempt = self
+                    .with_app_side_effect(|app| {
+                        app.process_claude_native_prompt_dispatch_attempt_for_runtime(
+                            &dispatch.session_id,
+                            &dispatch.provider_run_id,
+                            &provider_run,
+                            &dispatch_with_handoff,
+                        )
+                    })
+                    .await?;
+                match attempt {
+                    crate::app::ClaudeNativeDispatchAttempt::Completed => break,
+                    crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        if tokio::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
             owned.consume_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,

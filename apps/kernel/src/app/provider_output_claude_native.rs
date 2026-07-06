@@ -683,6 +683,12 @@ fn redact_native_hidden_instructions(prompt: &str) -> String {
     redacted.replace("\n\n\n", "\n\n")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudeNativeDispatchAttempt {
+    Completed,
+    AwaitingInjection,
+}
+
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
@@ -1175,18 +1181,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(())
     }
 
-    pub(crate) fn process_prompt_dispatch(
+    /// One injection attempt for a prompt dispatch. Claude-headless confirms
+    /// injection asynchronously through the context-file marker, so the caller
+    /// retries `AwaitingInjection` outcomes off the app lock instead of this
+    /// method sleeping while the whole daemon is blocked.
+    pub(crate) fn process_prompt_dispatch_attempt(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         dispatch: &KernelPromptDispatch,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<ClaudeNativeDispatchAttempt, DaemonError> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
-            return Ok(());
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
         let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
-            return Ok(());
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
         let prompt = ClaudeNativePromptInjection {
             id: &dispatch.prompt_id,
@@ -1194,36 +1204,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             hidden_system_context: &dispatch.hidden_system_context,
             attachments: &dispatch.attachments,
         };
+        self.inject_prompt(
+            session_id,
+            provider_run_id,
+            &agent_id,
+            context_file,
+            provider_run,
+            &prompt,
+        )?;
         if provider_run.provider() != "claude-headless" {
-            return self.inject_prompt(
-                session_id,
-                provider_run_id,
-                &agent_id,
-                context_file,
-                provider_run,
-                &prompt,
-            );
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
-        let deadline_ms = unix_epoch_ms().saturating_add(12_000);
-        loop {
-            self.inject_prompt(
-                session_id,
-                provider_run_id,
-                &agent_id,
-                context_file,
-                provider_run,
-                &prompt,
-            )?;
-            if claude_native_marker(context_file).as_deref()
-                == Some(&format!("injected:{}", prompt.id))
-            {
-                return Ok(());
-            }
-            if unix_epoch_ms() >= deadline_ms {
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        if claude_native_marker(context_file).as_deref() == Some(&format!("injected:{}", prompt.id))
+        {
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
+        Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
     }
 
     fn claude_native_prompt_context(

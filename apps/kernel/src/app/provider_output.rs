@@ -1603,14 +1603,14 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn process_claude_native_prompt_dispatch_for_runtime(
+    pub(crate) fn process_claude_native_prompt_dispatch_attempt_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         dispatch: &crate::app::KernelPromptDispatch,
-    ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self).process_prompt_dispatch(
+    ) -> Result<crate::app::ClaudeNativeDispatchAttempt, DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).process_prompt_dispatch_attempt(
             session_id,
             provider_run_id,
             provider_run,

@@ -68,6 +68,7 @@ pub(crate) use prompt_lifecycle::{
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
     KernelRemotePromptDispatch,
 };
+pub(crate) use provider_output_claude_native::ClaudeNativeDispatchAttempt;
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };
