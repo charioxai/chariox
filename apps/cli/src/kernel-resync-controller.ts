@@ -2,7 +2,11 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
-import { sessionPromptWorkJustCompleted } from "@arroba/kernel-client/session-prompt-work"
+import {
+  sessionSnapshotRefreshTransition,
+} from "@arroba/kernel-client/session-runtime-transition"
+
+const RESYNC_FORCE_PANE_REFRESH_REASONS = ["transport_resumed", "replay_gap"] as const
 
 type KernelResyncAttachment = {
   id: string
@@ -65,8 +69,14 @@ export function createKernelResyncController(options: KernelResyncControllerOpti
         }
 
         const projectedSession = options.projectSession(nextSession, options.getProviderRunState())
-        const shouldRefreshPanes = options.shouldRefreshAgentPanesForSessionChange(projectedSession)
-        const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
+        const refreshTransition = sessionSnapshotRefreshTransition({
+          previousSession,
+          nextSession: projectedSession,
+          sessionChangeRequiresPaneRefresh:
+            options.shouldRefreshAgentPanesForSessionChange(projectedSession),
+          reason,
+          forcePaneRefreshReasons: RESYNC_FORCE_PANE_REFRESH_REASONS,
+        })
         options.applySession(projectedSession)
 
         const nextProviderRunId = options.getActiveProviderRunId(nextSession)
@@ -91,7 +101,7 @@ export function createKernelResyncController(options: KernelResyncControllerOpti
           }
         }
 
-        if (shouldRefreshPanes || promptJustCompleted || reason === "transport_resumed" || reason === "replay_gap") {
+        if (refreshTransition.shouldRefreshAgentPanes) {
           await options.refreshAgentPanes(options.getSessionStateSnapshot())
         }
         options.clearLocalBusyStateForAuthoritativeIdle(options.getSessionStateSnapshot())

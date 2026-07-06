@@ -9,8 +9,8 @@ import type {
 import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
-  sessionPromptWorkJustCompleted,
-} from "@arroba/kernel-client/session-prompt-work"
+  sessionSnapshotRefreshTransition,
+} from "@arroba/kernel-client/session-runtime-transition"
 import {
   sessionCanIgnoreMissingActiveProviderRun,
   sessionShouldRecoverMissingActiveProviderRun,
@@ -146,13 +146,21 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         const session = await deps.getSessionState(previousSession.id)
         deps.recordDaemonActivity("session_state_poll")
         const projectedSession = deps.projectSession(session, deps.getProviderRun())
-        const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-        const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
+        const refreshTransition = sessionSnapshotRefreshTransition({
+          previousSession,
+          nextSession: projectedSession,
+          sessionChangeRequiresPaneRefresh:
+            deps.shouldRefreshAgentPanesForSessionChange(projectedSession),
+        })
         deps.applySessionState(projectedSession)
-        if (shouldRefreshPanes || promptJustCompleted) {
+        if (refreshTransition.shouldRefreshAgentPanes) {
           await deps.refreshAgentPanes(projectedSession)
         }
-        if (promptJustCompleted && deps.getWorkspaceLiveSyncStatus && deps.setWorkspaceLiveSyncStatus) {
+        if (
+          refreshTransition.shouldRefreshWorkspaceLiveSyncStatus
+          && deps.getWorkspaceLiveSyncStatus
+          && deps.setWorkspaceLiveSyncStatus
+        ) {
           try {
             deps.setWorkspaceLiveSyncStatus(await deps.getWorkspaceLiveSyncStatus(projectedSession.id))
             deps.updateSessionChrome()

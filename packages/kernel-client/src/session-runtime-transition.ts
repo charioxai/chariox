@@ -9,6 +9,7 @@ import {
   sessionAllowsLegacyAgentProcessingState,
   sessionAgentIsBusy,
   sessionHasPromptWork,
+  sessionPromptWorkJustCompleted,
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
 import {
@@ -99,6 +100,21 @@ export type ProviderActivityRuntimeTransition = {
   readonly providerActivityActive: boolean
   readonly working: boolean | null
   readonly shouldUpdateSessionChrome: boolean
+}
+
+export type SessionSnapshotRefreshTransitionInput = {
+  readonly previousSession: RuntimeSession
+  readonly nextSession: RuntimeSession
+  readonly sessionChangeRequiresPaneRefresh: boolean
+  readonly reason?: string | null
+  readonly forcePaneRefreshReasons?: readonly string[]
+}
+
+export type SessionSnapshotRefreshTransition = {
+  readonly promptJustCompleted: boolean
+  readonly reasonRequiresPaneRefresh: boolean
+  readonly shouldRefreshAgentPanes: boolean
+  readonly shouldRefreshWorkspaceLiveSyncStatus: boolean
 }
 
 export type TurnCompletionProviderActivityTransition = {
@@ -410,6 +426,28 @@ export function providerActivityRuntimeTransition(active: boolean): ProviderActi
     providerActivityActive: active,
     working: active ? true : null,
     shouldUpdateSessionChrome: true,
+  }
+}
+
+export function sessionSnapshotRefreshTransition(
+  options: SessionSnapshotRefreshTransitionInput,
+): SessionSnapshotRefreshTransition {
+  const promptJustCompleted = sessionPromptWorkJustCompleted(
+    options.previousSession,
+    options.nextSession,
+  )
+  const reasonRequiresPaneRefresh = Boolean(
+    options.reason
+      && (options.forcePaneRefreshReasons ?? []).includes(options.reason),
+  )
+  return {
+    promptJustCompleted,
+    reasonRequiresPaneRefresh,
+    shouldRefreshAgentPanes:
+      options.sessionChangeRequiresPaneRefresh
+      || promptJustCompleted
+      || reasonRequiresPaneRefresh,
+    shouldRefreshWorkspaceLiveSyncStatus: promptJustCompleted,
   }
 }
 

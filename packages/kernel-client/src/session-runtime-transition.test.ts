@@ -10,6 +10,7 @@ import {
   sessionAuthoritativeIdleTransitionState,
   sessionFocusedAgentId,
   sessionRuntimeTransitionState,
+  sessionSnapshotRefreshTransition,
   sessionShouldConfirmIdleTurnCompletion,
   sessionWorkingStateAfterPromptWork,
   turnCompletionDelayMs,
@@ -432,6 +433,52 @@ test("provider activity runtime transition marks active provider output as worki
     providerActivityActive: false,
     working: null,
     shouldUpdateSessionChrome: true,
+  })
+})
+
+test("session snapshot refresh transition refreshes panes for prompt settlement, shape changes, and recovery reasons", () => {
+  const activeSession = makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "running",
+    },
+  })
+  const idleSession = makeSession()
+
+  assert.deepEqual(sessionSnapshotRefreshTransition({
+    previousSession: activeSession,
+    nextSession: idleSession,
+    sessionChangeRequiresPaneRefresh: false,
+  }), {
+    promptJustCompleted: true,
+    reasonRequiresPaneRefresh: false,
+    shouldRefreshAgentPanes: true,
+    shouldRefreshWorkspaceLiveSyncStatus: true,
+  })
+  assert.deepEqual(sessionSnapshotRefreshTransition({
+    previousSession: idleSession,
+    nextSession: idleSession,
+    sessionChangeRequiresPaneRefresh: true,
+  }), {
+    promptJustCompleted: false,
+    reasonRequiresPaneRefresh: false,
+    shouldRefreshAgentPanes: true,
+    shouldRefreshWorkspaceLiveSyncStatus: false,
+  })
+  assert.deepEqual(sessionSnapshotRefreshTransition({
+    previousSession: idleSession,
+    nextSession: idleSession,
+    sessionChangeRequiresPaneRefresh: false,
+    reason: "replay_gap",
+    forcePaneRefreshReasons: ["transport_resumed", "replay_gap"],
+  }), {
+    promptJustCompleted: false,
+    reasonRequiresPaneRefresh: true,
+    shouldRefreshAgentPanes: true,
+    shouldRefreshWorkspaceLiveSyncStatus: false,
   })
 })
 
