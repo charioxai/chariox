@@ -12,9 +12,8 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::history::{
-    external_provider_observed_state_merge_key, ExternalImportHistoryEntry, SessionHistoryEntry,
-    SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+    ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntrySource,
+    SessionHistoryExternalObservation, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
     EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
 };
 use crate::local::{
@@ -1173,25 +1172,20 @@ fn persist_observed_external_settlement_history_signal(
     let Some(provider_turn_id) = provider_turn_id else {
         return;
     };
-    let merge_key = external_provider_observed_state_merge_key(
+    let entry = SessionHistoryEntry::external_provider_observed_state_signal(
+        &target.session_id,
+        provider_run_id,
+        &target.agent_id,
         &target.provider,
         &target.provider_session_id,
         EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
         latest_merge_key,
-    );
-    let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
-        &target.session_id,
-        provider_run_id,
-        &target.agent_id,
-        SessionHistoryEntryKind::ProviderStatus,
-        "",
-        &target.provider,
-        &target.provider_session_id,
-        Some(merge_key.clone()),
-        Some(provider_turn_id.to_string()),
+        provider_turn_id.to_string(),
         observed_at_ms.or_else(|| Some(crate::session::unix_epoch_ms())),
     );
-    entry.external_observation = Some(SessionHistoryExternalObservation::active_prompt_settled());
+    let Some(merge_key) = entry.merge_key.clone() else {
+        return;
+    };
     app.replace_history_entry_by_merge_key_or_append(&target.session_id, &merge_key, entry);
 }
 

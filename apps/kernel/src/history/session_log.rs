@@ -450,6 +450,40 @@ impl SessionHistoryEntry {
             timestamp_ms: observed_at_ms,
         }
     }
+
+    pub fn external_provider_observed_state_signal(
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        agent_id: &str,
+        provider: &str,
+        provider_session_id: &str,
+        reason: &str,
+        latest_merge_key: &str,
+        provider_turn_id: String,
+        observed_at_ms: Option<u64>,
+    ) -> Self {
+        let merge_key = external_provider_observed_state_merge_key(
+            provider,
+            provider_session_id,
+            reason,
+            latest_merge_key,
+        );
+        let mut entry = Self::external_provider_observed_with_merge_key(
+            session_id,
+            provider_run_id,
+            agent_id,
+            SessionHistoryEntryKind::ProviderStatus,
+            "",
+            provider,
+            provider_session_id,
+            Some(merge_key),
+            Some(provider_turn_id),
+            observed_at_ms,
+        );
+        entry.external_observation =
+            SessionHistoryExternalObservation::for_external_provider_state_reason(reason);
+        entry
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -833,6 +867,29 @@ mod tests {
             SessionHistoryExternalObservation::for_external_provider_state_reason(
                 EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON
             ),
+            Some(SessionHistoryExternalObservation::active_prompt_settled())
+        );
+
+        let entry = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:item-1",
+            "turn-1".to_string(),
+            Some(2_000),
+        );
+        assert_eq!(entry.kind, SessionHistoryEntryKind::ProviderStatus);
+        assert_eq!(entry.text, "");
+        assert_eq!(
+            entry.merge_key.as_deref(),
+            Some("external:codex:thread-1:state:active_prompt_settled:external:codex:thread-1:item-1")
+        );
+        assert_eq!(entry.external_provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            entry.external_observation,
             Some(SessionHistoryExternalObservation::active_prompt_settled())
         );
     }

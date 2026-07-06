@@ -962,28 +962,17 @@ mod tests {
             Some("turn-1".to_string()),
             Some(2_100),
         );
-        let mut hidden_settlement = SessionHistoryEntry::external_provider_observed_with_merge_key(
+        let hidden_settlement = SessionHistoryEntry::external_provider_observed_state_signal(
             "session-1",
             Some("run-1"),
             "agent-1",
-            SessionHistoryEntryKind::ProviderStatus,
-            "",
             "claude",
             "thread-1",
-            Some(crate::history::external_provider_observed_state_merge_key(
-                "claude",
-                "thread-1",
-                "active_prompt_settled",
-                "external:claude:thread-1:assistant-1",
-            )),
-            Some("turn-1".to_string()),
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:claude:thread-1:assistant-1",
+            "turn-1".to_string(),
             Some(2_200),
         );
-        hidden_settlement.external_observation =
-            Some(crate::history::SessionHistoryExternalObservation {
-                settles_active_prompt: true,
-                passive_telemetry: false,
-            });
         let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
         let assistant = HistoryEvent::transcript(11, &external_assistant, context.clone());
         let settlement = HistoryEvent::transcript(12, &hidden_settlement, context);
