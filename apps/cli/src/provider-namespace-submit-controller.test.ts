@@ -53,6 +53,42 @@ test("provider namespace submit forwards commands and applies submission state",
   assert.equal(harness.workingValues().at(-1), true)
 })
 
+test("provider namespace submit projects queued runtime state from active session work", async () => {
+  const harness = createHarness({
+    focusedAgentId: "agent-queued",
+    hasAgent: (agentId) => agentId === "agent-active" || agentId === "agent-queued",
+    submitProviderNamespacePrompt: async () => ({
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", {
+          agents: [agent("agent-active"), agent("agent-queued")],
+          active_prompt: {
+            id: "prompt-active",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-active",
+            prompt: "running",
+            status: "running",
+          },
+          queued_prompts: [{
+            id: "prompt-queued",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-queued",
+            prompt: "/session list",
+            status: "queued",
+          }],
+        }),
+      },
+      targetAgentId: "agent-queued",
+      outcomeName: "Queued",
+    }),
+  })
+
+  assert.equal(await harness.controller.submit("/opencode session list"), true)
+
+  assert.deepEqual(harness.streamingAgentIds(), ["agent-active"])
+  assert.equal(harness.workingValues().at(-1), true)
+})
+
 test("provider namespace submit drops stale focused agent ids", async () => {
   const harness = createHarness({
     focusedAgentId: "old-agent",
@@ -216,7 +252,7 @@ function promptSubmissionResult(sessionId: string, targetAgentId: string | null)
   }
 }
 
-function runtimeSession(id: string): RuntimeSession {
+function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id,
     workspace_id: "/workspace",
@@ -234,5 +270,26 @@ function runtimeSession(id: string): RuntimeSession {
       version: 1,
       values: {},
     },
+    ...overrides,
+  }
+}
+
+function agent(id: string): RuntimeSession["agents"][number] {
+  return {
+    id,
+    agent_ref: id,
+    session_id: "session-submitted",
+    alias: id,
+    provider: "opencode",
+    model: null,
+    worktree_id: "/workspace/tree",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
   }
 }

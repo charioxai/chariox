@@ -1,4 +1,8 @@
-import type { PromptAttachmentPart } from "./kernel-types.js"
+import type { PromptAttachmentPart, RuntimeSession } from "./kernel-types.js"
+import {
+  sessionHasPromptWork,
+  sessionProjectedStreamingAgentId,
+} from "./session-prompt-work.js"
 
 export type PromptSubmissionAttachmentInput = Pick<PromptAttachmentPart, "url" | "mime" | "filename">
 
@@ -23,4 +27,25 @@ export function formatPromptSubmissionStatusLine(options: {
   return options.outcomeName === "Queued"
     ? `Prompt queued behind ${options.activePromptId ?? "the active turn"}.`
     : "Prompt submitted."
+}
+
+export function promptSubmissionRuntimeState(options: {
+  readonly session: RuntimeSession
+  readonly outcomeName: string
+  readonly submittedTargetAgentId?: string | null
+}): {
+  readonly streamingAgentId: string | null
+  readonly working: boolean
+} {
+  const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.session)
+  if (options.outcomeName === "Queued") {
+    return {
+      streamingAgentId: projectedStreamingAgentId,
+      working: sessionHasPromptWork(options.session),
+    }
+  }
+  return {
+    streamingAgentId: projectedStreamingAgentId ?? options.submittedTargetAgentId ?? null,
+    working: sessionHasPromptWork(options.session) || options.submittedTargetAgentId != null,
+  }
 }

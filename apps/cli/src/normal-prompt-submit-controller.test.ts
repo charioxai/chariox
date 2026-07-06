@@ -83,6 +83,42 @@ test("normal prompt submit reports queued status with active prompt id", async (
   assert.deepEqual(harness.appendedPrompts(), [])
 })
 
+test("normal prompt submit projects queued runtime state from active session work", async () => {
+  const harness = createHarness({
+    focusedAgentId: "agent-queued",
+    hasAgent: (agentId) => agentId === "agent-active" || agentId === "agent-queued",
+    submitPrompt: async () => ({
+      ...promptSubmissionResult("session-submitted", "agent-queued", "Queued"),
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", null, {
+          agents: [agent("agent-active"), agent("agent-queued")],
+          active_prompt: {
+            id: "prompt-active",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-active",
+            prompt: "running",
+            status: "running",
+          },
+          queued_prompts: [{
+            id: "prompt-queued",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-queued",
+            prompt: "hello",
+            status: "queued",
+          }],
+        }),
+      },
+    }),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.appendedPrompts(), [])
+  assert.deepEqual(harness.streamingAgentIds(), ["agent-active"])
+  assert.equal(harness.workingValues().at(-1), true)
+})
+
 test("normal prompt submit reports queued status from per-agent active prompt state", async () => {
   const harness = createHarness({
     submitPrompt: async () => ({

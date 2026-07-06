@@ -11,6 +11,9 @@ import type { BackendProviderId } from "./provider-catalog.js"
 import {
   validateProviderNamespaceSubmit,
 } from "@arroba/kernel-client/provider-namespace-submit-policy"
+import {
+  promptSubmissionRuntimeState,
+} from "@arroba/kernel-client/prompt-submission"
 import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 
@@ -104,8 +107,13 @@ export function createProviderNamespaceSubmitController(
         )
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(submission.payload.session)
-        deps.setStreamingAgentId(submittedTargetAgentId)
-        deps.setWorking(true)
+        const runtimeState = promptSubmissionRuntimeState({
+          session: submission.payload.session,
+          outcomeName: submission.outcomeName,
+          submittedTargetAgentId,
+        })
+        deps.setStreamingAgentId(runtimeState.streamingAgentId)
+        deps.setWorking(runtimeState.working)
         deps.updateSessionChrome()
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
         deps.clearCommandCenter()

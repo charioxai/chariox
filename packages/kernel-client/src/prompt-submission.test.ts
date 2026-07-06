@@ -4,8 +4,13 @@ import test from "node:test"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
+  promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "./prompt-submission.js"
+import {
+  makeAgent,
+  makeSession,
+} from "./shell-executor.test-support.js"
 
 test("formatPromptSubmissionBody terminates non-empty prompts", () => {
   assert.equal(formatPromptSubmissionBody("hello"), "hello\n")
@@ -56,4 +61,70 @@ test("formatPromptSubmissionStatusLine describes queued and submitted outcomes",
     }),
     "Prompt submitted.",
   )
+})
+
+test("promptSubmissionRuntimeState follows session work for queued submissions", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-active" }), makeAgent({ id: "agent-queued" })],
+    active_prompt: {
+      id: "prompt-active",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-active",
+      prompt: "running",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "prompt-queued",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-queued",
+      prompt: "queued",
+      status: "queued",
+    }],
+  })
+
+  assert.deepEqual(promptSubmissionRuntimeState({
+    session,
+    outcomeName: "Queued",
+    submittedTargetAgentId: "agent-queued",
+  }), {
+    streamingAgentId: "agent-active",
+    working: true,
+  })
+})
+
+test("promptSubmissionRuntimeState does not invent streaming state for queued-only snapshots", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-queued" })],
+    queued_prompts: [{
+      id: "prompt-queued",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-queued",
+      prompt: "queued",
+      status: "queued",
+    }],
+  })
+
+  assert.deepEqual(promptSubmissionRuntimeState({
+    session,
+    outcomeName: "Queued",
+    submittedTargetAgentId: "agent-queued",
+  }), {
+    streamingAgentId: null,
+    working: true,
+  })
+})
+
+test("promptSubmissionRuntimeState allows optimistic streaming only for started submissions", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-started" })],
+  })
+
+  assert.deepEqual(promptSubmissionRuntimeState({
+    session,
+    outcomeName: "Started",
+    submittedTargetAgentId: "agent-started",
+  }), {
+    streamingAgentId: "agent-started",
+    working: true,
+  })
 })

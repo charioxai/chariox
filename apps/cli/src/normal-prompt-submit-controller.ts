@@ -9,6 +9,7 @@ import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
+  promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "@arroba/kernel-client/prompt-submission"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
@@ -105,8 +106,13 @@ export function createNormalPromptSubmitController(
         if (outcomeName !== "Queued") {
           deps.appendUserPrompt(deps.renderPromptTranscript(prompt), submittedTargetAgentId)
         }
-        deps.setStreamingAgentId(submittedTargetAgentId)
-        deps.setWorking(true)
+        const runtimeState = promptSubmissionRuntimeState({
+          session: payload.session,
+          outcomeName,
+          submittedTargetAgentId,
+        })
+        deps.setStreamingAgentId(runtimeState.streamingAgentId)
+        deps.setWorking(runtimeState.working)
         deps.updateSessionChrome()
         const activePromptId = sessionActivePromptIdForAgent(payload.session, submittedTargetAgentId)
         const queuedPromptCount = sessionQueuedPromptCount(payload.session, submittedTargetAgentId)
