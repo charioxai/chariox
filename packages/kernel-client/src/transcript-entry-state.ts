@@ -35,6 +35,16 @@ export type TranscriptSteeredPromptEntry = {
   readonly sourceAttachmentId?: string | null
 }
 
+export type TranscriptEntryRuntimeState = {
+  readonly entryCounter: number
+  readonly currentTurnId: number | null
+}
+
+export type TranscriptEntryRuntimeOptions = {
+  readonly nextEntryId: number
+  readonly currentTurnId: number | null
+}
+
 export type TranscriptRetentionSlice<TEntry extends Pick<TranscriptEntryStateEntry, "text">> = {
   readonly removed: TEntry[]
   readonly kept: TEntry[]
@@ -180,6 +190,15 @@ export function shouldSkipConsecutiveTranscriptEntry(
   return previous.role === next.role
     && previous.text === next.text
     && previous.emphasis === next.emphasis
+}
+
+export function transcriptEntryRuntimeOptions(
+  state: TranscriptEntryRuntimeState,
+): TranscriptEntryRuntimeOptions {
+  return {
+    nextEntryId: state.entryCounter + 1,
+    currentTurnId: state.currentTurnId,
+  }
 }
 
 export function createNextTranscriptEntry<

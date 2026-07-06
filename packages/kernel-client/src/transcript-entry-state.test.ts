@@ -11,6 +11,7 @@ import {
   createNextTranscriptEntry,
   reindexTranscriptEntries,
   shouldSkipConsecutiveTranscriptEntry,
+  transcriptEntryRuntimeOptions,
   transcriptHasTrailingUserPrompt,
   transcriptRetentionSlice,
   trimSingleTrailingNewline,
@@ -127,6 +128,23 @@ test("shouldSkipConsecutiveTranscriptEntry only deduplicates consecutive notices
     ),
     false,
   )
+})
+
+test("transcriptEntryRuntimeOptions projects caller counters", () => {
+  assert.deepEqual(transcriptEntryRuntimeOptions({
+    entryCounter: 9,
+    currentTurnId: 4,
+  }), {
+    nextEntryId: 10,
+    currentTurnId: 4,
+  })
+  assert.deepEqual(transcriptEntryRuntimeOptions({
+    entryCounter: 0,
+    currentTurnId: null,
+  }), {
+    nextEntryId: 1,
+    currentTurnId: null,
+  })
 })
 
 test("createNextTranscriptEntry assigns ids and inherits the active turn", () => {

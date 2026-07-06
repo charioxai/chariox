@@ -14,6 +14,7 @@ import {
   computeMaxTranscriptEntryId,
   createNextTranscriptEntry,
   shouldSkipConsecutiveTranscriptEntry,
+  transcriptEntryRuntimeOptions,
 } from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptStateControllerDeps = {
@@ -134,13 +135,14 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       return null
     }
     const currentEntries = deps.entries().filter(Boolean)
+    const runtimeOptions = transcriptEntryRuntimeOptions({
+      entryCounter: deps.entryCounter(),
+      currentTurnId: deps.currentTurnId(),
+    })
     const nextEntry = createNextTranscriptEntry<TranscriptEntry, Omit<TranscriptEntry, "id">>(
       currentEntries,
       entry,
-      {
-        nextEntryId: deps.entryCounter() + 1,
-        currentTurnId: deps.currentTurnId(),
-      },
+      runtimeOptions,
     )
     const nextEntries = applyVisibleState(
       [...currentEntries, nextEntry],
