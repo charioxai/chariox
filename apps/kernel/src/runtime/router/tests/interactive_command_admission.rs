@@ -212,12 +212,12 @@ async fn external_settlement_dispatches_next_queued_prompt() {
         .session_snapshot(&fixture.session_id)
         .await
         .expect("session should snapshot");
-    assert_eq!(
-        session
-            .active_prompt_for_agent(&fixture.agent_id)
-            .map(|prompt| prompt.id()),
-        Some(fixture.queued_prompt_id.as_str())
-    );
+    let active_prompt = session
+        .active_prompt_for_agent(&fixture.agent_id)
+        .expect("queued prompt should be promoted after external settlement");
+    assert_ne!(active_prompt.id(), fixture.queued_prompt_id);
+    assert_eq!(active_prompt.prompt(), "queued prompt");
+    assert_eq!(active_prompt.prompt_origin(), PromptOrigin::Arroba);
     assert!(
         session
             .queued_prompts_for_agent(&fixture.agent_id)
