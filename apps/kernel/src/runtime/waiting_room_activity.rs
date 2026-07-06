@@ -16,16 +16,17 @@ pub(crate) fn waiting_room_agent_activity_summary(
         .map(|queued| queued.len())
         .unwrap_or(0);
     let error = agent.state() == AgentState::Error;
+    let prompt_state_projected = session.prompt_states().contains_key(agent.id());
+    let legacy_working =
+        !prompt_state_projected && (agent.state() == AgentState::Working || agent.is_processing());
+    let working = legacy_working || active_prompt_count > 0;
     WaitingRoomPublicItemActivitySummary {
-        working: agent.state() == AgentState::Working
-            || agent.is_processing()
-            || active_prompt_count > 0,
+        working,
         active_prompt_count,
         queued_prompt_count,
         error,
         unread_idle_output: active_prompt_count == 0
-            && !agent.is_processing()
-            && agent.state() != AgentState::Working
+            && !legacy_working
             && session.agent_has_unread_output(caller_user_id, agent.id()),
     }
 }
@@ -76,9 +77,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         .agents()
         .iter()
         .filter(|agent| {
-            agent.state() == AgentState::Working
-                || agent.is_processing()
-                || active_prompt_agent_ids.contains(agent.id())
+            waiting_room_agent_has_active_work(session, agent, &active_prompt_agent_ids)
         })
         .count();
     if working_agent_count == 0 && active_prompt_count > 0 {
@@ -103,9 +102,7 @@ pub(crate) fn waiting_room_session_activity_summary(
                 .unwrap_or_default()
                 .is_empty();
             active_worker_run_missing
-                && (agent.state() == AgentState::Working
-                    || agent.is_processing()
-                    || active_prompt_agent_ids.contains(agent.id()))
+                && waiting_room_agent_has_active_work(session, agent, &active_prompt_agent_ids)
         })
         .count();
     let home_proxy_extension_agents = session
@@ -138,12 +135,25 @@ pub(crate) fn waiting_room_session_activity_summary(
             .iter()
             .filter(|agent| {
                 !active_prompt_agent_ids.contains(agent.id())
-                    && agent.state() != AgentState::Working
-                    && !agent.is_processing()
+                    && !waiting_room_agent_legacy_working(session, agent)
                     && session.agent_has_unread_output(caller_user_id, agent.id())
             })
             .count(),
     }
+}
+
+fn waiting_room_agent_has_active_work(
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    active_prompt_agent_ids: &HashSet<&str>,
+) -> bool {
+    active_prompt_agent_ids.contains(agent.id())
+        || waiting_room_agent_legacy_working(session, agent)
+}
+
+fn waiting_room_agent_legacy_working(session: &RuntimeSession, agent: &AgentInstance) -> bool {
+    !session.prompt_states().contains_key(agent.id())
+        && (agent.state() == AgentState::Working || agent.is_processing())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -256,6 +266,23 @@ mod tests {
         agent
     }
 
+    fn session_with_queued_prompt_state(agent_id: &str, agent: AgentInstance) -> RuntimeSession {
+        let session = session_with_agents(vec![agent]);
+        let mut serialized = serde_json::to_value(&session).expect("session should serialize");
+        serialized["prompt_states"] = serde_json::json!({
+            agent_id: {
+                "queued_prompts": [PromptQueueItem::new(
+                    "queued-1",
+                    "attachment-1",
+                    agent_id,
+                    "queued prompt",
+                    PromptStatus::Queued,
+                )],
+            },
+        });
+        serde_json::from_value(serialized).expect("session with queued prompt should deserialize")
+    }
+
     #[test]
     fn agent_activity_tracks_working_processing_and_error_state() {
         let idle = agent("idle", AgentState::Idle, false);
@@ -301,6 +328,29 @@ mod tests {
             )
             .error
         );
+    }
+
+    #[test]
+    fn agent_activity_treats_queued_prompt_state_as_queued_not_working() {
+        let session = session_with_queued_prompt_state(
+            "agent-1",
+            agent("agent-1", AgentState::Working, true),
+        );
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+
+        let summary = waiting_room_agent_activity_summary(
+            &session,
+            agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        assert!(!summary.working);
+        assert_eq!(summary.active_prompt_count, 0);
+        assert_eq!(summary.queued_prompt_count, 1);
     }
 
     #[test]
@@ -351,6 +401,21 @@ mod tests {
         assert_eq!(summary.error_agent_count, 1);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
+    }
+
+    #[test]
+    fn session_activity_treats_queued_prompt_state_as_queued_not_working() {
+        let session = session_with_queued_prompt_state(
+            "agent-1",
+            agent("agent-1", AgentState::Working, true),
+        );
+
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+
+        assert_eq!(summary.working_agent_count, 0);
+        assert_eq!(summary.active_prompt_count, 0);
+        assert_eq!(summary.queued_prompt_count, 1);
     }
 
     #[test]

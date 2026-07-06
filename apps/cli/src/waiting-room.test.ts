@@ -211,13 +211,13 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
-    ["Status", "Home", "Sync", "Next", "Last used", "Created at"],
+    ["Status", "Home", "Sync", "Work", "Next", "Last used", "Created at"],
   )
   const firstSessionRow = firstWindow.find((row) => row.id === "session:session-5")
   assert.equal(firstSessionRow?.title, "session-5")
   assert.deepEqual(
     firstSessionRow?.columns?.map((cell) => cell.trim()),
-    ["Active", "-", "off", "-", "2026-04-06 11:04 UTC", "2026-04-06 10:04 UTC"],
+    ["Active", "-", "off", "-", "-", "2026-04-06 11:04 UTC", "2026-04-06 10:04 UTC"],
   )
   assert.equal(firstWindow.filter((row) => row.id.startsWith("session:")).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
   assert.equal(firstWindow.some((row) => row.id === "session:session-3"), false)
@@ -458,7 +458,7 @@ test("waiting room keeps session metadata column widths stable across scroll win
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   const scrolledWindowHeader = firstWindow.find((row) => row.id === "session-header")?.columns
   const firstWindowWidths = scrolledWindowHeader?.map((column) => column.length)
-  assert.deepEqual(firstWindowWidths, [12, 4, 4, 4, 20, 20], "windowed rows should use the long status width baseline")
+  assert.deepEqual(firstWindowWidths, [12, 4, 4, 4, 4, 20, 20], "windowed rows should use the long status width baseline")
 
   for (let step = 0; step < MAX_VISIBLE_WAITING_ROOM_SESSIONS; step += 1) {
     state = moveWaitingRoomFocus(state, sessions, 1)
