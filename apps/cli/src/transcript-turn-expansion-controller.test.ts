@@ -4,34 +4,7 @@ import test from "node:test"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   createTranscriptTurnExpansionController,
-  replaceCollapsedTurnIds,
-  updateCollapsedTurnState,
 } from "./transcript-turn-expansion-controller.js"
-
-test("updateCollapsedTurnState stores collapsed turns sorted by agent", () => {
-  const current = { "agent-1": [5] }
-
-  const next = updateCollapsedTurnState(current, "agent-1", 2, false)
-
-  assert.deepEqual(next, { "agent-1": [2, 5] })
-  assert.notEqual(next, current)
-})
-
-test("updateCollapsedTurnState removes the agent when the last collapsed turn expands", () => {
-  const current = { "agent-1": [2] }
-
-  const next = updateCollapsedTurnState(current, "agent-1", 2, true)
-
-  assert.deepEqual(next, {})
-  assert.notEqual(next, current)
-})
-
-test("replaceCollapsedTurnIds deduplicates, sorts, and preserves identity when unchanged", () => {
-  const current = { "agent-1": [1, 3] }
-
-  assert.deepEqual(replaceCollapsedTurnIds(current, "agent-1", [3, 1, 3]), current)
-  assert.equal(replaceCollapsedTurnIds(current, "agent-1", [1, 3]), current)
-})
 
 test("transcript turn expansion controller collapses the latest collapsible turn", () => {
   const harness = expansionHarness()

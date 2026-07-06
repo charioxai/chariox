@@ -68,6 +68,8 @@ export type TranscriptBlobToggleProjection<TEntry extends TranscriptDisplayEntry
     readonly collapsed: boolean
   }
 
+export type CollapsedTranscriptTurnIdsByAgent = Record<string, number[]>
+
 type MutableTranscriptDisplayEntry =
   Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
   turnId?: number | null | undefined
@@ -132,6 +134,49 @@ export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEnt
 
   nextCollapsedTurnIds.add(latestTurnId)
   return sortedTurnIds(nextCollapsedTurnIds)
+}
+
+export function updateCollapsedTranscriptTurnState(
+  current: CollapsedTranscriptTurnIdsByAgent,
+  agentId: string,
+  turnId: number,
+  expanded: boolean,
+) {
+  const previous = new Set(current[agentId] ?? [])
+  if (expanded) {
+    previous.delete(turnId)
+  } else {
+    previous.add(turnId)
+  }
+  return replaceCollapsedTranscriptTurnIds(current, agentId, previous)
+}
+
+export function replaceCollapsedTranscriptTurnIds(
+  current: CollapsedTranscriptTurnIdsByAgent,
+  agentId: string,
+  turnIds: Iterable<number>,
+) {
+  const nextTurnIds = sortedTurnIds(new Set(turnIds))
+  if (nextTurnIds.length === 0) {
+    if (!(agentId in current)) {
+      return current
+    }
+    const next = { ...current }
+    delete next[agentId]
+    return next
+  }
+
+  const currentTurnIds = current[agentId] ?? []
+  if (
+    currentTurnIds.length === nextTurnIds.length
+    && currentTurnIds.every((value, index) => value === nextTurnIds[index])
+  ) {
+    return current
+  }
+  return {
+    ...current,
+    [agentId]: nextTurnIds,
+  }
 }
 
 export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntry>(

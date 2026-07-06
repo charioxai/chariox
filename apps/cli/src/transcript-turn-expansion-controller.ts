@@ -2,9 +2,12 @@ import type { TranscriptEntry } from "./cli-types.js"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  replaceCollapsedTranscriptTurnIds,
+  updateCollapsedTranscriptTurnState,
+  type CollapsedTranscriptTurnIdsByAgent,
 } from "@arroba/kernel-client/transcript-display-state"
 
-export type CollapsedTurnIdsByAgent = Record<string, number[]>
+export type CollapsedTurnIdsByAgent = CollapsedTranscriptTurnIdsByAgent
 export type ExpandedTurnIdsByAgent = CollapsedTurnIdsByAgent
 
 export type TranscriptTurnExpansionControllerDeps = {
@@ -24,7 +27,7 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
       return
     }
     deps.updateExpandedTurnIdsByAgent((current) =>
-      updateCollapsedTurnState(current, agentId, turnId, expanded))
+      updateCollapsedTranscriptTurnState(current, agentId, turnId, expanded))
   }
 
   const replaceExpandedTurnsForAgent = (
@@ -35,7 +38,7 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
       return
     }
     deps.updateExpandedTurnIdsByAgent((current) =>
-      replaceCollapsedTurnIds(current, agentId, turnIds))
+      replaceCollapsedTranscriptTurnIds(current, agentId, turnIds))
   }
 
   const collapseLatestTurnForAgent = (
@@ -65,49 +68,6 @@ export function applyCollapsedTurns(
   return applyTranscriptDisplayState(entries, collapsedTurnIds)
 }
 
-export function updateCollapsedTurnState(
-  current: CollapsedTurnIdsByAgent,
-  agentId: string,
-  turnId: number,
-  expanded: boolean,
-) {
-  const previous = new Set(current[agentId] ?? [])
-  if (expanded) {
-    previous.delete(turnId)
-  } else {
-    previous.add(turnId)
-  }
-  return replaceCollapsedTurnIds(current, agentId, previous)
-}
-
-export function replaceCollapsedTurnIds(
-  current: CollapsedTurnIdsByAgent,
-  agentId: string,
-  turnIds: Iterable<number>,
-) {
-  const nextTurnIds = [...new Set(turnIds)].sort((left, right) => left - right)
-  if (nextTurnIds.length === 0) {
-    if (!(agentId in current)) {
-      return current
-    }
-    const next = { ...current }
-    delete next[agentId]
-    return next
-  }
-
-  const currentTurnIds = current[agentId] ?? []
-  if (
-    currentTurnIds.length === nextTurnIds.length
-    && currentTurnIds.every((value, index) => value === nextTurnIds[index])
-  ) {
-    return current
-  }
-  return {
-    ...current,
-    [agentId]: nextTurnIds,
-  }
-}
-
 export const applyExpandedTurns = applyCollapsedTurns
-export const updateExpandedTurnState = updateCollapsedTurnState
-export const replaceExpandedTurnIds = replaceCollapsedTurnIds
+export const updateExpandedTurnState = updateCollapsedTranscriptTurnState
+export const replaceExpandedTurnIds = replaceCollapsedTranscriptTurnIds

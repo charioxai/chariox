@@ -4,12 +4,14 @@ import test from "node:test"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  replaceCollapsedTranscriptTurnIds,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptDisplayState,
   projectSettledTranscriptTurnDisplayState,
   projectTranscriptTurnToggleDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
+  updateCollapsedTranscriptTurnState,
   type TranscriptDisplayEntry,
 } from "./transcript-display-state.js"
 
@@ -295,6 +297,31 @@ test("collapseLatestTranscriptTurn marks only completed non-trivial turns", () =
     ], [1]),
     [1],
   )
+})
+
+test("collapsed transcript turn state stores turns sorted by agent", () => {
+  const current = { "agent-1": [5] }
+
+  const next = updateCollapsedTranscriptTurnState(current, "agent-1", 2, false)
+
+  assert.deepEqual(next, { "agent-1": [2, 5] })
+  assert.notEqual(next, current)
+})
+
+test("collapsed transcript turn state removes the agent when the last collapsed turn expands", () => {
+  const current = { "agent-1": [2] }
+
+  const next = updateCollapsedTranscriptTurnState(current, "agent-1", 2, true)
+
+  assert.deepEqual(next, {})
+  assert.notEqual(next, current)
+})
+
+test("replaceCollapsedTranscriptTurnIds deduplicates, sorts, and preserves identity when unchanged", () => {
+  const current = { "agent-1": [1, 3] }
+
+  assert.deepEqual(replaceCollapsedTranscriptTurnIds(current, "agent-1", [3, 1, 3]), current)
+  assert.equal(replaceCollapsedTranscriptTurnIds(current, "agent-1", [1, 3]), current)
 })
 
 test("collapseLatestTranscriptTurn skips active history turns", () => {
