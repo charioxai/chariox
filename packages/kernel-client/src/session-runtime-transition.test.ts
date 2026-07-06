@@ -192,6 +192,52 @@ test("session runtime transition reports active prompt settlement", () => {
   assert.equal(transition.shouldConfirmIdleTurnCompletion, true)
 })
 
+test("session runtime transition settles active turn even when queued prompt remains", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "thinking" },
+  })
+
+  assert.equal(transition.nextHasPromptWork, true)
+  assert.equal(transition.nextHasTurnWork, false)
+  assert.deepEqual(transition.settledAgentIds, ["agent-1"])
+  assert.equal(transition.shouldClearWorkingAfterPromptSettlement, true)
+  assert.equal(transition.shouldConfirmIdleTurnCompletion, true)
+})
+
 test("session runtime transition reports cancelled prompt settlement cleanup", () => {
   const currentSession = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
@@ -234,6 +280,53 @@ test("session runtime transition reports cancelled prompt settlement cleanup", (
   assert.equal(transition.shouldClearCancelledPromptRuntimeResidue, true)
   assert.equal(transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement, true)
   assert.equal(transition.nextStreamingAgentIdAfterCancelledPromptSettlement, null)
+  assert.equal(transition.shouldConfirmIdleTurnCompletion, true)
+})
+
+test("session runtime transition confirms cancelled prompt settlement with queued prompt remaining", () => {
+  const currentSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "cancelling",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "cancelling",
+          phase: "settling",
+        },
+      },
+    },
+  })
+  const nextSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  const transition = sessionRuntimeTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-1",
+    currentAgentActivityLabels: { "agent-1": "cancelling" },
+  })
+
+  assert.equal(transition.nextHasPromptWork, true)
+  assert.equal(transition.nextHasTurnWork, false)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.equal(transition.shouldClearCancelledPromptRuntimeResidue, true)
+  assert.equal(transition.shouldConfirmTurnCompletionAfterCancelledPromptSettlement, true)
   assert.equal(transition.shouldConfirmIdleTurnCompletion, true)
 })
 

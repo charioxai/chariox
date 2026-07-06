@@ -242,10 +242,10 @@ export function sessionRuntimeTransitionState(
     cancelledPromptSettled: promptLifecycle.cancelledPromptSettled,
     settledAgentIds: promptLifecycle.settledAgentIds,
     shouldClearWorkingAfterPromptSettlement:
-      promptLifecycle.settledAgentIds.length > 0 && !nextHasPromptWork,
+      promptLifecycle.settledAgentIds.length > 0 && !nextHasTurnWork,
     shouldClearCancelledPromptRuntimeResidue: promptLifecycle.cancelledPromptSettled,
     shouldConfirmTurnCompletionAfterCancelledPromptSettlement:
-      promptLifecycle.cancelledPromptSettled && !nextHasPromptWork,
+      promptLifecycle.cancelledPromptSettled && !nextHasTurnWork,
     nextStreamingAgentIdAfterCancelledPromptSettlement: projectedStreamingAgentId,
     shouldConfirmIdleTurnCompletion,
     previousAgentSignature,
