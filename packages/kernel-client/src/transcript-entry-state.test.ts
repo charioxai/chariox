@@ -75,6 +75,20 @@ test("createNextTranscriptEntry assigns ids and inherits the active turn", () =>
   assert.deepEqual(next, entry(9, "tool", "tool output", { turnId: 9 }))
 })
 
+test("createNextTranscriptEntry accepts explicit runtime entry and turn identity", () => {
+  const next = createNextTranscriptEntry([
+    entry(4, "user", "previous", { turnId: 1 }),
+  ], {
+    role: "assistant",
+    text: "reply",
+  }, {
+    nextEntryId: 12,
+    currentTurnId: 7,
+  })
+
+  assert.deepEqual(next, entry(12, "assistant", "reply", { turnId: 7 }))
+})
+
 test("createNextTranscriptEntry preserves explicit turn ids", () => {
   const next = createNextTranscriptEntry([
     entry(4, "user", "prompt", { turnId: 9 }),

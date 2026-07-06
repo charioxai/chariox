@@ -112,13 +112,19 @@ export function createNextTranscriptEntry<
 >(
   currentEntries: readonly TEntry[],
   entry: TDraft,
+  options: {
+    readonly nextEntryId?: number
+    readonly currentTurnId?: number | null
+  } = {},
 ): TEntry {
   const nextEntry = {
-    id: computeNextTranscriptEntryId(currentEntries),
+    id: options.nextEntryId ?? computeNextTranscriptEntryId(currentEntries),
     ...entry,
   } as unknown as TEntry
   if (nextEntry.turnId === undefined) {
-    const activeTurnId = computeCurrentTranscriptTurnId(currentEntries)
+    const activeTurnId = options.currentTurnId !== undefined
+      ? options.currentTurnId
+      : computeCurrentTranscriptTurnId(currentEntries)
     if (activeTurnId !== null) {
       return {
         ...nextEntry,

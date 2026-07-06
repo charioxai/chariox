@@ -22,6 +22,21 @@ test("transcript state controller appends entries with ids and active turn ids",
   assert.equal(harness.enforced, 1)
 })
 
+test("transcript state controller appends entries using runtime counters", () => {
+  const harness = transcriptHarness({
+    entries: [entry(1, "user", "hello", { turnId: 1 })],
+    entryCounter: 10,
+    currentTurnId: 2,
+  })
+
+  const appended = harness.controller.appendEntry({ role: "assistant", text: "reply" })
+
+  assert.equal(appended?.id, 11)
+  assert.equal(appended?.turnId, 2)
+  assert.deepEqual(harness.entries.map((candidate) => candidate.id), [1, 11])
+  assert.equal(harness.entryCounter, 11)
+})
+
 test("transcript state controller skips consecutive duplicate notices", () => {
   const harness = transcriptHarness({
     entries: [entry(1, "notice", "same", { emphasis: "warning" })],

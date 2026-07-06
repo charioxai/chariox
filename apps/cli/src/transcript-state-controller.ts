@@ -10,6 +10,7 @@ import {
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
 } from "@arroba/kernel-client/transcript-display-state"
+import { createNextTranscriptEntry } from "@arroba/kernel-client/transcript-entry-state"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 
 export type TranscriptStateControllerDeps = {
@@ -130,12 +131,14 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       return null
     }
     const currentEntries = deps.entries().filter(Boolean)
-    const nextId = deps.entryCounter() + 1
-    const nextEntry: TranscriptEntry = { id: nextId, ...entry }
-    const currentTurnId = deps.currentTurnId()
-    if (nextEntry.turnId === undefined && currentTurnId !== null) {
-      nextEntry.turnId = currentTurnId
-    }
+    const nextEntry = createNextTranscriptEntry<TranscriptEntry, Omit<TranscriptEntry, "id">>(
+      currentEntries,
+      entry,
+      {
+        nextEntryId: deps.entryCounter() + 1,
+        currentTurnId: deps.currentTurnId(),
+      },
+    )
     const nextEntries = applyVisibleState(
       [...currentEntries, nextEntry],
       deps.visibleTranscriptAgentId(),
