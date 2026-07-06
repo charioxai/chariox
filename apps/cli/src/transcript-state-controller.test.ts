@@ -88,6 +88,19 @@ test("transcript state controller toggles blob state and preserves focus", () =>
   assert.equal(harness.reconciled.length, 1)
 })
 
+test("transcript state controller ignores missing blob entries", () => {
+  const harness = transcriptHarness({
+    entries: [entry(1, "tool", "large")],
+  })
+
+  harness.controller.toggleBlob(99, false)
+
+  assert.deepEqual(harness.entries.map((candidate) => candidate.id), [1])
+  assert.equal(harness.persisted.length, 0)
+  assert.equal(harness.reconciled.length, 0)
+  assert.equal(harness.focusRetained, 0)
+})
+
 function transcriptHarness(options: {
   entries?: TranscriptEntry[]
   entryCounter?: number

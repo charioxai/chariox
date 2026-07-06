@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  projectTranscriptBlobToggleDisplayState,
   projectTranscriptDisplayState,
   projectSettledTranscriptTurnDisplayState,
   projectTranscriptTurnToggleDisplayState,
@@ -118,6 +119,30 @@ test("projectTranscriptTurnToggleDisplayState ignores invalid targets", () => {
 
   assert.equal(projectTranscriptTurnToggleDisplayState(current, null, [1]), null)
   assert.equal(projectTranscriptTurnToggleDisplayState(current, 2, [1]), null)
+})
+
+test("projectTranscriptBlobToggleDisplayState projects blob expansion through shared state", () => {
+  const current = applyTranscriptDisplayState(baseTurnEntries())
+  const projection = projectTranscriptBlobToggleDisplayState(current, 3, [], false)
+
+  assert.equal(projection?.entryId, 3)
+  assert.equal(projection?.collapsed, false)
+  assert.equal(projection?.entries.find((entry) => entry.id === 3)?.blobCollapsed, false)
+  assert.equal(projection?.entryCounter, 5)
+  assert.deepEqual(
+    projection?.entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Investigate the transcript UI"],
+      ["turn_toggle", "click to collapse"],
+      ["reasoning", "Thinking through the render model"],
+      ["tool", "tool output"],
+      ["assistant", "I changed the transcript layout."],
+    ],
+  )
+})
+
+test("projectTranscriptBlobToggleDisplayState ignores invalid entries", () => {
+  assert.equal(projectTranscriptBlobToggleDisplayState(baseTurnEntries(), 99, [], false), null)
 })
 
 test("applyTranscriptDisplayState uses shared collapsed blob descriptions by default", () => {

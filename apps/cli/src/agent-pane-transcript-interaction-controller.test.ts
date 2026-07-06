@@ -64,6 +64,18 @@ test("agent pane transcript interaction controller toggles blobs", () => {
   assert.equal(harness.focusRetained, 1)
 })
 
+test("agent pane transcript interaction controller ignores missing blob entries", () => {
+  const harness = interactionHarness({
+    "agent-1": [entry(1, "tool", "details")],
+  })
+
+  harness.controller.toggleBlob("agent-1", 99, false)
+
+  assert.equal(harness.committed.length, 0)
+  assert.equal(harness.reconciled.length, 0)
+  assert.equal(harness.focusRetained, 0)
+})
+
 function interactionHarness(
   paneEntriesByAgent: Record<string, TranscriptEntry[]>,
   expandedTurnIdsByAgent: Record<string, number[]> = {},

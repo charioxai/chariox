@@ -7,8 +7,8 @@ import {
   replaceSessionHistoryBlobPlaceholder,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
+  projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
-  setTranscriptBlobCollapsed,
 } from "@arroba/kernel-client/transcript-display-state"
 
 export type AgentPaneTranscriptInteractionControllerDeps = {
@@ -92,13 +92,16 @@ export function createAgentPaneTranscriptInteractionController(
         })
       return
     }
-    const nextEntries = setTranscriptBlobCollapsed(
+    const projection = projectTranscriptBlobToggleDisplayState(
       currentEntries,
       entryId,
       deps.expandedTurnIdsForAgent(agentId),
       collapsed,
     )
-    commitAndRefocus(deps, agentId, currentEntries, nextEntries)
+    if (!projection) {
+      return
+    }
+    commitAndRefocus(deps, agentId, currentEntries, projection.entries)
   }
 
   return {

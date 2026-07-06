@@ -61,6 +61,12 @@ export type TranscriptTurnToggleProjection<TEntry extends TranscriptDisplayEntry
     readonly collapsedTurnIds: number[]
   }
 
+export type TranscriptBlobToggleProjection<TEntry extends TranscriptDisplayEntry> =
+  TranscriptDisplayProjection<TEntry> & {
+    readonly entryId: number
+    readonly collapsed: boolean
+  }
+
 type MutableTranscriptDisplayEntry =
   Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
   turnId?: number | null | undefined
@@ -277,6 +283,38 @@ export function projectTranscriptTurnToggleDisplayState<TEntry extends Transcrip
   }
 }
 
+export function projectTranscriptBlobToggleDisplayState<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TEntry[],
+  entryId: number,
+  collapsedTurnIds: readonly number[] = [],
+  collapsed: boolean,
+  activeTurnId: number | null = null,
+  options: TranscriptDisplayStateOptions = {},
+): TranscriptBlobToggleProjection<TEntry> | null {
+  if (!entries.some((entry) => entry.id === entryId)) {
+    return null
+  }
+  const projection = projectTranscriptDisplayState(
+    stripTranscriptDisplayEntries(entries).map((entry) => {
+      if (entry.id !== entryId) {
+        return { ...entry }
+      }
+      return {
+        ...entry,
+        blobCollapsed: collapsed,
+      }
+    }) as TEntry[],
+    collapsedTurnIds,
+    activeTurnId,
+    options,
+  )
+  return {
+    ...projection,
+    entryId,
+    collapsed,
+  }
+}
+
 function inferredActiveHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {
@@ -311,16 +349,14 @@ export function setTranscriptBlobCollapsed<TEntry extends TranscriptDisplayEntry
   activeTurnId: number | null = null,
   options: TranscriptDisplayStateOptions = {},
 ): TEntry[] {
-  const updated = stripTranscriptDisplayEntries(entries).map((entry) => {
-    if (entry.id !== entryId) {
-      return { ...entry }
-    }
-    return {
-      ...entry,
-      blobCollapsed: collapsed,
-    }
-  }) as TEntry[]
-  return applyTranscriptDisplayState(updated, collapsedTurnIds, activeTurnId, options)
+  return projectTranscriptBlobToggleDisplayState(
+    entries,
+    entryId,
+    collapsedTurnIds,
+    collapsed,
+    activeTurnId,
+    options,
+  )?.entries ?? applyTranscriptDisplayState(entries, collapsedTurnIds, activeTurnId, options)
 }
 
 export function findVisibleTurnToggle<TEntry extends TranscriptDisplayEntry>(

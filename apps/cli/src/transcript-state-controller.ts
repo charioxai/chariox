@@ -6,8 +6,8 @@ import {
 } from "@arroba/kernel-client/session-history-transcript"
 import {
   projectTranscriptDisplayState,
+  projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
-  setTranscriptBlobCollapsed,
 } from "@arroba/kernel-client/transcript-display-state"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 
@@ -110,16 +110,19 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
         })
       return
     }
-    const nextEntries = setTranscriptBlobCollapsed(
+    const projection = projectTranscriptBlobToggleDisplayState(
       currentEntries,
       entryId,
       deps.expandedTurnIdsForAgent(agentId),
       collapsed,
     )
-    deps.setEntries(nextEntries)
-    deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
-    deps.persistVisibleTranscriptEntries(nextEntries)
-    deps.reconcileMountedTranscript(currentEntries, nextEntries)
+    if (!projection) {
+      return
+    }
+    deps.setEntries(projection.entries)
+    deps.setEntryCounter(projection.entryCounter)
+    deps.persistVisibleTranscriptEntries(projection.entries)
+    deps.reconcileMountedTranscript(currentEntries, projection.entries)
     deps.retainPromptFocus()
   }
 
