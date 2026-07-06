@@ -35,6 +35,39 @@ test("transcript state controller skips consecutive duplicate notices", () => {
   assert.equal(harness.persisted.length, 0)
 })
 
+test("transcript state controller toggles turns through shared display state", () => {
+  const harness = transcriptHarness({
+    entries: [
+      entry(1, "user", "prompt", { turnId: 1 }),
+      entry(4, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
+      entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
+      entry(3, "assistant", "summary", { turnId: 1 }),
+    ],
+    expandedTurnIds: [1],
+  })
+
+  harness.controller.toggleTurn(1, 4)
+
+  assert.deepEqual(harness.expandedTurnUpdates, [{
+    agentId: "agent-1",
+    turnId: 1,
+    expanded: true,
+  }])
+  assert.deepEqual(
+    harness.entries.map((candidate) => [candidate.id, candidate.role, candidate.hidden ?? false, candidate.toggleMode ?? null]),
+    [
+      [1, "user", false, null],
+      [4, "turn_toggle", false, "collapse"],
+      [2, "reasoning", false, null],
+      [3, "assistant", false, null],
+    ],
+  )
+  assert.equal(harness.entryCounter, 4)
+  assert.equal(harness.persisted.length, 1)
+  assert.equal(harness.reconciled.length, 1)
+  assert.equal(harness.focusRetained, 1)
+})
+
 test("transcript state controller toggles blob state and preserves focus", () => {
   const harness = transcriptHarness({
     entries: [
@@ -59,11 +92,18 @@ function transcriptHarness(options: {
   entries?: TranscriptEntry[]
   entryCounter?: number
   currentTurnId?: number | null
+  expandedTurnIds?: number[]
 }) {
   const harness = {
     entries: options.entries ?? [],
     entryCounter: options.entryCounter ?? 0,
     currentTurnId: options.currentTurnId ?? null,
+    expandedTurnIds: options.expandedTurnIds ?? [],
+    expandedTurnUpdates: [] as Array<{
+      agentId: string | null | undefined
+      turnId: number
+      expanded: boolean
+    }>,
     persisted: [] as TranscriptEntry[][],
     reconciled: [] as Array<{ current: TranscriptEntry[]; next: TranscriptEntry[] }>,
     enforced: 0,
@@ -81,8 +121,10 @@ function transcriptHarness(options: {
     },
     currentTurnId: () => harness.currentTurnId,
     visibleTranscriptAgentId: () => "agent-1",
-    expandedTurnIdsForAgent: () => [],
-    setExpandedTurnState: () => {},
+    expandedTurnIdsForAgent: () => harness.expandedTurnIds,
+    setExpandedTurnState: (agentId, turnId, expanded) => {
+      harness.expandedTurnUpdates.push({ agentId, turnId, expanded })
+    },
     persistVisibleTranscriptEntries: (entries) => {
       harness.persisted.push(entries)
     },

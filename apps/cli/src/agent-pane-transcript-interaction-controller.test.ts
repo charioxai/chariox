@@ -8,12 +8,13 @@ test("agent pane transcript interaction controller toggles turns", () => {
   const harness = interactionHarness({
     "agent-1": [
       entry(1, "user", "prompt", { turnId: 1 }),
-      entry(2, "assistant", "summary", { turnId: 1 }),
-      entry(3, "turn_toggle", "show", { turnId: 1, toggleMode: "expand" }),
+      entry(4, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
+      entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
+      entry(3, "assistant", "summary", { turnId: 1 }),
     ],
   }, { "agent-1": [1] })
 
-  harness.controller.toggleTurn("agent-1", 1, 3)
+  harness.controller.toggleTurn("agent-1", 1, 4)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
@@ -21,6 +22,15 @@ test("agent pane transcript interaction controller toggles turns", () => {
     expanded: true,
   }])
   assert.equal(harness.committed.length, 1)
+  assert.deepEqual(
+    harness.committed[0]?.entries.map((candidate) => [candidate.id, candidate.role, candidate.hidden ?? false, candidate.toggleMode ?? null]),
+    [
+      [1, "user", false, null],
+      [4, "turn_toggle", false, "collapse"],
+      [2, "reasoning", false, null],
+      [3, "assistant", false, null],
+    ],
+  )
   assert.equal(harness.reconciled.length, 1)
   assert.equal(harness.focusRetained, 1)
 })

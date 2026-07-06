@@ -7,9 +7,9 @@ import {
   replaceSessionHistoryBlobPlaceholder,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
-  applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
+  setTranscriptTurnExpanded,
 } from "@arroba/kernel-client/transcript-display-state"
 
 export type AgentPaneTranscriptInteractionControllerDeps = {
@@ -50,12 +50,12 @@ export function createAgentPaneTranscriptInteractionController(
 
     const expanding = toggleEntry.toggleMode === "expand"
     deps.setExpandedTurnState(agentId, turnId, expanding)
-    const nextEntries = applyTranscriptDisplayState(
+    const nextEntries = setTranscriptTurnExpanded(
       currentEntries,
+      turnId,
+      deps.expandedTurnIdsForAgent(agentId),
       expanding
-        ? deps.expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
-        : [...deps.expandedTurnIdsForAgent(agentId), turnId],
-    )
+    ) as TranscriptEntry[]
     commitAndRefocus(deps, agentId, currentEntries, nextEntries)
   }
 

@@ -5,10 +5,10 @@ import {
   replaceSessionHistoryBlobPlaceholder,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
-  applyTranscriptDisplayState,
   projectTranscriptDisplayState,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
+  setTranscriptTurnExpanded,
 } from "@arroba/kernel-client/transcript-display-state"
 import { shouldSkipConsecutiveTranscriptEntry } from "./transcript.js"
 
@@ -53,9 +53,12 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     const agentId = deps.visibleTranscriptAgentId()
     const expanding = toggleEntry.toggleMode === "expand"
     deps.setExpandedTurnState(agentId, turnId, expanding)
-    const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
-      ? deps.expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
-      : [...deps.expandedTurnIdsForAgent(agentId), turnId])
+    const nextEntries = setTranscriptTurnExpanded(
+      currentEntries,
+      turnId,
+      deps.expandedTurnIdsForAgent(agentId),
+      expanding,
+    ) as TranscriptEntry[]
     deps.setEntries(nextEntries)
     deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
     deps.persistVisibleTranscriptEntries(nextEntries)
