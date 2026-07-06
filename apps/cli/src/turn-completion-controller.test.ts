@@ -9,9 +9,9 @@ type FakeTimer = {
   cleared: boolean
 }
 
-function createHarness(options: { activePrompt?: boolean } = {}) {
+function createHarness(options: { activeTurnWork?: boolean } = {}) {
   let now = 0
-  let activePrompt = options.activePrompt ?? false
+  let activeTurnWork = options.activeTurnWork ?? false
   let completions = 0
   const timers: FakeTimer[] = []
   const controller = createTurnCompletionController<FakeTimer>({
@@ -24,7 +24,7 @@ function createHarness(options: { activePrompt?: boolean } = {}) {
     clearTimer(timer) {
       timer.cleared = true
     },
-    hasActivePrompt: () => activePrompt,
+    hasActiveTurnWork: () => activeTurnWork,
     getDelayMs: (lastActivityAt) => Math.max(0, 300 - Math.max(0, now - lastActivityAt)),
     completeTurn: () => {
       completions += 1
@@ -38,8 +38,8 @@ function createHarness(options: { activePrompt?: boolean } = {}) {
       now = value
     },
     completions: () => completions,
-    setActivePrompt(value: boolean) {
-      activePrompt = value
+    setActiveTurnWork(value: boolean) {
+      activeTurnWork = value
     },
   }
 }
@@ -62,13 +62,13 @@ test("turn completion controller waits for a quiet window after activity", () =>
   assert.equal(harness.controller.isConfirmed(), false)
 })
 
-test("turn completion controller defers scheduling while a prompt is active", () => {
-  const harness = createHarness({ activePrompt: true })
+test("turn completion controller defers scheduling while turn work is active", () => {
+  const harness = createHarness({ activeTurnWork: true })
 
   harness.controller.confirmAndSchedule()
   assert.equal(harness.timers.length, 0)
 
-  harness.setActivePrompt(false)
+  harness.setActiveTurnWork(false)
   harness.controller.maybeScheduleConfirmed()
   assert.equal(harness.timers[0]?.delayMs, 300)
 })

@@ -6,7 +6,7 @@ type TurnCompletionControllerOptions<TimerHandle> = {
   now: () => number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer: (timer: TimerHandle) => void
-  hasActivePrompt: () => boolean
+  hasActiveTurnWork: () => boolean
   getDelayMs: (lastActivityAt: number) => number | null
   completeTurn: () => void
 }
@@ -64,7 +64,7 @@ export function createTurnCompletionController<TimerHandle>(
   }
 
   const maybeScheduleConfirmed = () => {
-    if (!confirmed || options.hasActivePrompt()) {
+    if (!confirmed || options.hasActiveTurnWork()) {
       return
     }
     scheduleCompletion()

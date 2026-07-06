@@ -10,6 +10,7 @@ import {
 import type { TerminalOutputRecord } from "./cli-types.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import { turnCompletionDelayMs } from "@arroba/kernel-client/session-runtime-transition"
+import { sessionHasTurnWork } from "@arroba/kernel-client/session-prompt-work"
 import { getSessionHistoryBlobContent } from "./session-history-api.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalOutputRecordQueue } from "./terminal-output-record-queue.js"
@@ -35,7 +36,6 @@ export type CliTranscriptRuntimeCompositionDeps = {
   entryCounter: AnyFn
   setEntryCounter: AnyFn
   sessionState: AnyFn
-  activePrompt: AnyFn
   statusLine: AnyFn
   setStatusLine: AnyFn
   setWorking: AnyFn
@@ -130,7 +130,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     now: Date.now,
     scheduleTimer: deps.scheduleTimer,
     clearTimer: deps.clearTimer,
-    hasActivePrompt: () => Boolean(deps.activePrompt()),
+    hasActiveTurnWork: () => sessionHasTurnWork(deps.sessionState()),
     getDelayMs: (lastTurnActivityAt) => turnCompletionDelayMs({
       session: deps.sessionState(),
       pendingTerminalRecordCount: terminalOutputRecordQueue.pendingCount(),
@@ -149,7 +149,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
         deps.setAgentBusyLatches({})
         deps.setProviderActivityLabel(null)
         deps.setActiveStatusLabel(null)
-        if (!deps.activePrompt() && deps.statusLine() === "Cancellation requested.") {
+        if (!sessionHasTurnWork(deps.sessionState()) && deps.statusLine() === "Cancellation requested.") {
           deps.setStatusLine(deps.DEFAULT_CONNECTED_STATUS)
         }
         deps.setWorking(false)
