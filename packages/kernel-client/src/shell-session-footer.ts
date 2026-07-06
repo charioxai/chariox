@@ -2,8 +2,43 @@ import type {
   RuntimeSession,
   WorkspaceLiveSyncStatus,
 } from "./kernel-types.js"
-import type { SessionStatusMode } from "./session-runtime-status.js"
+import {
+  sessionStatusMode,
+  type SessionStatusMode,
+} from "./session-runtime-status.js"
 import { workspaceLiveSyncFooterSummary } from "./shell-workspace-format.js"
+
+export type SessionChromeProjection = {
+  readonly sessionStatusMode: SessionStatusMode
+  readonly footerHint: string
+}
+
+export function sessionChromeProjection(options: {
+  readonly daemonDisconnected: boolean
+  readonly working: boolean
+  readonly hasActivePrompt: boolean
+  readonly submitting: boolean
+  readonly queueDepth: number
+  readonly fatalError: string | null
+  readonly activePromptId: string | null
+  readonly statusLine: string
+}): SessionChromeProjection {
+  return {
+    sessionStatusMode: sessionStatusMode({
+      daemonDisconnected: options.daemonDisconnected,
+      working: options.working,
+      hasActivePrompt: options.hasActivePrompt,
+      submitting: options.submitting,
+      queueDepth: options.queueDepth,
+    }),
+    footerHint: sessionFooterHint({
+      fatalError: options.fatalError,
+      activePromptId: options.activePromptId,
+      queueDepth: options.queueDepth,
+      statusLine: options.statusLine,
+    }),
+  }
+}
 
 export function sessionFooterHint(options: {
   readonly fatalError: string | null

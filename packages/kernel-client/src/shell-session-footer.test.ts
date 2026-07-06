@@ -4,6 +4,7 @@ import test from "node:test"
 import type { WorkspaceLiveSyncStatus } from "./kernel-types.js"
 import {
   sessionAttachedFooterSummary,
+  sessionChromeProjection,
   sessionFooterHint,
   sessionVisibleAgentSummary,
 } from "./shell-session-footer.js"
@@ -40,6 +41,48 @@ test("session footer hint reflects errors, active prompts, queues, and fallback 
     queueDepth: 0,
     statusLine: "Connected.",
   }), "Connected.")
+})
+
+test("session chrome projection derives status mode and footer hint together", () => {
+  assert.deepEqual(sessionChromeProjection({
+    daemonDisconnected: false,
+    working: false,
+    hasActivePrompt: true,
+    submitting: false,
+    queueDepth: 2,
+    fatalError: null,
+    activePromptId: "prompt-1",
+    statusLine: "Connected.",
+  }), {
+    sessionStatusMode: "working",
+    footerHint: "Processing prompt-1; 2 queued.",
+  })
+  assert.deepEqual(sessionChromeProjection({
+    daemonDisconnected: true,
+    working: true,
+    hasActivePrompt: true,
+    submitting: true,
+    queueDepth: 1,
+    fatalError: "boom",
+    activePromptId: "prompt-1",
+    statusLine: "Connected.",
+  }), {
+    sessionStatusMode: "disconnected",
+    footerHint: "boom",
+  })
+  assert.deepEqual(sessionChromeProjection({
+    daemonDisconnected: false,
+    working: false,
+    hasActivePrompt: false,
+    submitting: false,
+    queueDepth: 0,
+    fatalError: null,
+    activePromptId: null,
+    statusLine: "Connected.",
+  }), {
+    sessionStatusMode: "idle",
+    footerHint: "Connected.",
+  })
 })
 
 test("session attached footer summary projects visible agents, collaboration, and sync", () => {

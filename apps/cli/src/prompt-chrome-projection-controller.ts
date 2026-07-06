@@ -3,10 +3,7 @@ import {
   derivePromptPlaceholder,
 } from "@arroba/kernel-client/prompt-surface-state"
 import {
-  sessionStatusMode,
-} from "@arroba/kernel-client/session-runtime-status"
-import {
-  sessionFooterHint,
+  sessionChromeProjection,
 } from "@arroba/kernel-client/shell-session-footer"
 import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-state"
 
@@ -33,20 +30,20 @@ export type PromptChromeProjectionControllerDeps<Color> = {
 export function createPromptChromeProjectionController<Color>(
   deps: PromptChromeProjectionControllerDeps<Color>,
 ) {
+  const chromeProjection = () => sessionChromeProjection({
+    daemonDisconnected: deps.daemonDisconnected(),
+    working: deps.working(),
+    hasActivePrompt: deps.hasActivePrompt(),
+    submitting: deps.submitting(),
+    queueDepth: deps.queueDepth(),
+    fatalError: deps.fatalError(),
+    activePromptId: deps.activePromptId(),
+    statusLine: deps.statusLine(),
+  })
+
   return {
-    sessionStatusMode: () => sessionStatusMode({
-      daemonDisconnected: deps.daemonDisconnected(),
-      working: deps.working(),
-      hasActivePrompt: deps.hasActivePrompt(),
-      submitting: deps.submitting(),
-      queueDepth: deps.queueDepth(),
-    }),
-    footerHint: () => sessionFooterHint({
-      fatalError: deps.fatalError(),
-      activePromptId: deps.activePromptId(),
-      queueDepth: deps.queueDepth(),
-      statusLine: deps.statusLine(),
-    }),
+    sessionStatusMode: () => chromeProjection().sessionStatusMode,
+    footerHint: () => chromeProjection().footerHint,
     promptPlaceholder: () => derivePromptPlaceholder({
       attached: deps.isAttached(),
       workflowScreenActive: deps.workflowScreenActive(),
