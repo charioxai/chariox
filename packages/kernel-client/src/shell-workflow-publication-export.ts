@@ -7,6 +7,7 @@ import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
 } from "./kernel-types.js"
+import { sessionWorkflowSchedules } from "./session-workflow-state.js"
 
 export async function writeWorkflowPublicationExportPackage(
   publication: WorkflowPublicationDefinition,
@@ -106,7 +107,7 @@ function workflowPublicationSnapshot(publication: WorkflowPublicationDefinition,
     workflow,
     endpoint,
     queues: (session.workflow_prompt_queues ?? []).filter((queue) => queue.workflow_id === workflow.id),
-    schedules: (session.workflow_schedules ?? session.workflow_watchdogs ?? []).filter((schedule) => schedule.workflow_id === workflow.id),
+    schedules: sessionWorkflowSchedules(session).filter((schedule) => schedule.workflow_id === workflow.id),
     agents,
   }
 }

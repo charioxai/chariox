@@ -33,6 +33,7 @@
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
     "./waiting-room-runtime-placement": "./dist/waiting-room-runtime-placement.js",
     "./workflow-prompt-state": "./dist/workflow-prompt-state.js",
+    "./session-workflow-state": "./dist/session-workflow-state.js",
     "./session-history-attachments": "./dist/session-history-attachments.js",
     "./session-history-fragments": "./dist/session-history-fragments.js",
     "./transcript-history-stitching": "./dist/transcript-history-stitching.js",

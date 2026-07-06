@@ -11,6 +11,7 @@ import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
 import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
 import { resolveActiveWorkflowRun } from "@arroba/kernel-client/workflow-prompt-state"
+import { sessionWorkflowSchedules } from "@arroba/kernel-client/session-workflow-state"
 
 export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 
@@ -168,7 +169,7 @@ function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowI
   const selectedNodeFailures = selectedNodeRun
     ? failureEvents.filter((entry) => entry.source_node_run_id === selectedNodeRun.id)
     : []
-  const workflowSchedules = (input.session.workflow_schedules ?? input.session.workflow_watchdogs ?? [])
+  const workflowSchedules = sessionWorkflowSchedules(input.session)
     .filter((entry) => entry.workflow_id === workflow.id)
     .sort((left, right) => left.next_run_at_ms - right.next_run_at_ms)
   const lines: string[] = []
