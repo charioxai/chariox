@@ -5,7 +5,13 @@ import type {
 import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 
-export type WaitingRoomActivityBadgeState = "none" | "working" | "done" | "mixedWorkingDone"
+export type WaitingRoomActivityBadgeState =
+  | "none"
+  | "queued"
+  | "working"
+  | "done"
+  | "mixedQueuedDone"
+  | "mixedWorkingDone"
 
 export function waitingRoomLifecycleStatusLabel(
   status: string | null | undefined,
@@ -24,8 +30,12 @@ export function waitingRoomActivityBadgeLabel(state: WaitingRoomActivityBadgeSta
   switch (state) {
     case "mixedWorkingDone":
       return "Working+Done"
+    case "mixedQueuedDone":
+      return "Queued+Done"
     case "working":
       return "Working"
+    case "queued":
+      return "Queued"
     case "done":
       return "Done"
     case "none":
@@ -102,13 +112,20 @@ export function waitingRoomSessionActivityBadgeState(
     "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count"
   > | null | undefined,
 ): WaitingRoomActivityBadgeState {
-  const working = waitingRoomSessionActivityHasWork(activity)
+  const activeWork = waitingRoomSessionActivityHasActiveWork(activity)
+  const queued = (activity?.queued_prompt_count ?? 0) > 0
   const done = waitingRoomSessionActivityHasUnreadIdleOutput(activity)
-  if (working && done) {
+  if (activeWork && done) {
     return "mixedWorkingDone"
   }
-  if (working) {
+  if (activeWork) {
     return "working"
+  }
+  if (queued && done) {
+    return "mixedQueuedDone"
+  }
+  if (queued) {
+    return "queued"
   }
   return done ? "done" : "none"
 }
@@ -201,10 +218,22 @@ export function waitingRoomItemActivityBadgeState(
     "active_prompt_count" | "queued_prompt_count" | "working" | "unread_idle_output"
   > | null | undefined,
 ): WaitingRoomActivityBadgeState {
-  if (waitingRoomItemActivityHasWork(activity)) {
+  const activeWork = waitingRoomItemActivityHasActiveWork(activity)
+  const queued = (activity?.queued_prompt_count ?? 0) > 0
+  const done = waitingRoomItemActivityHasUnreadIdleOutput(activity)
+  if (activeWork && done) {
+    return "mixedWorkingDone"
+  }
+  if (activeWork) {
     return "working"
   }
-  return waitingRoomItemActivityHasUnreadIdleOutput(activity) ? "done" : "none"
+  if (queued && done) {
+    return "mixedQueuedDone"
+  }
+  if (queued) {
+    return "queued"
+  }
+  return done ? "done" : "none"
 }
 
 export function waitingRoomItemActivityWorkLabel(
@@ -225,6 +254,26 @@ export function waitingRoomItemActivityWorkLabel(
 
 function numberOrZero(value: number | null | undefined): number {
   return isFiniteNumber(value) ? value : 0
+}
+
+function waitingRoomSessionActivityHasActiveWork(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "working_agent_count"
+  > | null | undefined,
+): boolean {
+  return (activity?.working_agent_count ?? 0) > 0
+    || (activity?.active_prompt_count ?? 0) > 0
+}
+
+function waitingRoomItemActivityHasActiveWork(
+  activity: Pick<
+    WaitingRoomPublicItemActivitySummary,
+    "active_prompt_count" | "working"
+  > | null | undefined,
+): boolean {
+  return activity?.working === true
+    || (activity?.active_prompt_count ?? 0) > 0
 }
 
 function isFiniteNumber(value: number | null | undefined): value is number {

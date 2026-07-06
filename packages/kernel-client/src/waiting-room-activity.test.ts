@@ -94,6 +94,18 @@ test("waiting room session activity predicates derive work and unread output", (
     unread_idle_agent_count: 0,
   }), "working")
   assert.equal(waitingRoomSessionActivityBadgeState({
+    working_agent_count: 0,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+    unread_idle_agent_count: 0,
+  }), "queued")
+  assert.equal(waitingRoomSessionActivityBadgeState({
+    working_agent_count: 0,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+    unread_idle_agent_count: 1,
+  }), "mixedQueuedDone")
+  assert.equal(waitingRoomSessionActivityBadgeState({
     working_agent_count: 1,
     active_prompt_count: 0,
     queued_prompt_count: 0,
@@ -113,10 +125,21 @@ test("waiting room status labels normalize lifecycle state and activity override
   assert.equal(waitingRoomLifecycleStatusLabel(""), "-")
   assert.equal(waitingRoomLifecycleStatusLabel(null, "unknown"), "unknown")
   assert.equal(waitingRoomActivityBadgeLabel("none"), null)
+  assert.equal(waitingRoomActivityBadgeLabel("queued"), "Queued")
   assert.equal(waitingRoomActivityBadgeLabel("working"), "Working")
   assert.equal(waitingRoomActivityBadgeLabel("done"), "Done")
+  assert.equal(waitingRoomActivityBadgeLabel("mixedQueuedDone"), "Queued+Done")
   assert.equal(waitingRoomActivityBadgeLabel("mixedWorkingDone"), "Working+Done")
   assert.equal(waitingRoomSessionStatusLabel({ status: "active", activity: null }), "Active")
+  assert.equal(waitingRoomSessionStatusLabel({
+    status: "active",
+    activity: {
+      working_agent_count: 0,
+      active_prompt_count: 0,
+      queued_prompt_count: 1,
+      unread_idle_agent_count: 0,
+    },
+  }), "Queued")
   assert.equal(waitingRoomSessionStatusLabel({
     status: "active",
     activity: {
@@ -186,7 +209,19 @@ test("waiting room item activity predicates derive work and unread output", () =
     active_prompt_count: 0,
     queued_prompt_count: 0,
     unread_idle_output: true,
-  }), "working")
+  }), "mixedWorkingDone")
+  assert.equal(waitingRoomItemActivityBadgeState({
+    working: false,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+    unread_idle_output: false,
+  }), "queued")
+  assert.equal(waitingRoomItemActivityBadgeState({
+    working: false,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+    unread_idle_output: true,
+  }), "mixedQueuedDone")
   assert.equal(waitingRoomItemActivityWorkLabel({
     working: true,
     active_prompt_count: 1,

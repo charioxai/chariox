@@ -76,6 +76,29 @@ test("waiting room session rows surface active and queued prompt counts", () => 
   assert.equal(rows[1]?.columns?.[3]?.trim(), "1 working, 1 active prompt, 2 queued prompts")
 })
 
+test("waiting room session rows render queued-only sessions as queued, not working", () => {
+  const rows = waitingRoomSessionRows(
+    { focus: "session", sessionIndex: 0 },
+    [
+      session({
+        id: "session-queued-only",
+        activity: {
+          agent_count: 1,
+          working_agent_count: 0,
+          active_prompt_count: 0,
+          queued_prompt_count: 1,
+          error_agent_count: 0,
+        },
+      }),
+    ],
+    { inventoryLoading: false, loadingText: "loading", titleWidth: 32 },
+  )
+
+  assert.equal(rows[1]?.value, "Queued")
+  assert.equal(rows[1]?.columns?.[0]?.trim(), "Queued")
+  assert.equal(rows[1]?.columns?.[3]?.trim(), "1 queued prompt")
+})
+
 test("waiting room session rows render done status for unread idle output", () => {
   const sessions = [
     session({

@@ -132,6 +132,16 @@ test("sessionBrowserStatus uses shared waiting-room activity status labels", () 
     status: "Active",
     activity: {
       agent_count: 1,
+      working_agent_count: 0,
+      active_prompt_count: 0,
+      queued_prompt_count: 1,
+      error_agent_count: 0,
+    },
+  }), "Queued")
+  assert.equal(sessionBrowserStatus({
+    status: "Active",
+    activity: {
+      agent_count: 1,
       working_agent_count: 1,
       active_prompt_count: 0,
       queued_prompt_count: 0,
