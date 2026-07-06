@@ -6,7 +6,12 @@ import { makeSession } from "./shell-executor.test-support.js"
 
 test("sessionWithProjectedAgentActivity preserves projected activity revision", () => {
   const session = sessionWithProjectedAgentActivity({
-    session: makeSession(),
+    session: {
+      ...makeSession(),
+      queued_prompts: null as never,
+      active_interactions: null as never,
+      metaagent_tasks: null as never,
+    },
     agent_activity: {
       "agent-1": {
         status: "working",
@@ -18,6 +23,9 @@ test("sessionWithProjectedAgentActivity preserves projected activity revision", 
     agent_activity_revision: 17,
   })
 
+  assert.deepEqual(session.queued_prompts, [])
+  assert.deepEqual(session.active_interactions, [])
+  assert.deepEqual(session.metaagent_tasks, [])
   assert.deepEqual(session.agent_activity, {
     "agent-1": {
       status: "working",
@@ -29,14 +37,22 @@ test("sessionWithProjectedAgentActivity preserves projected activity revision", 
   assert.equal(session.agent_activity_revision, 17)
 })
 
-test("sessionWithProjectedAgentActivity leaves legacy session untouched without projected activity", () => {
-  const legacy = makeSession()
+test("sessionWithProjectedAgentActivity normalizes legacy session shape without projected activity", () => {
+  const legacy = {
+    ...makeSession(),
+    queued_prompts: null as never,
+    active_interactions: null as never,
+    metaagent_tasks: null as never,
+  }
   const session = sessionWithProjectedAgentActivity({
     session: legacy,
     agent_activity: null,
     agent_activity_revision: 17,
   })
 
-  assert.equal(session, legacy)
+  assert.notEqual(session, legacy)
+  assert.deepEqual(session.queued_prompts, [])
+  assert.deepEqual(session.active_interactions, [])
+  assert.deepEqual(session.metaagent_tasks, [])
   assert.equal(session.agent_activity_revision, undefined)
 })
