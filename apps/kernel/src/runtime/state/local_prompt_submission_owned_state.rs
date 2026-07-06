@@ -71,34 +71,32 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id().to_string()
             }
         };
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-        if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
-            self.append_user_prompt_history(
-                &session_id,
-                prompt.source_attachment_id(),
-                prompt.target_agent_id(),
-                prompt.prompt(),
-                prompt.attachments(),
-                Some(prompt.id()),
-                prompt.workflow_run_id(),
-                prompt.workflow_node_run_id(),
-            )?;
-            let provider_run_id =
-                provider_run_id
-                    .as_deref()
-                    .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                        session_id: session_id.clone(),
-                    })?;
-            if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
-                self.capture_git_turn_snapshot_for_started_prompt(
-                    &session,
-                    &target_agent_id,
-                    &provider_run,
+        let prompt_sent_at_ms =
+            if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+                let prompt_sent_at_ms = self.record_started_user_prompt(
+                    &session_id,
+                    prompt.source_attachment_id(),
                     prompt,
-                    Some(prompt_sent_at_ms),
-                );
-            }
-        }
+                )?;
+                let provider_run_id =
+                    provider_run_id
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                            session_id: session_id.clone(),
+                        })?;
+                if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
+                    self.capture_git_turn_snapshot_for_started_prompt(
+                        &session,
+                        &target_agent_id,
+                        &provider_run,
+                        prompt,
+                        Some(prompt_sent_at_ms),
+                    );
+                }
+                Some(prompt_sent_at_ms)
+            } else {
+                None
+            };
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
@@ -138,13 +136,7 @@ impl KernelRuntimeOwnedState {
                     attachments: prompt.attachments().to_vec(),
                     steering: false,
                 });
-                self.agent_store
-                    .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
-                self.session_store.note_prompt_sent(
-                    &session_id,
-                    &outcome_agent_id,
-                    prompt_sent_at_ms,
-                )?;
+                debug_assert!(prompt_sent_at_ms.is_some());
             }
             crate::session::PromptSubmissionOutcome::Queued { .. } => {}
         }

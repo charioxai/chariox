@@ -576,6 +576,33 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    pub(super) fn record_started_user_prompt(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<u64, DaemonError> {
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.append_user_prompt_history(
+            session_id,
+            source_attachment_id,
+            prompt.target_agent_id(),
+            prompt.prompt(),
+            prompt.attachments(),
+            Some(prompt.id()),
+            prompt.workflow_run_id(),
+            prompt.workflow_node_run_id(),
+        )?;
+        self.agent_store
+            .note_prompt_sent_at(prompt.target_agent_id(), prompt_sent_at_ms)?;
+        self.session_store.note_prompt_sent(
+            session_id,
+            prompt.target_agent_id(),
+            prompt_sent_at_ms,
+        )?;
+        Ok(prompt_sent_at_ms)
+    }
+
     pub(super) fn append_steering_prompt_history(
         &self,
         session_id: &str,

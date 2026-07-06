@@ -156,17 +156,8 @@ impl KernelRuntimeOwnedState {
             session_id,
             started_next.source_attachment_id(),
         )?;
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-        self.append_user_prompt_history(
-            session_id,
-            &source_attachment_id,
-            started_next.target_agent_id(),
-            started_next.prompt(),
-            started_next.attachments(),
-            Some(started_next.id()),
-            started_next.workflow_run_id(),
-            started_next.workflow_node_run_id(),
-        )?;
+        let prompt_sent_at_ms =
+            self.record_started_user_prompt(session_id, &source_attachment_id, &started_next)?;
         self.echo_promoted_queued_prompt_to_attachments(
             session_id,
             provider_run_id,
@@ -175,10 +166,6 @@ impl KernelRuntimeOwnedState {
             started_next.prompt(),
             started_next.attachments(),
         );
-        self.agent_store
-            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
-        self.session_store
-            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
         self.capture_git_turn_snapshot_for_started_prompt(
             &session,
             agent_id,

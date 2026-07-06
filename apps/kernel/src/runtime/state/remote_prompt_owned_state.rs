@@ -60,25 +60,12 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         let remote_dispatch =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
-                self.append_user_prompt_history(
+                let _ = self.record_started_user_prompt(
                     &session_id,
                     prompt.source_attachment_id(),
-                    prompt.target_agent_id(),
-                    prompt.prompt(),
-                    prompt.attachments(),
-                    Some(prompt.id()),
-                    prompt.workflow_run_id(),
-                    prompt.workflow_node_run_id(),
-                )?;
-                self.agent_store
-                    .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
-                self.session_store.note_prompt_sent(
-                    &session_id,
-                    &outcome_agent_id,
-                    prompt_sent_at_ms,
+                    prompt,
                 )?;
                 Some(crate::app::KernelRemotePromptDispatch {
                     session_id: session_id.clone(),
@@ -169,21 +156,11 @@ impl KernelRuntimeOwnedState {
                         self.session_store.reserve_prompt_id(),
                     )?;
                 if let Some(active_prompt) = active.as_ref() {
-                    let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-                    self.append_user_prompt_history(
+                    let _ = self.record_started_user_prompt(
                         session_id,
                         active_prompt.source_attachment_id(),
-                        active_prompt.target_agent_id(),
-                        active_prompt.prompt(),
-                        active_prompt.attachments(),
-                        Some(active_prompt.id()),
-                        active_prompt.workflow_run_id(),
-                        active_prompt.workflow_node_run_id(),
+                        active_prompt,
                     )?;
-                    self.agent_store
-                        .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
-                    self.session_store
-                        .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
                 }
                 let (active_prompt, queued_prompts) =
                     self.prompt_state_owner.state_parts(&session, agent_id);
