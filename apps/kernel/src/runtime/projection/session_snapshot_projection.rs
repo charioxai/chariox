@@ -207,17 +207,9 @@ pub(crate) fn agent_activity_for_session_projection(
             .map(|turn| {
                 let active_prompt_for_turn =
                     active_prompt.filter(|prompt| prompt.id() == turn.prompt_id);
-                let prompt_origin = active_prompt_for_turn
-                    .map(PromptQueueItem::prompt_origin)
-                    .or_else(|| {
-                        crate::history::parse_external_provider_observed_id(&turn.prompt_id)
-                            .map(|_| PromptOrigin::External)
-                    });
-                let external_observed_id = active_prompt_for_turn
-                    .and_then(PromptQueueItem::external_observed_id)
-                    .or_else(|| {
-                        crate::history::parse_external_provider_observed_id(&turn.prompt_id)
-                    });
+                let prompt_origin = active_prompt_for_turn.map(PromptQueueItem::prompt_origin);
+                let external_observed_id =
+                    active_prompt_for_turn.and_then(PromptQueueItem::external_observed_id);
                 active_turn_projection(
                     turn.prompt_id.clone(),
                     Some(turn.provider_run_id.clone()),
@@ -510,6 +502,41 @@ mod tests {
             activity.active_turn.as_ref().map(|turn| &turn.phase),
             Some(&AgentTurnRuntimePhase::AwaitingFirstOutput)
         );
+    }
+
+    #[test]
+    fn session_snapshot_projection_does_not_infer_external_origin_without_prompt_owner_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        app.active_turn_store().start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "external:codex:session-1:user-1".to_string(),
+                provider_run.id().to_string(),
+            )
+            .with_phase(crate::app::ActiveTurnPhase::Streaming),
+        );
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let active_turn = projection
+            .agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.active_turn.as_ref())
+            .expect("active turn should still project as runtime activity");
+
+        assert_eq!(
+            active_turn.prompt_id,
+            "external:codex:session-1:user-1".to_string()
+        );
+        assert_eq!(active_turn.prompt_origin, None);
+        assert_eq!(active_turn.external_provider, None);
+        assert_eq!(active_turn.external_provider_session_id, None);
+        assert_eq!(active_turn.external_provider_turn_id, None);
     }
 
     #[test]
