@@ -49,6 +49,12 @@ export type TranscriptDisplayProjection<TEntry extends TranscriptDisplayEntry> =
   readonly entryCounter: number
 }
 
+export type TranscriptDisplayEntryInput<TEntry extends TranscriptDisplayEntry> =
+  | TEntry
+  | null
+  | undefined
+  | false
+
 export type TranscriptTurnSettlementProjection<TEntry extends TranscriptDisplayEntry> =
   TranscriptDisplayProjection<TEntry> & {
     readonly settledTurnId: number | null
@@ -110,6 +116,12 @@ export function stripTranscriptDisplayEntries<TEntry extends TranscriptDisplayEn
   entries: readonly TEntry[],
 ): TEntry[] {
   return stripTranscriptDisplayOnlyEntries(entries)
+}
+
+export function compactTranscriptDisplayEntries<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TranscriptDisplayEntryInput<TEntry>[],
+): TEntry[] {
+  return entries.filter((entry): entry is TEntry => Boolean(entry))
 }
 
 export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEntry>(
@@ -267,6 +279,20 @@ export function projectTranscriptDisplayState<TEntry extends TranscriptDisplayEn
     nextTurnId: computeNextTranscriptTurnId(projectedEntries),
     entryCounter: computeMaxTranscriptEntryId(projectedEntries),
   }
+}
+
+export function projectCompactTranscriptDisplayState<TEntry extends TranscriptDisplayEntry>(
+  entries: readonly TranscriptDisplayEntryInput<TEntry>[],
+  collapsedTurnIds: readonly number[] = [],
+  activeTurnId: number | null = null,
+  options: TranscriptDisplayStateOptions = {},
+): TranscriptDisplayProjection<TEntry> {
+  return projectTranscriptDisplayState(
+    compactTranscriptDisplayEntries(entries),
+    collapsedTurnIds,
+    activeTurnId,
+    options,
+  )
 }
 
 export function projectSettledTranscriptTurnDisplayState<TEntry extends TranscriptDisplayEntry>(

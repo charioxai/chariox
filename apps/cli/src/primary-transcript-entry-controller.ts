@@ -1,7 +1,8 @@
 import type { TranscriptEntry } from "./cli-types.js"
 import { computeTranscriptRebuildScrollTop } from "./background-effects.js"
 import {
-  projectTranscriptDisplayState,
+  compactTranscriptDisplayEntries,
+  projectCompactTranscriptDisplayState,
   type TranscriptDisplayProjection,
 } from "@arroba/kernel-client/transcript-display-state"
 import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
@@ -56,8 +57,8 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousScrollHeight = scrollbox?.scrollHeight ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
-    const projection = projectTranscriptDisplayState(
-      nextEntries.filter(Boolean),
+    const projection = projectCompactTranscriptDisplayState(
+      nextEntries,
       deps.expandedTurnIdsForAgent(transcriptAgentId),
     )
     deps.clearToolState()
@@ -82,17 +83,17 @@ export function createPrimaryTranscriptEntryController(deps: PrimaryTranscriptEn
   }
 
   const prependEntries = async (nextEntries: TranscriptEntry[]) => {
-    const sanitizedEntries = nextEntries.filter(Boolean)
+    const sanitizedEntries = compactTranscriptDisplayEntries(nextEntries)
     if (sanitizedEntries.length === 0) {
       return
     }
 
-    const currentEntries = deps.getEntries().filter(Boolean)
+    const currentEntries = compactTranscriptDisplayEntries(deps.getEntries())
     const scrollbox = deps.getScrollbox()
     const previousScrollHeight = scrollbox?.scrollHeight ?? 0
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
-    const projection = projectTranscriptDisplayState(
+    const projection = projectCompactTranscriptDisplayState(
       stitchPrependedHistoryTranscript(sanitizedEntries, currentEntries) as TranscriptEntry[],
       deps.expandedTurnIdsForAgent(deps.getVisibleTranscriptAgentId()),
     )

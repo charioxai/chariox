@@ -6,7 +6,8 @@ import {
   resolveSessionHistoryBlobLoadTarget,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
-  projectTranscriptDisplayState,
+  compactTranscriptDisplayEntries,
+  projectCompactTranscriptDisplayState,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
 } from "@arroba/kernel-client/transcript-display-state"
@@ -40,7 +41,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     agentId: string | null | undefined = deps.visibleTranscriptAgentId(),
     turnIds = deps.expandedTurnIdsForAgent(agentId),
   ) => {
-    const projection = projectTranscriptDisplayState(nextEntries, turnIds)
+    const projection = projectCompactTranscriptDisplayState(nextEntries, turnIds)
     deps.setEntries(projection.entries)
     deps.setEntryCounter(projection.entryCounter)
     return projection.entries
@@ -50,7 +51,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     if (!turnId) {
       return
     }
-    const currentEntries = deps.entries().filter(Boolean)
+    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
     const agentId = deps.visibleTranscriptAgentId()
     const projection = projectTranscriptTurnToggleDisplayState(
       currentEntries,
@@ -70,7 +71,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
   }
 
   const toggleBlob = (entryId: number, collapsed: boolean) => {
-    const currentEntries = deps.entries().filter(Boolean)
+    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
     const agentId = deps.visibleTranscriptAgentId()
     const target = currentEntries.find((entry) => entry.id === entryId)
     const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
@@ -82,7 +83,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
       deps.retainPromptFocus()
       void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
-          const latestEntries = deps.entries().filter(Boolean)
+          const latestEntries = compactTranscriptDisplayEntries(deps.entries())
           const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
             entryId,
@@ -96,7 +97,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
           deps.retainPromptFocus()
         })
         .catch((error) => {
-          const latestEntries = deps.entries().filter(Boolean)
+          const latestEntries = compactTranscriptDisplayEntries(deps.entries())
           const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
             entryId,
@@ -134,7 +135,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
       return null
     }
-    const currentEntries = deps.entries().filter(Boolean)
+    const currentEntries = compactTranscriptDisplayEntries(deps.entries())
     const runtimeOptions = transcriptEntryRuntimeOptions({
       entryCounter: deps.entryCounter(),
       currentTurnId: deps.currentTurnId(),

@@ -4,7 +4,9 @@ import test from "node:test"
 import {
   applyTranscriptDisplayState,
   collapseLatestTranscriptTurn,
+  compactTranscriptDisplayEntries,
   replaceCollapsedTranscriptTurnIds,
+  projectCompactTranscriptDisplayState,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptDisplayState,
   projectSettledTranscriptTurnDisplayState,
@@ -60,6 +62,41 @@ test("projectTranscriptDisplayState returns display entries with derived transcr
   assert.equal(projection.currentTurnId, 4)
   assert.equal(projection.nextTurnId, 5)
   assert.equal(projection.entryCounter, 6)
+})
+
+test("projectCompactTranscriptDisplayState compacts inputs before deriving display state", () => {
+  const projection = projectCompactTranscriptDisplayState([
+    baseTurnEntries()[0],
+    null,
+    { id: 99, role: "turn_toggle", text: "stale display row", turnId: 1 },
+    undefined,
+    false,
+    ...baseTurnEntries().slice(1),
+  ], [1])
+
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Investigate the transcript UI"],
+      ["turn_toggle", "click to expand"],
+      ["assistant", "I changed the transcript layout."],
+    ],
+  )
+  assert.equal(projection.currentTurnId, 1)
+  assert.equal(projection.entryCounter, 5)
+})
+
+test("compactTranscriptDisplayEntries removes nullish placeholder entries", () => {
+  assert.deepEqual(
+    compactTranscriptDisplayEntries([
+      baseTurnEntries()[0],
+      null,
+      undefined,
+      false,
+      baseTurnEntries()[1],
+    ]).map((entry) => entry.id),
+    [1, 2],
+  )
 })
 
 test("projectSettledTranscriptTurnDisplayState clears stale collapsed state for the active turn", () => {
