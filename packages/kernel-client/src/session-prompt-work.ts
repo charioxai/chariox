@@ -125,6 +125,27 @@ export function sessionAgentIsBusy(
   return legacyTopLevelSessionHasPromptWork(session, agentId)
 }
 
+export function sessionAgentHasTurnWork(
+  session: RuntimeSession | null | undefined,
+  agentId: string | null | undefined,
+): boolean {
+  if (!session || !agentId) {
+    return false
+  }
+  const projected = sessionProjectedPromptActivityForAgent(session, agentId)
+  if (projected === "not_found" || projected === "idle") {
+    return false
+  }
+  if (projected) {
+    return agentRuntimeActivityProjectionHasTurnWork(projected)
+  }
+  const promptState = sessionPromptStateRecordForAgent(session, agentId)
+  if (promptState !== undefined) {
+    return Boolean(promptState?.active_prompt)
+  }
+  return legacyTopLevelSessionHasActivePrompt(session, agentId)
+}
+
 export function sessionAgentBusyForProviderRunRecovery(
   session: RuntimeSession | null | undefined,
   agentId: string | null | undefined,
@@ -176,6 +197,10 @@ export function sessionProjectedStreamingAgentId(session: RuntimeSession): strin
 function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: string): boolean {
   return Boolean(session.active_prompt?.target_agent_id === agentId)
     || Boolean(session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId))
+}
+
+function legacyTopLevelSessionHasActivePrompt(session: RuntimeSession, agentId: string): boolean {
+  return Boolean(session.active_prompt?.target_agent_id === agentId)
 }
 
 function agentRuntimeActivityHasActivePrompt(

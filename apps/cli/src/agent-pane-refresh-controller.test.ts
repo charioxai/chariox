@@ -50,9 +50,72 @@ test("agent pane refresh controller owns session-change refresh decisions", () =
   assert.equal(splitHarness.controller.shouldRefreshForSessionChange(session("b")), false)
 })
 
+test("agent pane refresh backfills history while agent only has queued prompts", async () => {
+  const harness = createHarness({
+    split: false,
+    currentEntries: {
+      a: [
+        { id: 1, role: "user", turnId: 1, text: "older prompt" },
+        { id: 2, role: "assistant", turnId: 1, text: "older answer" },
+        { id: 3, role: "user", turnId: 2, text: "latest prompt" },
+        { id: 4, role: "assistant", turnId: 2, text: "latest answer" },
+      ],
+    },
+    historyPages: {
+      "a:null": {
+        entries: [
+          { id: 3, role: "user", turnId: 2, text: "latest prompt" },
+          { id: 4, role: "assistant", turnId: 2, text: "latest answer" },
+        ],
+        nextCursor: { before: "latest" },
+      },
+      "a:{\"before\":\"latest\"}": {
+        entries: [
+          { id: 1, role: "user", turnId: 1, text: "older prompt" },
+          { id: 2, role: "assistant", turnId: 1, text: "older answer" },
+        ],
+        nextCursor: null,
+      },
+      "b:null": {
+        entries: [historyEntry("b", "world\n")],
+        nextCursor: null,
+      },
+    },
+  })
+
+  await harness.controller.refresh(session("a", {
+    agent_activity: {
+      a: {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+      b: {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        active_prompt_count: 0,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+      },
+    },
+  }))
+
+  assert.deepEqual(harness.loads, ["a:null", "a:{\"before\":\"latest\"}", "b:null"])
+  assert.deepEqual(harness.replaced, {
+    agentId: "a",
+    text: ["older prompt", "older answer", "latest prompt", "latest answer"],
+  })
+})
+
 function createHarness(options: {
   split: boolean
   currentFocusedAgentId?: string | null
+  currentEntries?: Record<string, TranscriptEntry[]>
+  historyPages?: Record<string, { entries: TranscriptEntry[]; nextCursor: unknown }>
 }): {
   calls: string[]
   loads: string[]
@@ -70,11 +133,18 @@ function createHarness(options: {
     getCurrentAgents: () => [agent("a"), agent("b")],
     getFocusedAgentId: () => options.currentFocusedAgentId ?? "a",
     getCollapsedTurnIdsByAgent: () => ({}),
-    currentAgentPaneEntries: () => [],
+    currentAgentPaneEntries: (agentId) => options.currentEntries?.[agentId] ?? [],
     splitAgentResponseMode: () => options.split,
     maxAgentsPerScreen: () => 2,
     loadHistoryPage: async (_sessionId, agentId, cursor) => {
       loads.push(`${agentId}:${cursor ? JSON.stringify(cursor) : "null"}`)
+      const page = options.historyPages?.[`${agentId}:${cursor ? JSON.stringify(cursor) : "null"}`]
+      if (page) {
+        return {
+          entries: page.entries,
+          nextCursor: page.nextCursor as never,
+        }
+      }
       return {
         entries: [historyEntry(agentId, agentId === "a" ? "hello" : "world\n")],
         nextCursor: null,
@@ -124,7 +194,7 @@ function createHarness(options: {
   }
 }
 
-function session(focusedAgentId: string): RuntimeSession {
+function session(focusedAgentId: string, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
     workspace_id: "/workspace",
@@ -139,6 +209,7 @@ function session(focusedAgentId: string): RuntimeSession {
     max_agents: 2,
     agents: [agent("a"), agent("b")],
     config_state: { values: {} } as RuntimeSession["config_state"],
+    ...overrides,
   }
 }
 

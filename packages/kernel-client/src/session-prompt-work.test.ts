@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   sessionAllowsLegacyAgentProcessingState,
+  sessionAgentHasTurnWork,
   sessionAgentBusyForProviderRunRecovery,
   sessionAgentIsBusy,
   sessionHasAgentRuntimeProjection,
@@ -360,5 +361,57 @@ test("session projected streaming agent ignores queued-only projected activity",
     busyAgents: 1,
   })
   assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
+  assert.equal(sessionAgentHasTurnWork(session, "agent-1"), false)
   assert.equal(sessionProjectedStreamingAgentId(session), null)
+})
+
+test("session agent turn work excludes queued-only prompt work", () => {
+  const queuedOnly = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+  })
+  const externalTurn = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_prompt_count: 1,
+        queued_prompt_count: 0,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "external:codex:thread-1:turn-1",
+          prompt_origin: "external",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.equal(sessionAgentIsBusy(queuedOnly, "agent-1"), true)
+  assert.equal(sessionAgentHasTurnWork(queuedOnly, "agent-1"), false)
+  assert.equal(sessionAgentHasTurnWork(externalTurn, "agent-1"), true)
 })
