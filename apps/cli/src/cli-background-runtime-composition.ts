@@ -386,8 +386,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       return
     }
     deps.setProviderRunState(providerRun)
-    deps.applySessionState(applyProviderRunProfileToSession(deps.sessionState(), providerRun))
-    deps.updateSessionChrome()
+    applyDeltaSessionState(sessionId, (session) => applyProviderRunProfileToSession(session, providerRun))
   }
   const applySessionMetadataChanged = (
     sessionId: string,
