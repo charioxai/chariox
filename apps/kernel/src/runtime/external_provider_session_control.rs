@@ -21,8 +21,9 @@ use crate::local::{
     LocalDaemonResponse,
 };
 use crate::provider::{
-    external_provider_session_providers, ExternalProviderImportMetadata,
-    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
+    external_provider_import_model, external_provider_session_providers,
+    ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
@@ -1656,21 +1657,6 @@ fn persist_external_import_metadata(
     )?;
     let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?;
     Ok(agent)
-}
-
-fn default_external_provider_model(provider: &str) -> &'static str {
-    match provider {
-        "codex" => "gpt-5.5",
-        "claude" => "claude-sonnet-4-6",
-        _ => "default",
-    }
-}
-
-fn external_provider_import_model(provider: &str, requested_model: Option<String>) -> String {
-    requested_model.unwrap_or_else(|| match provider {
-        "codex" => "default".to_string(),
-        provider => default_external_provider_model(provider).to_string(),
-    })
 }
 
 fn external_provider_import_session_alias(

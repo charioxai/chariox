@@ -31,6 +31,14 @@ pub fn canonical_external_provider_session_id(
     .then(|| format!("{provider}:{provider_session_id}"))
 }
 
+pub fn external_provider_import_model(provider: &str, requested_model: Option<String>) -> String {
+    requested_model.unwrap_or_else(|| match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => "default".to_string(),
+        "claude" => "claude-sonnet-4-6".to_string(),
+        _ => "default".to_string(),
+    })
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderResumeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -595,7 +603,9 @@ pub struct ProviderLaunchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExternalProviderImportMetadata, LaunchProviderRequest};
+    use super::{
+        external_provider_import_model, ExternalProviderImportMetadata, LaunchProviderRequest,
+    };
 
     #[test]
     fn launch_request_tracks_managed_workspace_live_sync_mode() {
@@ -652,5 +662,33 @@ mod tests {
         assert_eq!(import.external_provider_session_id, "codex:thread-1");
         assert_eq!(import.external_provider, "codex");
         assert_eq!(import.external_provider_session_provider_id, "thread-1");
+    }
+
+    #[test]
+    fn external_provider_import_model_uses_provider_contract_defaults() {
+        assert_eq!(
+            external_provider_import_model("codex", None),
+            "default".to_string()
+        );
+        assert_eq!(
+            external_provider_import_model(" Codex ", None),
+            "default".to_string()
+        );
+        assert_eq!(
+            external_provider_import_model("claude", None),
+            "claude-sonnet-4-6".to_string()
+        );
+        assert_eq!(
+            external_provider_import_model("opencode", None),
+            "default".to_string()
+        );
+        assert_eq!(
+            external_provider_import_model("unknown", None),
+            "default".to_string()
+        );
+        assert_eq!(
+            external_provider_import_model("claude", Some("custom-model".to_string())),
+            "custom-model".to_string()
+        );
     }
 }
