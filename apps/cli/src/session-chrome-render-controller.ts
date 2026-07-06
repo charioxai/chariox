@@ -39,7 +39,6 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getMultiAgentMode: () => boolean
   getResponseLayout: () => MultiAgentResponseLayout
   getSessionStatusMode: () => SessionStatusMode
-  getFocusedHasPromptWork: () => boolean
   getWorkspaceLiveSyncStatus: () => WorkspaceLiveSyncStatus | null
   getHotkeyToggleLabel: () => string
   getTerminalWidth?: () => number
@@ -72,7 +71,6 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         responseLayout: deps.getResponseLayout(),
         sessionStatusMode: deps.getSessionStatusMode(),
         hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
-        focusedHasPromptWork: deps.getFocusedHasPromptWork(),
         workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
       })
       : SESSION_NEW_FOOTER_HINT

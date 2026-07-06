@@ -89,7 +89,6 @@ function createDeps(overrides: {
     getMultiAgentMode: () => true,
     getResponseLayout: () => "split",
     getSessionStatusMode: () => overrides.sessionStatusMode ?? "idle",
-    getFocusedHasPromptWork: () => false,
     getWorkspaceLiveSyncStatus: () => overrides.workspaceLiveSyncStatus ?? null,
     getHotkeyToggleLabel: () => "?",
     getTerminalWidth: () => overrides.terminalWidth ?? 80,

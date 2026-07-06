@@ -1,8 +1,5 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
 import {
-  sessionAgentIsBusy,
-} from "@arroba/kernel-client/session-prompt-work"
-import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@arroba/kernel-client/session-runtime-status"
 import { createEffect } from "solid-js"
@@ -322,7 +319,6 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getMultiAgentMode: deps.multiAgentMode,
     getResponseLayout: deps.multiAgentResponseLayout,
     getSessionStatusMode: deps.sessionStatusMode,
-    getFocusedHasPromptWork: () => sessionAgentIsBusy(deps.sessionState(), deps.focusedAgentId()),
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,
