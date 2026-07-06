@@ -229,7 +229,7 @@ pub(crate) fn agent_activity_for_session_projection(
                     )
                 })
             });
-        let prompt_busy = !matches!(prompt_status, AgentPromptRuntimeStatus::None);
+        let prompt_busy = agent_prompt_runtime_status_is_active_prompt(&prompt_status);
         let agent_busy =
             agent.is_processing() || agent.state() == AgentState::Working || provider_busy;
         let status = if agent.state() == AgentState::Error {
@@ -580,6 +580,41 @@ mod tests {
         assert!(control.can_cancel);
         assert!(control.steer_disabled_reason.is_none());
         assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
+    fn session_snapshot_projection_keeps_queued_only_prompts_idle() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-queued-only");
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "queued-only",
+                &attachment_id,
+                agent.id(),
+                "queued prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("prompt should queue");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Idle);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Queued);
+        assert!(!activity.busy);
+        assert_eq!(activity.active_prompt_count, 0);
+        assert_eq!(activity.queued_prompt_count, 1);
+        assert_eq!(activity.queued_prompt_controls.len(), 1);
     }
 
     #[test]

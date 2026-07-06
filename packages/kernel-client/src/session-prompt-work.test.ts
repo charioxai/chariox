@@ -71,12 +71,12 @@ test("session prompt work summary treats prompt states as runtime authority", ()
   assert.deepEqual(sessionPromptWorkSummary(session), {
     active: 1,
     queued: 1,
-    busyAgents: 2,
+    busyAgents: 1,
   })
   assert.deepEqual(sessionPromptWorkByAgent(session), {
     "agent-1": false,
     "agent-2": true,
-    "agent-3": true,
+    "agent-3": false,
   })
   assert.equal(sessionQueuedPromptCount(session), 1)
   assert.equal(sessionQueuedPromptCount(session, "agent-1"), 0)
@@ -310,9 +310,9 @@ test("session projected streaming agent ignores queued-only projected activity",
   assert.deepEqual(sessionPromptWorkSummary(session), {
     active: 0,
     queued: 1,
-    busyAgents: 1,
+    busyAgents: 0,
   })
-  assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), false)
   assert.equal(sessionAgentHasTurnWork(session, "agent-1"), false)
   assert.equal(sessionProjectedStreamingAgentId(session), null)
 })
@@ -363,7 +363,7 @@ test("session agent turn work excludes queued-only prompt work", () => {
     },
   })
 
-  assert.equal(sessionAgentIsBusy(queuedOnly, "agent-1"), true)
+  assert.equal(sessionAgentIsBusy(queuedOnly, "agent-1"), false)
   assert.equal(sessionAgentHasTurnWork(queuedOnly, "agent-1"), false)
   assert.equal(sessionHasTurnWork(queuedOnly), false)
   assert.equal(sessionAgentHasTurnWork(externalTurn, "agent-1"), true)
@@ -387,7 +387,7 @@ test("session turn work includes legacy processing without counting queues", () 
 
   assert.equal(sessionAgentHasTurnWork(legacyProcessing, "agent-1"), true)
   assert.equal(sessionHasTurnWork(legacyProcessing), true)
-  assert.equal(sessionAgentIsBusy(legacyQueuedOnly, "agent-1"), true)
+  assert.equal(sessionAgentIsBusy(legacyQueuedOnly, "agent-1"), false)
   assert.equal(sessionAgentHasTurnWork(legacyQueuedOnly, "agent-1"), false)
   assert.equal(sessionHasTurnWork(legacyQueuedOnly), false)
 })

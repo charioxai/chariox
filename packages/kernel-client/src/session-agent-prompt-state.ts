@@ -118,6 +118,8 @@ export function sessionProjectedPromptActivityForAgent(
     && !projection.busy
     && !projection.error
     && !projection.unreadIdleOutput
+    && projection.promptStatus === "none"
+    && projection.queuedPromptCount === 0
   ) {
     return "idle"
   }

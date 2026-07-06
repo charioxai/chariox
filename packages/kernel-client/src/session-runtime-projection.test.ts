@@ -793,7 +793,7 @@ test("sessionPromptWorkSummary treats prompt states as runtime authority", () =>
   assert.deepEqual(sessionPromptWorkSummary(session), {
     active: 1,
     queued: 1,
-    busyAgents: 2,
+    busyAgents: 1,
   })
 })
 

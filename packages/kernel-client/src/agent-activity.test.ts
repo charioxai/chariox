@@ -228,7 +228,7 @@ test("agent activity projection preserves kernel counts as activity source", () 
   }), {
     status: "idle",
     promptStatus: "none",
-    busy: true,
+    busy: false,
     activeTurn: null,
     activePromptCount: 0,
     activePromptCountExplicit: true,

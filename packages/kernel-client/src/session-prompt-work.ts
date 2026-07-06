@@ -10,7 +10,6 @@ import {
   type AgentRuntimeActivityProjection,
 } from "./agent-activity.js"
 import {
-  agentPromptStateHasWork,
   sessionHasAgentActivityProjection,
   sessionHasPromptStateProjection,
   sessionProjectedPromptActivityEntriesForSessionAgents,
@@ -60,7 +59,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   }
 
   if (hasPromptStates) {
-    const busyAgents = promptStateEntries.filter(([, state]) => agentPromptStateHasWork(state)).length
+    const busyAgents = promptStateEntries.filter(([, state]) => Boolean(state?.active_prompt)).length
     return {
       active: promptStateEntries.filter(([, state]) => Boolean(state?.active_prompt)).length,
       queued,
@@ -88,6 +87,9 @@ export function sessionQueuedPromptCount(
   }
   if (projected) {
     if (projected.queuedPromptCountExplicit) {
+      return projected.queuedPromptCount
+    }
+    if (projected.queuedPromptCount > 0) {
       return projected.queuedPromptCount
     }
     if (!projected.busy) {
@@ -120,9 +122,10 @@ export function sessionAgentIsBusy(
   }
   const promptState = sessionPromptStateRecordForAgent(session, agentId)
   if (promptState !== undefined) {
-    return Boolean(promptState?.active_prompt) || Boolean(promptState?.queued_prompts?.length)
+    return Boolean(promptState?.active_prompt)
   }
-  return legacyTopLevelSessionHasPromptWork(session, agentId)
+  return legacyTopLevelSessionHasActivePrompt(session, agentId)
+    || session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
 }
 
 export function sessionAgentHasTurnWork(
@@ -197,11 +200,6 @@ export function sessionProjectedStreamingAgentId(session: RuntimeSession): strin
     return activeAgents.length === 1 ? activeAgents[0] ?? null : null
   }
   return session.active_prompt?.target_agent_id ?? null
-}
-
-function legacyTopLevelSessionHasPromptWork(session: RuntimeSession, agentId: string): boolean {
-  return Boolean(session.active_prompt?.target_agent_id === agentId)
-    || Boolean(session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId))
 }
 
 function legacyTopLevelSessionHasActivePrompt(session: RuntimeSession, agentId: string): boolean {

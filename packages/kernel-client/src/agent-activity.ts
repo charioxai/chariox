@@ -142,7 +142,7 @@ export function projectAgentRuntimeActivity(
   const rawBusy = readBooleanField(activityRecord, "busy") === true
     || readBooleanField(value, "busy") === true
     || status === "working"
-    || agentRuntimePromptStatusIsActive(promptStatus)
+    || agentRuntimePromptStatusIsActivePrompt(promptStatus)
     || activeTurnBusy
   const projectedActivePromptCount = readExplicitNonNegativeIntegerField(
     activityRecord,
@@ -167,10 +167,15 @@ export function projectAgentRuntimeActivity(
   const activeTurnIdentity = projectAgentRuntimeActiveTurnIdentity(liveActiveTurn)
   const lastCompletedTurn = readAgentRuntimeCompletedTurn(activityRecord)
     ?? readAgentRuntimeCompletedTurn(value)
+  const hasTurnWork = activeTurnBusy
+    || agentRuntimePromptStatusIsActivePrompt(promptStatus)
+    || activePromptCount > 0
+  const queuedOnly = !hasTurnWork
+    && (agentRuntimePromptStatusIsQueued(promptStatus) || queuedPromptCount > 0)
   return {
     status,
     promptStatus,
-    busy: rawBusy || activePromptCount > 0 || queuedPromptCount > 0,
+    busy: queuedOnly ? false : rawBusy || activePromptCount > 0,
     activeTurn,
     ...activeTurnIdentity,
     ...(lastCompletedTurn ? { lastCompletedTurn } : {}),
