@@ -1,3 +1,9 @@
+import type { RuntimeSession } from "./cli-types.js"
+import {
+  resolvePromptRecoveryProviderLaunch,
+  type SessionLifecycleLaunchSelection,
+} from "@arroba/kernel-client/session-lifecycle-state"
+
 type ProviderRecoveryLaunchInput = {
   sessionId: string
   provider: string
@@ -10,10 +16,9 @@ type ProviderRecoveryLaunchInput = {
 type ProviderRecoveryControllerOptions<TSession, TProviderRun> = {
   isAttached: () => boolean
   getSessionId: () => string
-  getProvider: () => string
+  getSessionStateSnapshot: () => RuntimeSession
+  getFallbackLaunch: () => SessionLifecycleLaunchSelection
   getAccountProfile: () => string
-  getModel: () => string
-  getEffort: () => string
   getTargetAgentId: () => string | null
   launchProviderRun: (input: ProviderRecoveryLaunchInput) => Promise<TProviderRun>
   getSessionState: (sessionId: string) => Promise<TSession>
@@ -22,6 +27,7 @@ type ProviderRecoveryControllerOptions<TSession, TProviderRun> = {
   applySession: (session: TSession) => void
   resizeSession: (sessionId: string) => Promise<void>
   onRecovered: (reason: string) => void
+  onRecoverySkipped: (reason: string, skipReason: string) => void
   onRecoveryFailed: (reason: string, error: unknown) => void
 }
 
@@ -43,13 +49,22 @@ export function createProviderRecoveryController<TSession, TProviderRun>(
 
       inFlight = true
       try {
+        const launchDecision = resolvePromptRecoveryProviderLaunch(
+          options.getSessionStateSnapshot(),
+          options.getFallbackLaunch(),
+          options.getTargetAgentId(),
+        )
+        if (launchDecision.action === "skip_launch") {
+          options.onRecoverySkipped(reason, launchDecision.reason)
+          return false
+        }
         const providerRun = await options.launchProviderRun({
           sessionId: options.getSessionId(),
-          provider: options.getProvider(),
+          provider: launchDecision.launch.provider,
           accountProfile: options.getAccountProfile(),
-          model: options.getModel(),
-          effort: options.getEffort(),
-          targetAgentId: options.getTargetAgentId(),
+          model: launchDecision.launch.model,
+          effort: launchDecision.launch.effort,
+          targetAgentId: launchDecision.targetAgentId,
         })
         options.applyProviderRun(providerRun)
         options.applySession(

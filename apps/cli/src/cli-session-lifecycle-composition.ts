@@ -319,10 +319,13 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
   const providerRecoveryController = createProviderRecoveryController({
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
-    getProvider: () => deps.options.provider ?? "opencode",
+    getSessionStateSnapshot: deps.sessionState,
+    getFallbackLaunch: () => ({
+      provider: deps.options.provider ?? "opencode",
+      model: deps.currentModelId(),
+      effort: deps.currentVariantId(),
+    }),
     getAccountProfile: () => deps.options.accountProfile,
-    getModel: () => deps.currentModelId(),
-    getEffort: () => deps.currentVariantId(),
     getTargetAgentId: deps.focusedAgentId,
     launchProviderRun: ({ sessionId, provider, accountProfile, model, effort, targetAgentId }) =>
       launchProviderRun(deps.client, sessionId, provider, accountProfile, model, effort, targetAgentId),
@@ -335,6 +338,12 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.setStatusLine("Recovered provider connection.")
       deps.updateSessionChrome()
       deps.flashFooter(`recovered provider run after ${reason}`, "info")
+    },
+    onRecoverySkipped: (reason, skipReason) => {
+      deps.appLogger?.warn("provider recovery skipped", {
+        reason,
+        skip_reason: skipReason,
+      })
     },
     onRecoveryFailed: (reason, error) => {
       deps.appLogger?.warn("provider recovery failed", {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
+import { makeAgent, makeSession } from "./command-actions-test-support.js"
 
 type TestSession = {
   id: string
@@ -25,18 +26,28 @@ test("recover relaunches the provider run and reapplies the recovered session", 
   const controller = createProviderRecoveryController<TestSession, TestProviderRun>({
     isAttached: () => true,
     getSessionId: () => "session-1",
-    getProvider: () => "opencode",
+    getSessionStateSnapshot: () => makeSession({
+      agents: [makeAgent({
+        id: "agent-1",
+        provider: "claude",
+        model: "claude/sonnet-4.6",
+        effort: "high",
+      })],
+    }),
+    getFallbackLaunch: () => ({
+      provider: "opencode",
+      model: "gpt-5.2",
+      effort: "medium",
+    }),
     getAccountProfile: () => "default",
-    getModel: () => "gpt-5.2",
-    getEffort: () => "medium",
     getTargetAgentId: () => "agent-1",
     launchProviderRun: async (input) => {
       assert.deepEqual(input, {
         sessionId: "session-1",
-        provider: "opencode",
+        provider: "claude",
         accountProfile: "default",
-        model: "gpt-5.2",
-        effort: "medium",
+        model: "claude/sonnet-4.6",
+        effort: "high",
         targetAgentId: "agent-1",
       })
       events.push("launch")
@@ -67,6 +78,7 @@ test("recover relaunches the provider run and reapplies the recovered session", 
       assert.equal(reason, "silent_poll")
       events.push("recovered")
     },
+    onRecoverySkipped: () => {},
     onRecoveryFailed: () => {},
   })
 
@@ -90,10 +102,13 @@ test("recover is idle when detached or already recovering", async () => {
   const controller = createProviderRecoveryController<TestSession, TestProviderRun>({
     isAttached: () => attached,
     getSessionId: () => "session-1",
-    getProvider: () => "opencode",
+    getSessionStateSnapshot: () => makeSession(),
+    getFallbackLaunch: () => ({
+      provider: "opencode",
+      model: "default",
+      effort: "",
+    }),
     getAccountProfile: () => "default",
-    getModel: () => "default",
-    getEffort: () => "",
     getTargetAgentId: () => null,
     launchProviderRun: async () => {
       launches += 1
@@ -105,6 +120,7 @@ test("recover is idle when detached or already recovering", async () => {
     applySession: () => {},
     resizeSession: async () => {},
     onRecovered: () => {},
+    onRecoverySkipped: () => {},
     onRecoveryFailed: () => {},
   })
 
@@ -124,10 +140,13 @@ test("recover reports failures and clears in-flight state", async () => {
   const controller = createProviderRecoveryController<TestSession, TestProviderRun>({
     isAttached: () => true,
     getSessionId: () => "session-1",
-    getProvider: () => "opencode",
+    getSessionStateSnapshot: () => makeSession(),
+    getFallbackLaunch: () => ({
+      provider: "opencode",
+      model: "default",
+      effort: "",
+    }),
     getAccountProfile: () => "default",
-    getModel: () => "default",
-    getEffort: () => "",
     getTargetAgentId: () => null,
     launchProviderRun: async () => {
       throw new Error("launch failed")
@@ -138,6 +157,7 @@ test("recover reports failures and clears in-flight state", async () => {
     applySession: () => {},
     resizeSession: async () => {},
     onRecovered: () => {},
+    onRecoverySkipped: () => {},
     onRecoveryFailed: (_reason, error) => {
       failure = error
     },
@@ -146,5 +166,52 @@ test("recover reports failures and clears in-flight state", async () => {
   assert.equal(await controller.recover("silent_poll"), false)
 
   assert.match(failure instanceof Error ? failure.message : String(failure), /launch failed/)
+  assert.equal(controller.isInFlight(), false)
+})
+
+test("recover skips local launch for remote-backed focused agents", async () => {
+  let launches = 0
+  let skipped: string | null = null
+  const controller = createProviderRecoveryController<TestSession, TestProviderRun>({
+    isAttached: () => true,
+    getSessionId: () => "session-1",
+    getSessionStateSnapshot: () => makeSession({
+      agents: [makeAgent({
+        id: "agent-1",
+        remote_execution: {
+          worker_kernel_id: "worker-1",
+          worker_machine_id: "machine-1",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "worker-agent-1",
+        },
+      })],
+    }),
+    getFallbackLaunch: () => ({
+      provider: "opencode",
+      model: "default",
+      effort: "",
+    }),
+    getAccountProfile: () => "default",
+    getTargetAgentId: () => "agent-1",
+    launchProviderRun: async () => {
+      launches += 1
+      return { id: "run-1" }
+    },
+    getSessionState: async () => ({ id: "session-1" }),
+    projectSession: (session) => session,
+    applyProviderRun: () => {},
+    applySession: () => {},
+    resizeSession: async () => {},
+    onRecovered: () => {},
+    onRecoverySkipped: (_reason, skipReason) => {
+      skipped = skipReason
+    },
+    onRecoveryFailed: () => {},
+  })
+
+  assert.equal(await controller.recover("silent_poll"), false)
+
+  assert.equal(launches, 0)
+  assert.equal(skipped, "remote_backed_agent")
   assert.equal(controller.isInFlight(), false)
 })
