@@ -153,8 +153,19 @@ impl DaemonApp {
     pub(super) fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
         let replay_after_sequence = match self.durable_state.latest_snapshot()? {
             Some(snapshot) => {
-                self.restore_durable_state_snapshot(snapshot.payload)?;
-                snapshot.sequence
+                if self.restore_durable_state_snapshot(snapshot.payload)? {
+                    snapshot.sequence
+                } else {
+                    crate::logging::info_with_fields(
+                        "durable_state.restore",
+                        "ignored durable snapshot for another kernel owner",
+                        serde_json::json!({
+                            "snapshot_sequence": snapshot.sequence,
+                            "daemon_id": self.config.daemon_id,
+                        }),
+                    );
+                    0
+                }
             }
             None => 0,
         };
@@ -172,12 +183,15 @@ impl DaemonApp {
     fn restore_durable_state_snapshot(
         &mut self,
         payload: serde_json::Value,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let snapshot: DurableKernelSnapshotPayload =
             serde_json::from_value(payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.restore_snapshot",
                 message: error.to_string(),
             })?;
+        if !self.snapshot_has_current_kernel_state(&snapshot) {
+            return Ok(false);
+        }
         let restored_session_ids: std::collections::BTreeSet<String> = snapshot
             .sessions
             .iter()
@@ -221,11 +235,22 @@ impl DaemonApp {
                     .collect(),
             });
         self.refresh_restored_session_projections()?;
-        Ok(())
+        Ok(true)
     }
 
     fn session_belongs_to_current_kernel(&self, session: &RuntimeSession) -> bool {
         session.host_daemon_id() == self.config.daemon_id
+    }
+
+    fn snapshot_has_current_kernel_state(&self, snapshot: &DurableKernelSnapshotPayload) -> bool {
+        snapshot
+            .sessions
+            .iter()
+            .any(|session| self.session_belongs_to_current_kernel(session))
+            || snapshot
+                .slices
+                .iter()
+                .any(|slice| slice.owner_kernel_id == self.config.daemon_id)
     }
 
     fn mark_agent_external_provider_sessions_attached(&self, agent: &AgentInstance) {

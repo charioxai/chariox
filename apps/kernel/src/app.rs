@@ -639,6 +639,44 @@ mod tests {
     }
 
     #[test]
+    fn durable_restore_ignores_newer_snapshot_from_other_kernel_owner() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "shared-kernel-snapshot-owner-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config_a = DaemonConfig::for_tests();
+        config_a.daemon_id = "kernel-a".to_string();
+        config_a.user_config.state.path = Some(state_path.display().to_string());
+        let session_id = {
+            let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
+            let (session, _) = app
+                .create_session(CreateSessionRequest::new("workspace-a", "worktree-a"))
+                .expect("session should create");
+            session.id().to_string()
+        };
+
+        let mut config_b = DaemonConfig::for_tests();
+        config_b.daemon_id = "kernel-b".to_string();
+        config_b.user_config.state.path = Some(state_path.display().to_string());
+        {
+            let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
+            app.create_session(CreateSessionRequest::new("workspace-b", "worktree-b"))
+                .expect("kernel b session should create");
+            app.save_durable_state_snapshot()
+                .expect("kernel b should write latest snapshot");
+        }
+
+        let app = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
+        let restored = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("kernel a session should restore from event log");
+        assert_eq!(restored.host_daemon_id(), "kernel-a");
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
     fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
         let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
             "restart-agent-projection-{}.db",
