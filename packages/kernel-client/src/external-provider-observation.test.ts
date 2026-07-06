@@ -333,6 +333,7 @@ test("external provider observed status render policy requires observed non-pass
 
 test("external provider observed passive telemetry helper accepts history and transcript fields", () => {
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: false,
@@ -340,9 +341,26 @@ test("external provider observed passive telemetry helper accepts history and tr
     },
   }), true)
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    role: "status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalObservation: {
       settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "prompt_echo",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_output",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
       passive_telemetry: true,
     },
   }), false)

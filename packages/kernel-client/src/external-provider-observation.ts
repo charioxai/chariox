@@ -171,6 +171,9 @@ export function externalProviderObservedProviderStatusShouldRender(
 export function externalProviderObservedEntryIsPassiveTelemetry(
   entry: ExternalProviderObservedObservationFields,
 ): boolean {
+  if (!externalProviderObservedEntryCanBePassiveTelemetry(entry)) {
+    return false
+  }
   return externalProviderObservedObservation(entry)?.passive_telemetry === true
 }
 
@@ -449,16 +452,14 @@ export type ExternalProviderObservedProviderStatusFields = ExternalProviderObser
 }
 
 export type ExternalProviderObservedObservationFields = {
+  readonly kind?: string | null | undefined
+  readonly role?: string | null | undefined
   readonly source?: string | null | undefined
   readonly external_observation?: SessionHistoryExternalObservation | null | undefined
   readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
 
-export type ExternalProviderObservedStatusSettlementFields =
-  ExternalProviderObservedObservationFields & {
-    readonly kind?: string | null | undefined
-    readonly role?: string | null | undefined
-  }
+export type ExternalProviderObservedStatusSettlementFields = ExternalProviderObservedObservationFields
 
 export type ExternalProviderObservedCompletionTimeFields = {
   readonly observed_at_ms?: number | null | undefined
@@ -554,4 +555,13 @@ function externalProviderObservedEntryIsStatus(
   entry: ExternalProviderObservedStatusSettlementFields,
 ): boolean {
   return entry.kind === "provider_status" || entry.role === "status"
+}
+
+function externalProviderObservedEntryCanBePassiveTelemetry(
+  entry: ExternalProviderObservedObservationFields,
+): boolean {
+  return externalProviderObservedEntryIsStatus(entry)
+    || entry.kind === "prompt_echo"
+    || entry.kind === "user_prompt"
+    || entry.role === "user"
 }
