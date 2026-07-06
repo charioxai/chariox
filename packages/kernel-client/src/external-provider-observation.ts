@@ -126,8 +126,8 @@ export function externalProviderObservedEntryBelongsToImport(
   if (!entrySessionId) {
     return true
   }
-  return entrySessionId === externalImport.external_provider_session_id
-    || entrySessionId === externalImport.external_provider_session_provider_id
+  return entrySessionId === nonBlankString(externalImport.external_provider_session_id)
+    || entrySessionId === nonBlankString(externalImport.external_provider_session_provider_id)
 }
 
 export function promptOriginExternalProviderObservedMetadata(
