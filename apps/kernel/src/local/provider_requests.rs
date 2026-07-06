@@ -208,13 +208,14 @@ impl DaemonApp {
         &mut self,
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request.provider.as_str() {
-            "codex" | "claude" | "claude-headless" | "claude-p" => {
-                provider_auth_status_response(request)
-            }
-            provider => Err(DaemonError::LocalTransport {
+        match crate::provider::canonical_provider_family(&request.provider) {
+            Some("codex" | "claude") => provider_auth_status_response(request),
+            _ => Err(DaemonError::LocalTransport {
                 operation: "get_provider_auth_status",
-                message: format!("provider `{provider}` does not expose an auth status API"),
+                message: format!(
+                    "provider `{}` does not expose an auth status API",
+                    request.provider
+                ),
             }),
         }
     }

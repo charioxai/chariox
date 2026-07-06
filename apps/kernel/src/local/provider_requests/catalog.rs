@@ -117,20 +117,23 @@ pub(crate) fn load_provider_catalog(
 pub(crate) fn provider_auth_status_response(
     request: GetProviderAuthStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    match request.provider.as_str() {
-        "codex" => {
+    match crate::provider::canonical_provider_family(&request.provider) {
+        Some("codex") => {
             let endpoint = ensure_codex_catalog_endpoint()?;
             let client = CodexClient::new("provider-auth", endpoint)?;
             Ok(LocalDaemonResponse::ProviderAuthStatus {
                 status: client.auth_status()?,
             })
         }
-        "claude" | "claude-headless" | "claude-p" => Ok(LocalDaemonResponse::ProviderAuthStatus {
+        Some("claude") => Ok(LocalDaemonResponse::ProviderAuthStatus {
             status: claude_auth_status(&request.provider)?,
         }),
-        provider => Err(DaemonError::LocalTransport {
+        _ => Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
-            message: format!("provider `{provider}` does not expose an auth status API"),
+            message: format!(
+                "provider `{}` does not expose an auth status API",
+                request.provider
+            ),
         }),
     }
 }
