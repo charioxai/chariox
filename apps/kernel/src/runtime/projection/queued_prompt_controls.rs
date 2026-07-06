@@ -147,6 +147,35 @@ mod tests {
     }
 
     #[test]
+    fn queued_prompt_controls_block_steering_from_external_active_turn_origin() {
+        let prompt_state = prompt_state(
+            None,
+            vec![PromptQueueItem::new(
+                "queued-1",
+                "attach-1",
+                "agent-1",
+                "queued",
+                PromptStatus::Queued,
+            )],
+        );
+
+        let controls =
+            queued_prompt_controls_projection(Some(&prompt_state), Some(PromptOrigin::External));
+        let control = controls
+            .get("queued-1")
+            .expect("queued prompt control should exist");
+
+        assert_eq!(control.status, "queued");
+        assert!(!control.can_steer);
+        assert!(control.can_cancel);
+        assert_eq!(
+            control.steer_disabled_reason.as_deref(),
+            Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
+        );
+        assert!(control.cancel_disabled_reason.is_none());
+    }
+
+    #[test]
     fn queued_prompt_controls_mark_stale_prompts_not_actionable() {
         let prompt_state = prompt_state(
             None,
