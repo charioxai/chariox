@@ -181,12 +181,8 @@ fn load_promptless_agent_outline(
             next_cursor: None,
         });
     };
-    let synthetic_prompt_entry = SessionHistoryEntry::user_prompt(
-        session_id,
-        "arroba-history",
-        agent_id,
-        "(no recorded prompt; showing recent agent activity)",
-    );
+    let synthetic_prompt_entry =
+        promptless_synthetic_prompt_entry(session_id, agent_id, &turn_events);
     let synthetic_prompt = HistoryEvent::transcript(
         first_event.sequence.saturating_sub(1),
         &synthetic_prompt_entry,
@@ -216,6 +212,34 @@ fn load_promptless_agent_outline(
         turns,
         next_cursor: None,
     })
+}
+
+fn promptless_synthetic_prompt_entry(
+    session_id: &str,
+    agent_id: &str,
+    events: &[HistoryEvent],
+) -> SessionHistoryEntry {
+    const PROMPTLESS_TEXT: &str = "(no recorded prompt; showing recent agent activity)";
+    if let Some(identity) = outline_turn_external_identity(events) {
+        return SessionHistoryEntry::external_provider_observed(
+            session_id,
+            events
+                .iter()
+                .find_map(|event| event.provider_run_id.as_deref()),
+            agent_id,
+            SessionHistoryEntryKind::UserPrompt,
+            PROMPTLESS_TEXT,
+            &identity.provider,
+            &identity.provider_session_id,
+            Some(identity.provider_turn_id),
+            events
+                .iter()
+                .filter_map(|event| event.to_session_history_entry())
+                .filter_map(|entry| entry.observed_at_ms)
+                .min(),
+        );
+    }
+    SessionHistoryEntry::user_prompt(session_id, "arroba-history", agent_id, PROMPTLESS_TEXT)
 }
 
 fn ensure_unique_outline_turn_id(
@@ -1341,6 +1365,69 @@ mod tests {
             SessionHistoryEntryKind::ProviderTool
         );
         assert_eq!(outline.turns[0].blobs[0].summary, "$ cargo test");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn agent_outline_preserves_external_identity_for_promptless_observed_activity() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-promptless-external-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let tool_entry = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderTool,
+            r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
+            "codex",
+            "thread-1",
+            Some("tool-1".to_string()),
+            Some(42),
+        );
+        let tool = HistoryEvent::transcript(1, &tool_entry, context);
+        store
+            .append(&tool)
+            .expect("promptless external activity should append");
+
+        let outline = load_agent_outline(&store, "session-1", "agent-1", 1, None)
+            .expect("outline should load");
+
+        assert_eq!(outline.turns.len(), 1);
+        let turn = &outline.turns[0];
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            turn.external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(turn.external_provider_turn_id.as_deref(), Some("tool-1"));
+        assert!(turn.user_prompt.entry.is_external_provider_observed());
+        assert!(
+            turn.user_prompt.entry.text.contains("no recorded prompt"),
+            "{:?}",
+            turn.user_prompt
+        );
+        assert_eq!(turn.blobs.len(), 1);
+        assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
+        assert_eq!(turn.blobs[0].summary, "$ cargo test");
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
