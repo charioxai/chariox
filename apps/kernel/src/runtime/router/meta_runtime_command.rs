@@ -202,7 +202,9 @@ impl CommandRouter {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let (session, metaagent) = {
-            let app = self.app.lock().await;
+            let app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
+                    .await;
             let session = app.sessions().get_session(&context.home_session_id)?;
             let agent = app.agents().get_agent(&context.home_agent_id)?;
             (session, agent)
@@ -399,7 +401,9 @@ impl CommandRouter {
         let correlation_id = format!("metaagent:{}:command:{timestamp_ms}", metaagent.id());
         let display_command = redacted_meta_command_for_payload(command);
         let durable_state = {
-            let app = self.app.lock().await;
+            let app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
+                    .await;
             app.durable_state_store()
         };
         if let Err(error) = durable_state.append_event(
@@ -636,21 +640,33 @@ impl CommandRouter {
         match command {
             "agent" => {
                 let agents = {
-                    let app = self.app.lock().await;
+                    let app = crate::runtime::app_lock::lock_app_instrumented(
+                        &self.app,
+                        "meta_runtime_command",
+                    )
+                    .await;
                     app.agents().get_session_agents(session.id())
                 };
                 meta_agent_request(session, metaagent, &tokens[1..], &agents)
             }
             "workflow" => {
                 let agents = {
-                    let app = self.app.lock().await;
+                    let app = crate::runtime::app_lock::lock_app_instrumented(
+                        &self.app,
+                        "meta_runtime_command",
+                    )
+                    .await;
                     app.agents().get_session_agents(session.id())
                 };
                 meta_workflow_request(session, metaagent, &tokens[1..], &agents)
             }
             "mcp" => {
                 let agents = {
-                    let app = self.app.lock().await;
+                    let app = crate::runtime::app_lock::lock_app_instrumented(
+                        &self.app,
+                        "meta_runtime_command",
+                    )
+                    .await;
                     app.agents().get_session_agents(session.id())
                 };
                 meta_extension_request(
@@ -664,7 +680,11 @@ impl CommandRouter {
             }
             "skill" | "skills" => {
                 let agents = {
-                    let app = self.app.lock().await;
+                    let app = crate::runtime::app_lock::lock_app_instrumented(
+                        &self.app,
+                        "meta_runtime_command",
+                    )
+                    .await;
                     app.agents().get_session_agents(session.id())
                 };
                 meta_extension_request(
@@ -693,7 +713,9 @@ impl CommandRouter {
     ) -> Result<String, DaemonError> {
         let client_id = metaagent_command_client_id(metaagent.id());
         {
-            let app = self.app.lock().await;
+            let app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
+                    .await;
             if let Some(attachment) = app
                 .attachments()
                 .list_client_attachments(&client_id)
@@ -725,7 +747,9 @@ impl CommandRouter {
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = {
-            let app = self.app.lock().await;
+            let app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
+                    .await;
             app.agents().get_session_agents(session_id)
         };
         let owned_agents = agents

@@ -38,7 +38,7 @@ pub(crate) async fn build_daemon_health_projection(
     let agents = input.runtime_state.list_agents();
     let active_turns = input.runtime_state.active_turn_snapshot();
     let provider_runs = input.provider_run_projection.list();
-    DaemonHealthProjection::new(
+    let mut projection = DaemonHealthProjection::new(
         input.last_event_id,
         input.session_runtime.queue_snapshots().await,
         input.agent_runtime.queue_snapshots().await,
@@ -77,7 +77,9 @@ pub(crate) async fn build_daemon_health_projection(
             &active_turns,
             &provider_runs,
         ),
-    )
+    );
+    projection.app_lock = crate::runtime::app_lock::app_lock_health_snapshot();
+    projection
 }
 
 pub(crate) async fn execute_daemon_health_request(

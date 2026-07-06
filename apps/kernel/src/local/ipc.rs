@@ -67,7 +67,11 @@ async fn run_local_ipc_server_with_shared_app<F>(
 where
     F: Future<Output = ()>,
 {
-    let socket_path = app.lock().await.config().local_socket_path.clone();
+    let socket_path = crate::runtime::app_lock::lock_app_instrumented(&app, "local_ipc")
+        .await
+        .config()
+        .local_socket_path
+        .clone();
     prepare_socket_path(&socket_path)?;
 
     let listener =
@@ -76,9 +80,11 @@ where
             message: error.to_string(),
         })?;
     harden_socket_permissions(&socket_path)?;
-    let provider_runtime_lanes = app.lock().await.provider_run_operation_lanes();
+    let provider_runtime_lanes = crate::runtime::app_lock::lock_app_instrumented(&app, "local_ipc")
+        .await
+        .provider_run_operation_lanes();
     let durable_snapshot_scheduler = {
-        let app = app.lock().await;
+        let app = crate::runtime::app_lock::lock_app_instrumented(&app, "local_ipc").await;
         app.durable_snapshot_scheduler()
     };
     let mut durable_snapshot_task = durable_snapshot_scheduler
@@ -98,7 +104,7 @@ where
                 if let Some(task) = durable_snapshot_task.take() {
                     task.abort();
                 }
-                let mut app = app.lock().await;
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(&app, "local_ipc").await;
                 let _ = app.shutdown_cleanup();
                 break Ok(());
             },
@@ -1395,7 +1401,7 @@ mod tests {
             "```json\n{}\n```\n",
             serde_json::to_string(&payload).expect("workflow test output should serialize")
         );
-        let mut app = app.lock().await;
+        let mut app = crate::runtime::app_lock::lock_app_instrumented(&app, "local_ipc").await;
         let provider_run_id = app
             .sessions()
             .get_session(session_id)

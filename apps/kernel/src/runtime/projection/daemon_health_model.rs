@@ -735,6 +735,8 @@ pub struct DaemonHealthProjection {
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
+    #[serde(default)]
+    pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,
 }
 
 impl DaemonHealthProjection {
@@ -788,6 +790,7 @@ impl DaemonHealthProjection {
             workspace_coordination,
             workspace_live_sync,
             projection_invariants,
+            app_lock: crate::runtime::app_lock::AppLockHealthSnapshot::default(),
         }
     }
 }

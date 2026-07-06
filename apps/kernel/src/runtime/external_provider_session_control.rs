@@ -177,7 +177,11 @@ async fn poll_attached_external_provider_transcripts(
     let tick_started = Instant::now();
     let now = tokio::time::Instant::now();
     let targets = {
-        let app = app.lock().await;
+        let app = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
         attached_external_observer_targets(&app)
     };
     let target_count = targets.len();
@@ -226,7 +230,11 @@ async fn poll_attached_external_provider_transcripts(
             Ok(read) => {
                 let append_started = Instant::now();
                 let outcome = {
-                    let mut app = app.lock().await;
+                    let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                        &app,
+                        "external_provider_session_control",
+                    )
+                    .await;
                     append_observed_external_turns_for_attached_target_with_options(
                         &mut app,
                         read,
@@ -422,7 +430,11 @@ async fn refresh_external_provider_session_index(
         cache.cached_signature_checks = 0;
     }
     let store = {
-        let app = app.lock().await;
+        let app = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
         app.external_provider_session_index_store()
     };
     for provider in external_provider_session_providers() {
@@ -433,7 +445,9 @@ async fn refresh_external_provider_session_index(
             .collect::<Vec<_>>();
         store.replace_provider_sessions(provider, provider_sessions);
     }
-    let app = app.lock().await;
+    let app =
+        crate::runtime::app_lock::lock_app_instrumented(&app, "external_provider_session_control")
+            .await;
     mark_attached_external_provider_sessions(&app, runtime_state, &store);
     let total_elapsed = refresh_started.elapsed();
     if force || total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH || !discovered.is_empty()
@@ -506,13 +520,21 @@ pub(crate) async fn execute_external_provider_session_request(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let store = {
-        let app = app.lock().await;
+        let app = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
         app.external_provider_session_index_store()
     };
     match request {
         LocalDaemonRequest::ListExternalProviderSessions(request) => {
             {
-                let app = app.lock().await;
+                let app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 mark_attached_external_provider_sessions(&app, runtime_state, &store);
             }
             Ok(LocalDaemonResponse::ExternalProviderSessionsListed {
@@ -535,7 +557,11 @@ pub(crate) async fn execute_external_provider_session_request(
                 }
             }
             {
-                let app = app.lock().await;
+                let app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 mark_attached_external_provider_sessions(&app, runtime_state, &store);
             }
             refresh_attached_external_provider_histories(
@@ -554,7 +580,11 @@ pub(crate) async fn execute_external_provider_session_request(
             })
         }
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
-            let mut app = app.lock().await;
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
             mark_attached_external_provider_sessions(&app, runtime_state, &store);
             import_external_provider_session(
                 &mut app,
@@ -565,7 +595,11 @@ pub(crate) async fn execute_external_provider_session_request(
             )
         }
         LocalDaemonRequest::ImportExternalProviderAgent(request) => {
-            let mut app = app.lock().await;
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
             mark_attached_external_provider_sessions(&app, runtime_state, &store);
             import_external_provider_agent(&mut app, runtime_state, &store, request, caller_user_id)
         }
@@ -582,7 +616,11 @@ async fn refresh_attached_external_provider_histories(
     provider_filter: Option<&str>,
 ) {
     let targets = {
-        let app = app.lock().await;
+        let app = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
         attached_external_observer_targets(&app)
             .into_iter()
             .filter(|target| {
@@ -611,7 +649,11 @@ async fn refresh_attached_external_provider_histories(
             }
         };
         let outcome = {
-            let mut app = app.lock().await;
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
             append_observed_external_turns_for_attached_target(&mut app, read).unwrap_or_default()
         };
         dispatch_next_queued_prompt_after_external_settlement(
@@ -1835,7 +1877,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let store = {
-                let app = app.lock().await;
+                let app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 app.external_provider_session_index_store()
             };
             store.upsert(record("dev-stub", "external-1", "/tmp/external-one"));
@@ -1974,7 +2020,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let store = {
-                let app = app.lock().await;
+                let app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 app.external_provider_session_index_store()
             };
             store.upsert(record("codex", "thread-1", "/tmp/codex-thread"));
@@ -2024,7 +2074,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let store = {
-                let app = app.lock().await;
+                let app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 app.external_provider_session_index_store()
             };
             store.upsert(record(
@@ -2070,7 +2124,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let (session_id, agent_id, store) = {
-                let mut app = app.lock().await;
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                     .create_session(CreateSessionRequest::new("workspace", "worktree"))
                     .expect("session should create");
@@ -2151,7 +2209,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let (session_id, agent_id, store) = {
-                let mut app = app.lock().await;
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                     .create_session(CreateSessionRequest::new("workspace", "worktree"))
                     .expect("session should create");
@@ -2212,7 +2274,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let (session_id, store) = {
-                let mut app = app.lock().await;
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 let (session, _) = crate::app::KernelSessionService::new(&mut app)
                     .create_session(CreateSessionRequest::new("workspace", "worktree"))
                     .expect("session should create");
@@ -2282,7 +2348,11 @@ mod tests {
                 DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
             ));
             let (target_session_id, owner_session_id, owner_agent_id, store) = {
-                let mut app = app.lock().await;
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
                 let (target_session, _) = crate::app::KernelSessionService::new(&mut app)
                     .create_session(CreateSessionRequest::new(
                         "workspace-target",

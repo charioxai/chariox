@@ -32,7 +32,11 @@ fn runtime_command_paths_do_not_lock_daemon_app() {
         }
         let source = std::fs::read_to_string(&path).expect("runtime source should be readable");
         let production_source = strip_cfg_test_items(&source);
-        for pattern in ["app.lock().await", "app.lock().await;"] {
+        for pattern in [
+            "app.lock().await",
+            "app.lock().await;",
+            "lock_app_instrumented(",
+        ] {
             for (line_index, line) in production_source.lines().enumerate() {
                 if line.contains(pattern) {
                     if allowed_direct_app_lock(&relative, line) {
@@ -83,7 +87,10 @@ fn scan_runtime_command_path(relative: &Path) -> bool {
 
 fn allowed_direct_app_lock(relative: &Path, line: &str) -> bool {
     relative == Path::new("runtime/state/mod.rs")
-        && line.trim() == "let mut app = self.app.lock().await;"
+        && line
+            .trim()
+            .contains("lock_app_instrumented(&self.app, \"kernel_runtime_state\")")
+        || relative == Path::new("runtime/app_lock.rs")
         || matches!(
             relative.to_str(),
             Some(

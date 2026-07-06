@@ -126,7 +126,8 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = paired_terminal_records();
     let (external_provider_session_page, metaagent_events) = {
-        let app = app.lock().await;
+        let app =
+            crate::runtime::app_lock::lock_app_instrumented(&app, "waiting_room_control").await;
         (
             app.external_provider_session_index_store().list(
                 &ListExternalProviderSessionsRequest {
