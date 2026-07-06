@@ -70,6 +70,11 @@ export type SessionHistoryTranscriptHydrateOptions = {
   promptId?: string | null
 }
 
+export type SessionHistoryBlobLoadTarget = {
+  readonly agentId: string
+  readonly blobId: string
+}
+
 export function applyHistoryTranscriptDeferral<TEntry extends SessionHistoryTranscriptEntry>(entry: TEntry): TEntry {
   return applyTranscriptHistoryDeferral(entry)
 }
@@ -350,6 +355,25 @@ export function markSessionHistoryBlobLoading(
     delete next.historyBlobError
     return next
   })
+}
+
+export function resolveSessionHistoryBlobLoadTarget(
+  entry: SessionHistoryTranscriptEntry | null | undefined,
+  collapsed: boolean,
+): SessionHistoryBlobLoadTarget | null {
+  if (
+    collapsed
+    || !entry?.historyBlobId
+    || entry.historyBlobLoaded === true
+    || entry.historyBlobLoading === true
+    || !entry.historyBlobAgentId
+  ) {
+    return null
+  }
+  return {
+    agentId: entry.historyBlobAgentId,
+    blobId: entry.historyBlobId,
+  }
 }
 
 export function previewLineForHistoryTranscriptEntry(entry: SessionHistoryEntry): string | null {

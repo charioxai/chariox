@@ -5,6 +5,7 @@ import type {
 import {
   markSessionHistoryBlobLoading,
   replaceSessionHistoryBlobPlaceholder,
+  resolveSessionHistoryBlobLoadTarget,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
   projectTranscriptBlobToggleDisplayState,
@@ -59,17 +60,11 @@ export function createAgentPaneTranscriptInteractionController(
   const toggleBlob = (agentId: string, entryId: number, collapsed: boolean) => {
     const currentEntries = deps.currentAgentPaneEntries(agentId)
     const target = currentEntries.find((entry) => entry.id === entryId)
-    if (
-      collapsed === false
-      && target?.historyBlobId
-      && target.historyBlobLoaded !== true
-      && target.historyBlobLoading !== true
-      && target.historyBlobAgentId
-      && deps.loadHistoryBlobContent
-    ) {
+    const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
+    if (loadTarget && deps.loadHistoryBlobContent) {
       const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
       commitAndRefocus(deps, agentId, currentEntries, loadingEntries)
-      void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
+      void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
           const latestEntries = deps.currentAgentPaneEntries(agentId)
           const nextEntries = replaceSessionHistoryBlobPlaceholder(

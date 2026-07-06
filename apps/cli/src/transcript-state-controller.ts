@@ -3,6 +3,7 @@ import type { SessionHistoryBlobContent } from "./cli-types.js"
 import {
   markSessionHistoryBlobLoading,
   replaceSessionHistoryBlobPlaceholder,
+  resolveSessionHistoryBlobLoadTarget,
 } from "@arroba/kernel-client/session-history-transcript"
 import {
   projectTranscriptDisplayState,
@@ -67,20 +68,14 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     const currentEntries = deps.entries().filter(Boolean)
     const agentId = deps.visibleTranscriptAgentId()
     const target = currentEntries.find((entry) => entry.id === entryId)
-    if (
-      collapsed === false
-      && target?.historyBlobId
-      && target.historyBlobLoaded !== true
-      && target.historyBlobLoading !== true
-      && target.historyBlobAgentId
-      && deps.loadHistoryBlobContent
-    ) {
+    const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
+    if (loadTarget && deps.loadHistoryBlobContent) {
       const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
       deps.setEntries(loadingEntries)
       deps.persistVisibleTranscriptEntries(loadingEntries)
       deps.reconcileMountedTranscript(currentEntries, loadingEntries)
       deps.retainPromptFocus()
-      void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
+      void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
           const latestEntries = deps.entries().filter(Boolean)
           const nextEntries = replaceSessionHistoryBlobPlaceholder(

@@ -11,6 +11,7 @@ import {
   hydrateSessionHistoryTranscriptEntries,
   mergePrependedHistoryTranscriptFragments,
   replaceSessionHistoryBlobPlaceholder,
+  resolveSessionHistoryBlobLoadTarget,
   stitchPrependedHistoryTranscript,
   type SessionHistoryTranscriptEntry,
 } from "./session-history-transcript.js"
@@ -358,6 +359,26 @@ test("session history outline hydration carries prompt identity into entries and
   assert.equal(placeholder?.externalProvider, "codex")
   assert.equal(placeholder?.externalProviderSessionId, "thread-1")
   assert.equal(placeholder?.externalProviderTurnId, "user-1")
+})
+
+test("session history blob load target resolves only expandable unloaded placeholders", () => {
+  const placeholder = transcriptEntry(1, "tool", "placeholder", {
+    historyBlobId: "blob-1",
+    historyBlobAgentId: "agent-1",
+  })
+
+  assert.deepEqual(resolveSessionHistoryBlobLoadTarget(placeholder, false), {
+    agentId: "agent-1",
+    blobId: "blob-1",
+  })
+  const { historyBlobAgentId: _agentId, ...withoutAgentId } = placeholder
+  const { historyBlobId: _blobId, ...withoutBlobId } = placeholder
+  assert.equal(resolveSessionHistoryBlobLoadTarget(placeholder, true), null)
+  assert.equal(resolveSessionHistoryBlobLoadTarget({ ...placeholder, historyBlobLoaded: true }, false), null)
+  assert.equal(resolveSessionHistoryBlobLoadTarget({ ...placeholder, historyBlobLoading: true }, false), null)
+  assert.equal(resolveSessionHistoryBlobLoadTarget(withoutAgentId, false), null)
+  assert.equal(resolveSessionHistoryBlobLoadTarget(withoutBlobId, false), null)
+  assert.equal(resolveSessionHistoryBlobLoadTarget(null, false), null)
 })
 
 test("session history outline hydration orders turns and keeps stable turn ids", () => {
