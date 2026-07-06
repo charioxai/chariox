@@ -32,6 +32,17 @@ export type SessionIdleTurnCompletionInput = {
   readonly currentActiveStatusLabel: string | null
 }
 
+export type SessionAuthoritativeIdleTransitionInput = {
+  readonly nextSession: RuntimeSession
+  readonly currentStatusLine?: string | null
+  readonly cancellationRequestedStatusLine?: string
+}
+
+export type SessionAuthoritativeIdleTransitionState = {
+  readonly shouldClearRuntimeResidue: boolean
+  readonly shouldResetCancellationStatusLine: boolean
+}
+
 export type SessionRuntimeTransitionOptions = {
   readonly currentSession: RuntimeSession
   readonly nextSession: RuntimeSession
@@ -83,6 +94,8 @@ export type TurnCompletionDelayInput = {
   readonly now: number
   readonly quietWindowMs: number
 }
+
+export const DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE = "Cancellation requested."
 
 export function sessionFocusedAgentId<TAgent extends { id: string }>(
   session: {
@@ -355,6 +368,19 @@ export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnC
     || options.currentStreamingAgentId !== null
     || options.currentProviderActivityLabel !== null
     || options.currentActiveStatusLabel !== null
+}
+
+export function sessionAuthoritativeIdleTransitionState(
+  options: SessionAuthoritativeIdleTransitionInput,
+): SessionAuthoritativeIdleTransitionState {
+  const shouldClearRuntimeResidue = !sessionHasPromptWork(options.nextSession)
+  const cancellationRequestedStatusLine =
+    options.cancellationRequestedStatusLine ?? DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE
+  return {
+    shouldClearRuntimeResidue,
+    shouldResetCancellationStatusLine:
+      shouldClearRuntimeResidue && options.currentStatusLine === cancellationRequestedStatusLine,
+  }
 }
 
 export function turnCompletionDelayMs(options: TurnCompletionDelayInput): number | null {

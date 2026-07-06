@@ -1,8 +1,8 @@
 import type { RuntimeSession } from "./cli-types.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
-  sessionHasPromptWork,
-} from "@arroba/kernel-client/session-prompt-work"
+  sessionAuthoritativeIdleTransitionState,
+} from "@arroba/kernel-client/session-runtime-transition"
 
 export type AuthoritativeIdleControllerDeps = {
   batchUpdate: (callback: () => void) => void
@@ -26,7 +26,11 @@ export function createAuthoritativeIdleController(
   deps: AuthoritativeIdleControllerDeps,
 ) {
   const clear = (nextSession: RuntimeSession) => {
-    if (sessionHasPromptWork(nextSession)) {
+    const transition = sessionAuthoritativeIdleTransitionState({
+      nextSession,
+      currentStatusLine: deps.getStatusLine(),
+    })
+    if (!transition.shouldClearRuntimeResidue) {
       return false
     }
 
@@ -42,7 +46,7 @@ export function createAuthoritativeIdleController(
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       deps.setWorking(false)
-      if (deps.getStatusLine() === "Cancellation requested.") {
+      if (transition.shouldResetCancellationStatusLine) {
         deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
     })

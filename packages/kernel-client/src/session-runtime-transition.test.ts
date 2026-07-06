@@ -6,6 +6,7 @@ import {
   readAgentBusyLatch,
   resolveSessionStreamingAgentId,
   resolveVisibleTranscriptAgentId,
+  sessionAuthoritativeIdleTransitionState,
   sessionFocusedAgentId,
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
@@ -335,6 +336,47 @@ test("session idle turn completion waits only for idle snapshots", () => {
     currentProviderActivityLabel: "thinking",
     currentActiveStatusLabel: "thinking",
   }), false)
+})
+
+test("session authoritative idle transition clears only truly idle snapshots", () => {
+  const idleSession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const activeSession = makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: "running",
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const processingSession = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+  })
+
+  assert.deepEqual(sessionAuthoritativeIdleTransitionState({
+    nextSession: idleSession,
+    currentStatusLine: "Cancellation requested.",
+  }), {
+    shouldClearRuntimeResidue: true,
+    shouldResetCancellationStatusLine: true,
+  })
+  assert.deepEqual(sessionAuthoritativeIdleTransitionState({
+    nextSession: activeSession,
+    currentStatusLine: "Cancellation requested.",
+  }), {
+    shouldClearRuntimeResidue: false,
+    shouldResetCancellationStatusLine: false,
+  })
+  assert.deepEqual(sessionAuthoritativeIdleTransitionState({
+    nextSession: processingSession,
+    currentStatusLine: "Cancellation requested.",
+  }), {
+    shouldClearRuntimeResidue: false,
+    shouldResetCancellationStatusLine: false,
+  })
 })
 
 test("turn completion delay waits for prompt work and record flushes", () => {
