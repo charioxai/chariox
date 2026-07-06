@@ -170,6 +170,26 @@ test("session agent pane status badge for session uses authoritative projection"
     agent: makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
     activeLabel: null,
   }), { label: "THINKING", tone: "working" })
+
+  assert.deepEqual(sessionAgentPaneStatusBadgeForSession({
+    session: makeSession({
+      agents: [makeAgent({ id: "agent-1", state: "Idle", is_processing: false })],
+      prompt_states: {
+        "agent-1": {
+          active_prompt: null,
+          queued_prompts: [{
+            id: "queued-1",
+            source_attachment_id: "attach-1",
+            target_agent_id: "agent-1",
+            prompt: "queued",
+            status: "Queued",
+          }],
+        },
+      },
+    }),
+    agent: makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
+    activeLabel: null,
+  }), { label: "IDLE", tone: "idle" })
 })
 
 test("session runtime state prefers projected activity over stale legacy state", () => {
@@ -216,7 +236,7 @@ test("session runtime state prefers projected activity over stale legacy state",
   }), "Error")
 })
 
-test("session runtime state uses shared prompt-state work predicate", () => {
+test("session runtime state uses active prompt state without counting queues as working", () => {
   const session = makeSession({
     prompt_states: {
       "agent-1": {
@@ -248,6 +268,40 @@ test("session runtime state uses shared prompt-state work predicate", () => {
       },
     },
   }), "Working")
+
+  const queuedOnlySession = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agents: [makeAgent({ id: "agent-1", state: "Idle", is_processing: false })],
+  })
+
+  assert.equal(sessionAgentRuntimeState(queuedOnlySession, makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  })), "Idle")
+  assert.equal(agentRuntimeStateFromProjection(makeAgent({
+    id: "agent-1",
+    state: "Idle",
+    is_processing: false,
+  }), {
+    promptStates: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{ id: "queued-1" }],
+      },
+    },
+  }), "Idle")
 })
 
 test("session runtime state ignores activity outside session agents", () => {

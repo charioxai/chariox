@@ -14,7 +14,6 @@ import {
   normalizeProviderActivityLabel,
 } from "./provider-status.js"
 import {
-  agentPromptStateHasWork,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
@@ -232,7 +231,7 @@ export function sessionAgentRuntimeState(
     if (agent.state === "Error") {
       return "Error"
     }
-    return agentPromptStateHasWork(promptState)
+    return promptStateHasActivePrompt(promptState)
       ? "Working"
       : "Idle"
   }
@@ -287,7 +286,7 @@ export function agentRuntimeStateFromProjection(
     if (agent.state === "Error") {
       return "Error"
     }
-    return agentPromptStateHasWork(promptState)
+    return promptStateHasActivePrompt(promptState)
       ? "Working"
       : "Idle"
   }
@@ -320,6 +319,10 @@ function sessionStatusBadge(parts: SessionStatusBadgePart[]): SessionFocusedStat
 
 function formatSessionWorkingStatusLabel(activity: string | null): string {
   return (normalizeProviderActivityLabel(activity) ?? ACTIVE_STATUS_FALLBACK).trim().toUpperCase()
+}
+
+function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | undefined): boolean {
+  return Boolean(state?.active_prompt)
 }
 
 function legacyAgentRuntimeState(agent: AgentInstance): AgentInstance["state"] {
