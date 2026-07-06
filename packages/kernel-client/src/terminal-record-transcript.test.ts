@@ -181,7 +181,7 @@ test("terminalRecordTranscriptProjection keeps idle provider status out of live 
   assert.equal(projection.marksAgentBusy, false)
   assert.equal(projection.updatesProviderActivity, false)
   assert.equal(projection.appendsLiveTranscript, false)
-  assert.equal(projection.renderProviderStatus, true)
+  assert.equal(projection.renderProviderStatus, false)
 })
 
 test("terminalRecordTranscriptProjection keeps ordinary status merge separate from external statuses", () => {

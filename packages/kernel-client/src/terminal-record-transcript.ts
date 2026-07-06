@@ -88,6 +88,7 @@ export function terminalRecordTranscriptProjection(
   const providerStatusIdle = record.kind === "provider_status" && options.isProviderIdleStatus(text)
   const renderProviderStatus = record.kind === "provider_status"
     && !historyRefreshSignal
+    && !providerStatusIdle
     ? terminalRecordProviderStatusShouldRender(record, text, options.shouldRenderProviderStatus)
     : false
   const appendsLiveTranscript = !historyRefreshSignal && !passiveExternalTelemetry && !providerStatusIdle
