@@ -215,6 +215,7 @@ function automationQueuedPromptStripItem(item: QueuedPromptStripItem): Record<st
     agentId: item.agentId,
     sourceAttachmentId: item.sourceAttachmentId,
     prompt: item.prompt,
+    promptOrigin: item.promptOrigin,
     status: item.status,
     attachmentCount: item.attachmentCount,
     steerDisabled: item.steerDisabled,
@@ -238,6 +239,7 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
       ? {
         promptId: entry.queuedPrompt.promptId,
         agentId: entry.queuedPrompt.agentId,
+        promptOrigin: entry.queuedPrompt.promptOrigin ?? null,
         status: entry.queuedPrompt.status,
         attachmentCount: entry.queuedPrompt.attachmentCount,
         steerDisabled: entry.queuedPrompt.steerDisabled,

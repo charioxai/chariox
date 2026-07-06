@@ -164,6 +164,7 @@ export function buildTranscriptEntryRenderable(
       && nextEntry.queuedPrompt?.attachmentCount === currentEntry.queuedPrompt?.attachmentCount
       && nextEntry.queuedPrompt?.promptId === currentEntry.queuedPrompt?.promptId
       && nextEntry.queuedPrompt?.agentId === currentEntry.queuedPrompt?.agentId
+      && nextEntry.queuedPrompt?.promptOrigin === currentEntry.queuedPrompt?.promptOrigin
       && nextEntry.queuedPrompt?.steerDisabled === currentEntry.queuedPrompt?.steerDisabled
       && nextEntry.queuedPrompt?.canSteer === currentEntry.queuedPrompt?.canSteer
       && nextEntry.queuedPrompt?.canCancel === currentEntry.queuedPrompt?.canCancel

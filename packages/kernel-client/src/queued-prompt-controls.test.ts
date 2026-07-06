@@ -131,6 +131,7 @@ test("projected queued prompt comparison includes identity and actionability", (
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-1",
     prompt: "queued",
+    promptOrigin: null,
     attachmentCount: 1,
   })
 
@@ -142,6 +143,10 @@ test("projected queued prompt comparison includes identity and actionability", (
   assert.equal(projectedQueuedPromptListsMatch([current], [{
     ...current,
     prompt: "edited queued prompt",
+  }]), false)
+  assert.equal(projectedQueuedPromptListsMatch([current], [{
+    ...current,
+    promptOrigin: "external",
   }]), false)
   assert.equal(projectedQueuedPromptListsMatch([current], [{
     ...current,
@@ -298,6 +303,7 @@ test("queued prompt projection returns display prompts with actionability", () =
       sourceAttachmentId: "attachment-1",
       targetAgentId: "agent-1",
       prompt: "queued-1",
+      promptOrigin: null,
       attachmentCount: 0,
       status: "dispatching",
       steerDisabled: true,
@@ -349,6 +355,7 @@ test("queued prompt projection does not infer steering policy from external acti
       sourceAttachmentId: "attachment-1",
       targetAgentId: "agent-1",
       prompt: "queued-1",
+      promptOrigin: null,
       attachmentCount: 0,
       status: "queued",
       steerDisabled: false,
@@ -420,6 +427,7 @@ test("project queued prompt records attachment count and fallback target", () =>
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-fallback",
     prompt: "queued",
+    promptOrigin: null,
     createdAtMs: 1_234,
     attachmentCount: 1,
     status: "queued",
@@ -446,6 +454,32 @@ test("project queued prompt uses pending prompt id as action identity", () => {
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-1",
     prompt: "queued",
+    promptOrigin: null,
+    attachmentCount: 0,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
+})
+
+test("project queued prompt normalizes prompt ownership", () => {
+  assert.deepEqual(projectQueuedPrompt({
+    id: "queued-external",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "queued",
+    status: "queued",
+    prompt_origin: " External ",
+  }), {
+    id: "queued-external",
+    pendingPromptId: null,
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "queued",
+    promptOrigin: "external",
     attachmentCount: 0,
     status: "queued",
     steerDisabled: false,
@@ -645,6 +679,7 @@ function projectedPrompt(
     sourceAttachmentId: "attachment-1",
     targetAgentId: "agent-1",
     prompt: "queued",
+    promptOrigin: null,
     attachmentCount: 0,
     status: "queued",
     steerDisabled: false,

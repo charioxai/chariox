@@ -196,6 +196,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         queuedPrompt: {
           promptId: "prompt-1",
           agentId: "agent-1",
+          promptOrigin: "arroba",
           status: "queued",
           attachmentCount: 0,
           steerDisabled: true,
@@ -212,6 +213,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         agentId: "agent-1",
         sourceAttachmentId: null,
         prompt: "queued behind external turn",
+        promptOrigin: "arroba",
         status: "queued",
         attachmentCount: 0,
         steerDisabled: true,
@@ -267,6 +269,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
   assert.deepEqual((snapshot.agentPanes?.["agent-1"] as Array<Record<string, unknown>>)[0]?.queuedPrompt, {
     promptId: "prompt-1",
     agentId: "agent-1",
+    promptOrigin: "arroba",
     status: "queued",
     attachmentCount: 0,
     steerDisabled: true,
@@ -282,6 +285,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
       agentId: "agent-1",
       sourceAttachmentId: null,
       prompt: "queued behind external turn",
+      promptOrigin: "arroba",
       status: "queued",
       attachmentCount: 0,
       steerDisabled: true,

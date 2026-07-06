@@ -1,5 +1,6 @@
 import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   sessionAgentActivityRecordForAgent,
   sessionPromptStateRecordForAgent,
@@ -41,6 +42,7 @@ export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly sourceAttachmentId: string
   readonly targetAgentId: string | null
   readonly prompt: string
+  readonly promptOrigin: string | null
   readonly createdAtMs?: number | null
   readonly attachmentCount: number
 }
@@ -107,6 +109,7 @@ export function projectedQueuedPromptMatches(
     && current.sourceAttachmentId === next.sourceAttachmentId
     && current.targetAgentId === next.targetAgentId
     && current.prompt === next.prompt
+    && current.promptOrigin === next.promptOrigin
     && (current.createdAtMs ?? null) === (next.createdAtMs ?? null)
     && current.attachmentCount === next.attachmentCount
     && queuedPromptActionabilityMatches(current, next)
@@ -198,6 +201,7 @@ export function projectQueuedPrompt(
     sourceAttachmentId: prompt.source_attachment_id ?? "",
     targetAgentId: prompt.target_agent_id ?? options.fallbackTargetAgentId ?? null,
     prompt: prompt.prompt,
+    promptOrigin: promptOriginFromRecord(prompt),
     ...(prompt.created_at_ms !== undefined ? { createdAtMs: prompt.created_at_ms } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),

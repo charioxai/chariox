@@ -20,6 +20,7 @@ test("queuedPromptStripItemsForAgent projects queued prompts for the agent", () 
     agentId: item.agentId,
     sourceAttachmentId: item.sourceAttachmentId,
     prompt: item.prompt,
+    promptOrigin: item.promptOrigin,
     status: item.status,
     attachmentCount: item.attachmentCount,
     canSteer: item.canSteer,
@@ -29,6 +30,7 @@ test("queuedPromptStripItemsForAgent projects queued prompts for the agent", () 
     agentId: "agent-1",
     sourceAttachmentId: "attachment-1",
     prompt: "queued prompt",
+    promptOrigin: null,
     status: "queued",
     attachmentCount: 2,
     canSteer: true,
@@ -106,6 +108,7 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
           prompt: "queued prompt\n",
           attachments: [],
           status: "queued",
+          prompt_origin: " External ",
         }],
       },
     },
@@ -130,11 +133,13 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
 
   assert.deepEqual({
     promptId: item?.promptId,
+    promptOrigin: item?.promptOrigin,
     status: item?.status,
     canSteer: item?.canSteer,
     canCancel: item?.canCancel,
   }, {
     promptId: "pending-prompt-1",
+    promptOrigin: "external",
     status: "dispatching",
     canSteer: false,
     canCancel: false,
@@ -223,6 +228,7 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
   assert.deepEqual(entry.queuedPrompt, {
     promptId: "prompt-1",
     agentId: "agent-1",
+    promptOrigin: null,
     status: "queued",
     attachmentCount: 2,
     steerDisabled: false,

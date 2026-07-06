@@ -17,6 +17,7 @@ export type QueuedPromptStripItem = {
   agentId: string
   sourceAttachmentId: string | null
   prompt: string
+  promptOrigin: string | null
   status: string
   attachmentCount: number
   steerDisabled: boolean
@@ -40,6 +41,7 @@ export type QueuedPromptStripStatusOverride = {
 export type QueuedPromptTranscriptMetadata = {
   promptId: string
   agentId: string
+  promptOrigin?: string | null
   status: string
   attachmentCount: number
   steerDisabled: boolean
@@ -125,6 +127,7 @@ export function queuedPromptStripItemToTranscriptEntry(
     queuedPrompt: {
       promptId: item.promptId,
       agentId: item.agentId,
+      promptOrigin: item.promptOrigin,
       status: item.status,
       attachmentCount: item.attachmentCount,
       steerDisabled: item.steerDisabled,
@@ -223,6 +226,7 @@ function queuedPromptItemsFromEntries(
       agentId: queuedPrompt.agentId,
       sourceAttachmentId: entry.sourceAttachmentId ?? null,
       prompt: trimSingleTrailingNewline(entry.text),
+      promptOrigin: queuedPrompt.promptOrigin ?? null,
       status: queuedPrompt.status,
       attachmentCount: queuedPrompt.attachmentCount,
       steerDisabled: queuedPrompt.steerDisabled,
@@ -258,6 +262,7 @@ function queuedPromptItemFromProjection(
     return applyOverride({
       ...optimistic,
       prompt: trimSingleTrailingNewline(prompt.prompt),
+      promptOrigin: prompt.promptOrigin,
       sourceAttachmentId: prompt.sourceAttachmentId,
       attachmentCount: prompt.attachmentCount,
     })
@@ -267,6 +272,7 @@ function queuedPromptItemFromProjection(
     agentId,
     sourceAttachmentId: prompt.sourceAttachmentId,
     prompt: trimSingleTrailingNewline(prompt.prompt),
+    promptOrigin: prompt.promptOrigin,
     status: prompt.status,
     attachmentCount: prompt.attachmentCount,
     steerDisabled: prompt.steerDisabled,
