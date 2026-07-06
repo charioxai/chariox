@@ -102,7 +102,7 @@ export function createCodexKernelOutputProjection(options: {
         isProviderIdleStatus,
         shouldRenderProviderStatus: () => false,
       })
-      if (recordProjection.historyRefreshSignal || recordProjection.passiveExternalTelemetry) continue
+      if (!recordProjection.appendsLiveTranscript) continue
 
       if (recordProjection.transcriptRole === "user") {
         const turnId = startProjectedTurn()

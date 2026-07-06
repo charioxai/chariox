@@ -76,6 +76,26 @@ test("codex kernel output projection suppresses passive external telemetry", () 
   assert.deepEqual(debug, [])
 })
 
+test("codex kernel output projection follows shared live append suppression", () => {
+  const broadcasts: unknown[] = []
+  const debug: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: (label, payload) => debug.push({ label, payload }),
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([{
+    agent_id: "agent-1",
+    kind: "provider_status",
+    bytes: [...Buffer.from("OpenCode is idle.", "utf8")],
+  }])
+
+  assert.deepEqual(broadcasts, [])
+  assert.deepEqual(debug, [])
+})
+
 test("codex kernel output projection normalizes provider errors through shared terminal projection", () => {
   const broadcasts: unknown[] = []
   const projection = createCodexKernelOutputProjection({
