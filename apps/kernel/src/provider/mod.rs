@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 mod claude;
 mod claude_runtime;
 mod codex;
@@ -30,7 +32,7 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
-pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
+pub use codex_runtime::CodexRuntimeState;
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
@@ -48,7 +50,6 @@ pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
     resolve_opencode_executable,
 };
-pub(crate) use opencode_binding::run_opencode_utility_prompt;
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,
@@ -134,6 +135,41 @@ pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
 ) -> bool {
     run.adapter_key() == "opencode"
 }
+
+pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "claude" && run.client_interface().is_arroba()
+}
+
+pub(crate) fn run_blocking_provider_utility_prompt(
+    run: &RuntimeProviderRun,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    operation: &'static str,
+) -> Result<String, crate::error::DaemonError> {
+    match run.adapter_key() {
+        "codex" => codex_runtime::run_codex_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+        ),
+        "opencode" => opencode_binding::run_opencode_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+        ),
+        adapter_key => Err(crate::error::DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "agent utility prompts are not supported for provider adapter `{adapter_key}`"
+            ),
+        }),
+    }
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
@@ -145,9 +181,10 @@ mod tests {
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
         provider_run_refreshes_selection_on_read,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
-        provider_run_uses_claude_native_bridge,
-        provider_run_waits_for_workflow_publication_completion, AgentEndpointMode,
-        LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+        provider_run_uses_claude_native_bridge, provider_run_uses_runtime_structured_utility_prompt,
+        provider_run_waits_for_workflow_publication_completion,
+        run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
+        ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
 
     #[test]
@@ -239,6 +276,50 @@ mod tests {
         assert!(!provider_run_reuses_run_for_mcp_continuation_reload(
             &claude
         ));
+    }
+
+    #[test]
+    fn runtime_structured_utility_prompt_is_provider_policy() {
+        let structured_claude = provider_run("claude", "claude");
+        let native_claude = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+        let opencode = provider_run("opencode", "opencode");
+
+        assert!(provider_run_uses_runtime_structured_utility_prompt(
+            &structured_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &native_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(&codex));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &opencode
+        ));
+    }
+
+    #[test]
+    fn blocking_utility_prompt_reports_unsupported_adapter() {
+        let run = provider_run("dev-stub", "utility-unsupported");
+        let error = run_blocking_provider_utility_prompt(
+            &run,
+            "visible",
+            "hidden",
+            std::time::Duration::from_secs(1),
+            "test utility",
+        )
+        .expect_err("unsupported adapter should fail before provider I/O");
+
+        match error {
+            crate::error::DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "test utility");
+                assert!(message.contains("dev-stub"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {

@@ -97,7 +97,7 @@ pub(super) fn execute_utility_command(
     timeout: Duration,
 ) -> Result<String, DaemonError> {
     let run_id = run.id().to_string();
-    if run.adapter_key() != "claude" || !run.client_interface().is_arroba() {
+    if !crate::provider::provider_run_uses_runtime_structured_utility_prompt(&run) {
         return Err(DaemonError::LocalTransport {
             operation: "run structured provider utility prompt",
             message: format!(

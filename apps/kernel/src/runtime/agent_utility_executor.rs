@@ -10,9 +10,7 @@ use crate::local::{
     GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
     RunAgentUtilityRequest, SemanticRecallSearchUtilityInput, WorkspaceCommitMessageUtilityInput,
 };
-use crate::provider::{
-    run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunState, RuntimeProviderRun,
-};
+use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::runtime::history_requests::{
     knn_semantic_recall_search, semantic_recall_request_from_utility_input,
 };
@@ -223,7 +221,7 @@ async fn run_provider_utility_prompt(
     prompt: AgentUtilityPromptParts,
     operation: &'static str,
 ) -> Result<String, DaemonError> {
-    if provider_run.adapter_key() == "claude" {
+    if crate::provider::provider_run_uses_runtime_structured_utility_prompt(&provider_run) {
         return runtime_state
             .run_structured_provider_utility_prompt(
                 provider_run,
@@ -233,25 +231,14 @@ async fn run_provider_utility_prompt(
             )
             .await;
     }
-    tokio::task::spawn_blocking(move || match provider_run.adapter_key() {
-        "codex" => run_codex_utility_prompt(
+    tokio::task::spawn_blocking(move || {
+        crate::provider::run_blocking_provider_utility_prompt(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
             AGENT_UTILITY_TIMEOUT,
-        ),
-        "opencode" => run_opencode_utility_prompt(
-            &provider_run,
-            &prompt.visible_user_prompt,
-            &prompt.hidden_system_context,
-            AGENT_UTILITY_TIMEOUT,
-        ),
-        adapter_key => Err(DaemonError::LocalTransport {
             operation,
-            message: format!(
-                "agent utility prompts are not supported for provider adapter `{adapter_key}`"
-            ),
-        }),
+        )
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
