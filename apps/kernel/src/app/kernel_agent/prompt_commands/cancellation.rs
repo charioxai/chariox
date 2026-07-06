@@ -118,7 +118,7 @@ impl<'a> KernelAgentService<'a> {
         };
         self.app
             .record_notice(session_id, Some(&provider_run_id), recipients, message);
-        if uses_structured_prompt_io && provider_run.adapter_key() == "claude" {
+        if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(&provider_run) {
             return self.finalize_active_prompt_cancellation(
                 session_id,
                 agent_id,

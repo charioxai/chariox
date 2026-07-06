@@ -287,7 +287,7 @@ impl KernelRuntimeOwnedState {
                 provider_run.id()
             ),
         );
-        if provider_run.adapter_key() == "claude" {
+        if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(&provider_run) {
             let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 target_agent_id,

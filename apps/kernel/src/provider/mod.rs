@@ -108,6 +108,12 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
         || run.adapter_key() == "opencode"
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
 }
+
+pub(crate) fn provider_run_finalizes_cancellation_on_abort_dispatch(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
@@ -116,8 +122,9 @@ pub(crate) use workspace_write_fence::{
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_run_is_claude_headless, provider_run_uses_claude_native_bridge, AgentEndpointMode,
-        LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+        provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
+        provider_run_uses_claude_native_bridge, AgentEndpointMode, LaunchProviderRequest,
+        ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
 
     #[test]
@@ -131,9 +138,43 @@ mod tests {
         assert!(!provider_run_uses_claude_native_bridge(&regular));
     }
 
+    #[test]
+    fn structured_claude_cancellation_settlement_is_provider_policy() {
+        let structured = provider_run("claude", "claude");
+        let headless = provider_run("claude", "claude-headless");
+        let native_tui = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+
+        assert!(provider_run_finalizes_cancellation_on_abort_dispatch(
+            &structured
+        ));
+        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
+            &headless
+        ));
+        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
+            &native_tui
+        ));
+        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
+            &codex
+        ));
+    }
+
     fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
+        provider_run_with_client_interface(adapter_key, provider, ProviderClientInterface::Arroba)
+    }
+
+    fn provider_run_with_client_interface(
+        adapter_key: &str,
+        provider: &str,
+        client_interface: ProviderClientInterface,
+    ) -> RuntimeProviderRun {
         let request =
-            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model");
+            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model")
+                .with_client_interface(client_interface);
         RuntimeProviderRun::new(
             format!("provider-run-{adapter_key}-{provider}"),
             &request,

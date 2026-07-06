@@ -400,7 +400,8 @@ impl DaemonApp {
             return Err(error);
         }
         if let Ok(provider_run) = self.providers.get_run(&provider_run_id) {
-            if provider_run.adapter_key() == "claude" {
+            if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(&provider_run)
+            {
                 if let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) {
                     let _ = self.finalize_active_prompt_cancellation(
                         &session_id,

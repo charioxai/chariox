@@ -103,7 +103,9 @@ impl KernelRuntimeOwnedState {
                 );
             } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
             {
-                if provider_run.adapter_key() == "claude" {
+                if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(
+                    &provider_run,
+                ) {
                     if let Some(agent_id) = provider_run.agent_instance_id() {
                         let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
                             &finished.session_id,
