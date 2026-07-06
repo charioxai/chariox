@@ -94,10 +94,6 @@ export function sessionProjectedPromptActivityEntriesForSessionAgents(
   return entries
 }
 
-export function agentPromptStateHasWork(state: SessionAgentPromptStateLike | null | undefined): boolean {
-  return Boolean(state?.active_prompt) || Boolean(state?.queued_prompts?.length)
-}
-
 export function sessionProjectedPromptActivityForAgent(
   session: RuntimeSession,
   agentId: string,
