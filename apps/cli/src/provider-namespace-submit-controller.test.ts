@@ -45,7 +45,7 @@ test("provider namespace submit forwards commands and applies submission state",
     targetAgentId: "agent-1",
     prompt: "/session list\n",
   }])
-  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: "agent-1" }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: "agent-submitted" }])
   assert.equal(harness.appliedSessions().at(-1)?.id, "session-submitted")
   assert.deepEqual(harness.streamingAgentIds(), ["agent-submitted"])
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "/opencode session list" }])
@@ -85,6 +85,7 @@ test("provider namespace submit projects queued runtime state from active sessio
 
   assert.equal(await harness.controller.submit("/opencode session list"), true)
 
+  assert.deepEqual(harness.appendedPrompts(), [])
   assert.deepEqual(harness.streamingAgentIds(), ["agent-active"])
   assert.equal(harness.workingValues().at(-1), true)
 })
@@ -102,7 +103,7 @@ test("provider namespace submit drops stale focused agent ids", async () => {
     targetAgentId: null,
     prompt: "/session list\n",
   }])
-  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: null }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: "agent-submitted" }])
 })
 
 test("provider namespace submit restores UI after submission failure", async () => {
@@ -115,6 +116,7 @@ test("provider namespace submit restores UI after submission failure", async () 
   assert.equal(await harness.controller.submit("/opencode session list"), true)
 
   assert.equal(harness.logErrors().at(-1)?.message, "provider namespace command failed")
+  assert.deepEqual(harness.appendedPrompts(), [])
   assert.equal(harness.restoredSnapshots().at(-1)?.rawPrompt, "/opencode session list")
   assert.deepEqual(harness.clearedBusyAgents(), ["agent-busy"])
   assert.deepEqual(harness.submittingAgentIds(), [null])

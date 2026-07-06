@@ -105,7 +105,6 @@ export function createProviderNamespaceSubmitController(
           return true
         }
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
-        deps.appendUserPrompt(deps.renderPromptTranscript(command.raw), targetAgentId)
         const submission = await deps.submitProviderNamespacePrompt(
           attachment.id,
           targetAgentId,
@@ -118,6 +117,9 @@ export function createProviderNamespaceSubmitController(
           outcomeName: submission.outcomeName,
           submittedTargetAgentId,
         })
+        if (transition.shouldAppendUserPrompt) {
+          deps.appendUserPrompt(deps.renderPromptTranscript(command.raw), submittedTargetAgentId)
+        }
         deps.setStreamingAgentId(transition.streamingAgentId)
         deps.setWorking(transition.working)
         deps.updateSessionChrome()
