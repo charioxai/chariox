@@ -1093,6 +1093,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
         active_prompt_changed && latest_active_prompt.is_none();
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
+    let state_signal_observed_at_ms = last_cursor.last_observed_at_ms;
     if outcome.external_active_prompt_settled && !active_prompt_sync.latest_observation_settles {
         persist_observed_external_settlement_history_signal(
             app,
@@ -1117,6 +1118,8 @@ fn append_observed_external_turns_for_attached_target_with_options(
             &read.target,
             provider_run_id.as_deref(),
             state_signal_merge_key.as_deref(),
+            visible_provider_turn_id.as_deref(),
+            state_signal_observed_at_ms,
             if latest_active_prompt.is_some() {
                 EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON
             } else {
@@ -1301,6 +1304,8 @@ fn emit_observed_external_state_signal(
     target: &AttachedExternalObserverTarget,
     provider_run_id: Option<&str>,
     latest_merge_key: Option<&str>,
+    provider_turn_id: Option<&str>,
+    observed_at_ms: Option<u64>,
     reason: &str,
 ) {
     let Ok(agent) = app.agents().get_agent(&target.agent_id) else {
@@ -1324,8 +1329,8 @@ fn emit_observed_external_state_signal(
         &target.provider_session_id,
         reason,
         latest_merge_key,
-        reason.to_string(),
-        None,
+        provider_turn_id.unwrap_or(reason).to_string(),
+        observed_at_ms,
     );
     let Some(external_observation_metadata) =
         crate::terminal::TerminalOutputExternalObservationMetadata::from_session_history_entry(
@@ -4922,8 +4927,9 @@ mod tests {
         );
         assert_eq!(
             state_metadata.external_provider_turn_id.as_deref(),
-            Some("active_prompt_settled")
+            Some("user-1")
         );
+        assert_eq!(state_metadata.observed_at_ms, Some(84));
         assert_eq!(
             state_metadata
                 .external_observation
