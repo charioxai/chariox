@@ -99,6 +99,15 @@ pub(crate) fn provider_id_for_launch(provider: &str) -> &str {
     }
 }
 
+pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        "claude" | "claude-headless" | "claude-p" => Some("claude"),
+        _ => None,
+    }
+}
+
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
 }
@@ -209,7 +218,7 @@ pub(crate) use workspace_write_fence::{
 #[cfg(test)]
 mod tests {
     use super::{
-        adapter_key_for_provider, provider_adapter_supports_policy_reload,
+        adapter_key_for_provider, canonical_provider_family, provider_adapter_supports_policy_reload,
         provider_batch_launch_concurrency_limit, provider_id_for_launch,
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
         provider_run_refreshes_selection_on_read, provider_run_supports_policy_reload,
@@ -239,6 +248,15 @@ mod tests {
         assert_eq!(provider_id_for_launch("claude-headless"), "claude-headless");
         assert_eq!(adapter_key_for_provider("codex"), "codex");
         assert_eq!(provider_id_for_launch("codex"), "codex");
+    }
+
+    #[test]
+    fn canonical_provider_family_normalizes_provider_modes() {
+        assert_eq!(canonical_provider_family(" CODEX "), Some("codex"));
+        assert_eq!(canonical_provider_family("opencode"), Some("opencode"));
+        assert_eq!(canonical_provider_family("claude-headless"), Some("claude"));
+        assert_eq!(canonical_provider_family("claude-p"), Some("claude"));
+        assert_eq!(canonical_provider_family("unknown"), None);
     }
 
     #[test]

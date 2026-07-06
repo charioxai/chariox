@@ -76,16 +76,11 @@ fn normalize_providers(providers: &[String]) -> Result<Vec<String>, DaemonError>
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for provider in requested {
-        let normalized = match provider.trim().to_ascii_lowercase().as_str() {
-            "codex" => "codex",
-            "opencode" => "opencode",
-            "claude" | "claude-headless" | "claude-p" => "claude",
-            _ => {
-                return Err(DaemonError::InvalidConfig {
-                    field: "provider",
-                    message: "providers must be Codex, OpenCode, or Claude",
-                });
-            }
+        let Some(normalized) = crate::provider::canonical_provider_family(&provider) else {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider",
+                message: "providers must be Codex, OpenCode, or Claude",
+            });
         };
         if seen.insert(normalized.to_string()) {
             out.push(normalized.to_string());
