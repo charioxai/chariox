@@ -3,7 +3,7 @@ import {
   sessionActivePromptIdForAgent,
 } from "./session-prompt-identity.js"
 import {
-  sessionHasPromptWork,
+  sessionHasTurnWork,
   sessionProjectedStreamingAgentId,
   sessionQueuedPromptCount,
 } from "./session-prompt-work.js"
@@ -124,12 +124,12 @@ export function promptSubmissionRuntimeState(options: {
   if (options.outcomeName === "Queued") {
     return {
       streamingAgentId: projectedStreamingAgentId,
-      working: sessionHasPromptWork(options.session),
+      working: sessionHasTurnWork(options.session),
     }
   }
   return {
     streamingAgentId: projectedStreamingAgentId ?? options.submittedTargetAgentId ?? null,
-    working: sessionHasPromptWork(options.session) || options.submittedTargetAgentId != null,
+    working: sessionHasTurnWork(options.session) || options.submittedTargetAgentId != null,
   }
 }
 
@@ -166,7 +166,7 @@ export function promptSubmissionFailureRuntimeState(session: RuntimeSession): {
 } {
   return {
     streamingAgentId: sessionProjectedStreamingAgentId(session),
-    working: sessionHasPromptWork(session),
+    working: sessionHasTurnWork(session),
   }
 }
 

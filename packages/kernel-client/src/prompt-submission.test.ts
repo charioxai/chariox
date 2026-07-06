@@ -240,7 +240,7 @@ test("promptSubmissionSuccessTransition projects started prompt metadata", () =>
   })
 })
 
-test("promptSubmissionRuntimeState does not invent streaming state for queued-only snapshots", () => {
+test("promptSubmissionRuntimeState does not invent active working state for queued-only snapshots", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-queued" })],
     queued_prompts: [{
@@ -258,7 +258,7 @@ test("promptSubmissionRuntimeState does not invent streaming state for queued-on
     submittedTargetAgentId: "agent-queued",
   }), {
     streamingAgentId: null,
-    working: true,
+    working: false,
   })
 })
 

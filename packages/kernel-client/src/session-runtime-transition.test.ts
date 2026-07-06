@@ -12,7 +12,7 @@ import {
   sessionRuntimeTransitionState,
   sessionSnapshotRefreshTransition,
   sessionShouldConfirmIdleTurnCompletion,
-  sessionWorkingStateAfterPromptWork,
+  sessionWorkingStateAfterTurnWork,
   turnCompletionDelayMs,
   turnCompletionProviderActivityTransition,
 } from "./session-runtime-transition.js"
@@ -267,7 +267,7 @@ test("session streaming resolution can ignore legacy processing for projected se
   assert.equal(resolveSessionStreamingAgentId(agents, null, false, true, "agent-b", false), null)
 })
 
-test("session working and busy latches stay latched until completion is confirmed", () => {
+test("session working and busy latches stay latched until turn completion is confirmed", () => {
   const empty: Record<string, boolean> = {}
   const busy = nextAgentBusyLatches(empty, "agent-1", true)
   const idleSession = makeSession({
@@ -289,16 +289,30 @@ test("session working and busy latches stay latched until completion is confirme
       },
     },
   })
+  const queuedOnlySession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "next",
+      status: "Queued",
+    }],
+  })
 
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: true,
     nextSession: idleSession,
   }), true)
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: false,
     nextSession: activeSession,
   }), true)
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
+    currentWorking: false,
+    nextSession: queuedOnlySession,
+  }), false)
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: false,
     nextSession: idleSession,
   }), false)

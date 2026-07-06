@@ -37,7 +37,7 @@ import {
   sessionFocusedAgentId,
   sessionRuntimeTransitionState,
   sessionShouldConfirmIdleTurnCompletion,
-  sessionWorkingStateAfterPromptWork,
+  sessionWorkingStateAfterTurnWork,
   shouldPreserveAgentActivityLabel,
   turnCompletionDelayMs,
 } from "./session-runtime-transition.js"
@@ -1088,7 +1088,7 @@ test("sessionRuntimeTransitionState clears stale streaming when projected activi
   })
 })
 
-test("sessionRuntimeTransitionState does not stream queued-only projected activity", () => {
+test("sessionRuntimeTransitionState does not preserve active runtime state for queued-only activity", () => {
   const currentSession = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
   })
@@ -1116,11 +1116,11 @@ test("sessionRuntimeTransitionState does not stream queued-only projected activi
     nextFocusedAgentId: "agent-1",
     nextHasPromptWork: true,
     nextStreamingAgentId: null,
-    nextFocusedActivityLabel: "thinking",
+    nextFocusedActivityLabel: null,
     nextAgentActivityLabels: {
-      "agent-1": "thinking",
+      "agent-1": null,
     },
-    nextWorking: true,
+    nextWorking: false,
     activePromptChanged: false,
     cancelledPromptSettled: false,
     settledAgentIds: [],
@@ -1200,7 +1200,7 @@ test("sessionRuntimeTransitionState treats empty prompt states as authoritative 
   })
 })
 
-test("sessionWorkingStateAfterPromptWork keeps working latched until completion is confirmed", () => {
+test("sessionWorkingStateAfterTurnWork keeps working latched until turn completion is confirmed", () => {
   const idleSession = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
   })
@@ -1219,20 +1219,39 @@ test("sessionWorkingStateAfterPromptWork keeps working latched until completion 
       },
     },
   })
+  const queuedOnlySession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "queued",
+        }],
+      },
+    },
+  })
 
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: true,
     nextSession: idleSession,
   }), true)
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: true,
     nextSession: activeSession,
   }), true)
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: false,
     nextSession: activeSession,
   }), true)
-  assert.equal(sessionWorkingStateAfterPromptWork({
+  assert.equal(sessionWorkingStateAfterTurnWork({
+    currentWorking: false,
+    nextSession: queuedOnlySession,
+  }), false)
+  assert.equal(sessionWorkingStateAfterTurnWork({
     currentWorking: false,
     nextSession: idleSession,
   }), false)

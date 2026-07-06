@@ -40,7 +40,7 @@ import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
 import {
-  sessionHasPromptWork,
+  sessionHasTurnWork,
   sessionProjectedStreamingAgentId,
 } from "@arroba/kernel-client/session-prompt-work"
 import {
@@ -174,7 +174,7 @@ export function createCliAppState(options: {
   const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [historyLoadingMessage, setHistoryLoadingMessage] = createSignal<string | null>(null)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
-  const [working, setWorking] = createSignal(sessionHasPromptWork(initialSession))
+  const [working, setWorking] = createSignal(sessionHasTurnWork(initialSession))
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
   const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
   const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>(initialPromptHistory)

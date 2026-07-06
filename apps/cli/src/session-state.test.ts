@@ -71,7 +71,7 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
   assert.deepEqual(detached.agentActivityLabels, {})
 })
 
-test("deriveAttachedCliTransitionState resets transient UI state and keeps prompt work", () => {
+test("deriveAttachedCliTransitionState resets transient UI state and keeps active turn work", () => {
   const attached = deriveAttachedCliTransitionState({
     session: session({
       active_prompt: {
@@ -95,6 +95,26 @@ test("deriveAttachedCliTransitionState resets transient UI state and keeps promp
   assert.equal(attached.streamingAgentId, "agent-a")
   assert.equal(attached.working, true)
   assert.equal(attached.statusLine, "")
+})
+
+test("deriveAttachedCliTransitionState keeps queued-only sessions out of active working state", () => {
+  const attached = deriveAttachedCliTransitionState({
+    session: session({
+      queued_prompts: [{
+        id: "queued-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "next",
+        status: "queued",
+      }],
+      agents: [agent("agent-a")],
+    }),
+    createdSession: false,
+    connectedStatus: "",
+  })
+
+  assert.equal(attached.streamingAgentId, null)
+  assert.equal(attached.working, false)
 })
 
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
