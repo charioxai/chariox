@@ -5,8 +5,8 @@ use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
 use crate::provider::{
-    canonical_external_provider_session_id, ExternalProviderImportMetadata,
-    ExternalProviderObservedCursor, ProviderResumeState,
+    canonical_external_provider_session_id, external_provider_session_providers,
+    ExternalProviderImportMetadata, ExternalProviderObservedCursor, ProviderResumeState,
 };
 use crate::session::unix_epoch_ms;
 
@@ -150,12 +150,21 @@ impl ExternalProviderSessionIndexStore {
         provider: &str,
         sessions: Vec<ExternalProviderSessionRecord>,
     ) {
+        let Some(provider) = normalize_external_provider_filter(provider) else {
+            return;
+        };
         let mut index = self
             .inner
             .write()
             .expect("external provider session index poisoned");
         let mut replacement = BTreeMap::new();
         for mut session in sessions {
+            if normalize_external_provider_filter(&session.provider).as_deref()
+                != Some(provider.as_str())
+            {
+                continue;
+            }
+            session.provider = provider.clone();
             if let Some(attachment) = index.attached.get(&session.external_session_id) {
                 apply_attachment_marker(&mut session, attachment);
             }
@@ -359,6 +368,7 @@ impl ExternalProviderSessionIndexStore {
                 request
                     .provider
                     .as_deref()
+                    .and_then(normalize_external_provider_filter)
                     .map_or(true, |provider| session.provider == provider)
             })
             .cloned()
@@ -413,6 +423,13 @@ fn format_external_provider_session_cursor(offset: usize) -> String {
     format!("offset:{offset}")
 }
 
+fn normalize_external_provider_filter(provider: &str) -> Option<String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    external_provider_session_providers()
+        .contains(&provider.as_str())
+        .then_some(provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,11 +467,49 @@ mod tests {
         assert!(!second.has_more);
 
         let codex = store.list(&ListExternalProviderSessionsRequest {
-            provider: Some("codex".to_string()),
+            provider: Some(" Codex ".to_string()),
             cursor: None,
             limit: None,
         });
         assert_eq!(codex.sessions.len(), 2);
+    }
+
+    #[test]
+    fn replace_provider_sessions_normalizes_provider_key() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-stale", 20));
+
+        store.replace_provider_sessions(" CODEX ", vec![record("codex", "thread-fresh", 40)]);
+
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        });
+        assert_eq!(
+            page.sessions
+                .iter()
+                .map(|session| session.external_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex:thread-fresh"]
+        );
+        assert!(store.get("codex:thread-stale").is_none());
+    }
+
+    #[test]
+    fn replace_provider_sessions_ignores_unknown_provider_key() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 20));
+
+        store.replace_provider_sessions("unknown", vec![record("codex", "thread-2", 40)]);
+
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        });
+        assert_eq!(page.sessions.len(), 1);
+        assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
     }
 
     #[test]
