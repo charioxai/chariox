@@ -23,6 +23,8 @@ One line per landed task; keep this file short. Format: `date task — outcome (
 - 2026-07-06 C3 (drift) `session_id` added to Rust relay claims + cross-impl conformance test verifying a TS-issued JWT (`b463db17d` arroba, `02259302` arroba-cloud). Both repos verify one shared fixture; wire-shape drift fails a conformance test.
 - 2026-07-06 F1 repo hygiene — untracked scratch strays, gitignored worktree/drill dirs (`ffd345c0b`, `98e85cdb9` arroba).
 - 2026-07-06 F2 README slimmed; milestone prose moved to `docs/STATUS.md` (`98e85cdb9` arroba).
+- 2026-07-06 D1 root Cargo workspace (kernel + relay + adapters, one lockfile); CI fmt/clippy/test now cover all crates (`f4509b45f` arroba). **Phase 3 complete.**
+- 2026-07-06 E3 (underway) `apps/api/src` restructure — billing/ (`d54e7192`), device-login/ + pairing/ (`3c00e481`), account/ (`985fef0c`, arroba-cloud). 29 files moved via a repeatable move+import-rewrite; all green.
 
 ## In progress / notes for the next agent
 
@@ -32,7 +34,7 @@ One line per landed task; keep this file short. Format: `date task — outcome (
 - Phase 2 remaining:
   - **C2 sync feed** — enforcement primitive is in (`RelayRevocationRegistry`, wire via `ScopedTokenVerifier::with_revocations`). Remaining: cloud exposes revocations (`account-admin-revocations`) and the relay periodically pulls + calls `revoke_token_id`/`revoke_account`/`prune`. Needs a relay HTTP client + cloud endpoint; verify live.
   - **C3 format consolidation** — relay still accepts both `arroba-scoped-v1` and JWT with duplicated parsing; consolidate on JWT behind a deprecation window (keep accepting the old format one release with a warning metric, then delete `decode_scoped_token_parts`/`encode_scoped_hmac_token`). `session_id`, future-iat/skew, and the shared conformance fixture are done.
-- Phase 3/4/5 remaining: **D1** root Cargo workspace (defer while a parallel agent is editing `apps/kernel/Cargo.lock` — structural conflict risk); **E1–E4** monster-file splits (sliced, some in parallel-agent territory); **F3** projection clone reduction (measure with B1 `app_lock` first).
+- Phase 4/5 remaining: **E3** continue the `apps/api/src` regroup for the remaining families (`browser-*`, `cloud-api-*-facade`, `*-repository`/`*-service` singletons) — reuse the move+rewrite recipe (a scratch script `regroup.py` was used: git mv `prefix-*.ts`→`prefix/*.ts`, rewrite moved files' `./x`→`../x` keeping intra-family siblings colocated, rewrite importers' `./prefix-x.js`→`./prefix/x.js`, then `pnpm --filter @arroba-cloud/api build && test`); optionally extend `architecture-boundaries.test.ts` to lock the layout. **E1** (`terminal-browser-app.ts`), **E2** (kernel `workflow_code.rs` etc. — see `WORKFLOW_CODE_OVERARCHING_PLAN.html`), **E4** (styles→CSS) are in files a parallel agent edits; slice opportunistically. **F3** projection clone reduction — measure with B1 `app_lock` on a running daemon first.
 - Already-done-in-tree: B5 blocking HTTP wrapped in `spawn_blocking` at `runtime/state/tool_dispatch/credential.rs:287`; history reads use `spawn_blocking`.
 - Use daemon health `app_lock` (B1) to measure before/after for any B3/B4/F3 change.
 - Known pre-existing failures on `main` (NOT caused by this work, verified via clean-tree stash): `lib_tests::provider_sessions::prompt_submission_queues_and_notifies_other_attachments` and `local::api::tests::workflow_definition_control::local_request_api_runs_workflow_code_with_generated_agent`. Worth a separate fix; they will block a fully-green `cargo test`.
