@@ -9,7 +9,9 @@ import {
   sessionAllowsLegacyAgentProcessingState,
   sessionAgentIsBusy,
   sessionHasPromptWork,
+  sessionHasTurnWork,
   sessionPromptWorkJustCompleted,
+  sessionTurnWorkJustCompleted,
   sessionProjectedStreamingAgentId,
 } from "./session-prompt-work.js"
 import {
@@ -386,7 +388,7 @@ export function deriveAllAgentsBusyState(options: {
 }
 
 export function sessionShouldConfirmIdleTurnCompletion(options: SessionIdleTurnCompletionInput): boolean {
-  if (sessionHasPromptWork(options.nextSession)) {
+  if (sessionHasTurnWork(options.nextSession)) {
     return false
   }
   return options.currentWorking
@@ -412,7 +414,7 @@ export function sessionAuthoritativeIdleTransitionState(
 
 export function turnCompletionDelayMs(options: TurnCompletionDelayInput): number | null {
   if (
-    sessionHasPromptWork(options.session)
+    sessionHasTurnWork(options.session)
     || options.pendingTerminalRecordCount > 0
     || options.pendingTerminalRecordFlush
   ) {
@@ -432,7 +434,10 @@ export function providerActivityRuntimeTransition(active: boolean): ProviderActi
 export function sessionSnapshotRefreshTransition(
   options: SessionSnapshotRefreshTransitionInput,
 ): SessionSnapshotRefreshTransition {
-  const promptJustCompleted = sessionPromptWorkJustCompleted(
+  const promptJustCompleted = sessionTurnWorkJustCompleted(
+    options.previousSession,
+    options.nextSession,
+  ) || sessionPromptWorkJustCompleted(
     options.previousSession,
     options.nextSession,
   )

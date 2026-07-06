@@ -306,7 +306,7 @@ test("session working and busy latches stay latched until completion is confirme
   assert.deepEqual(nextAgentBusyLatches(busy, "agent-1", false), {})
 })
 
-test("session idle turn completion waits only for idle snapshots", () => {
+test("session idle turn completion waits only for active turn snapshots", () => {
   const idleSession = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Focused" })],
   })
@@ -320,9 +320,33 @@ test("session idle turn completion waits only for idle snapshots", () => {
     },
     agents: [makeAgent({ id: "agent-1", state: "Focused" })],
   })
+  const queuedOnlySession = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Focused" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "next",
+          status: "Queued",
+        }],
+      },
+    },
+  })
 
   assert.equal(sessionShouldConfirmIdleTurnCompletion({
     nextSession: idleSession,
+    currentWorking: true,
+    currentSubmitting: false,
+    currentBusyLatches: {},
+    currentStreamingAgentId: "agent-1",
+    currentProviderActivityLabel: "thinking",
+    currentActiveStatusLabel: "thinking",
+  }), true)
+  assert.equal(sessionShouldConfirmIdleTurnCompletion({
+    nextSession: queuedOnlySession,
     currentWorking: true,
     currentSubmitting: false,
     currentBusyLatches: {},
@@ -382,7 +406,7 @@ test("session authoritative idle transition clears only truly idle snapshots", (
   })
 })
 
-test("turn completion delay waits for prompt work and record flushes", () => {
+test("turn completion delay waits for active turn work and record flushes", () => {
   const activeSession = makeSession({
     active_prompt: {
       id: "prompt-1",
@@ -395,6 +419,16 @@ test("turn completion delay waits for prompt work and record flushes", () => {
   })
   const idleSession = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
+  })
+  const queuedOnlySession = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "next",
+      status: "Queued",
+    }],
   })
 
   assert.equal(turnCompletionDelayMs({
@@ -413,6 +447,14 @@ test("turn completion delay waits for prompt work and record flushes", () => {
     now: 1_000,
     quietWindowMs: 1_500,
   }), null)
+  assert.equal(turnCompletionDelayMs({
+    session: queuedOnlySession,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), 1_400)
   assert.equal(turnCompletionDelayMs({
     session: idleSession,
     pendingTerminalRecordCount: 0,
@@ -447,10 +489,29 @@ test("session snapshot refresh transition refreshes panes for prompt settlement,
     },
   })
   const idleSession = makeSession()
+  const queuedOnlySession = makeSession({
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "next",
+      status: "Queued",
+    }],
+  })
 
   assert.deepEqual(sessionSnapshotRefreshTransition({
     previousSession: activeSession,
     nextSession: idleSession,
+    sessionChangeRequiresPaneRefresh: false,
+  }), {
+    promptJustCompleted: true,
+    reasonRequiresPaneRefresh: false,
+    shouldRefreshAgentPanes: true,
+    shouldRefreshWorkspaceLiveSyncStatus: true,
+  })
+  assert.deepEqual(sessionSnapshotRefreshTransition({
+    previousSession: activeSession,
+    nextSession: queuedOnlySession,
     sessionChangeRequiresPaneRefresh: false,
   }), {
     promptJustCompleted: true,

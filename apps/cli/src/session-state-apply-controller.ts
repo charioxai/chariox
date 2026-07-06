@@ -11,6 +11,9 @@ import {
   DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE,
   sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
+import {
+  sessionHasTurnWork,
+} from "@arroba/kernel-client/session-prompt-work"
 
 export type SessionStateApplyTurnCompletion = {
   reset(): void
@@ -85,7 +88,7 @@ export function createSessionStateApplyController(
     deps.setResponseLayout(nextLayout)
     deps.setWorking(transition.nextWorking)
 
-    if (transition.nextHasPromptWork) {
+    if (sessionHasTurnWork(nextSession)) {
       deps.turnCompletion.reset()
     } else if (deps.turnCompletion.isConfirmed() || transition.shouldConfirmIdleTurnCompletion) {
       deps.turnCompletion.confirmAndSchedule()

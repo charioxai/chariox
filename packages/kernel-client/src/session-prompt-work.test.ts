@@ -7,6 +7,7 @@ import {
   sessionAgentBusyForProviderRunRecovery,
   sessionAgentIsBusy,
   sessionHasAgentRuntimeProjection,
+  sessionHasTurnWork,
   sessionPromptWorkJustCompleted,
   sessionProjectedStreamingAgentId,
   sessionQueuedPromptCount,
@@ -413,5 +414,29 @@ test("session agent turn work excludes queued-only prompt work", () => {
 
   assert.equal(sessionAgentIsBusy(queuedOnly, "agent-1"), true)
   assert.equal(sessionAgentHasTurnWork(queuedOnly, "agent-1"), false)
+  assert.equal(sessionHasTurnWork(queuedOnly), false)
   assert.equal(sessionAgentHasTurnWork(externalTurn, "agent-1"), true)
+  assert.equal(sessionHasTurnWork(externalTurn), true)
+})
+
+test("session turn work includes legacy processing without counting queues", () => {
+  const legacyProcessing = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
+  })
+  const legacyQueuedOnly = makeSession({
+    agents: [makeAgent({ id: "agent-1", state: "Idle", is_processing: false })],
+    queued_prompts: [{
+      id: "queued-1",
+      source_attachment_id: "attach-1",
+      target_agent_id: "agent-1",
+      prompt: "queued",
+      status: "Queued",
+    }],
+  })
+
+  assert.equal(sessionAgentHasTurnWork(legacyProcessing, "agent-1"), true)
+  assert.equal(sessionHasTurnWork(legacyProcessing), true)
+  assert.equal(sessionAgentIsBusy(legacyQueuedOnly, "agent-1"), true)
+  assert.equal(sessionAgentHasTurnWork(legacyQueuedOnly, "agent-1"), false)
+  assert.equal(sessionHasTurnWork(legacyQueuedOnly), false)
 })

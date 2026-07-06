@@ -1128,7 +1128,7 @@ test("sessionRuntimeTransitionState does not stream queued-only projected activi
     shouldClearCancelledPromptRuntimeResidue: false,
     shouldConfirmTurnCompletionAfterCancelledPromptSettlement: false,
     nextStreamingAgentIdAfterCancelledPromptSettlement: null,
-    shouldConfirmIdleTurnCompletion: false,
+    shouldConfirmIdleTurnCompletion: true,
     previousAgentSignature: "agent-1",
     nextAgentSignature: "agent-1",
   })

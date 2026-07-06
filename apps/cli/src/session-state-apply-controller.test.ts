@@ -175,6 +175,55 @@ test("session state apply controller clears agent busy when external prompt disa
   ])
 })
 
+test("session state apply controller schedules turn completion when only queued prompts remain", () => {
+  const current = session({
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+  const queuedOnly = session({
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [prompt("queued-1", "agent-a", "Queued")],
+      },
+    },
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+  })
+  const harness = createHarness({
+    session: current,
+    working: true,
+    streamingAgentId: "agent-a",
+    agentActivityLabels: { "agent-a": "thinking" },
+  })
+
+  harness.controller.apply(queuedOnly)
+
+  assert.equal(harness.state.working, true)
+  assert.deepEqual(harness.calls.filter((call) => call === "turnCompletion.reset"), [])
+  assert.deepEqual(harness.calls.filter((call) => call === "confirmAndSchedule"), [
+    "confirmAndSchedule",
+  ])
+})
+
 function createHarness(options: {
   session: RuntimeSession
   layout?: "individual" | "split"

@@ -144,6 +144,7 @@ export function sessionAgentHasTurnWork(
     return Boolean(promptState?.active_prompt)
   }
   return legacyTopLevelSessionHasActivePrompt(session, agentId)
+    || session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
 }
 
 export function sessionAgentBusyForProviderRunRecovery(
@@ -166,6 +167,17 @@ export function sessionPromptWorkJustCompleted(
   nextSession: RuntimeSession,
 ): boolean {
   return sessionHasPromptWork(previousSession) && !sessionHasPromptWork(nextSession)
+}
+
+export function sessionHasTurnWork(session: RuntimeSession): boolean {
+  return session.agents.some((agent) => sessionAgentHasTurnWork(session, agent.id))
+}
+
+export function sessionTurnWorkJustCompleted(
+  previousSession: RuntimeSession,
+  nextSession: RuntimeSession,
+): boolean {
+  return sessionHasTurnWork(previousSession) && !sessionHasTurnWork(nextSession)
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
