@@ -3967,6 +3967,19 @@ mod tests {
             },
             "externally observed Codex token telemetry should update kernel provider-run usage"
         );
+        assert_eq!(
+            app.provider_run_projection_store()
+                .get(run.id())
+                .expect("projected provider run should load")
+                .usage(),
+            crate::provider::ProviderRunTokenUsage {
+                total_tokens: Some(42),
+                last_tokens: Some(42),
+                context_tokens: None,
+                context_window: None,
+            },
+            "externally observed Codex token telemetry should update client-visible provider-run projection"
+        );
     }
 
     #[test]
