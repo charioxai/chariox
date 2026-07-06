@@ -337,6 +337,24 @@ test("applyTranscriptDisplayState keeps every incomplete history turn expanded",
   )
 })
 
+test("applyTranscriptDisplayState treats completed history metadata as authoritative over stale incomplete fragments", () => {
+  const sourceEntries: TranscriptDisplayEntry[] = [
+    { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null },
+    { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null },
+    { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000 },
+  ]
+  const entries = applyTranscriptDisplayState(sourceEntries, [1])
+
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "External prompt"],
+      ["turn_toggle", "click to expand"],
+      ["assistant", "Completed assistant summary"],
+    ],
+  )
+})
+
 test("collapseLatestTranscriptTurn marks only completed non-trivial turns", () => {
   assert.deepEqual(collapseLatestTranscriptTurn(baseTurnEntries()), [1])
   assert.deepEqual(
@@ -396,6 +414,17 @@ test("collapseLatestTranscriptTurn skips latest active history turn when earlier
       { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null },
     ]),
     [],
+  )
+})
+
+test("collapseLatestTranscriptTurn collapses completed history turns with stale incomplete fragments", () => {
+  assert.deepEqual(
+    collapseLatestTranscriptTurn([
+      { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null },
+      { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null },
+      { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000 },
+    ]),
+    [1],
   )
 })
 

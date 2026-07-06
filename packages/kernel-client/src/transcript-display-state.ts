@@ -396,10 +396,25 @@ export function projectTranscriptBlobToggleDisplayState<TEntry extends Transcrip
 function inferredActiveHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {
-  return new Set(entries
-    .filter((entry) => entry.historyTurnCompletedAtMs === null)
-    .map((entry) => entry.turnId)
-    .filter((turnId): turnId is number => typeof turnId === "number"))
+  const lifecycleByTurnId = new Map<number, { completed: boolean; incomplete: boolean }>()
+  for (const entry of entries) {
+    if (typeof entry.turnId !== "number") {
+      continue
+    }
+    if (entry.historyTurnCompletedAtMs !== null && typeof entry.historyTurnCompletedAtMs !== "number") {
+      continue
+    }
+    const lifecycle = lifecycleByTurnId.get(entry.turnId) ?? { completed: false, incomplete: false }
+    if (typeof entry.historyTurnCompletedAtMs === "number") {
+      lifecycle.completed = true
+    } else {
+      lifecycle.incomplete = true
+    }
+    lifecycleByTurnId.set(entry.turnId, lifecycle)
+  }
+  return new Set([...lifecycleByTurnId.entries()]
+    .filter(([, lifecycle]) => lifecycle.incomplete && !lifecycle.completed)
+    .map(([turnId]) => turnId))
 }
 
 export function setTranscriptTurnExpanded<TEntry extends TranscriptDisplayEntry>(
