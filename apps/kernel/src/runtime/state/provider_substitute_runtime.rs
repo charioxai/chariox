@@ -34,11 +34,8 @@ impl KernelRuntimeState {
                     });
                 }
             }
-            let adapter_key = match profile.provider.as_str() {
-                "default" => "opencode",
-                value => value,
-            };
-            let provider = adapter_key;
+            let provider = crate::provider::provider_id_for_launch(&profile.provider);
+            let adapter_key = crate::provider::adapter_key_for_provider(provider);
             let config = owned.config_projection.snapshot();
             let mut launch_request = crate::provider::LaunchProviderRequest::new(
                 session_id,

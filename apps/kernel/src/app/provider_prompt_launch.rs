@@ -35,10 +35,7 @@ impl DaemonApp {
                 ),
             });
         }
-        let provider = match agent.provider() {
-            "default" => "opencode",
-            value => value,
-        };
+        let provider = crate::provider::provider_id_for_launch(agent.provider());
         let adapter_key = crate::provider::adapter_key_for_provider(provider);
         let session = self.sessions.get_session(session_id)?;
         let effective_config =

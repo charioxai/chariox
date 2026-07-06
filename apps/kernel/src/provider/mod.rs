@@ -92,6 +92,13 @@ pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
     }
 }
 
+pub(crate) fn provider_id_for_launch(provider: &str) -> &str {
+    match provider {
+        "default" => "opencode",
+        value => value,
+    }
+}
+
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
 }
@@ -186,7 +193,8 @@ pub(crate) use workspace_write_fence::{
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_adapter_supports_policy_reload,
+        adapter_key_for_provider, provider_adapter_supports_policy_reload,
+        provider_id_for_launch,
         provider_run_finalizes_cancellation_on_abort_dispatch, provider_run_is_claude_headless,
         provider_run_refreshes_selection_on_read, provider_run_supports_policy_reload,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_selection_sync,
@@ -205,6 +213,16 @@ mod tests {
         assert!(provider_run_uses_claude_native_bridge(&headless));
         assert!(!provider_run_is_claude_headless(&regular));
         assert!(!provider_run_uses_claude_native_bridge(&regular));
+    }
+
+    #[test]
+    fn provider_launch_identity_normalization_is_provider_policy() {
+        assert_eq!(adapter_key_for_provider("default"), "opencode");
+        assert_eq!(provider_id_for_launch("default"), "opencode");
+        assert_eq!(adapter_key_for_provider("claude-headless"), "claude");
+        assert_eq!(provider_id_for_launch("claude-headless"), "claude-headless");
+        assert_eq!(adapter_key_for_provider("codex"), "codex");
+        assert_eq!(provider_id_for_launch("codex"), "codex");
     }
 
     #[test]

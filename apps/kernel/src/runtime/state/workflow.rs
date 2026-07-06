@@ -62,10 +62,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         let agent = self.agent_store.get_agent(agent_id)?;
-        let provider = match agent.provider() {
-            "default" => "opencode",
-            value => value,
-        };
+        let provider = crate::provider::provider_id_for_launch(agent.provider());
         let adapter_key = crate::provider::adapter_key_for_provider(provider);
         let mut request = crate::provider::LaunchProviderRequest::new(
             session_id,
