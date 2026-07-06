@@ -59,3 +59,23 @@ export function promptSubmissionFailureRuntimeState(session: RuntimeSession): {
     working: sessionHasPromptWork(session),
   }
 }
+
+export function promptSubmissionFailureTransition(options: {
+  readonly session: RuntimeSession
+  readonly submittingAgentId?: string | null
+}): {
+  readonly clearBusyAgentId: string | null
+  readonly submittingAgentId: null
+  readonly submitting: false
+  readonly streamingAgentId: string | null
+  readonly working: boolean
+} {
+  const runtimeState = promptSubmissionFailureRuntimeState(options.session)
+  return {
+    clearBusyAgentId: options.submittingAgentId ?? null,
+    submittingAgentId: null,
+    submitting: false,
+    streamingAgentId: runtimeState.streamingAgentId,
+    working: runtimeState.working,
+  }
+}

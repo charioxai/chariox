@@ -9,7 +9,7 @@ import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
-  promptSubmissionFailureRuntimeState,
+  promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "@arroba/kernel-client/prompt-submission"
@@ -134,12 +134,15 @@ export function createNormalPromptSubmitController(
           error: formatError(error),
         })
         deps.restoreFailedPromptUi(submissionUi)
-        deps.clearAgentBusy(deps.getSubmittingAgentId())
-        deps.setSubmittingAgentId(null)
-        deps.setSubmitting(false)
-        const runtimeState = promptSubmissionFailureRuntimeState(deps.getSession())
-        deps.setStreamingAgentId(runtimeState.streamingAgentId)
-        deps.setWorking(runtimeState.working)
+        const transition = promptSubmissionFailureTransition({
+          session: deps.getSession(),
+          submittingAgentId: deps.getSubmittingAgentId(),
+        })
+        deps.clearAgentBusy(transition.clearBusyAgentId)
+        deps.setSubmittingAgentId(transition.submittingAgentId)
+        deps.setSubmitting(transition.submitting)
+        deps.setStreamingAgentId(transition.streamingAgentId)
+        deps.setWorking(transition.working)
         deps.setFatalError(formatError(error))
         deps.updateSessionChrome()
       }

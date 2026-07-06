@@ -5,6 +5,7 @@ import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
   promptSubmissionFailureRuntimeState,
+  promptSubmissionFailureTransition,
   promptSubmissionRuntimeState,
   promptSubmissionAttachmentsToParts,
 } from "./prompt-submission.js"
@@ -150,6 +151,43 @@ test("promptSubmissionFailureRuntimeState follows current session work", () => {
   assert.deepEqual(promptSubmissionFailureRuntimeState(makeSession({
     agents: [makeAgent({ id: "agent-idle" })],
   })), {
+    streamingAgentId: null,
+    working: false,
+  })
+})
+
+test("promptSubmissionFailureTransition resets submitting while preserving session runtime work", () => {
+  const activeSession = makeSession({
+    agents: [makeAgent({ id: "agent-active" })],
+    active_prompt: {
+      id: "prompt-active",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-active",
+      prompt: "running",
+      status: "running",
+    },
+  })
+
+  assert.deepEqual(promptSubmissionFailureTransition({
+    session: activeSession,
+    submittingAgentId: "agent-submitting",
+  }), {
+    clearBusyAgentId: "agent-submitting",
+    submittingAgentId: null,
+    submitting: false,
+    streamingAgentId: "agent-active",
+    working: true,
+  })
+
+  assert.deepEqual(promptSubmissionFailureTransition({
+    session: makeSession({
+      agents: [makeAgent({ id: "agent-idle" })],
+    }),
+    submittingAgentId: null,
+  }), {
+    clearBusyAgentId: null,
+    submittingAgentId: null,
+    submitting: false,
     streamingAgentId: null,
     working: false,
   })
