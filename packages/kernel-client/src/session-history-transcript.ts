@@ -291,7 +291,7 @@ export function replaceSessionHistoryBlobPlaceholder(
   entries: SessionHistoryTranscriptEntry[],
   entryId: number,
   content: SessionHistoryBlobContent,
-  expandedTurnIds: readonly number[],
+  collapsedTurnIds: readonly number[],
 ): SessionHistoryTranscriptEntry[] {
   const placeholder = entries.find((entry) => entry.id === entryId)
   if (!placeholder?.historyBlobId) {
@@ -323,7 +323,7 @@ export function replaceSessionHistoryBlobPlaceholder(
   const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
   return applyTranscriptDisplayState(
     reindexTranscriptEntries(replaced, 0),
-    expandedTurnIds,
+    collapsedTurnIds,
     activeTurnId,
   ) as SessionHistoryTranscriptEntry[]
 }

@@ -58,7 +58,7 @@ test("transcript state controller toggles turns through shared display state", (
       entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 1 }),
     ],
-    expandedTurnIds: [1],
+    collapsedTurnIds: [1],
   })
 
   harness.controller.toggleTurn(1, 4)
@@ -120,13 +120,13 @@ function transcriptHarness(options: {
   entries?: TranscriptEntry[]
   entryCounter?: number
   currentTurnId?: number | null
-  expandedTurnIds?: number[]
+  collapsedTurnIds?: number[]
 }) {
   const harness = {
     entries: options.entries ?? [],
     entryCounter: options.entryCounter ?? 0,
     currentTurnId: options.currentTurnId ?? null,
-    expandedTurnIds: options.expandedTurnIds ?? [],
+    collapsedTurnIds: options.collapsedTurnIds ?? [],
     expandedTurnUpdates: [] as Array<{
       agentId: string | null | undefined
       turnId: number
@@ -149,7 +149,7 @@ function transcriptHarness(options: {
     },
     currentTurnId: () => harness.currentTurnId,
     visibleTranscriptAgentId: () => "agent-1",
-    collapsedTurnIdsForAgent: () => harness.expandedTurnIds,
+    collapsedTurnIdsForAgent: () => harness.collapsedTurnIds,
     setExpandedTurnState: (agentId, turnId, expanded) => {
       harness.expandedTurnUpdates.push({ agentId, turnId, expanded })
     },
