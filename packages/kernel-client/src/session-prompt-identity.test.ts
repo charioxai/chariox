@@ -148,6 +148,49 @@ test("session pending prompt identity matches queued pending prompt ids", () => 
   assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-materialized"), true)
 })
 
+test("session pending prompt identity keeps queued prompts visible behind projected active turn", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "running-1",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [{
+          id: "queued-materialized",
+          pending_prompt_id: "queued-pending",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          status: "Queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "running-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "queued-pending"), false)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "running-1"), true)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-pending"), true)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-materialized"), true)
+})
+
 test("session pending prompt identity respects projected idle as authoritative", () => {
   const session = makeSession({
     queued_prompts: [{

@@ -55,7 +55,14 @@ export function sessionHasPendingPrompt(session: RuntimeSession, agentId: string
     return false
   }
   if (projected?.activeTurnPromptId) {
-    return projected.activeTurnPromptId === promptId
+    if (projected.activeTurnPromptId === promptId) {
+      return true
+    }
+    const promptState = sessionPromptStateRecordForAgent(session, agentId)
+    if (promptState !== undefined) {
+      return Boolean(promptState?.queued_prompts?.some((prompt) => promptMatchesId(prompt, promptId)))
+    }
+    return false
   }
   const promptState = sessionPromptStateRecordForAgent(session, agentId)
   if (promptState !== undefined) {
