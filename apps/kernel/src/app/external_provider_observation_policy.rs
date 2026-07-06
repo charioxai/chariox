@@ -10,6 +10,13 @@ pub(crate) struct ExternalProviderObservationPolicy<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct ExternalProviderActivePromptSync<'turn> {
+    pub(crate) active_prompt_turn: Option<&'turn ObservedExternalProviderTurn>,
+    pub(crate) latest_observation_settles: bool,
+    pub(crate) should_sync_active_prompt: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ExternalProviderObservationSpec {
     provider: &'static str,
     requires_explicit_completion: bool,
@@ -193,6 +200,35 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Some(latest)
     }
 
+    pub(crate) fn active_prompt_sync<'turn>(
+        self,
+        turns: &'turn [ObservedExternalProviderTurn],
+        changed_count: usize,
+        active_relevant_changed_count: usize,
+        allow_stable_settlement: bool,
+        arroba_owned_provider_turn_ids: &BTreeSet<String>,
+    ) -> ExternalProviderActivePromptSync<'turn> {
+        let active_prompt_turn = self.active_external_prompt_turn(
+            turns,
+            active_relevant_changed_count > 0,
+            arroba_owned_provider_turn_ids,
+        );
+        let latest_observation_settles = self.latest_effective_turn_settles(turns);
+        let has_active_relevant_observation = turns
+            .iter()
+            .any(|turn| !self.turn_is_passive_telemetry(turn));
+        let should_sync_active_prompt = active_prompt_turn.is_some()
+            || latest_observation_settles
+            || (allow_stable_settlement
+                && has_active_relevant_observation
+                && (changed_count == 0 || active_relevant_changed_count == 0));
+        ExternalProviderActivePromptSync {
+            active_prompt_turn,
+            latest_observation_settles,
+            should_sync_active_prompt,
+        }
+    }
+
     pub(crate) fn observation_for_turn(
         self,
         turn: &ObservedExternalProviderTurn,
@@ -258,7 +294,9 @@ mod tests {
 
     #[test]
     fn codex_and_opencode_require_explicit_completion() {
-        assert!(ExternalProviderObservationPolicy::for_provider("codex").uses_explicit_completion());
+        assert!(
+            ExternalProviderObservationPolicy::for_provider("codex").uses_explicit_completion()
+        );
         assert!(
             ExternalProviderObservationPolicy::for_provider("opencode").uses_explicit_completion()
         );
@@ -509,9 +547,11 @@ mod tests {
             }],
         ]
         .concat();
-        assert!(policy
-            .active_external_prompt_turn(&settled, false, &BTreeSet::new())
-            .is_none());
+        assert!(
+            policy
+                .active_external_prompt_turn(&settled, false, &BTreeSet::new())
+                .is_none()
+        );
     }
 
     #[test]
@@ -520,17 +560,113 @@ mod tests {
         let mut arroba_owned = BTreeSet::new();
         arroba_owned.insert("user-1".to_string());
 
-        assert!(policy
-            .active_external_prompt_turn(
-                &[ObservedExternalProviderTurn {
-                    role: ObservedExternalProviderTurnRole::User,
-                    text: "same   prompt".to_string(),
-                    provider_turn_id: Some("user-1".to_string()),
-                    observed_at_ms: None,
-                }],
-                true,
-                &arroba_owned,
-            )
-            .is_none());
+        assert!(
+            policy
+                .active_external_prompt_turn(
+                    &[ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::User,
+                        text: "same   prompt".to_string(),
+                        provider_turn_id: Some("user-1".to_string()),
+                        observed_at_ms: None,
+                    }],
+                    true,
+                    &arroba_owned,
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn active_prompt_sync_settles_claude_stable_assistant_after_quiet_poll() {
+        let policy = ExternalProviderObservationPolicy::for_provider("claude");
+        let turns = vec![
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "prompt".to_string(),
+                provider_turn_id: Some("user-1".to_string()),
+                observed_at_ms: None,
+            },
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Assistant,
+                text: "final answer".to_string(),
+                provider_turn_id: Some("assistant-1".to_string()),
+                observed_at_ms: None,
+            },
+        ];
+
+        let first_poll = policy.active_prompt_sync(&turns, 2, 2, true, &BTreeSet::new());
+        assert!(first_poll.should_sync_active_prompt);
+        assert_eq!(
+            first_poll
+                .active_prompt_turn
+                .and_then(|turn| turn.provider_turn_id.as_deref()),
+            Some("user-1")
+        );
+
+        let quiet_poll = policy.active_prompt_sync(&turns, 0, 0, true, &BTreeSet::new());
+        assert!(quiet_poll.should_sync_active_prompt);
+        assert!(quiet_poll.active_prompt_turn.is_none());
+        assert!(!quiet_poll.latest_observation_settles);
+    }
+
+    #[test]
+    fn active_prompt_sync_keeps_codex_active_until_explicit_completion() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let turns = vec![
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "prompt".to_string(),
+                provider_turn_id: Some("user-1".to_string()),
+                observed_at_ms: None,
+            },
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Assistant,
+                text: "intermediate answer".to_string(),
+                provider_turn_id: Some("assistant-1".to_string()),
+                observed_at_ms: None,
+            },
+        ];
+
+        let quiet_poll = policy.active_prompt_sync(&turns, 0, 0, true, &BTreeSet::new());
+        assert!(quiet_poll.should_sync_active_prompt);
+        assert_eq!(
+            quiet_poll
+                .active_prompt_turn
+                .and_then(|turn| turn.provider_turn_id.as_deref()),
+            Some("user-1")
+        );
+        assert!(!quiet_poll.latest_observation_settles);
+
+        let completed_turns = [
+            turns,
+            vec![ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{}".to_string(),
+                provider_turn_id: Some("task-complete-1".to_string()),
+                observed_at_ms: None,
+            }],
+        ]
+        .concat();
+        let completion = policy.active_prompt_sync(&completed_turns, 1, 1, true, &BTreeSet::new());
+        assert!(completion.should_sync_active_prompt);
+        assert!(completion.active_prompt_turn.is_none());
+        assert!(completion.latest_observation_settles);
+    }
+
+    #[test]
+    fn active_prompt_sync_ignores_passive_telemetry_only_poll() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let turns = vec![ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
+                .to_string(),
+            provider_turn_id: Some("usage-1".to_string()),
+            observed_at_ms: None,
+        }];
+
+        let sync = policy.active_prompt_sync(&turns, 1, 0, true, &BTreeSet::new());
+        assert!(!sync.should_sync_active_prompt);
+        assert!(sync.active_prompt_turn.is_none());
+        assert!(!sync.latest_observation_settles);
     }
 }

@@ -1071,23 +1071,17 @@ fn append_observed_external_turns_for_attached_target_with_options(
     outcome.changed_count = changed;
     outcome.active_relevant_changed_count = active_relevant_appended;
     let observation_policy = ExternalProviderObservationPolicy::for_provider(&provider);
-    let latest_active_prompt = external_active_prompt_from_turns(
-        &read.target,
+    let active_prompt_sync = observation_policy.active_prompt_sync(
         &candidate_turns,
-        active_relevant_appended > 0,
+        changed,
+        active_relevant_appended,
+        options.allow_external_active_prompt_settlement,
         &arroba_owned_provider_turn_ids,
     );
-    let latest_observation_settles =
-        observation_policy.latest_effective_turn_settles(&candidate_turns);
-    let has_active_relevant_observation = candidate_turns
-        .iter()
-        .any(|turn| !observation_policy.turn_is_passive_telemetry(turn));
-    let should_sync_active_prompt = latest_active_prompt.is_some()
-        || latest_observation_settles
-        || (options.allow_external_active_prompt_settlement
-            && has_active_relevant_observation
-            && (changed == 0 || active_relevant_appended == 0));
-    let active_prompt_changed = if should_sync_active_prompt {
+    let latest_active_prompt = active_prompt_sync
+        .active_prompt_turn
+        .map(|turn| external_active_prompt_from_turn(&read.target, turn));
+    let active_prompt_changed = if active_prompt_sync.should_sync_active_prompt {
         app.prompt_owner_sync_external_active_prompt(
             &read.target.session_id,
             &read.target.agent_id,
@@ -1100,7 +1094,7 @@ fn append_observed_external_turns_for_attached_target_with_options(
         active_prompt_changed && latest_active_prompt.is_none();
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
-    if outcome.external_active_prompt_settled && !latest_observation_settles {
+    if outcome.external_active_prompt_settled && !active_prompt_sync.latest_observation_settles {
         persist_observed_external_settlement_history_signal(
             app,
             &read.target,
@@ -1255,30 +1249,22 @@ fn consume_arroba_owned_prompt_text_match(
     true
 }
 
-fn external_active_prompt_from_turns(
+fn external_active_prompt_from_turn(
     target: &AttachedExternalObserverTarget,
-    turns: &[crate::app::ObservedExternalProviderTurn],
-    has_new_observations: bool,
-    arroba_owned_provider_turn_ids: &BTreeSet<String>,
-) -> Option<PromptQueueItem> {
-    let policy = ExternalProviderObservationPolicy::for_provider(&target.provider);
-    let latest = policy.active_external_prompt_turn(
-        turns,
-        has_new_observations,
-        arroba_owned_provider_turn_ids,
-    )?;
+    latest: &crate::app::ObservedExternalProviderTurn,
+) -> PromptQueueItem {
     let provider_turn_id = latest.provider_turn_id_or_fallback();
     let external_prompt_id = crate::history::external_provider_observed_merge_key(
         &target.provider,
         &target.provider_session_id,
         &provider_turn_id,
     );
-    Some(PromptQueueItem::external_observed_running(
+    PromptQueueItem::external_observed_running(
         external_prompt_id,
         &target.provider,
         target.agent_id.clone(),
         latest.text.clone(),
-    ))
+    )
 }
 
 fn latest_observed_user_turn_id(
