@@ -231,7 +231,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
   const agentPaneRefreshController = createAgentPaneRefreshController({
     getCurrentAgents: () => deps.sessionState().agents,
     getFocusedAgentId: deps.focusedAgentId,
-    getExpandedTurnIdsByAgent: deps.expandedTurnIdsByAgent,
+    getCollapsedTurnIdsByAgent: deps.expandedTurnIdsByAgent,
     currentAgentPaneEntries,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
@@ -244,11 +244,11 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       }
     },
     pruneAuxiliaryAgentPanes,
-    setExpandedTurnIdsByAgent: deps.setExpandedTurnIdsByAgent,
+    setCollapsedTurnIdsByAgent: deps.setExpandedTurnIdsByAgent,
     setAgentPanePreviews: deps.setAgentPanePreviews,
     setAgentPaneEntries: deps.setAgentPaneEntries,
     setNextHistoryCursor: deps.setNextHistoryCursor,
-    applyExpandedTurns: deps.applyExpandedTurns,
+    applyCollapsedTurns: deps.applyExpandedTurns,
     replaceTranscriptEntries: (entries, agentId) => deps.replaceTranscriptEntries(entries, agentId),
     applyResponseLayout: deps.applyResponseLayout,
     rebuildAuxiliaryAgentPane,

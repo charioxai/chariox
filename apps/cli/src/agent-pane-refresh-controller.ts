@@ -21,7 +21,7 @@ import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry
 type AgentPaneRefreshControllerDeps = {
   getCurrentAgents: () => readonly AgentInstance[]
   getFocusedAgentId: () => string | null
-  getExpandedTurnIdsByAgent: () => Record<string, number[]>
+  getCollapsedTurnIdsByAgent: () => Record<string, number[]>
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
   splitAgentResponseMode: () => boolean
   maxAgentsPerScreen: () => number
@@ -31,11 +31,11 @@ type AgentPaneRefreshControllerDeps = {
     cursor: SessionHistoryOutlineCursor | null,
   ) => Promise<{ entries: TranscriptEntry[]; nextCursor: SessionHistoryOutlineCursor | null }>
   pruneAuxiliaryAgentPanes: (session: RuntimeSession) => void
-  setExpandedTurnIdsByAgent: (expandedTurnIdsByAgent: Record<string, number[]>) => void
+  setCollapsedTurnIdsByAgent: (collapsedTurnIdsByAgent: Record<string, number[]>) => void
   setAgentPanePreviews: (previews: Record<string, string>) => void
   setAgentPaneEntries: (entries: Record<string, TranscriptEntry[]>) => void
   setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
-  applyExpandedTurns: (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => TranscriptEntry[]
+  applyCollapsedTurns: (entries: TranscriptEntry[], collapsedTurnIds: readonly number[]) => TranscriptEntry[]
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   applyResponseLayout: () => void
   rebuildAuxiliaryAgentPane: (agentId: string) => void
@@ -63,7 +63,7 @@ export function createAgentPaneRefreshController(
     >({
       session,
       hasPromptWorkForAgent: (agent) => sessionAgentIsBusy(session, agent.id),
-      expandedTurnIdsByAgent: deps.getExpandedTurnIdsByAgent(),
+      collapsedTurnIdsByAgent: deps.getCollapsedTurnIdsByAgent(),
       currentPaneEntriesByAgent: Object.fromEntries(
         session.agents.map((agent) => [agent.id, deps.currentAgentPaneEntries(agent.id)]),
       ),
@@ -77,14 +77,14 @@ export function createAgentPaneRefreshController(
       loadHistoryPage: (agentId, cursor) => deps.loadHistoryPage(session.id, agentId, cursor),
       hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
       collapseHistoricalTurns: (entries) => entries,
-      applyExpandedTurns: deps.applyExpandedTurns,
+      applyCollapsedTurns: deps.applyCollapsedTurns,
       reindexEntries: reindexTranscriptEntries,
       formatPreview: formatTranscriptPreview,
-      preserveExpandedTurnIds: true,
+      preserveCollapsedTurnIds: true,
     })
 
     deps.pruneAuxiliaryAgentPanes(session)
-    deps.setExpandedTurnIdsByAgent(nextPaneState.expandedTurnIdsByAgent)
+    deps.setCollapsedTurnIdsByAgent(nextPaneState.collapsedTurnIdsByAgent)
     deps.setAgentPanePreviews(nextPaneState.previews)
     deps.setAgentPaneEntries(nextPaneState.paneEntries)
     deps.setNextHistoryCursor(

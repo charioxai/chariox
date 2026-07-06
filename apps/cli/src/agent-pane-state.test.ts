@@ -88,7 +88,7 @@ test("shouldRefreshAgentPanesForSessionChange refreshes on agent shape or focuse
   }), false)
 })
 
-test("refreshAgentPaneState loads the latest page and keeps only valid expanded turns", async () => {
+test("refreshAgentPaneState loads the latest page and keeps only valid collapsed turns", async () => {
   const pages = new Map<string, Array<{ entries: Array<{ role: string; turnId?: number; text: string }>; nextCursor: string | null }>>([
     ["agent-a:head", [{ entries: [{ role: "assistant", turnId: 2, text: "answer" }], nextCursor: "older" }]],
     ["agent-a:older", [{ entries: [{ role: "user", turnId: 2, text: "question" }], nextCursor: null }]],
@@ -118,7 +118,7 @@ test("refreshAgentPaneState loads the latest page and keeps only valid expanded 
       focused_agent_id: "agent-b",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {
+    collapsedTurnIdsByAgent: {
       "agent-a": [2, 999],
     },
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
@@ -130,8 +130,8 @@ test("refreshAgentPaneState loads the latest page and keeps only valid expanded 
     },
     hydrateEntries: (entries: Array<{ role: string; text: string }>) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => [...entries, { role: "turn_toggle", turnId: 2, text: "toggle" }],
-    applyExpandedTurns: (entries, expandedTurnIds) =>
-      expandedTurnIds.includes(2)
+    applyCollapsedTurns: (entries, collapsedTurnIds) =>
+      collapsedTurnIds.includes(2)
         ? entries.filter((entry) => entry.role !== "turn_toggle")
         : entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
@@ -139,7 +139,7 @@ test("refreshAgentPaneState loads the latest page and keeps only valid expanded 
   })
 
   assert.ok(result.paneEntries["agent-a"])
-  assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [2] })
+  assert.deepEqual(result.collapsedTurnIdsByAgent, { "agent-a": [2] })
   assert.equal(result.visibleAgentId, "agent-b")
   assert.deepEqual(result.paneEntries["agent-a"]!.map((entry) => entry.text), ["answer"])
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["other", "toggle"])
@@ -154,7 +154,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
       focused_agent_id: "agent-b",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [
         {
@@ -201,7 +201,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -219,7 +219,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         {
@@ -256,7 +256,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -281,7 +281,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         {
@@ -333,7 +333,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -358,7 +358,7 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
       focused_agent_id: "agent-b",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [{
         role: "assistant",
@@ -383,7 +383,7 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -405,7 +405,7 @@ test("refreshAgentPaneState ignores stray external ids without observed source w
       focused_agent_id: "agent-b",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-b": [{
         role: "assistant",
@@ -430,7 +430,7 @@ test("refreshAgentPaneState ignores stray external ids without observed source w
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -445,7 +445,7 @@ test("refreshAgentPaneState ignores stale focused agent ids", async () => {
       focused_agent_id: "stale-agent",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
     loadHistoryPage: async (agentId) => ({
       entries: [{ role: "assistant", text: `${agentId} history` }],
@@ -453,7 +453,7 @@ test("refreshAgentPaneState ignores stale focused agent ids", async () => {
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join("\n"),
   })
@@ -462,17 +462,17 @@ test("refreshAgentPaneState ignores stale focused agent ids", async () => {
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["agent-a history"])
 })
 
-test("refreshAgentPaneState can preserve expanded turn ids during refresh", async () => {
+test("refreshAgentPaneState can preserve collapsed turn ids during refresh", async () => {
   const result = await refreshAgentPaneState({
     session: {
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {
+    collapsedTurnIdsByAgent: {
       "agent-a": [2, 999],
     },
-    preserveExpandedTurnIds: true,
+    preserveCollapsedTurnIds: true,
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
     loadHistoryPage: async () => ({
       entries: [
@@ -483,12 +483,12 @@ test("refreshAgentPaneState can preserve expanded turn ids during refresh", asyn
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
 
-  assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [2, 999] })
+  assert.deepEqual(result.collapsedTurnIdsByAgent, { "agent-a": [2, 999] })
 })
 
 test("refreshAgentPaneState preserves collapsed turn display across history refresh", async () => {
@@ -498,7 +498,7 @@ test("refreshAgentPaneState preserves collapsed turn display across history refr
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {
+    collapsedTurnIdsByAgent: {
       "agent-a": [1],
     },
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
@@ -512,12 +512,12 @@ test("refreshAgentPaneState preserves collapsed turn display across history refr
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries, expandedTurnIds) => applyTranscriptDisplayState(entries, expandedTurnIds),
+    applyCollapsedTurns: (entries, collapsedTurnIds) => applyTranscriptDisplayState(entries, collapsedTurnIds),
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.filter((entry) => !entry.hidden).map((entry) => entry.text).join(" | "),
   })
 
-  assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [1] })
+  assert.deepEqual(result.collapsedTurnIdsByAgent, { "agent-a": [1] })
   assert.deepEqual(
     result.visibleEntries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
     [
@@ -556,7 +556,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: { "agent-a": [1] },
+    collapsedTurnIdsByAgent: { "agent-a": [1] },
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "question" },
@@ -588,7 +588,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -607,7 +607,7 @@ test("refreshAgentPaneState preserves completed turns when collapse is disabled"
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
     loadHistoryPage: async () => ({
       entries: [
@@ -620,7 +620,7 @@ test("refreshAgentPaneState preserves completed turns when collapse is disabled"
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -649,7 +649,7 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "first question" },
@@ -680,7 +680,7 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
     },
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -706,7 +706,7 @@ test("refreshAgentPaneState stops backfill when older cursor repeats without dup
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "first question" },
@@ -730,7 +730,7 @@ test("refreshAgentPaneState stops backfill when older cursor repeats without dup
     },
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -755,7 +755,7 @@ test("refreshAgentPaneState preserves richer live pane entries while prompt work
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "question" },
@@ -772,7 +772,7 @@ test("refreshAgentPaneState preserves richer live pane entries while prompt work
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })

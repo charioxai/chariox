@@ -36,8 +36,8 @@ function expansionHarness(initial: Record<string, number[]> = {}) {
     controller: null as ReturnType<typeof createTranscriptTurnExpansionController> | null,
   }
   harness.controller = createTranscriptTurnExpansionController({
-    expandedTurnIdsForAgent: (agentId) => agentId ? harness.collapsedTurnIdsByAgent[agentId] ?? [] : [],
-    updateExpandedTurnIdsByAgent: (updater) => {
+    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.collapsedTurnIdsByAgent[agentId] ?? [] : [],
+    updateCollapsedTurnIdsByAgent: (updater) => {
       harness.collapsedTurnIdsByAgent = updater(harness.collapsedTurnIdsByAgent)
     },
   })

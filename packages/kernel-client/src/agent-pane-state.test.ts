@@ -186,8 +186,8 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
       },
       { role: "assistant", turnId: 1, text: "answer" },
     ],
-    expandedTurnIds: [1],
-    applyExpandedTurns: (entries) => entries,
+    collapsedTurnIds: [1],
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
   })
 
@@ -248,7 +248,7 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "first question" },
@@ -279,7 +279,7 @@ test("refreshAgentPaneState backfills enough history to preserve current pane de
     },
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -308,7 +308,7 @@ test("refreshAgentPaneState backfills idle panes while another agent has prompt 
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: (agent) => agent.id === "agent-b",
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "idle older prompt" },
@@ -351,7 +351,7 @@ test("refreshAgentPaneState backfills idle panes while another agent has prompt 
     },
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -384,7 +384,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => true,
-    expandedTurnIdsByAgent: {},
+    collapsedTurnIdsByAgent: {},
     currentPaneEntriesByAgent: {
       "agent-a": [
         {
@@ -422,7 +422,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })
@@ -461,7 +461,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
       focused_agent_id: "agent-a",
     },
     hasPromptWorkForAgent: () => false,
-    expandedTurnIdsByAgent: { "agent-a": [1] },
+    collapsedTurnIdsByAgent: { "agent-a": [1] },
     currentPaneEntriesByAgent: {
       "agent-a": [
         { role: "user", turnId: 1, text: "question" },
@@ -493,7 +493,7 @@ test("refreshAgentPaneState preserves loaded history blob content across refresh
     }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     collapseHistoricalTurns: (entries) => entries,
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
     formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
   })

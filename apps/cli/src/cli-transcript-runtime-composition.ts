@@ -166,8 +166,8 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) =>
     agentId ? (deps.expandedTurnIdsByAgent()[agentId] ?? []) : []
   const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
-    expandedTurnIdsForAgent,
-    updateExpandedTurnIdsByAgent: (updater) => {
+    collapsedTurnIdsForAgent: expandedTurnIdsForAgent,
+    updateCollapsedTurnIdsByAgent: (updater) => {
       deps.setExpandedTurnIdsByAgent((current: any) => updater(current))
     },
   })

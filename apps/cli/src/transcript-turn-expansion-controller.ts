@@ -8,12 +8,11 @@ import {
 } from "@arroba/kernel-client/transcript-display-state"
 
 export type CollapsedTurnIdsByAgent = CollapsedTranscriptTurnIdsByAgent
-export type ExpandedTurnIdsByAgent = CollapsedTurnIdsByAgent
 
 export type TranscriptTurnExpansionControllerDeps = {
-  expandedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
-  updateExpandedTurnIdsByAgent: (
-    updater: (current: ExpandedTurnIdsByAgent) => ExpandedTurnIdsByAgent,
+  collapsedTurnIdsForAgent: (agentId: string | null | undefined) => readonly number[]
+  updateCollapsedTurnIdsByAgent: (
+    updater: (current: CollapsedTurnIdsByAgent) => CollapsedTurnIdsByAgent,
   ) => void
 }
 
@@ -26,18 +25,18 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
     if (!agentId || !turnId) {
       return
     }
-    deps.updateExpandedTurnIdsByAgent((current) =>
+    deps.updateCollapsedTurnIdsByAgent((current) =>
       updateCollapsedTranscriptTurnState(current, agentId, turnId, expanded))
   }
 
-  const replaceExpandedTurnsForAgent = (
+  const replaceCollapsedTurnsForAgent = (
     agentId: string | null | undefined,
     turnIds: readonly number[],
   ) => {
     if (!agentId) {
       return
     }
-    deps.updateExpandedTurnIdsByAgent((current) =>
+    deps.updateCollapsedTurnIdsByAgent((current) =>
       replaceCollapsedTranscriptTurnIds(current, agentId, turnIds))
   }
 
@@ -47,16 +46,15 @@ export function createTranscriptTurnExpansionController(deps: TranscriptTurnExpa
   ) => {
     const nextTurnIds = collapseLatestTranscriptTurn(
       paneEntries,
-      deps.expandedTurnIdsForAgent(agentId),
+      deps.collapsedTurnIdsForAgent(agentId),
     )
-    replaceExpandedTurnsForAgent(agentId, nextTurnIds)
+    replaceCollapsedTurnsForAgent(agentId, nextTurnIds)
     return nextTurnIds
   }
 
   return {
     applyExpandedTurns: applyCollapsedTurns,
     collapseLatestTurnForAgent,
-    replaceExpandedTurnsForAgent,
     setExpandedTurnState,
   }
 }
@@ -67,7 +65,3 @@ export function applyCollapsedTurns(
 ) {
   return applyTranscriptDisplayState(entries, collapsedTurnIds)
 }
-
-export const applyExpandedTurns = applyCollapsedTurns
-export const updateExpandedTurnState = updateCollapsedTranscriptTurnState
-export const replaceExpandedTurnIds = replaceCollapsedTranscriptTurnIds

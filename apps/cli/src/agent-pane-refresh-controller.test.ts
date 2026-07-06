@@ -69,7 +69,7 @@ function createHarness(options: {
   const controller = createAgentPaneRefreshController({
     getCurrentAgents: () => [agent("a"), agent("b")],
     getFocusedAgentId: () => options.currentFocusedAgentId ?? "a",
-    getExpandedTurnIdsByAgent: () => ({}),
+    getCollapsedTurnIdsByAgent: () => ({}),
     currentAgentPaneEntries: () => [],
     splitAgentResponseMode: () => options.split,
     maxAgentsPerScreen: () => 2,
@@ -83,8 +83,8 @@ function createHarness(options: {
     pruneAuxiliaryAgentPanes: (nextSession) => {
       calls.push(`pruneAuxiliaryAgentPanes:${nextSession.id}`)
     },
-    setExpandedTurnIdsByAgent: () => {
-      calls.push("setExpandedTurnIdsByAgent")
+    setCollapsedTurnIdsByAgent: () => {
+      calls.push("setCollapsedTurnIdsByAgent")
     },
     setAgentPanePreviews: (nextPreviews) => {
       calls.push("setAgentPanePreviews")
@@ -96,7 +96,7 @@ function createHarness(options: {
     setNextHistoryCursor: (cursor) => {
       calls.push(`setNextHistoryCursor:${cursor ? "cursor" : "null"}`)
     },
-    applyExpandedTurns: (entries) => entries,
+    applyCollapsedTurns: (entries) => entries,
     replaceTranscriptEntries: (entries, agentId) => {
       calls.push(`replaceTranscriptEntries:${agentId ?? "none"}`)
       replaced = { agentId, text: entries.map((entry) => entry.text) }

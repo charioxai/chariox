@@ -28,7 +28,7 @@ export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
 export type AgentPaneRefreshResult<TEntry, TCursor> = {
   readonly paneEntries: Record<string, TEntry[]>
   readonly previews: Record<string, string>
-  readonly expandedTurnIdsByAgent: Record<string, number[]>
+  readonly collapsedTurnIdsByAgent: Record<string, number[]>
   readonly visibleAgentId: string | null
   readonly visibleEntries: TEntry[]
   readonly visibleCursor: TCursor | null
@@ -150,8 +150,8 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
 export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEntry>(options: {
   readonly refreshedEntries: TEntry[]
   readonly currentEntries: readonly TEntry[]
-  readonly expandedTurnIds: readonly number[]
-  readonly applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
+  readonly collapsedTurnIds: readonly number[]
+  readonly applyCollapsedTurns: (entries: TEntry[], collapsedTurnIds: readonly number[]) => TEntry[]
   readonly reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
 }): TEntry[] {
   const loadedByBlob = new Map<string, TEntry[]>()
@@ -184,7 +184,7 @@ export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEn
     return options.refreshedEntries
   }
   return options.reindexEntries(
-    options.applyExpandedTurns(nextEntries, options.expandedTurnIds),
+    options.applyCollapsedTurns(nextEntries, options.collapsedTurnIds),
     0,
   )
 }
@@ -230,7 +230,7 @@ export async function refreshAgentPaneState<
 >(options: {
   readonly session: AgentPaneSession<TAgent>
   readonly hasPromptWorkForAgent: (agent: TAgent) => boolean
-  readonly expandedTurnIdsByAgent: Record<string, readonly number[] | undefined>
+  readonly collapsedTurnIdsByAgent: Record<string, readonly number[] | undefined>
   readonly currentPaneEntriesByAgent?: Record<string, readonly TEntry[] | undefined>
   readonly resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
   readonly loadHistoryPage: (
@@ -239,14 +239,14 @@ export async function refreshAgentPaneState<
   ) => Promise<{ entries: THistoryEntry[]; nextCursor: TCursor | null }>
   readonly hydrateEntries: (entries: THistoryEntry[]) => TEntry[]
   readonly collapseHistoricalTurns: (entries: TEntry[], keepLatestExpanded: boolean) => TEntry[]
-  readonly applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
+  readonly applyCollapsedTurns: (entries: TEntry[], collapsedTurnIds: readonly number[]) => TEntry[]
   readonly reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
   readonly formatPreview: (entries: TEntry[]) => string
-  readonly preserveExpandedTurnIds?: boolean
+  readonly preserveCollapsedTurnIds?: boolean
 }): Promise<AgentPaneRefreshResult<TEntry, TCursor>> {
   const previews: Record<string, string> = {}
   const paneEntries: Record<string, TEntry[]> = {}
-  const expandedTurnIdsByAgent: Record<string, number[]> = {}
+  const collapsedTurnIdsByAgent: Record<string, number[]> = {}
   const visibleAgentId = options.resolveVisibleAgentId(
     options.session.agents,
     focusedAgentIdForAgentPaneSession(options.session),
@@ -285,28 +285,28 @@ export async function refreshAgentPaneState<
         .map((entry) => entry.turnId)
         .filter((turnId): turnId is number => typeof turnId === "number"),
     )
-    const expandedTurnIds = options.preserveExpandedTurnIds
-      ? [...new Set(options.expandedTurnIdsByAgent[agent.id] ?? [])]
-      : (options.expandedTurnIdsByAgent[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
-    if (expandedTurnIds.length > 0) {
-      expandedTurnIdsByAgent[agent.id] = expandedTurnIds
+    const collapsedTurnIds = options.preserveCollapsedTurnIds
+      ? [...new Set(options.collapsedTurnIdsByAgent[agent.id] ?? [])]
+      : (options.collapsedTurnIdsByAgent[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
+    if (collapsedTurnIds.length > 0) {
+      collapsedTurnIdsByAgent[agent.id] = collapsedTurnIds
     }
 
     let nextPaneEntries = options.reindexEntries(
-      options.applyExpandedTurns(
+      options.applyCollapsedTurns(
         options.collapseHistoricalTurns(
           resolvedHistoryEntries,
           true,
         ),
-        expandedTurnIds,
+        collapsedTurnIds,
       ),
       0,
     )
     nextPaneEntries = preserveLoadedHistoryBlobs({
       refreshedEntries: nextPaneEntries,
       currentEntries: currentPaneEntries,
-      expandedTurnIds,
-      applyExpandedTurns: options.applyExpandedTurns,
+      collapsedTurnIds,
+      applyCollapsedTurns: options.applyCollapsedTurns,
       reindexEntries: options.reindexEntries,
     })
     if (agentHasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
@@ -324,7 +324,7 @@ export async function refreshAgentPaneState<
   return {
     paneEntries,
     previews,
-    expandedTurnIdsByAgent,
+    collapsedTurnIdsByAgent,
     visibleAgentId,
     visibleEntries,
     visibleCursor,
