@@ -3,8 +3,8 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import {
-  sessionPromptWorkJustCompleted,
-} from "@arroba/kernel-client/session-prompt-work"
+  sessionSnapshotRefreshTransition,
+} from "@arroba/kernel-client/session-runtime-transition"
 import { sessionShouldRecoverMissingActiveProviderRun } from "@arroba/kernel-client/provider-run-recovery"
 
 type KernelSessionSnapshotControllerDeps = {
@@ -38,8 +38,12 @@ export function createKernelSessionSnapshotController(
   ) => {
     const previousSession = deps.getSession()
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
-    const shouldRefreshPanes = deps.shouldRefreshAgentPanesForSessionChange(projectedSession)
-    const promptJustCompleted = sessionPromptWorkJustCompleted(previousSession, projectedSession)
+    const refreshTransition = sessionSnapshotRefreshTransition({
+      previousSession,
+      nextSession: projectedSession,
+      sessionChangeRequiresPaneRefresh:
+        deps.shouldRefreshAgentPanesForSessionChange(projectedSession),
+    })
 
     deps.applySessionState(projectedSession)
 
@@ -64,7 +68,7 @@ export function createKernelSessionSnapshotController(
       }
     }
 
-    if (shouldRefreshPanes || promptJustCompleted) {
+    if (refreshTransition.shouldRefreshAgentPanes) {
       await deps.refreshAgentPanes(projectedSession)
     }
   }
