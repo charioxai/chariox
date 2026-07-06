@@ -8,7 +8,7 @@ test("prompt chrome projection derives status and footer from prompt state", () 
   const controller = createPromptChromeProjectionController({
     daemonDisconnected: () => false,
     working: () => false,
-    hasActivePrompt: () => true,
+    hasActiveTurnWork: () => true,
     submitting: () => false,
     queueDepth: () => 2,
     fatalError: () => null,
@@ -28,12 +28,36 @@ test("prompt chrome projection derives status and footer from prompt state", () 
   assert.equal(controller.footerHint(), "Processing prompt-1; 2 queued.")
 })
 
+test("prompt chrome projection treats queued-only work as queued, not active turn work", () => {
+  const controller = createPromptChromeProjectionController({
+    daemonDisconnected: () => false,
+    working: () => false,
+    hasActiveTurnWork: () => false,
+    submitting: () => false,
+    queueDepth: () => 1,
+    fatalError: () => null,
+    activePromptId: () => null,
+    statusLine: () => "connected",
+    isAttached: () => true,
+    workflowScreenActive: () => false,
+    workflowPromptState: workflowPromptState,
+    attachedPlaceholder: "attached prompt",
+    detachedPlaceholder: "detached prompt",
+    attachedBackground: () => "attached",
+    detachedBackground: () => "detached",
+    workflowBackground: () => "workflow",
+  })
+
+  assert.equal(controller.sessionStatusMode(), "working")
+  assert.equal(controller.footerHint(), "1 queued prompt.")
+})
+
 test("prompt chrome projection derives placeholder and tracks prompt background theme", () => {
   let themeRevisionReads = 0
   const controller = createPromptChromeProjectionController({
     daemonDisconnected: () => false,
     working: () => false,
-    hasActivePrompt: () => false,
+    hasActiveTurnWork: () => false,
     submitting: () => false,
     queueDepth: () => 0,
     fatalError: () => null,

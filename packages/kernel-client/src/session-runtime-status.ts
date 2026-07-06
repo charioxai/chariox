@@ -64,14 +64,14 @@ export type SessionAgentRuntimeDisplayState = {
 export function sessionStatusMode(options: {
   readonly daemonDisconnected: boolean
   readonly working: boolean
-  readonly hasActivePrompt: boolean
+  readonly hasActiveTurnWork: boolean
   readonly submitting: boolean
   readonly queueDepth: number
 }): SessionStatusMode {
   if (options.daemonDisconnected) {
     return "disconnected"
   }
-  if (options.working || options.hasActivePrompt || options.submitting || options.queueDepth > 0) {
+  if (options.working || options.hasActiveTurnWork || options.submitting || options.queueDepth > 0) {
     return "working"
   }
   return "idle"

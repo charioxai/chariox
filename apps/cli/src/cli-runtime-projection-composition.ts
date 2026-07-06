@@ -165,6 +165,7 @@ export function createCliRuntimeProjectionComposition(
     resolveSessionAgent: agentRuntimeProjectionController.resolveSessionAgent,
     agentBusyLatch: agentRuntimeProjectionController.agentBusyLatch,
     anyPromptWork: agentRuntimeProjectionController.anyPromptWork,
+    anyTurnWork: agentRuntimeProjectionController.anyTurnWork,
     focusedQueueDepth: agentRuntimeProjectionController.focusedQueueDepth,
     focusedActivePrompt: agentRuntimeProjectionController.focusedActivePrompt,
     focusedActivityLabel: agentRuntimeProjectionController.focusedActivityLabel,

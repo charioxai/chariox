@@ -47,7 +47,7 @@ test("session chrome projection derives status mode and footer hint together", (
   assert.deepEqual(sessionChromeProjection({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: true,
+    hasActiveTurnWork: true,
     submitting: false,
     queueDepth: 2,
     fatalError: null,
@@ -60,7 +60,7 @@ test("session chrome projection derives status mode and footer hint together", (
   assert.deepEqual(sessionChromeProjection({
     daemonDisconnected: true,
     working: true,
-    hasActivePrompt: true,
+    hasActiveTurnWork: true,
     submitting: true,
     queueDepth: 1,
     fatalError: "boom",
@@ -73,7 +73,20 @@ test("session chrome projection derives status mode and footer hint together", (
   assert.deepEqual(sessionChromeProjection({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: false,
+    hasActiveTurnWork: false,
+    submitting: false,
+    queueDepth: 1,
+    fatalError: null,
+    activePromptId: null,
+    statusLine: "Connected.",
+  }), {
+    sessionStatusMode: "working",
+    footerHint: "1 queued prompt.",
+  })
+  assert.deepEqual(sessionChromeProjection({
+    daemonDisconnected: false,
+    working: false,
+    hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 0,
     fatalError: null,

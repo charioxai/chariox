@@ -44,6 +44,7 @@ test("agent runtime projection resolves focused agent, prompt work, and tool act
   assert.equal(controller.focusedActivePrompt()?.id, "prompt-1")
   assert.equal(controller.focusedQueueDepth(), 1)
   assert.equal(controller.anyPromptWork(), true)
+  assert.equal(controller.anyTurnWork(), true)
   assert.equal(controller.activeToolLabelForAgent("agent-a"), "editing")
   assert.equal(controller.focusedActivityLabel(), "editing")
   assert.equal(controller.focusedAgentBusy(), true)
@@ -91,6 +92,51 @@ test("agent runtime projection queue depth follows shared runtime projection", (
 
   assert.equal(controller.focusedQueueDepth(), 0)
   assert.equal(controller.agentQueuedDepth("agent-a"), 0)
+  assert.equal(controller.anyPromptWork(), false)
+  assert.equal(controller.anyTurnWork(), false)
+})
+
+test("agent runtime projection distinguishes queued prompt work from active turn work", () => {
+  const session = runtimeSession({
+    focused_agent_id: "agent-a",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: null,
+        queued_prompts: [prompt({ id: "prompt-queued", target_agent_id: "agent-a" })],
+      },
+    },
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        active_prompt_count: 0,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+      },
+    },
+    agents: [agent("agent-a")],
+  })
+  const controller = createAgentRuntimeProjectionController({
+    getSession: () => session,
+    getFocusedAgentId: () => "agent-a",
+    getProviderRun: () => null,
+    getVisibleTranscriptAgentId: () => "agent-a",
+    getActiveToolLabels: () => [],
+    getAgentPaneToolUpdates: () => [],
+    getAgentPanePreviews: () => ({}),
+    getAgentActivityLabels: () => ({}),
+    updateAgentActivityLabels: () => {},
+    getAgentBusyLatches: () => ({}),
+    updateAgentBusyLatches: () => {},
+    getSubmitting: () => false,
+    getSubmittingAgentId: () => null,
+    getStreamingAgentId: () => null,
+  })
+
+  assert.equal(controller.focusedQueueDepth(), 1)
+  assert.equal(controller.anyPromptWork(), true)
+  assert.equal(controller.anyTurnWork(), false)
 })
 
 test("agent runtime projection active prompt follows projected active turn identity", () => {

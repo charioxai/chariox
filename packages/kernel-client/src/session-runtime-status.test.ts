@@ -23,21 +23,28 @@ test("session status mode follows disconnected and prompt-work precedence", () =
   assert.equal(sessionStatusMode({
     daemonDisconnected: true,
     working: true,
-    hasActivePrompt: true,
+    hasActiveTurnWork: true,
     submitting: true,
     queueDepth: 1,
   }), "disconnected")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: true,
+    hasActiveTurnWork: true,
     submitting: false,
     queueDepth: 0,
   }), "working")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: false,
+    hasActiveTurnWork: false,
+    submitting: false,
+    queueDepth: 1,
+  }), "working")
+  assert.equal(sessionStatusMode({
+    daemonDisconnected: false,
+    working: false,
+    hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 0,
   }), "idle")

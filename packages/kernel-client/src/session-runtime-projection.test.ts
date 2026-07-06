@@ -324,28 +324,28 @@ test("session status mode and footer hint reflect prompt and queue work", () => 
   assert.equal(sessionStatusMode({
     daemonDisconnected: true,
     working: false,
-    hasActivePrompt: false,
+    hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 0,
   }), "disconnected")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: true,
+    hasActiveTurnWork: true,
     submitting: false,
     queueDepth: 0,
   }), "working")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: false,
+    hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 1,
   }), "working")
   assert.equal(sessionStatusMode({
     daemonDisconnected: false,
     working: false,
-    hasActivePrompt: false,
+    hasActiveTurnWork: false,
     submitting: false,
     queueDepth: 0,
   }), "idle")

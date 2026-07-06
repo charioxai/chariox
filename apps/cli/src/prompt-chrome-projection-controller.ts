@@ -10,7 +10,7 @@ import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-
 export type PromptChromeProjectionControllerDeps<Color> = {
   daemonDisconnected: () => boolean
   working: () => boolean
-  hasActivePrompt: () => boolean
+  hasActiveTurnWork: () => boolean
   submitting: () => boolean
   queueDepth: () => number
   fatalError: () => string | null
@@ -33,7 +33,7 @@ export function createPromptChromeProjectionController<Color>(
   const chromeProjection = () => sessionChromeProjection({
     daemonDisconnected: deps.daemonDisconnected(),
     working: deps.working(),
-    hasActivePrompt: deps.hasActivePrompt(),
+    hasActiveTurnWork: deps.hasActiveTurnWork(),
     submitting: deps.submitting(),
     queueDepth: deps.queueDepth(),
     fatalError: deps.fatalError(),

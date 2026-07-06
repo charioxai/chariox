@@ -61,6 +61,7 @@ export type CliPromptSurfaceCompositionDeps = {
   daemonDisconnected: AnyFn
   working: AnyFn
   anyPromptWork: AnyFn
+  anyTurnWork: AnyFn
   submitting: AnyFn
   focusedQueueDepth: AnyFn
   fatalError: AnyFn
@@ -109,7 +110,7 @@ export function createCliPromptSurfaceComposition(deps: CliPromptSurfaceComposit
   const promptChromeProjectionController = createPromptChromeProjectionController({
     daemonDisconnected: deps.daemonDisconnected,
     working: deps.working,
-    hasActivePrompt: deps.anyPromptWork,
+    hasActiveTurnWork: deps.anyTurnWork,
     submitting: deps.submitting,
     queueDepth: deps.focusedQueueDepth,
     fatalError: deps.fatalError,

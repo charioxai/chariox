@@ -16,7 +16,7 @@ export type SessionChromeProjection = {
 export function sessionChromeProjection(options: {
   readonly daemonDisconnected: boolean
   readonly working: boolean
-  readonly hasActivePrompt: boolean
+  readonly hasActiveTurnWork: boolean
   readonly submitting: boolean
   readonly queueDepth: number
   readonly fatalError: string | null
@@ -27,7 +27,7 @@ export function sessionChromeProjection(options: {
     sessionStatusMode: sessionStatusMode({
       daemonDisconnected: options.daemonDisconnected,
       working: options.working,
-      hasActivePrompt: options.hasActivePrompt,
+      hasActiveTurnWork: options.hasActiveTurnWork,
       submitting: options.submitting,
       queueDepth: options.queueDepth,
     }),

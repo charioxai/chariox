@@ -19,6 +19,7 @@ import {
 } from "@arroba/kernel-client/session-prompt-identity"
 import {
   sessionHasPromptWork,
+  sessionHasTurnWork,
   sessionQueuedPromptCount,
 } from "@arroba/kernel-client/session-prompt-work"
 import type {
@@ -86,6 +87,7 @@ export function createAgentRuntimeProjectionController(
   const agentBusyLatch = (agentId: string | null | undefined) =>
     readAgentBusyLatch(deps.getAgentBusyLatches(), agentId)
   const anyPromptWork = () => sessionHasPromptWork(deps.getSession())
+  const anyTurnWork = () => sessionHasTurnWork(deps.getSession())
   const focusedPromptState = () => promptStateForAgent(deps.getFocusedAgentId())
   const focusedQueueDepth = () => agentQueuedDepth(deps.getFocusedAgentId())
   const focusedActivePrompt = () => agentActivePrompt(deps.getFocusedAgentId())
@@ -153,6 +155,7 @@ export function createAgentRuntimeProjectionController(
     agentActivePrompt,
     agentBusyLatch,
     anyPromptWork,
+    anyTurnWork,
     focusedPromptState,
     focusedQueueDepth,
     focusedActivePrompt,
