@@ -289,13 +289,19 @@ pub(crate) fn execute_import_mcp_servers_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
         crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
-    let outcome = match request.provider.as_str() {
+    let Some(provider) = crate::provider::canonical_provider_family(&request.provider) else {
+        return Err(DaemonError::InvalidConfig {
+            field: "provider",
+            message: "only Codex, OpenCode, and Claude MCP import are supported",
+        });
+    };
+    let outcome = match provider {
         "codex" => crate::mcp::import_codex_mcp_servers(&registry, request.name.as_deref())?,
         "opencode" => {
             let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
             crate::mcp::import_opencode_mcp_servers(&registry, &workspace, request.name.as_deref())?
         }
-        "claude" | "claude-headless" | "claude-p" => {
+        "claude" => {
             let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
             crate::mcp::import_claude_mcp_servers(&registry, &workspace, request.name.as_deref())?
         }
@@ -509,14 +515,20 @@ pub(crate) fn execute_import_skills_request(
     let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
-    let outcome = match request.provider.as_str() {
+    let Some(provider) = crate::provider::canonical_provider_family(&request.provider) else {
+        return Err(DaemonError::InvalidConfig {
+            field: "provider",
+            message: "only Codex, OpenCode, and Claude skill import are supported",
+        });
+    };
+    let outcome = match provider {
         "codex" => {
             crate::skill::import_codex_skills(&registry, &workspace, request.name.as_deref())?
         }
         "opencode" => {
             crate::skill::import_opencode_skills(&registry, &workspace, request.name.as_deref())?
         }
-        "claude" | "claude-headless" | "claude-p" => {
+        "claude" => {
             crate::skill::import_claude_skills(&registry, &workspace, request.name.as_deref())?
         }
         _ => {

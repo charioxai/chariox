@@ -451,6 +451,12 @@ pub fn discover_provider_mcp_import_candidates(
     if let Some(name) = requested_name {
         validate_registry_name(name, "mcp name")?;
     }
+    let Some(provider) = crate::provider::canonical_provider_family(provider) else {
+        return Err(DaemonError::InvalidConfig {
+            field: "provider",
+            message: "only Codex, OpenCode, and Claude MCP import are supported",
+        });
+    };
     match provider {
         "codex" => {
             let config_path = codex_home_dir()?.join("config.toml");
@@ -493,7 +499,7 @@ pub fn discover_provider_mcp_import_candidates(
             }
             Ok(discovery)
         }
-        "claude" | "claude-headless" | "claude-p" => {
+        "claude" => {
             let mut discovery = ProviderMcpImportDiscovery::default();
             let mut found_config = false;
             for config_path in claude_mcp_config_paths(workspace) {

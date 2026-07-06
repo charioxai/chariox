@@ -602,20 +602,22 @@ pub fn discover_provider_skill_import_candidates(
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<ProviderSkillImportDiscovery, DaemonError> {
-    let roots = match provider {
+    let Some(canonical_provider) = crate::provider::canonical_provider_family(provider) else {
+        return Err(DaemonError::InvalidConfig {
+            field: "provider",
+            message: "only Codex, OpenCode, and Claude skill import are supported",
+        });
+    };
+    let roots = match canonical_provider {
         "codex" => codex_skill_roots(workspace),
         "opencode" => opencode_skill_roots(workspace),
-        "claude" | "claude-headless" | "claude-p" => claude_skill_roots(workspace),
+        "claude" => claude_skill_roots(workspace),
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
                 message: "only Codex, OpenCode, and Claude skill import are supported",
             });
         }
-    };
-    let canonical_provider = match provider {
-        "claude-headless" | "claude-p" => "claude",
-        other => other,
     };
     discover_provider_skill_import_candidates_from_roots(canonical_provider, roots, requested_name)
 }
