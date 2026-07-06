@@ -110,7 +110,7 @@ impl KernelRuntimeState {
             }
         }
         if !chunks.is_empty() {
-            if provider_run.provider() == "claude-headless" {
+            if crate::provider::provider_run_is_claude_headless(&provider_run) {
                 owned.note_prompt_output(provider_run_id);
             } else {
                 owned.note_prompt_response_content(provider_run_id);
@@ -123,7 +123,7 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
-        let records = if provider_run.provider() == "claude-headless" {
+        let records = if crate::provider::provider_run_is_claude_headless(&provider_run) {
             Vec::new()
         } else {
             let agent_id = provider_run.agent_instance_id().map(str::to_string);

@@ -91,9 +91,13 @@ pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
     }
 }
 
+pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude" && run.provider() == "claude-headless"
+}
+
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
-        && (!run.client_interface().is_arroba() || run.provider() == "claude-headless")
+        && (!run.client_interface().is_arroba() || provider_run_is_claude_headless(run))
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
@@ -108,3 +112,42 @@ pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        provider_run_is_claude_headless, provider_run_uses_claude_native_bridge, AgentEndpointMode,
+        LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+
+    #[test]
+    fn claude_headless_provider_mode_is_provider_policy() {
+        let headless = provider_run("claude", "claude-headless");
+        let regular = provider_run("claude", "claude");
+
+        assert!(provider_run_is_claude_headless(&headless));
+        assert!(provider_run_uses_claude_native_bridge(&headless));
+        assert!(!provider_run_is_claude_headless(&regular));
+        assert!(!provider_run_uses_claude_native_bridge(&regular));
+    }
+
+    fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
+        let request =
+            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model");
+        RuntimeProviderRun::new(
+            format!("provider-run-{adapter_key}-{provider}"),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: provider.to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+}

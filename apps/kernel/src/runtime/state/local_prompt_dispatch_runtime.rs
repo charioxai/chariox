@@ -447,7 +447,7 @@ impl KernelRuntimeState {
             .read()
             .run_processes
             .contains_key(&dispatch.provider_run_id);
-        if provider_run.provider() == "claude-headless" && !has_managed_process {
+        if crate::provider::provider_run_is_claude_headless(&provider_run) && !has_managed_process {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10_000);
             while tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;

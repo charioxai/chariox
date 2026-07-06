@@ -871,7 +871,7 @@ impl<'a> ProviderOutputPump<'a> {
                 .collect::<String>(),
         );
         if !chunks.is_empty() {
-            if provider_run.provider() == "claude-headless" {
+            if crate::provider::provider_run_is_claude_headless(&provider_run) {
                 self.context.note_prompt_output(request.provider_run_id);
             } else {
                 self.context
@@ -879,7 +879,7 @@ impl<'a> ProviderOutputPump<'a> {
             }
         }
 
-        let records = if provider_run.provider() == "claude-headless" {
+        let records = if crate::provider::provider_run_is_claude_headless(&provider_run) {
             Vec::new()
         } else {
             chunks
