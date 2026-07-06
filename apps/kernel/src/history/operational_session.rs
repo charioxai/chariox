@@ -448,8 +448,7 @@ impl OperationalHistoryStore {
             let metadata_text = metadata_text.unwrap_or_default();
             let external_observation = serde_json::from_str::<HistoryEvent>(&event_json)
                 .ok()
-                .and_then(|event| event.to_session_history_entry())
-                .and_then(|entry| entry.external_observation);
+                .and_then(|event| event.session_history_external_observation());
             let is_external_observed =
                 SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
                     &metadata_text,

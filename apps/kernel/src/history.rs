@@ -359,6 +359,10 @@ impl HistoryEvent {
         })
     }
 
+    pub fn session_history_external_observation(&self) -> Option<SessionHistoryExternalObservation> {
+        self.to_session_history_entry()?.external_observation
+    }
+
     pub fn operational(
         sequence: u64,
         kind: HistoryEventKind,
@@ -982,10 +986,9 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        external_provider_observed_state_merge_key, HistoryEvent, HistoryEventKind,
-        HistoryEventQuery, HistoryEventRole, HistoryEventTurnContext, OperationalHistoryStore,
-        SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource,
-        SessionHistoryStore,
+        HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventRole,
+        HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
+        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
     };
 
     #[test]
@@ -1325,34 +1328,27 @@ mod tests {
             Some(2_200),
         );
         external_status.external_observation =
-            Some(crate::history::SessionHistoryExternalObservation {
-                settles_active_prompt: true,
-                passive_telemetry: false,
-            });
-        let state_merge_key = external_provider_observed_state_merge_key(
+            Some(crate::history::SessionHistoryExternalObservation::active_prompt_settled());
+        let external_state_signal = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            None,
+            "agent-1",
             "codex",
             "thread-1",
-            "active_prompt_settled",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
             "external:codex:thread-1:turn-1:status",
+            "active_prompt_settled".to_string(),
+            Some(2_300),
         );
-        let mut external_state_signal =
-            SessionHistoryEntry::external_provider_observed_with_merge_key(
-                "session-1",
-                None,
-                "agent-1",
-                SessionHistoryEntryKind::ProviderStatus,
-                "external provider state changed",
-                "codex",
-                "thread-1",
-                Some(state_merge_key.clone()),
-                Some("active_prompt_settled".to_string()),
-                Some(2_300),
-            );
-        external_state_signal.external_observation =
-            Some(crate::history::SessionHistoryExternalObservation {
-                settles_active_prompt: true,
-                passive_telemetry: false,
-            });
+        let state_signal_merge_key = external_state_signal
+            .merge_key
+            .clone()
+            .expect("state signal should have merge key");
+        assert_eq!(
+            HistoryEvent::transcript(4, &external_status, HistoryEventTurnContext::default())
+                .session_history_external_observation(),
+            Some(crate::history::SessionHistoryExternalObservation::active_prompt_settled())
+        );
 
         for (sequence, entry) in [
             (1, arroba_prompt),
@@ -1405,7 +1401,7 @@ mod tests {
         assert!(
             !index
                 .external_entries_by_merge_key
-                .contains_key(&state_merge_key),
+                .contains_key(&state_signal_merge_key),
             "internal external-observer state signals must not pollute the provider transcript index"
         );
 
@@ -1495,10 +1491,9 @@ mod tests {
                 Some("assistant-1".to_string()),
                 Some(sequence * 100),
             );
-            entry.external_observation = Some(crate::history::SessionHistoryExternalObservation {
-                settles_active_prompt,
-                passive_telemetry: false,
-            });
+            entry.external_observation = settles_active_prompt.then(
+                crate::history::SessionHistoryExternalObservation::active_prompt_settled,
+            );
             store
                 .append(&HistoryEvent::transcript(
                     sequence,
