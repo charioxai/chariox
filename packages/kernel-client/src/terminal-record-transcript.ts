@@ -95,7 +95,10 @@ export function terminalRecordTranscriptProjection(
     metadata,
     historyRefreshSignal,
     passiveExternalTelemetry,
-    startsStreaming: record.kind !== "prompt_echo" && !historyRefreshSignal && !passiveExternalTelemetry,
+    startsStreaming: record.kind !== "prompt_echo"
+      && !historyRefreshSignal
+      && !passiveExternalTelemetry
+      && !providerStatusIdle,
     marksAgentBusy: record.kind !== "prompt_echo"
       && !historyRefreshSignal
       && !passiveExternalTelemetry

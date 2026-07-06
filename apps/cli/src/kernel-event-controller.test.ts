@@ -250,7 +250,7 @@ test("external observed provider status rendering uses shared observed policy", 
   ])
 })
 
-test("idle provider status is ignored so it cannot demote a live turn to idle", () => {
+test("idle provider status is ignored so it cannot create local live turn state", () => {
   const { deps, calls } = createDeps({
     resolveTerminalRecordAgentId: () => "agent-a",
     agentActivityLabel: () => "Thinking",
@@ -266,7 +266,6 @@ test("idle provider status is ignored so it cannot demote a live turn to idle", 
   assert.deepEqual(calls, [
     "activity:terminal_record",
     "turn-activity:terminal_record",
-    "streaming:agent-a",
   ])
 })
 

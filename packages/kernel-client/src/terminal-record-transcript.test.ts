@@ -167,7 +167,7 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
   assert.equal(projection.metadata.externalProvider, "codex")
 })
 
-test("terminalRecordTranscriptProjection keeps idle provider status from marking a turn busy", () => {
+test("terminalRecordTranscriptProjection keeps idle provider status out of live turn state", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
   }, "OpenCode is idle.", {
@@ -176,7 +176,7 @@ test("terminalRecordTranscriptProjection keeps idle provider status from marking
   })
 
   assert.equal(projection.providerStatusIdle, true)
-  assert.equal(projection.startsStreaming, true)
+  assert.equal(projection.startsStreaming, false)
   assert.equal(projection.marksAgentBusy, false)
   assert.equal(projection.updatesProviderActivity, false)
   assert.equal(projection.appendsLiveTranscript, false)
