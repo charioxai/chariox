@@ -36,7 +36,11 @@ export type SessionRuntimeTransitionOptions = {
   readonly currentSession: RuntimeSession
   readonly nextSession: RuntimeSession
   readonly currentWorking: boolean
+  readonly currentSubmitting?: boolean
+  readonly currentBusyLatches?: Record<string, boolean>
   readonly currentStreamingAgentId: string | null
+  readonly currentProviderActivityLabel?: string | null
+  readonly currentActiveStatusLabel?: string | null
   readonly currentAgentActivityLabels: Record<string, string | null>
 }
 
@@ -54,6 +58,7 @@ export type SessionRuntimeTransitionState = {
   readonly shouldClearCancelledPromptRuntimeResidue: boolean
   readonly shouldConfirmTurnCompletionAfterCancelledPromptSettlement: boolean
   readonly nextStreamingAgentIdAfterCancelledPromptSettlement: string | null
+  readonly shouldConfirmIdleTurnCompletion: boolean
   readonly previousAgentSignature: string
   readonly nextAgentSignature: string
 }
@@ -139,6 +144,15 @@ export function sessionRuntimeTransitionState(
   const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
   const nextFocusedAgentId = sessionFocusedAgentId(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
+  const shouldConfirmIdleTurnCompletion = sessionShouldConfirmIdleTurnCompletion({
+    nextSession: options.nextSession,
+    currentWorking: options.currentWorking,
+    currentSubmitting: options.currentSubmitting ?? false,
+    currentBusyLatches: options.currentBusyLatches ?? {},
+    currentStreamingAgentId: options.currentStreamingAgentId,
+    currentProviderActivityLabel: options.currentProviderActivityLabel ?? null,
+    currentActiveStatusLabel: options.currentActiveStatusLabel ?? null,
+  })
   const promptLifecycle = sessionPromptLifecycleTransition(options.currentSession, options.nextSession)
   const projectedStreamingAgentId = sessionProjectedStreamingAgentId(options.nextSession)
   const nextHasAgentActivityProjection = sessionHasAgentActivityProjection(options.nextSession)
@@ -188,6 +202,7 @@ export function sessionRuntimeTransitionState(
     shouldConfirmTurnCompletionAfterCancelledPromptSettlement:
       promptLifecycle.cancelledPromptSettled && !nextHasPromptWork,
     nextStreamingAgentIdAfterCancelledPromptSettlement: projectedStreamingAgentId,
+    shouldConfirmIdleTurnCompletion,
     previousAgentSignature,
     nextAgentSignature,
   }

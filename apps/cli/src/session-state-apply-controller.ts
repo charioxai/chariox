@@ -8,7 +8,6 @@ import {
   sessionResponseLayout,
 } from "@arroba/kernel-client/session-config-projection"
 import {
-  sessionShouldConfirmIdleTurnCompletion,
   sessionRuntimeTransitionState,
 } from "@arroba/kernel-client/session-runtime-transition"
 
@@ -69,19 +68,14 @@ export function createSessionStateApplyController(
       currentSession,
       nextSession,
       currentWorking: deps.getWorking(),
-      currentStreamingAgentId: deps.getStreamingAgentId(),
-      currentAgentActivityLabels: deps.getAgentActivityLabels(),
-    })
-    const nextLayout = sessionResponseLayout(nextSession, deps.getLayoutPreference())
-    const shouldConfirmIdleCompletion = sessionShouldConfirmIdleTurnCompletion({
-      nextSession,
-      currentWorking: deps.getWorking(),
       currentSubmitting: deps.getSubmitting(),
       currentBusyLatches: deps.getAgentBusyLatches(),
       currentStreamingAgentId: deps.getStreamingAgentId(),
       currentProviderActivityLabel: deps.getProviderActivityLabel(),
       currentActiveStatusLabel: deps.getActiveStatusLabel(),
+      currentAgentActivityLabels: deps.getAgentActivityLabels(),
     })
+    const nextLayout = sessionResponseLayout(nextSession, deps.getLayoutPreference())
 
     deps.setSession(nextSession)
     deps.syncQueuedPromptEntries(nextSession)
@@ -92,7 +86,7 @@ export function createSessionStateApplyController(
 
     if (transition.nextHasPromptWork) {
       deps.turnCompletion.reset()
-    } else if (deps.turnCompletion.isConfirmed() || shouldConfirmIdleCompletion) {
+    } else if (deps.turnCompletion.isConfirmed() || transition.shouldConfirmIdleTurnCompletion) {
       deps.turnCompletion.confirmAndSchedule()
     } else {
       deps.cancelPendingTurnCompletion()
