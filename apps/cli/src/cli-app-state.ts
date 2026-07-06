@@ -181,7 +181,7 @@ export function createCliAppState(options: {
   const [promptHistoryIndex, setPromptHistoryIndex] = createSignal<number | null>(null)
   const [promptHistoryDraft, setPromptHistoryDraft] = createSignal<string | null>(null)
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
-  const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
+  const [collapsedTurnIdsByAgent, setCollapsedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
   const [workspaceShellContext, setWorkspaceShellContext] = createSignal<ShellContext>(createDefaultShellContext({
     workspace: initialWorkspaceTarget,
@@ -324,8 +324,8 @@ export function createCliAppState(options: {
     setPromptHistoryDraft,
     hotkeysOpen,
     setHotkeysOpen,
-    expandedTurnIdsByAgent,
-    setExpandedTurnIdsByAgent,
+    collapsedTurnIdsByAgent,
+    setCollapsedTurnIdsByAgent,
     workspaceScreenMode,
     setWorkspaceScreenMode,
     workspaceShellContext,

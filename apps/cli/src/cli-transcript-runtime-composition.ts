@@ -69,8 +69,8 @@ export type CliTranscriptRuntimeCompositionDeps = {
     setNextTurnId: AnyFn
     setCurrentTurnId: AnyFn
   }
-  expandedTurnIdsByAgent: AnyFn
-  setExpandedTurnIdsByAgent: AnyFn
+  collapsedTurnIdsByAgent: AnyFn
+  setCollapsedTurnIdsByAgent: AnyFn
   persistVisibleTranscriptEntries: AnyFn
   reconcileMountedTranscript: AnyFn
   retainPromptFocus: AnyFn
@@ -164,11 +164,11 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   const maybeScheduleConfirmedTurnCompletion = turnCompletionController.maybeScheduleConfirmed
 
   const collapsedTurnIdsForAgent = (agentId: string | null | undefined) =>
-    agentId ? (deps.expandedTurnIdsByAgent()[agentId] ?? []) : []
+    agentId ? (deps.collapsedTurnIdsByAgent()[agentId] ?? []) : []
   const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
     collapsedTurnIdsForAgent: collapsedTurnIdsForAgent,
     updateCollapsedTurnIdsByAgent: (updater) => {
-      deps.setExpandedTurnIdsByAgent((current: any) => updater(current))
+      deps.setCollapsedTurnIdsByAgent((current: any) => updater(current))
     },
   })
   const setExpandedTurnState = transcriptTurnExpansionController.setExpandedTurnState
@@ -292,7 +292,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     currentAgentPaneEntries: deps.currentAgentPaneEntries,
     collapsedTurnIdsForAgent,
     setCollapsedTurnIdsForAgent: (agentId, turnIds) => {
-      deps.setExpandedTurnIdsByAgent((current: any) => ({
+      deps.setCollapsedTurnIdsByAgent((current: any) => ({
         ...current,
         [agentId]: turnIds,
       }))

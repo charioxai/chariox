@@ -7,12 +7,12 @@ import type { TranscriptEntry } from "./cli-types.js"
 test("assistant completion controller finalizes the visible transcript turn", () => {
   const harness = completionHarness({
     entries: turnEntries(),
-    expandedTurnIdsByAgent: { "agent-1": [1, 3] },
+    collapsedTurnIdsByAgent: { "agent-1": [1, 3] },
   })
 
   harness.controller.markCompleted("agent-1")
 
-  assert.deepEqual(harness.expandedTurnIdsByAgent["agent-1"], [3])
+  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-1"], [3])
   assert.deepEqual(harness.setEntryBatches.at(-1)?.map((entry) => [entry.role, entry.text]), [
     ["user", "Investigate"],
     ["turn_toggle", "click to collapse"],
@@ -33,12 +33,12 @@ test("assistant completion controller finalizes an off-focus split pane", () => 
     paneEntries: {
       "agent-2": turnEntries("auxiliary"),
     },
-    expandedTurnIdsByAgent: { "agent-2": [1] },
+    collapsedTurnIdsByAgent: { "agent-2": [1] },
   })
 
   harness.controller.markCompleted("agent-2")
 
-  assert.deepEqual(harness.expandedTurnIdsByAgent["agent-2"], [])
+  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-2"], [])
   assert.deepEqual(harness.agentTranscriptEntries, [{
     agentId: "agent-2",
     entries: ["auxiliary", "click to collapse", "tool output", "done"],
@@ -56,7 +56,7 @@ test("assistant completion controller still clears busy state and confirms witho
 
   harness.controller.markCompleted(null)
 
-  assert.deepEqual(harness.expandedTurnIdsByAgent, {})
+  assert.deepEqual(harness.collapsedTurnIdsByAgent, {})
   assert.deepEqual(harness.setEntryBatches, [])
   assert.deepEqual(harness.calls, ["busy:null", "turn:confirm", "turn:schedule"])
 })
@@ -66,14 +66,14 @@ function completionHarness(options: {
   visibleAgentId?: string | null
   entries?: TranscriptEntry[]
   paneEntries?: Record<string, TranscriptEntry[]>
-  expandedTurnIdsByAgent?: Record<string, number[]>
+  collapsedTurnIdsByAgent?: Record<string, number[]>
 } = {}) {
   const harness = {
     split: options.split ?? false,
     visibleAgentId: options.visibleAgentId === undefined ? "agent-1" : options.visibleAgentId,
     entries: options.entries ?? [],
     paneEntries: options.paneEntries ?? {},
-    expandedTurnIdsByAgent: options.expandedTurnIdsByAgent ?? {},
+    collapsedTurnIdsByAgent: options.collapsedTurnIdsByAgent ?? {},
     setEntryBatches: [] as TranscriptEntry[][],
     persistedEntries: [] as TranscriptEntry[][],
     reconciled: [] as Array<{ current: string[]; next: string[] }>,
@@ -87,9 +87,9 @@ function completionHarness(options: {
     visibleTranscriptAgentId: () => harness.visibleAgentId,
     splitAgentResponseMode: () => harness.split,
     currentAgentPaneEntries: (agentId) => harness.paneEntries[agentId] ?? [],
-    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
+    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.collapsedTurnIdsByAgent[agentId] ?? [] : [],
     setCollapsedTurnIdsForAgent: (agentId, turnIds) => {
-      harness.expandedTurnIdsByAgent[agentId] = turnIds
+      harness.collapsedTurnIdsByAgent[agentId] = turnIds
     },
     setEntries: (entries) => {
       harness.entries = entries

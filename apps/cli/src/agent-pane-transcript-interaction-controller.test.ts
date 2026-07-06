@@ -78,11 +78,11 @@ test("agent pane transcript interaction controller ignores missing blob entries"
 
 function interactionHarness(
   paneEntriesByAgent: Record<string, TranscriptEntry[]>,
-  expandedTurnIdsByAgent: Record<string, number[]> = {},
+  collapsedTurnIdsByAgent: Record<string, number[]> = {},
 ) {
   const harness = {
     paneEntriesByAgent,
-    expandedTurnIdsByAgent,
+    collapsedTurnIdsByAgent,
     expandedTurnUpdates: [] as Array<{
       agentId: string | null | undefined
       turnId: number | null | undefined
@@ -99,7 +99,7 @@ function interactionHarness(
   }
   harness.controller = createAgentPaneTranscriptInteractionController({
     currentAgentPaneEntries: (agentId) => harness.paneEntriesByAgent[agentId] ?? [],
-    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.expandedTurnIdsByAgent[agentId] ?? [] : [],
+    collapsedTurnIdsForAgent: (agentId) => agentId ? harness.collapsedTurnIdsByAgent[agentId] ?? [] : [],
     setExpandedTurnState: (agentId, turnId, expanded) => {
       harness.expandedTurnUpdates.push({ agentId, turnId, expanded })
     },

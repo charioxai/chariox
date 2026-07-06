@@ -37,14 +37,14 @@ export type CliAgentPaneCompositionDeps = {
   agentPaneEntries: AnyFn
   setAgentPaneEntries: AnyFn
   setAgentPanePreviews: AnyFn
-  setExpandedTurnIdsByAgent: AnyFn
+  setCollapsedTurnIdsByAgent: AnyFn
   setNextHistoryCursor: AnyFn
   sessionState: AnyFn
   focusedAgentId: AnyFn
   maxAgentsPerScreen: AnyFn
   splitAgentResponseMode: AnyFn
   responsePrimaryAgent: AnyFn
-  expandedTurnIdsByAgent: AnyFn
+  collapsedTurnIdsByAgent: AnyFn
   collapsedTurnIdsForAgent: AnyFn
   setExpandedTurnState: AnyFn
   applyCollapsedTurns: AnyFn
@@ -231,7 +231,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
   const agentPaneRefreshController = createAgentPaneRefreshController({
     getCurrentAgents: () => deps.sessionState().agents,
     getFocusedAgentId: deps.focusedAgentId,
-    getCollapsedTurnIdsByAgent: deps.expandedTurnIdsByAgent,
+    getCollapsedTurnIdsByAgent: deps.collapsedTurnIdsByAgent,
     currentAgentPaneEntries,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
@@ -244,7 +244,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       }
     },
     pruneAuxiliaryAgentPanes,
-    setCollapsedTurnIdsByAgent: deps.setExpandedTurnIdsByAgent,
+    setCollapsedTurnIdsByAgent: deps.setCollapsedTurnIdsByAgent,
     setAgentPanePreviews: deps.setAgentPanePreviews,
     setAgentPaneEntries: deps.setAgentPaneEntries,
     setNextHistoryCursor: deps.setNextHistoryCursor,
