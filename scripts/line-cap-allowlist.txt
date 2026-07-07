@@ -114,4 +114,3 @@ apps/kernel/src/runtime_transport/subscriptions.rs
 apps/kernel/src/io/coordinator.rs
 apps/kernel/src/runtime/state/agent_config_runtime_state.rs
 apps/cli/scripts/live-mcp-skill-drill.mjs
-apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/ArrobaAppModelTests.swift
