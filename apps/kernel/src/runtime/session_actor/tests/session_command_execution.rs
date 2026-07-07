@@ -538,19 +538,45 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (end_session_id, delete_session_id, terminal_stream) = {
+    let (end_session_id, delete_session_id, delete_agent_id, delete_cursor_key, terminal_stream) = {
         let mut app_locked = app.lock().await;
         let (end_session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("end session should be created");
-        let (delete_session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+        let (delete_session, delete_agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(
                 CreateSessionRequest::new("workspace", "worktree").with_alias("delete-owned"),
             )
             .expect("delete session should be created");
+        let external_sessions = app_locked.external_provider_session_index_store();
+        external_sessions.upsert(session_command_external_provider_session_record(
+            "codex",
+            "deleted-session-thread",
+            40,
+        ));
+        external_sessions.mark_attached(
+            "codex:deleted-session-thread",
+            delete_session.id(),
+            delete_agent.id(),
+        );
+        let delete_cursor_key = crate::app::AttachedProviderTranscriptCursorKey::new(
+            delete_session.id(),
+            delete_agent.id(),
+            "codex",
+            "deleted-session-thread",
+        );
+        app_locked.attached_provider_transcript_cursor_store().set(
+            delete_cursor_key.clone(),
+            crate::provider::ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-before-delete".to_string()),
+                ..crate::provider::ExternalProviderObservedCursor::default()
+            },
+        );
         (
             end_session.id().to_string(),
             delete_session.id().to_string(),
+            delete_agent.id().to_string(),
+            delete_cursor_key,
             app_locked.terminal_stream_store(),
         )
     };
@@ -605,6 +631,34 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
     assert!(
         session_projection.get(&delete_session_id).is_none(),
         "deleted session should be removed from projection"
+    );
+    let page = _locked_app.external_provider_session_index_store().list(
+        &ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        },
+    );
+    assert_eq!(
+        page.sessions
+            .iter()
+            .map(|session| session.external_session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["codex:deleted-session-thread"],
+        "deleting a session with an attached external provider agent should return its provider thread to the unattached list"
+    );
+    assert!(page.sessions[0].is_attachable_to_arroba());
+    assert_eq!(
+        page.sessions[0].attached_agent_ids,
+        Vec::<String>::new(),
+        "deleted session agent `{delete_agent_id}` should not remain attached to the external provider session"
+    );
+    assert_eq!(
+        _locked_app
+            .attached_provider_transcript_cursor_store()
+            .get(&delete_cursor_key),
+        crate::provider::ExternalProviderObservedCursor::default(),
+        "deleting a session should prune its attached provider transcript cursor"
     );
 }
 
@@ -785,4 +839,29 @@ fn handles_attach_through_session_actor_surface() {
         response,
         LocalDaemonResponse::SessionAttached { .. }
     ));
+}
+
+fn session_command_external_provider_session_record(
+    provider: &str,
+    provider_session_id: &str,
+    last_modified_at_ms: u64,
+) -> ExternalProviderSessionRecord {
+    ExternalProviderSessionRecord {
+        external_session_id: format!("{provider}:{provider_session_id}"),
+        provider: provider.to_string(),
+        provider_session_id: provider_session_id.to_string(),
+        title: Some(provider_session_id.to_string()),
+        title_source: Some("test".to_string()),
+        first_prompt_preview: None,
+        created_at_ms: None,
+        last_modified_at_ms,
+        worktree_path: None,
+        account_profile: None,
+        capabilities: ExternalProviderSessionCapabilities {
+            ..ExternalProviderSessionCapabilities::default()
+        },
+        attached_to_arroba: false,
+        attached_session_ids: Vec::new(),
+        attached_agent_ids: Vec::new(),
+    }
 }
