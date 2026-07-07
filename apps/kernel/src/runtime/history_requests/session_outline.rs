@@ -649,6 +649,9 @@ fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
 
 fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
     let entry = event.to_session_history_entry()?;
+    if entry.is_external_provider_observed_state_signal() {
+        return None;
+    }
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
@@ -665,6 +668,9 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
 
 fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
     let mut entry = event.to_session_history_entry()?;
+    if entry.is_external_provider_observed_state_signal() {
+        return None;
+    }
     for attachment in &mut entry.attachments {
         attachment.rehydrate_preview_url();
     }
@@ -1520,6 +1526,67 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final output")
         );
+    }
+
+    #[test]
+    fn blob_content_hides_external_observer_state_signals() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-hidden-state-blob-content-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let hidden_settlement = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:assistant-1",
+            "turn-1".to_string(),
+            Some(2_200),
+        );
+        store
+            .append(&HistoryEvent::transcript(12, &hidden_settlement, context))
+            .expect("hidden settlement should append");
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime should create")
+            .block_on(execute_session_history_blob_content_request(
+                store.clone(),
+                GetSessionHistoryBlobContentRequest {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    blob_id: blob_id(12, 12),
+                },
+            ))
+            .expect("blob content should load");
+        let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } = response else {
+            panic!("unexpected response")
+        };
+
+        assert!(
+            entries.is_empty(),
+            "internal observer state must not project through blob content"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]
