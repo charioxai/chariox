@@ -6,6 +6,7 @@ import {
   agentRuntimeActiveTurnIsBusy,
   agentRuntimeActivityHasTurnWork,
   agentRuntimeActivityIsBusy,
+  agentRuntimeActivityProjectionHasTurnWork,
   agentRuntimeActivityProjectionHasExternalActiveTurn,
   agentRuntimeActivityProjectionResolvedStatus,
   agentRuntimeActivityResolvedStatus,
@@ -240,6 +241,39 @@ test("agent activity turn-work helper distinguishes active turns from queued-onl
     prompt_status: "none",
     busy: false,
   }), false)
+})
+
+test("agent activity projection busy state mirrors projected turn-work policy", () => {
+  const cases = [
+    {
+      status: "working",
+      prompt_status: "queued",
+      busy: true,
+      active_prompt_count: 0,
+      queued_prompt_count: 1,
+    },
+    {
+      status: "idle",
+      prompt_status: "none",
+      busy: false,
+      active_turn: {
+        prompt_id: "prompt-1",
+        status: "running",
+      },
+    },
+    {
+      status: "working",
+      prompt_status: "none",
+      busy: false,
+      active_prompt_count: 0,
+      queued_prompt_count: 0,
+    },
+  ]
+
+  for (const value of cases) {
+    const projection = projectAgentRuntimeActivity(value)
+    assert.equal(projection.busy, agentRuntimeActivityProjectionHasTurnWork(projection))
+  }
 })
 
 test("agent activity projection preserves kernel counts as activity source", () => {

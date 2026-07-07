@@ -171,15 +171,10 @@ export function projectAgentRuntimeActivity(
   const activeTurnIdentity = projectAgentRuntimeActiveTurnIdentity(liveActiveTurn)
   const lastCompletedTurn = readAgentRuntimeCompletedTurn(activityRecord)
     ?? readAgentRuntimeCompletedTurn(value)
-  const hasTurnWork = activeTurnBusy
-    || agentRuntimePromptStatusIsActivePrompt(promptStatus)
-    || activePromptCount > 0
-  const queuedOnly = !hasTurnWork
-    && (agentRuntimePromptStatusIsQueued(promptStatus) || queuedPromptCount > 0)
-  return {
+  const projection: AgentRuntimeActivityProjection = {
     status,
     promptStatus,
-    busy: queuedOnly ? false : rawBusy || activePromptCount > 0,
+    busy: rawBusy,
     activeTurn,
     ...activeTurnIdentity,
     ...(lastCompletedTurn ? { lastCompletedTurn } : {}),
@@ -189,6 +184,10 @@ export function projectAgentRuntimeActivity(
     queuedPromptCountExplicit: projectedQueuedPromptCount.explicit,
     error,
     unreadIdleOutput,
+  }
+  return {
+    ...projection,
+    busy: agentRuntimeActivityProjectionHasTurnWork(projection),
   }
 }
 
