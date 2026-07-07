@@ -79,6 +79,12 @@ pub struct PromptQueueItem {
     status: PromptStatus,
     #[serde(default)]
     prompt_origin: PromptOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_turn_id: Option<String>,
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
 }
@@ -94,6 +100,9 @@ pub struct PendingPromptSubmission {
     updated_at_ms: u64,
     hidden_system_context: String,
     prompt_origin: PromptOrigin,
+    external_provider: Option<String>,
+    external_provider_session_id: Option<String>,
+    external_provider_turn_id: Option<String>,
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
 }
@@ -114,6 +123,9 @@ impl PendingPromptSubmission {
             updated_at_ms: now,
             hidden_system_context: prompt.hidden_system_context,
             prompt_origin: prompt.prompt_origin,
+            external_provider: prompt.external_provider,
+            external_provider_session_id: prompt.external_provider_session_id,
+            external_provider_turn_id: prompt.external_provider_turn_id,
             workflow_run_id: prompt.workflow_run_id,
             workflow_node_run_id: prompt.workflow_node_run_id,
         }
@@ -132,6 +144,9 @@ impl PendingPromptSubmission {
             hidden_system_context: self.hidden_system_context,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
+            external_provider: self.external_provider,
+            external_provider_session_id: self.external_provider_session_id,
+            external_provider_turn_id: self.external_provider_turn_id,
             workflow_run_id: self.workflow_run_id,
             workflow_node_run_id: self.workflow_node_run_id,
         }
@@ -159,6 +174,9 @@ impl PromptQueueItem {
             hidden_system_context: String::new(),
             status,
             prompt_origin: PromptOrigin::Arroba,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
             workflow_run_id: None,
             workflow_node_run_id: None,
         }
@@ -170,14 +188,21 @@ impl PromptQueueItem {
         target_agent_id: impl Into<String>,
         prompt: impl Into<String>,
     ) -> Self {
-        Self::new(
+        let id = id.into();
+        let external_observed_id = crate::history::parse_external_provider_observed_id(&id);
+        let prompt = Self::new(
             id,
             format!("external:{}", provider.as_ref()),
             target_agent_id,
             prompt,
             PromptStatus::Running,
         )
-        .with_prompt_origin(PromptOrigin::External)
+        .with_prompt_origin(PromptOrigin::External);
+        if let Some(external_observed_id) = external_observed_id {
+            prompt.with_external_observed_id(external_observed_id)
+        } else {
+            prompt
+        }
     }
 
     pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
@@ -202,6 +227,16 @@ impl PromptQueueItem {
 
     pub fn with_prompt_origin(mut self, prompt_origin: PromptOrigin) -> Self {
         self.prompt_origin = prompt_origin;
+        self
+    }
+
+    pub fn with_external_observed_id(
+        mut self,
+        external_observed_id: crate::history::ExternalProviderObservedId,
+    ) -> Self {
+        self.external_provider = Some(external_observed_id.provider);
+        self.external_provider_session_id = Some(external_observed_id.provider_session_id);
+        self.external_provider_turn_id = Some(external_observed_id.provider_turn_id);
         self
     }
 
@@ -276,9 +311,26 @@ impl PromptQueueItem {
     }
 
     pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
-        self.is_external()
-            .then(|| crate::history::parse_external_provider_observed_id(&self.id))
-            .flatten()
+        if !self.is_external() {
+            return None;
+        }
+        Some(crate::history::ExternalProviderObservedId {
+            provider: self.external_provider.clone()?,
+            provider_session_id: self.external_provider_session_id.clone()?,
+            provider_turn_id: self.external_provider_turn_id.clone()?,
+        })
+    }
+
+    pub fn external_provider(&self) -> Option<&str> {
+        self.external_provider.as_deref()
+    }
+
+    pub fn external_provider_session_id(&self) -> Option<&str> {
+        self.external_provider_session_id.as_deref()
+    }
+
+    pub fn external_provider_turn_id(&self) -> Option<&str> {
+        self.external_provider_turn_id.as_deref()
     }
 
     pub fn workflow_run_id(&self) -> Option<&str> {
@@ -431,6 +483,45 @@ mod tests {
         assert!(!prompt.is_arroba_owned());
         assert_eq!(
             prompt.external_observed_id(),
+            Some(crate::history::ExternalProviderObservedId {
+                provider: "codex".to_string(),
+                provider_session_id: "thread-1".to_string(),
+                provider_turn_id: "user-1".to_string(),
+            })
+        );
+        assert_eq!(prompt.external_provider(), Some("codex"));
+        assert_eq!(prompt.external_provider_session_id(), Some("thread-1"));
+        assert_eq!(prompt.external_provider_turn_id(), Some("user-1"));
+
+        let payload = serde_json::to_value(&prompt).expect("prompt should serialize");
+        assert_eq!(
+            payload.pointer("/external_provider"),
+            Some(&serde_json::json!("codex"))
+        );
+        assert_eq!(
+            payload.pointer("/external_provider_session_id"),
+            Some(&serde_json::json!("thread-1"))
+        );
+        assert_eq!(
+            payload.pointer("/external_provider_turn_id"),
+            Some(&serde_json::json!("user-1"))
+        );
+    }
+
+    #[test]
+    fn prompt_queue_item_pending_conversion_preserves_external_metadata() {
+        let prompt = PromptQueueItem::external_observed_running(
+            "external:codex:thread-1:user-1",
+            "codex",
+            "agent-1",
+            "run this",
+        );
+
+        let pending = prompt.into_pending_queue_item("pending-1");
+
+        assert_eq!(pending.id(), "pending-1");
+        assert_eq!(
+            pending.external_observed_id(),
             Some(crate::history::ExternalProviderObservedId {
                 provider: "codex".to_string(),
                 provider_session_id: "thread-1".to_string(),

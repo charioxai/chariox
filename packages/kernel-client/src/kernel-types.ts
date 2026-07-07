@@ -1049,6 +1049,9 @@ export type PromptQueueItem = {
   updated_at_ms?: number
   status: string
   prompt_origin?: "arroba" | "external" | string
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
 }
 
 export type RuntimeAttachment = {
@@ -1521,7 +1524,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 232
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 233
 
 export type TerminalCommandCatalogNodeKind =
   | "group"

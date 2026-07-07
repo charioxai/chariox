@@ -622,14 +622,12 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
-        let external_prompt = crate::session::PromptQueueItem::new(
+        let external_prompt = crate::session::PromptQueueItem::external_observed_running(
             "external:codex:session-1:user-1",
-            "external:codex",
+            "codex",
             agent.id(),
             "external prompt",
-            crate::session::PromptStatus::Running,
-        )
-        .with_prompt_origin(crate::session::PromptOrigin::External);
+        );
         app.prompt_owner_sync_external_active_prompt(
             session.id(),
             agent.id(),
@@ -994,14 +992,12 @@ mod tests {
             .expect("session should be created");
         let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
         let attachment_id = attach_cli(&mut app, session.id(), "cli-external-queued-controls");
-        let external_prompt = crate::session::PromptQueueItem::new(
+        let external_prompt = crate::session::PromptQueueItem::external_observed_running(
             "external:codex:session-1:user-1",
-            "external:codex",
+            "codex",
             agent.id(),
             "external prompt",
-            crate::session::PromptStatus::Running,
-        )
-        .with_prompt_origin(crate::session::PromptOrigin::External);
+        );
         app.prompt_owner_sync_external_active_prompt(
             session.id(),
             agent.id(),

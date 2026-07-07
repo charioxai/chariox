@@ -130,7 +130,7 @@ test("session prompt lifecycle falls back to prompt state for sparse active acti
   }])
 })
 
-test("session prompt lifecycle records external prompt-state identity from runtime id", () => {
+test("session prompt lifecycle records external prompt-state identity from explicit metadata", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
     prompt_states: {
@@ -142,6 +142,9 @@ test("session prompt lifecycle records external prompt-state identity from runti
           prompt: "hello",
           status: "running",
           prompt_origin: " External ",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "turn:with:colon",
         },
         queued_prompts: [],
       },
@@ -163,10 +166,50 @@ test("session prompt lifecycle records external prompt-state identity from runti
     prompt: "hello",
     status: "running",
     prompt_origin: " External ",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn:with:colon",
     promptOrigin: "external",
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn:with:colon",
+  }])
+})
+
+test("session prompt lifecycle does not infer external prompt-state identity from runtime id", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:turn-1",
+          source_attachment_id: "external:codex",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          prompt_origin: "external",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "external:codex:thread-1:turn-1",
+    source_attachment_id: "external:codex",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    prompt_origin: "external",
+    promptOrigin: "external",
   }])
 })
 
@@ -526,7 +569,7 @@ test("session prompt lifecycle transition settles reused prompt ids when externa
   })
 })
 
-test("session prompt lifecycle transition treats decomposed metadata fill-in as stable", () => {
+test("session prompt lifecycle transition treats newly explicit external metadata as a change", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
       agents: [makeAgent({ id: "agent-1" })],
@@ -570,9 +613,9 @@ test("session prompt lifecycle transition treats decomposed metadata fill-in as 
   )
 
   assert.deepEqual(transition, {
-    activePromptChanged: false,
+    activePromptChanged: true,
     cancelledPromptSettled: false,
-    settledAgentIds: [],
+    settledAgentIds: ["agent-1"],
   })
 })
 

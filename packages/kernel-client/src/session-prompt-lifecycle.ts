@@ -8,11 +8,9 @@ import {
 } from "./agent-activity.js"
 import {
   externalProviderObservedIdentityKey,
-  parseExternalProviderObservedId,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
 import {
-  ARROBA_PROMPT_ORIGIN,
   EXTERNAL_PROMPT_ORIGIN,
   promptOriginFromRecord,
 } from "./prompt-origin.js"
@@ -100,19 +98,18 @@ export function sessionPromptLifecycleTransition(
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   const promptOrigin = promptOriginFromRecord(prompt)
-  const externalObservedId = promptOrigin === EXTERNAL_PROMPT_ORIGIN
-    ? parseExternalProviderObservedId(prompt.id)
-    : null
   return {
     ...prompt,
     status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
     promptOrigin,
-    ...(externalObservedId
-      ? {
-        externalProvider: externalObservedId.provider,
-        externalProviderSessionId: externalObservedId.providerSessionId,
-        externalProviderTurnId: externalObservedId.providerTurnId,
-      }
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider !== undefined
+      ? { externalProvider: prompt.external_provider }
+      : {}),
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider_session_id !== undefined
+      ? { externalProviderSessionId: prompt.external_provider_session_id }
+      : {}),
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider_turn_id !== undefined
+      ? { externalProviderTurnId: prompt.external_provider_turn_id }
       : {}),
   }
 }
@@ -178,13 +175,15 @@ function activePromptLifecycleRecordMatchesPromptState(
   if (stateActivePrompt.id === record.id) {
     return true
   }
-  const stateExternalId = parseExternalProviderObservedId(stateActivePrompt.id)
-  if (!stateExternalId) {
+  const stateExternalKey = activePromptLifecycleRecordExternalIdentityKey(
+    activePromptLifecycleRecordFromPrompt(stateActivePrompt),
+  )
+  if (!stateExternalKey) {
     return false
   }
-  return stateExternalId.provider === normalizeExternalProviderLifecycleProvider(record.externalProvider)
-    && stateExternalId.providerSessionId === (record.externalProviderSessionId ?? "")
-    && stateExternalId.providerTurnId === (record.externalProviderTurnId ?? "")
+  return stateExternalKey.provider === normalizeExternalProviderLifecycleProvider(record.externalProvider)
+    && stateExternalKey.providerSessionId === (record.externalProviderSessionId ?? "")
+    && stateExternalKey.providerTurnId === (record.externalProviderTurnId ?? "")
 }
 
 function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {
@@ -210,7 +209,7 @@ function activePromptLifecycleRecordIdentityFingerprint(prompt: ActivePromptLife
 
 function activePromptLifecycleRecordExternalIdentityKey(prompt: ActivePromptLifecycleRecord) {
   return externalProviderObservedIdentityKey({
-    promptId: prompt.promptOrigin === ARROBA_PROMPT_ORIGIN ? null : prompt.id,
+    promptId: null,
     ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
     ...(prompt.externalProviderSessionId !== undefined
       ? { externalProviderSessionId: prompt.externalProviderSessionId }
