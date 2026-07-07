@@ -116,6 +116,46 @@ test("attached session prime projects kernel-scoped history without local import
   assert.equal(harness.replaceCalls.at(-1)?.agentId, "agent-1")
 })
 
+test("attached session prime filters passive external provider statuses through shared hydration", async () => {
+  const harness = primeHarness({
+    outline: {
+      agents: [{
+        agent_id: "agent-1",
+        turns: [{
+          turn_id: "turn-1",
+          prompt_id: "external:codex:thread-1:user-1",
+          prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+          started_at_ms: 1,
+          completed_at_ms: null,
+          user_prompt: historyEntry(1, "user_prompt", "external prompt\n", "agent-1", externalObserved("codex", "thread-1", "user-1")),
+          entries: [
+            historyEntry(2, "provider_status", "codex token_count\n{\"total\":42}", "agent-1", externalObserved("codex", "thread-1", "token-count")),
+            historyEntry(3, "provider_output", "external output", "agent-1", externalObserved("codex", "thread-1", "assistant-1")),
+          ],
+          summary: null,
+          blobs: [],
+        }],
+        next_cursor: null,
+      }],
+    },
+  })
+
+  await harness.controller.prime(session())
+
+  assert.deepEqual(renderableTexts(harness.agentPaneEntries["agent-1"] ?? []), [
+    "external prompt",
+    "external output",
+  ])
+  assert.deepEqual(renderableReplaceEntries(harness.replaceCalls.at(-1)?.entries ?? []), [
+    { id: 1, role: "user", text: "external prompt" },
+    { id: 2, role: "assistant", text: "external output" },
+  ])
+  assert.equal(harness.agentPanePreviews["agent-1"], "You: external prompt\nAsst: external output")
+})
+
 function primeHarness(options: {
   split?: boolean
   maxAgentsPerScreen?: number
@@ -231,7 +271,7 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
 
 function historyEntry(
   entryIndex: number,
-  kind: "user_prompt" | "provider_output",
+  kind: "user_prompt" | "provider_output" | "provider_status",
   text: string,
   agentId: string,
   metadata: Record<string, unknown> = {},
