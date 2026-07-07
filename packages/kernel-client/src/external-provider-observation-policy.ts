@@ -19,7 +19,7 @@ export function externalProviderStatusIsPassiveTelemetry(
   text: string,
 ): boolean {
   const spec = externalProviderObservationSpec(provider)
-  return spec?.passiveStatusPrefixes.some((prefix) => text.startsWith(prefix)) ?? false
+  return spec?.passiveStatusPrefixes.some((prefix) => statusTextStartsWith(text, prefix)) ?? false
 }
 
 function externalProviderObservationSpec(
@@ -30,4 +30,8 @@ function externalProviderObservationSpec(
     return null
   }
   return EXTERNAL_PROVIDER_OBSERVATION_SPECS.find((spec) => spec.provider === normalized) ?? null
+}
+
+function statusTextStartsWith(text: string, prefix: string): boolean {
+  return text.trimStart().slice(0, prefix.length).toLowerCase() === prefix
 }

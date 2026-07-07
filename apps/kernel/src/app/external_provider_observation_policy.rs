@@ -84,7 +84,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         self.spec().is_some_and(|spec| {
             spec.settling_status_prefixes
                 .iter()
-                .any(|prefix| text.starts_with(prefix))
+                .any(|prefix| status_text_starts_with(text, prefix))
                 || spec
                     .settling_status_fragments
                     .iter()
@@ -96,7 +96,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         self.spec().is_some_and(|spec| {
             spec.passive_status_prefixes
                 .iter()
-                .any(|prefix| text.starts_with(prefix))
+                .any(|prefix| status_text_starts_with(text, prefix))
         })
     }
 
@@ -105,7 +105,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             return None;
         }
         let (header, payload) = text.split_once('\n')?;
-        if header.trim() != "codex token_count" {
+        if !header.trim().eq_ignore_ascii_case("codex token_count") {
             return None;
         }
         let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
@@ -252,6 +252,12 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
     }
 }
 
+fn status_text_starts_with(text: &str, prefix: &str) -> bool {
+    text.trim_start()
+        .get(..prefix.len())
+        .is_some_and(|header| header.eq_ignore_ascii_case(prefix))
+}
+
 fn first_u64_path(value: &serde_json::Value, paths: &[&[&str]]) -> Option<u64> {
     paths.iter().find_map(|path| read_u64_path(value, path))
 }
@@ -394,24 +400,24 @@ mod tests {
     #[test]
     fn provider_policy_tolerates_legacy_provider_casing_and_whitespace() {
         let codex = ExternalProviderObservationPolicy::for_provider(" Codex ");
-        assert!(codex.status_settles("codex task_complete\n{}"));
-        assert!(codex.status_is_passive_telemetry("codex token_count\n{}"));
+        assert!(codex.status_settles(" Codex task_complete\n{}"));
+        assert!(codex.status_is_passive_telemetry(" CODEX token_count\n{}"));
 
         let claude = ExternalProviderObservationPolicy::for_provider(" CLAUDE ");
-        assert!(claude.status_settles("claude message completed\n{}"));
+        assert!(claude.status_settles(" Claude message completed\n{}"));
         assert!(
-            claude.status_is_passive_telemetry("claude last-prompt {\"lastPrompt\":\"prompt\"}")
+            claude.status_is_passive_telemetry(" CLAUDE last-prompt {\"lastPrompt\":\"prompt\"}")
         );
 
         let opencode = ExternalProviderObservationPolicy::for_provider(" OpenCode ");
-        assert!(opencode.status_settles("opencode message completed\n{}"));
+        assert!(opencode.status_settles(" OpenCode message completed\n{}"));
     }
 
     #[test]
     fn codex_token_count_status_projects_provider_run_usage() {
         assert_eq!(
             ExternalProviderObservationPolicy::for_provider("codex").status_usage(
-                "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42000},\"model_context_window\":128000}}"
+                " Codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42000},\"model_context_window\":128000}}"
             ),
             Some(ProviderRunTokenUsage {
                 total_tokens: Some(42_000),
