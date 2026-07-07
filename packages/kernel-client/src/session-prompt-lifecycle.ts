@@ -127,7 +127,7 @@ function activePromptLifecycleRecordFromProjectedTurn(
   return {
     id: projection.activeTurnPromptId,
     status: projection.activeTurnStatus ?? projection.promptStatus,
-    promptOrigin: projection.activeTurnPromptOrigin ?? null,
+    promptOrigin: activePromptLifecycleRecordPromptOriginFromProjectedTurn(projection),
     target_agent_id: agentId,
     ...(projection.activeTurnProviderRunId ? { providerRunId: projection.activeTurnProviderRunId } : {}),
     ...(projection.activeTurnSourceAttachmentId !== undefined
@@ -141,6 +141,25 @@ function activePromptLifecycleRecordFromProjectedTurn(
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
       : {}),
   }
+}
+
+function activePromptLifecycleRecordPromptOriginFromProjectedTurn(
+  projection: AgentRuntimeActivityProjection,
+): string | null {
+  if (projection.activeTurnPromptOrigin !== undefined) {
+    return projection.activeTurnPromptOrigin
+  }
+  if (parseExternalProviderObservedId(projection.activeTurnPromptId)) {
+    return EXTERNAL_PROMPT_ORIGIN
+  }
+  if (
+    projection.activeTurnExternalProvider
+    || projection.activeTurnExternalProviderSessionId
+    || projection.activeTurnExternalProviderTurnId
+  ) {
+    return EXTERNAL_PROMPT_ORIGIN
+  }
+  return null
 }
 
 function activePromptLifecycleRecordWithPromptState(
