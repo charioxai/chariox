@@ -15,6 +15,9 @@ import {
   stitchPrependedHistoryTranscript,
   type SessionHistoryTranscriptEntry,
 } from "./session-history-transcript.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("session history transcript hydration reconstructs tools and suppresses ordinary status noise", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
@@ -111,7 +114,7 @@ test("session history transcript hydration preserves external observed metadata"
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(7, "provider_output", "native ", {
       merge_key: "external:codex:thread-1:item-1",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "item-1",
@@ -123,7 +126,7 @@ test("session history transcript hydration preserves external observed metadata"
     }, { fragmentStart: 0, fragmentEnd: 7, totalChars: 12 }),
     pageEntry(7, "provider_output", "reply", {
       merge_key: "external:codex:thread-1:item-1",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "item-1",
@@ -136,7 +139,7 @@ test("session history transcript hydration preserves external observed metadata"
 
   assert.equal(entries.length, 1)
   assert.equal(entries[0]?.text, "native reply")
-  assert.equal(entries[0]?.source, "external_provider_observed")
+  assert.equal(entries[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(entries[0]?.externalProvider, "codex")
   assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
   assert.equal(entries[0]?.externalProviderTurnId, "item-1")
@@ -151,12 +154,12 @@ test("session history transcript hydration recovers external observed metadata f
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(7, "provider_output", "native reply", {
       merge_key: "external:codex:thread-1:item-1",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     }),
   ])
 
   assert.equal(entries.length, 1)
-  assert.equal(entries[0]?.source, "external_provider_observed")
+  assert.equal(entries[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(entries[0]?.externalProvider, "codex")
   assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
   assert.equal(entries[0]?.externalProviderTurnId, "item-1")
@@ -166,13 +169,13 @@ test("session history transcript hydration renders only non-passive external pro
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(1, "provider_status", "OpenCode status: reconnecting"),
     pageEntry(2, "provider_status", "codex event turn_aborted {\"reason\":\"user\"}", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-aborted",
     }),
     pageEntry(3, "provider_status", "codex token_count {\"total\":42}", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "token-count",
@@ -182,7 +185,7 @@ test("session history transcript hydration renders only non-passive external pro
       },
     }),
     pageEntry(4, "provider_status", "codex token_count {\"total\":43}", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "legacy-token-count",
@@ -193,19 +196,19 @@ test("session history transcript hydration renders only non-passive external pro
     "codex event turn_aborted {\"reason\":\"user\"}",
   ])
   assert.equal(entries[0]?.role, "status")
-  assert.equal(entries[0]?.source, "external_provider_observed")
+  assert.equal(entries[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
 })
 
 test("session history transcript hydration keeps multiple external provider statuses", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(0, "user_prompt", "external prompt\n", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
     }),
     pageEntry(1, "provider_status", "codex turn started", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "status-started",
@@ -215,7 +218,7 @@ test("session history transcript hydration keeps multiple external provider stat
       },
     }),
     pageEntry(2, "provider_status", "codex turn aborted", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "status-aborted",
@@ -254,7 +257,7 @@ test("session history transcript hydration preserves prompt attachment and promp
       attachments,
     }),
     pageEntry(1, "provider_output", "native reply\n", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
@@ -278,7 +281,7 @@ test("session history transcript hydration preserves prompt attachment and promp
 test("shared history transcript stitch helpers preserve metadata", () => {
   const stitched = stitchPrependedHistoryTranscript(
     [transcriptEntry(1, "assistant", "native ", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -302,7 +305,7 @@ test("shared history transcript stitch helpers preserve metadata", () => {
 
   assert.equal(stitched.length, 1)
   assert.equal(stitched[0]?.text, "native reply")
-  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
@@ -375,12 +378,12 @@ test("session history outline hydration carries prompt identity into entries and
   assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptId, "prompt-1")
   assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptOrigin, "external")
   const prompt = entries.find((entry) => entry.role === "user")
-  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(prompt?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(prompt?.externalProvider, "codex")
   assert.equal(prompt?.externalProviderSessionId, "thread-1")
   assert.equal(prompt?.externalProviderTurnId, "user-1")
   const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
-  assert.equal(placeholder?.source, "external_provider_observed")
+  assert.equal(placeholder?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(placeholder?.externalProvider, "codex")
   assert.equal(placeholder?.externalProviderSessionId, "thread-1")
   assert.equal(placeholder?.externalProviderTurnId, "user-1")
@@ -554,11 +557,11 @@ test("session history outline hydration projects sparse external turn metadata",
   const prompt = entries.find((entry) => entry.role === "user")
   const assistant = entries.find((entry) => entry.role === "assistant")
   const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
-  assert.equal(prompt?.source, "external_provider_observed")
+  assert.equal(prompt?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(prompt?.promptOrigin, "external")
-  assert.equal(assistant?.source, "external_provider_observed")
+  assert.equal(assistant?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(assistant?.promptOrigin, "external")
-  assert.equal(placeholder?.source, "external_provider_observed")
+  assert.equal(placeholder?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(placeholder?.promptOrigin, "external")
   assert.equal(prompt?.externalProvider, "codex")
   assert.equal(prompt?.externalProviderSessionId, "thread-1")
@@ -685,7 +688,7 @@ test("session history blob replacement preserves prompt and external turn metada
   const tool = replaced.find((entry) => entry.role === "tool")
   assert.equal(tool?.promptId, "prompt-1")
   assert.equal(tool?.promptOrigin, "external")
-  assert.equal(tool?.source, "external_provider_observed")
+  assert.equal(tool?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(tool?.externalProvider, "codex")
   assert.equal(tool?.externalProviderSessionId, "thread-1")
   assert.equal(tool?.externalProviderTurnId, "user-1")
