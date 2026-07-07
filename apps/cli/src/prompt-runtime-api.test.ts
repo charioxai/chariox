@@ -8,6 +8,7 @@ import type {
 import type { LocalIpcClient } from "./ipc.js"
 import {
   cancelQueuedPrompt,
+  promptSubmissionTranscriptMetadata,
   steerQueuedPrompt,
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
@@ -58,6 +59,78 @@ test("submitPromptWithRecovery merges projected agent activity into returned ses
   })
   assert.equal(result.payload.session.agent_activity_revision, 42)
   assert.equal(result.targetAgentId, "agent-1")
+})
+
+test("prompt submission transcript metadata prefers outcome prompt identity", () => {
+  assert.deepEqual(promptSubmissionTranscriptMetadata({
+    outcome: {
+      Started: {
+        prompt: {
+          id: "prompt-started",
+          source_attachment_id: "attachment-started",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "Running",
+          prompt_origin: " External ",
+        },
+      },
+    },
+    session: runtimeSession("session-1", {
+      active_prompt: {
+        id: "prompt-state",
+        source_attachment_id: "attachment-state",
+        target_agent_id: "agent-1",
+        prompt: "hello",
+        status: "running",
+        prompt_origin: "arroba",
+      },
+    }),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }, "agent-1"), {
+    promptId: "prompt-started",
+    sourceAttachmentId: "attachment-started",
+    promptOrigin: "external",
+  })
+})
+
+test("prompt submission transcript metadata falls back to projected session prompt", () => {
+  assert.deepEqual(promptSubmissionTranscriptMetadata({
+    outcome: {},
+    session: runtimeSession("session-1", {
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-state",
+            source_attachment_id: "attachment-state",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: "running",
+            prompt_origin: " External ",
+          },
+          queued_prompts: [],
+        },
+      },
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-state",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }, "agent-1"), {
+    promptId: "prompt-state",
+    sourceAttachmentId: "attachment-state",
+    promptOrigin: "external",
+  })
 })
 
 test("submitPromptWithRecovery recovers with the stored provider for the prompt target", async () => {
