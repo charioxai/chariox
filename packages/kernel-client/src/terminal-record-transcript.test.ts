@@ -26,6 +26,17 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
     promptOrigin: "external",
     sourceAttachmentId: "attachment-1",
   })
+
+  assert.equal(terminalRecordTranscriptMetadata({
+    kind: "prompt_echo",
+    prompt_id: "external:codex:thread-1:turn-1",
+  }).promptOrigin, "external")
+
+  assert.equal(terminalRecordTranscriptMetadata({
+    kind: "prompt_echo",
+    prompt_id: "external:codex:thread-1:turn-1",
+    prompt_origin: "arroba",
+  }).promptOrigin, "arroba")
 })
 
 test("terminalRecordTranscriptMetadata preserves explicit null prompt identity", () => {
@@ -67,6 +78,7 @@ test("terminalRecordTranscriptMetadata projects external observed metadata", () 
       passive_telemetry: false,
     },
   }), {
+    promptOrigin: "external",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
