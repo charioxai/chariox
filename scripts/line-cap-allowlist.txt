@@ -109,7 +109,6 @@ apps/kernel/src/transport/mcp_server/tests.rs
 apps/kernel/src/scheduler/prompt_injection.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/Views/ArrobaRootView.swift
 apps/kernel/src/runtime_transport.rs
-apps/cli/src/slice-command-handlers.ts
 apps/cli/scripts/lib/hosted-cloud-kernel-scenarios.mjs
 apps/kernel/src/slice/store.rs
 apps/cli/scripts/live-unattached-agents-tui-parity-drill.mjs

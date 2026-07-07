@@ -1,12 +1,14 @@
 import type {
   SliceBackupRecord,
-  SliceDisplayEndpoint,
   SliceLogEntry,
   SliceRecord,
   SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import {
+  formatSliceProviderAuthActionResult,
+  formatSliceProviderLogin,
+} from "./slice-auth-format.js"
 import {
   formatSliceDiagnostics,
   formatSliceOperation,
@@ -17,59 +19,13 @@ import {
   formatSliceScope,
   sliceProviderAuthCoverage,
 } from "@arroba/kernel-client/slice-format"
-
-type FooterTone = "info" | "error"
-
-type SliceCreateOptions = {
-  name: string
-  backend?: "local_docker" | "ssh_docker"
-  os?: string
-  displayMode?: "headless" | "headed"
-  workspaceId?: string | null
-  worktreeId?: string | null
-  workspaceMount?: string | null
-  workerKernelRef?: string | null
-  displayUrl?: string | null
-  fromSavedState?: string | null
-  base?: "default" | "clean" | null
-}
-
-export type SliceCommandHandlerDeps = {
-  currentWorkspaceTarget: () => string
-  currentWorktreeTarget: () => string
-  focusedAgentId: () => string | null
-  resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
-  flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice: (message: string) => void
-  openExternalUrl?: (url: string) => Promise<boolean>
-  listSlices?: () => Promise<SliceRecord[]>
-  createSlice?: (options: SliceCreateOptions) => Promise<SliceRecord>
-  getSlice?: (sliceRef: string) => Promise<SliceRecord>
-  startSlice?: (sliceRef: string) => Promise<SliceRecord>
-  stopSlice?: (sliceRef: string) => Promise<SliceRecord>
-  deleteSlice?: (sliceRef: string) => Promise<SliceRecord>
-  importSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
-  removeSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
-  startSliceProviderLogin?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; login: SliceProviderLogin }>
-  setSliceProviderAuthAlias?: (sliceRef: string, provider: string, alias: string | null) => Promise<{ slice: SliceRecord; provider: string; alias: string | null }>
-  getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
-  getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
-  listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
-  saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null, scope?: "this_slice" | "future_slices" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
-  getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
-  resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
-  createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
-}
-
-type SliceProviderLogin = {
-  provider: string
-  login_kind: string
-  auth_url?: string | null
-  verification_url?: string | null
-  user_code?: string | null
-  status: string
-  message: string
-}
+import type {
+  SliceCommandHandlerDeps,
+  SliceCreateOptions,
+} from "./slice-command-handler-types.js"
+export type {
+  SliceCommandHandlerDeps,
+} from "./slice-command-handler-types.js"
 
 export async function handleSliceSlashCommand(
   deps: SliceCommandHandlerDeps,
@@ -996,34 +952,6 @@ async function startSliceAuthLogin(
   const result = await deps.startSliceProviderLogin(sliceRef, provider)
   deps.appendNotice(formatSliceProviderLogin(result.login))
   deps.flashFooter(`slice auth login ${result.login.provider}: ${result.login.status}`, "info")
-}
-
-function formatSliceProviderLogin(login: SliceProviderLogin): string {
-  return [
-    `slice auth login ${login.provider}: ${login.status}`,
-    login.verification_url ? `url=${login.verification_url}` : "",
-    login.user_code ? `code=${login.user_code}` : "",
-    login.message,
-  ].filter(Boolean).join("\n")
-}
-
-function formatSliceProviderAuthActionResult(
-  action: "import" | "remove",
-  slice: SliceRecord,
-  provider: string,
-  status: string,
-): string {
-  const sliceRef = formatSliceLabel(slice)
-  if ((action === "import" && status === "imported") || (action === "remove" && status === "removed")) {
-    return `slice auth ${action} ${provider}: ${status}`
-  }
-  if (status === "not_implemented") {
-    const fallback = action === "import"
-      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
-      : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
-    return `slice auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
-  }
-  return `slice auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
 }
 
 async function setSliceAuthAlias(
