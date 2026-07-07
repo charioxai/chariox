@@ -7,7 +7,7 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./kernel-types.js"
-import { promptOriginFromRecord } from "./prompt-origin.js"
+import { promptOriginFromPromptRecord } from "./prompt-origin.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type SessionHistoryCursorSelection = {
@@ -139,9 +139,23 @@ export function sessionHistoryOutlineTurnSourceAttachmentId(
 }
 
 export function sessionHistoryOutlineTurnPromptMetadata(
-  turn: Pick<SessionHistoryOutlineTurn, "prompt_origin" | "user_prompt">,
+  turn: Pick<
+    SessionHistoryOutlineTurn,
+    | "prompt_id"
+    | "prompt_origin"
+    | "external_provider"
+    | "external_provider_session_id"
+    | "external_provider_turn_id"
+    | "user_prompt"
+  >,
 ): SessionHistoryOutlineTurnPromptMetadata {
-  const promptOrigin = promptOriginFromRecord(turn)
+  const promptOrigin = promptOriginFromPromptRecord({
+    id: turn.prompt_id,
+    prompt_origin: turn.prompt_origin,
+    external_provider: turn.external_provider,
+    external_provider_session_id: turn.external_provider_session_id,
+    external_provider_turn_id: turn.external_provider_turn_id,
+  })
   const sourceAttachmentId = sessionHistoryOutlineTurnSourceAttachmentId(turn)
   return {
     ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")

@@ -1,6 +1,6 @@
 import type { SessionHistoryExternalObservation } from "./kernel-types.js"
 import {
-  promptOriginFromRecord,
+  promptOriginFromPromptRecord,
   promptOriginIsExternal,
   type PromptOriginRecord,
 } from "./prompt-origin.js"
@@ -200,14 +200,20 @@ export function externalProviderObservedCompletionAtMs(
 export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
-  if (!promptOriginIsExternal(promptOriginFromRecord(record))) {
+  if (!promptOriginIsExternal(promptOriginFromPromptRecord({
+    ...record,
+    id: record.id ?? record.prompt_id,
+  }))) {
     return null
   }
+  const promptIdentity = parseExternalProviderObservedId(record.id ?? record.prompt_id)
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: normalizeExternalProviderId(record.external_provider),
-    externalProviderSessionId: nonBlankString(record.external_provider_session_id),
-    externalProviderTurnId: nonBlankString(record.external_provider_turn_id),
+    externalProvider: normalizeExternalProviderId(record.external_provider) ?? promptIdentity?.provider ?? null,
+    externalProviderSessionId: nonBlankString(record.external_provider_session_id)
+      ?? promptIdentity?.providerSessionId
+      ?? null,
+    externalProviderTurnId: nonBlankString(record.external_provider_turn_id) ?? promptIdentity?.providerTurnId ?? null,
   }
 }
 
@@ -474,6 +480,8 @@ export type ExternalProviderObservedCompletionTimeFields = {
 }
 
 export type ExternalProviderObservedPromptOriginFields = PromptOriginRecord & {
+  readonly id?: string | null | undefined
+  readonly prompt_id?: string | null | undefined
   readonly external_provider?: string | null | undefined
   readonly external_provider_session_id?: string | null | undefined
   readonly external_provider_turn_id?: string | null | undefined
