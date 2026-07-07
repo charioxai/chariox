@@ -65,6 +65,61 @@ test("stitchPrependedTranscriptHistory preserves prompt attachment metadata", ()
   assert.deepEqual(stitched[0]?.attachments, attachments)
 })
 
+test("stitchPrependedTranscriptHistory preserves prompt ownership metadata", () => {
+  const stitched = stitchPrependedTranscriptHistory(
+    [entry(1, "user", "external ", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 9,
+      historyTotalChars: 15,
+      promptId: "prompt-1",
+      promptOrigin: "external",
+      historyTurnCompletedAtMs: null,
+      historyTurnLifecycle: "open",
+    })],
+    [entry(2, "user", "prompt", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 9,
+      historyFragmentEnd: 15,
+      historyTotalChars: 15,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.text, "external prompt")
+  assert.equal(stitched[0]?.promptId, "prompt-1")
+  assert.equal(stitched[0]?.promptOrigin, "external")
+  assert.equal(stitched[0]?.historyTurnCompletedAtMs, null)
+  assert.equal(stitched[0]?.historyTurnLifecycle, "open")
+})
+
+test("stitchPrependedTranscriptHistory keeps newer prompt ownership metadata authoritative", () => {
+  const stitched = stitchPrependedTranscriptHistory(
+    [entry(1, "user", "arroba ", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 13,
+      promptOrigin: "external",
+      historyTurnCompletedAtMs: null,
+      historyTurnLifecycle: "open",
+    })],
+    [entry(2, "user", "prompt", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 13,
+      historyTotalChars: 13,
+      promptOrigin: "arroba",
+      historyTurnCompletedAtMs: 1_000,
+      historyTurnLifecycle: "completed",
+    })],
+  )
+
+  assert.equal(stitched[0]?.promptOrigin, "arroba")
+  assert.equal(stitched[0]?.historyTurnCompletedAtMs, 1_000)
+  assert.equal(stitched[0]?.historyTurnLifecycle, "completed")
+})
+
 test("stitchPrependedTranscriptHistory merges external observed metadata", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {

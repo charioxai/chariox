@@ -28,9 +28,12 @@ export type TranscriptHistoryStitchEntry = ExternalProviderObservedMutableTransc
   sourceText?: KernelTranscriptEntry["sourceText"]
   mergeKey?: KernelTranscriptEntry["mergeKey"]
   promptId?: string | null
+  promptOrigin?: string | null
   sourceAttachmentId?: string | null
   attachments?: SessionHistoryPromptAttachment[]
   providerRunId?: string | null
+  historyTurnCompletedAtMs?: number | null
+  historyTurnLifecycle?: "open" | "completed"
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number
@@ -118,8 +121,17 @@ function mergeStitchedHistoryMetadata<TEntry extends TranscriptHistoryStitchEntr
   if (target.promptId === undefined && older.promptId !== undefined) {
     target.promptId = older.promptId
   }
+  if (target.promptOrigin === undefined && older.promptOrigin !== undefined) {
+    target.promptOrigin = older.promptOrigin
+  }
   if (target.sourceAttachmentId === undefined && older.sourceAttachmentId !== undefined) {
     target.sourceAttachmentId = older.sourceAttachmentId
+  }
+  if (target.historyTurnCompletedAtMs === undefined && older.historyTurnCompletedAtMs !== undefined) {
+    target.historyTurnCompletedAtMs = older.historyTurnCompletedAtMs
+  }
+  if (target.historyTurnLifecycle === undefined && older.historyTurnLifecycle !== undefined) {
+    target.historyTurnLifecycle = older.historyTurnLifecycle
   }
   if (older.attachments !== undefined || newer.attachments !== undefined) {
     target.attachments = mergeSessionHistoryPromptAttachments(
