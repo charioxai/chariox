@@ -5,6 +5,7 @@ import type {
   SessionHistoryEntry,
   SessionHistoryOutlineAgent,
   SessionHistoryPageEntry,
+  SessionHistoryOutlineTurn,
 } from "./kernel-types.js"
 import {
   hydrateSessionHistoryOutlineAgentEntries,
@@ -545,6 +546,32 @@ test("session history outline hydration treats invalid completion markers as inc
   ])
   assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, null)
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, null)
+})
+
+test("session history outline hydration keeps absent completion markers active", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [({
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
+      summary: pageEntry(2, "provider_output", "partial assistant\n"),
+      blobs: [blob("blob-1", "provider_tool", 3, "tool", "running tool")],
+    } as SessionHistoryOutlineTurn)],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+  assert.deepEqual(entries.filter((entry) => !entry.hidden).map((entry) => entry.role), [
+    "user",
+    "reasoning",
+    "assistant",
+    "tool",
+  ])
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, undefined)
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, undefined)
 })
 
 test("session history outline hydration projects sparse external turn metadata", () => {

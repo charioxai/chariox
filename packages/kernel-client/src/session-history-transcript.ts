@@ -260,7 +260,7 @@ export function hydrateSessionHistoryOutlineAgentEntries(
   orderedSessionHistoryOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
     const turnId = sessionHistoryOutlineTurnDisplayId(turn, turnIndex)
     const completedAtMs = sessionHistoryOutlineTurnCompletedAtMs(turn)
-    if (completedAtMs === null) {
+    if (completedAtMs === null || completedAtMs === undefined) {
       activeTurnId = turnId
     }
     const externalMetadata = outlineTurnExternalMetadata(turn)
