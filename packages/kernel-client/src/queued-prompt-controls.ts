@@ -284,9 +284,15 @@ function compareProjectedQueuedPromptOrder(
   left: ProjectedQueuedPrompt,
   right: ProjectedQueuedPrompt,
 ): number {
-  const leftCreated = left.createdAtMs ?? Number.MAX_SAFE_INTEGER
-  const rightCreated = right.createdAtMs ?? Number.MAX_SAFE_INTEGER
+  const leftCreated = queuedPromptCreatedAtMs(left)
+  const rightCreated = queuedPromptCreatedAtMs(right)
   return leftCreated - rightCreated || left.id.localeCompare(right.id)
+}
+
+function queuedPromptCreatedAtMs(prompt: Pick<ProjectedQueuedPrompt, "createdAtMs">): number {
+  return typeof prompt.createdAtMs === "number" && Number.isFinite(prompt.createdAtMs)
+    ? prompt.createdAtMs
+    : Number.MAX_SAFE_INTEGER
 }
 
 function projectedActivityAllowsPromptQueue(projection: AgentRuntimeActivityProjection): boolean {

@@ -159,12 +159,14 @@ test("projected queued prompt sorting uses creation time and stable id order", (
   assert.deepEqual(sortProjectedQueuedPrompts([
     projectedPrompt({ id: "queued-c", prompt: "c", createdAtMs: 1_000 }),
     projectedPrompt({ id: "queued-missing", prompt: "missing" }),
+    projectedPrompt({ id: "queued-invalid", prompt: "invalid", createdAtMs: Number.NaN }),
     projectedPrompt({ id: "queued-a", prompt: "a", createdAtMs: 1_000 }),
     projectedPrompt({ id: "queued-oldest", prompt: "oldest", createdAtMs: 500 }),
   ]).map((prompt) => prompt.id), [
     "queued-oldest",
     "queued-a",
     "queued-c",
+    "queued-invalid",
     "queued-missing",
   ])
 })
