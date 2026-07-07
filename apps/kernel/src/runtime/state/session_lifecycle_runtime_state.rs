@@ -218,7 +218,29 @@ impl KernelRuntimeState {
         &self,
         request: crate::attachment::AttachRequest,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        self.owned.attach(request)
+        let attachment = self.owned.attach(request)?;
+        let runtime_state = self.clone();
+        let app = Arc::clone(&self.app);
+        let session_id = attachment.session_id().to_string();
+        tokio::spawn(async move {
+            crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_session(
+                &app,
+                Some(&runtime_state),
+                &session_id,
+            )
+            .await;
+            if let Err(error) = runtime_state.owned.session_snapshot(&session_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.external_provider_sessions",
+                    "failed to refresh session projection after external provider attach catch-up",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        });
+        Ok(attachment)
     }
 
     pub(crate) async fn detach(

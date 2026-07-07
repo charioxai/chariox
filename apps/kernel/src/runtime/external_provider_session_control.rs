@@ -24,7 +24,7 @@ use crate::local::{
 use crate::provider::{
     external_provider_import_model, external_provider_session_providers,
     ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
-    ProviderResumeState, RuntimeProviderRun,
+    ProviderResumeState, ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
@@ -136,6 +136,12 @@ struct AttachedExternalObserverSchedule {
     consecutive_errors: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AttachedExternalObserverPollOutcome {
+    target_count: usize,
+    due_count: usize,
+}
+
 impl AttachedExternalObserverSchedule {
     fn due_now(now: tokio::time::Instant) -> Self {
         Self {
@@ -153,17 +159,22 @@ pub(crate) async fn run_attached_provider_transcript_observer(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut schedule: BTreeMap<String, AttachedExternalObserverSchedule> = BTreeMap::new();
-    let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut idle = false;
     loop {
+        let delay = if idle {
+            EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL
+        } else {
+            EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL
+        };
         tokio::select! {
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     break;
                 }
             }
-            _ = interval.tick() => {
-                poll_attached_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
+            _ = tokio::time::sleep(delay) => {
+                let outcome = poll_attached_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
+                idle = outcome.target_count == 0;
             }
         }
     }
@@ -173,7 +184,7 @@ async fn poll_attached_external_provider_transcripts(
     app: &Arc<Mutex<DaemonApp>>,
     runtime_state: &crate::runtime::state::KernelRuntimeState,
     schedule: &mut BTreeMap<String, AttachedExternalObserverSchedule>,
-) {
+) -> AttachedExternalObserverPollOutcome {
     let tick_started = Instant::now();
     let now = tokio::time::Instant::now();
     let targets = {
@@ -185,6 +196,13 @@ async fn poll_attached_external_provider_transcripts(
         attached_external_observer_targets(&app)
     };
     let target_count = targets.len();
+    if target_count == 0 {
+        schedule.clear();
+        return AttachedExternalObserverPollOutcome {
+            target_count,
+            due_count: 0,
+        };
+    }
     let target_keys = targets
         .iter()
         .map(attached_observer_target_key)
@@ -197,7 +215,10 @@ async fn poll_attached_external_provider_transcripts(
         EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK,
     );
     if due.is_empty() {
-        return;
+        return AttachedExternalObserverPollOutcome {
+            target_count,
+            due_count: 0,
+        };
     }
     let due_count = due.len();
     let limited = due_count >= EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK;
@@ -312,6 +333,10 @@ async fn poll_attached_external_provider_transcripts(
                 "error_count": error_count,
             }),
         );
+    }
+    AttachedExternalObserverPollOutcome {
+        target_count,
+        due_count,
     }
 }
 
@@ -630,6 +655,35 @@ async fn refresh_attached_external_provider_histories(
     runtime_state: Option<&KernelRuntimeState>,
     provider_filter: Option<&str>,
 ) {
+    refresh_attached_external_provider_histories_matching(
+        app,
+        runtime_state,
+        provider_filter,
+        None,
+    )
+    .await;
+}
+
+pub(crate) async fn refresh_attached_external_provider_histories_for_session(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    session_id: &str,
+) {
+    refresh_attached_external_provider_histories_matching(
+        app,
+        runtime_state,
+        None,
+        Some(session_id),
+    )
+    .await;
+}
+
+async fn refresh_attached_external_provider_histories_matching(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    provider_filter: Option<&str>,
+    session_filter: Option<&str>,
+) {
     let targets = {
         let app = crate::runtime::app_lock::lock_app_instrumented(
             &app,
@@ -642,6 +696,9 @@ async fn refresh_attached_external_provider_histories(
                 provider_filter
                     .map(|provider| target.provider == provider)
                     .unwrap_or(true)
+                    && session_filter
+                        .map(|session_id| target.session_id == session_id)
+                        .unwrap_or(true)
             })
             .collect::<Vec<_>>()
     };
@@ -1431,10 +1488,15 @@ fn attached_external_observer_targets(app: &DaemonApp) -> Vec<AttachedExternalOb
         let Ok(session) = app.sessions().get_session(agent.session_id()) else {
             continue;
         };
-        let provider_run_id = app
+        let latest_run = app
             .providers()
-            .get_latest_run_for_agent(session.id(), agent.id())
-            .map(|run| run.id().to_string());
+            .get_latest_run_for_agent(session.id(), agent.id());
+        if !session_has_live_attachment(app, session.id())
+            && !latest_run.as_ref().is_some_and(provider_run_is_running)
+        {
+            continue;
+        }
+        let provider_run_id = latest_run.map(|run| run.id().to_string());
         if let Some(import) = agent.external_provider_import().cloned() {
             let target = attached_external_observer_target_from_import(
                 session.id(),
@@ -1465,6 +1527,9 @@ fn attached_external_observer_targets(app: &DaemonApp) -> Vec<AttachedExternalOb
         {
             continue;
         }
+        if !session_has_live_attachment(app, run.session_id()) && !provider_run_is_running(&run) {
+            continue;
+        }
         for target in attached_external_observer_targets_from_provider_run(&cursor_store, &run) {
             targets
                 .entry(attached_observer_target_key(&target))
@@ -1474,12 +1539,27 @@ fn attached_external_observer_targets(app: &DaemonApp) -> Vec<AttachedExternalOb
     targets.into_values().collect()
 }
 
+fn session_has_live_attachment(app: &DaemonApp, session_id: &str) -> bool {
+    !app.attachments
+        .list_session_attachment_ids(session_id)
+        .is_empty()
+}
+
+fn provider_run_is_running(run: &RuntimeProviderRun) -> bool {
+    matches!(
+        run.state(),
+        ProviderRunState::Starting | ProviderRunState::Running
+    )
+}
+
 fn mark_attached_external_provider_sessions(
     app: &DaemonApp,
     runtime_state: Option<&KernelRuntimeState>,
     store: &crate::app::ExternalProviderSessionIndexStore,
 ) {
-    for attachment in attached_external_provider_session_refs(app, runtime_state) {
+    let attached_refs = attached_external_provider_session_refs(app, runtime_state);
+    prune_stale_external_provider_session_refs(app, &attached_refs, store);
+    for attachment in attached_refs {
         store.mark_attached(
             &attachment.external_session_id,
             &attachment.session_id,
@@ -1495,13 +1575,37 @@ struct AttachedExternalProviderSessionRef {
     agent_id: String,
 }
 
+fn prune_stale_external_provider_session_refs(
+    app: &DaemonApp,
+    attached_refs: &BTreeSet<AttachedExternalProviderSessionRef>,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+) {
+    let desired_agents = attached_refs
+        .iter()
+        .map(|attachment| (attachment.session_id.as_str(), attachment.agent_id.as_str()))
+        .collect::<BTreeSet<_>>();
+    for agent in app.agents().list_agents() {
+        if !desired_agents.contains(&(agent.session_id(), agent.id())) {
+            store.detach_agent(agent.session_id(), agent.id());
+        }
+    }
+}
+
 fn attached_external_provider_session_refs(
     app: &DaemonApp,
     runtime_state: Option<&KernelRuntimeState>,
 ) -> BTreeSet<AttachedExternalProviderSessionRef> {
     let mut attached = BTreeSet::new();
     for agent in app.agents().list_agents() {
-        if app.sessions().get_session(agent.session_id()).is_err() {
+        let Ok(session) = app.sessions().get_session(agent.session_id()) else {
+            continue;
+        };
+        let latest_run = app
+            .providers()
+            .get_latest_run_for_agent(session.id(), agent.id());
+        if !session_has_live_attachment(app, session.id())
+            && !latest_run.as_ref().is_some_and(provider_run_is_running)
+        {
             continue;
         }
         if let Some(import) = agent.external_provider_import() {
@@ -1519,11 +1623,16 @@ fn attached_external_provider_session_refs(
         );
     }
     for run in app.providers().list_runs() {
+        if !session_has_live_attachment(app, run.session_id()) && !provider_run_is_running(&run) {
+            continue;
+        }
         push_provider_run_attachment(&mut attached, &run);
     }
     if let Some(runtime_state) = runtime_state {
         for run in runtime_state.provider_runs_for_external_session_attachment() {
-            push_provider_run_attachment(&mut attached, &run);
+            if provider_run_is_running(&run) {
+                push_provider_run_attachment(&mut attached, &run);
+            }
         }
     }
     attached
@@ -1868,6 +1977,31 @@ mod tests {
         run
     }
 
+    fn test_starting_codex_run(
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        provider_session_id: &str,
+    ) -> RuntimeProviderRun {
+        let request =
+            LaunchProviderRequest::new(session_id, "codex", "codex", "default", "gpt-test")
+                .with_agent_id(agent_id);
+        let launch = crate::provider::ProviderLaunchResult {
+            process_label: "codex:test".to_string(),
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("codex:test".to_string()),
+        };
+        let mut run = RuntimeProviderRun::new(provider_run_id, &request, launch);
+        run.set_provider_session_id(Some(provider_session_id.to_string()));
+        run
+    }
+
     fn single_attached_target(app: &DaemonApp) -> AttachedExternalObserverTarget {
         let targets = attached_external_observer_targets(app);
         assert_eq!(
@@ -1876,6 +2010,21 @@ mod tests {
             "expected exactly one attached observer target"
         );
         targets.into_iter().next().expect("target should exist")
+    }
+
+    fn attach_test_session(app: &DaemonApp, session_id: &str) {
+        let session_store = app.session_state_store();
+        let mut sessions = session_store.write();
+        app.attachments()
+            .attach(
+                &mut sessions,
+                crate::attachment::AttachRequest::new(
+                    session_id,
+                    format!("client-{session_id}"),
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ),
+            )
+            .expect("test attachment should be created");
     }
 
     #[test]
@@ -1920,6 +2069,184 @@ mod tests {
                 .map(|target| target.agent_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["c", "d"]
+        );
+    }
+
+    #[test]
+    fn resume_state_without_attachment_or_running_run_is_not_observed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        app.agents()
+            .set_agent_runtime_profile(
+                agent.id(),
+                "codex",
+                Some("gpt-test".to_string()),
+                None,
+                ProviderResumeState::from_codex_thread_id("thread-idle"),
+            )
+            .expect("agent runtime profile should update");
+
+        assert!(
+            attached_external_observer_targets(&app).is_empty(),
+            "idle persisted resume state must not create observer work"
+        );
+
+        let store = app.external_provider_session_index_store();
+        store.upsert(record("codex", "thread-idle", "/tmp/thread-idle"));
+        store.mark_attached("codex:thread-idle", session.id(), agent.id());
+        mark_attached_external_provider_sessions(&app, None, &store);
+        let indexed = store
+            .get("codex:thread-idle")
+            .expect("record should remain indexed");
+        assert!(
+            !indexed.is_attached_to_arroba(),
+            "idle persisted resume state must not mark external sessions attached"
+        );
+        assert_eq!(indexed.first_attached_session_id(), None);
+        assert_eq!(indexed.first_attached_agent_id(), None);
+        assert_eq!(session.attachment_ids().len(), 0);
+    }
+
+    #[test]
+    fn attached_resume_state_is_observed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        app.agents()
+            .set_agent_runtime_profile(
+                agent.id(),
+                "codex",
+                Some("gpt-test".to_string()),
+                None,
+                ProviderResumeState::from_codex_thread_id("thread-attached"),
+            )
+            .expect("agent runtime profile should update");
+        attach_test_session(&app, session.id());
+
+        let target = single_attached_target(&app);
+
+        assert_eq!(target.session_id, session.id());
+        assert_eq!(target.agent_id, agent.id());
+        assert_eq!(target.provider, "codex");
+        assert_eq!(target.provider_session_id, "thread-attached");
+    }
+
+    #[test]
+    fn session_bounded_refresh_catches_up_after_attach() {
+        let _guard = crate::env_lock::lock();
+        let codex_home = temp_root("codex-attach-catchup");
+        let previous_codex_home = env::var_os("CODEX_HOME");
+        env::set_var("CODEX_HOME", &codex_home);
+        let session_dir = codex_home.join("sessions");
+        fs::create_dir_all(&session_dir).expect("codex session dir should create");
+        fs::write(
+            session_dir.join("attach-catchup.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-attach-catchup\",\"cwd\":\"/tmp/attach-catchup\",\"model_provider\":\"openai\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"catch up this attached thread\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"a1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"caught up\"}]}}\n",
+            ),
+        )
+        .expect("codex session should write");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let (session_id, agent_id) = {
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
+                let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                app.agents()
+                    .set_agent_runtime_profile(
+                        agent.id(),
+                        "codex",
+                        Some("gpt-test".to_string()),
+                        None,
+                        ProviderResumeState::from_codex_thread_id("thread-attach-catchup"),
+                    )
+                    .expect("agent runtime profile should update");
+                attach_test_session(&app, session.id());
+                (session.id().to_string(), agent.id().to_string())
+            };
+
+            refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+
+            let app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
+            let session = app
+                .sessions()
+                .get_session(&session_id)
+                .expect("session should load");
+            let entries = app
+                .load_session_history_entries(&session, Some(&agent_id))
+                .expect("history should load");
+            assert!(entries
+                .iter()
+                .any(|entry| entry.text == "catch up this attached thread"));
+            assert!(entries.iter().any(|entry| entry.text == "caught up"));
+        });
+
+        restore_env_var("CODEX_HOME", previous_codex_home);
+    }
+
+    #[test]
+    fn running_provider_run_without_attachment_is_observed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let run = test_codex_run(session.id(), agent.id(), "run-live", "thread-live");
+        app.providers_mut().insert_run_for_test(run.clone());
+
+        let target = single_attached_target(&app);
+
+        assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
+        assert_eq!(target.provider_session_id, "thread-live");
+    }
+
+    #[test]
+    fn starting_provider_run_without_attachment_is_observed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let starting_run =
+            test_starting_codex_run(session.id(), agent.id(), "run-starting", "thread-starting");
+        app.providers_mut()
+            .insert_run_for_test(starting_run.clone());
+
+        let target = single_attached_target(&app);
+
+        assert_eq!(target.provider_run_id.as_deref(), Some(starting_run.id()));
+        assert_eq!(target.provider_session_id, "thread-starting");
+    }
+
+    #[test]
+    fn parked_provider_run_without_attachment_is_not_observed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut run = test_codex_run(session.id(), agent.id(), "run-parked", "thread-parked");
+        run.mark_parked();
+        app.providers_mut().insert_run_for_test(run);
+
+        assert!(
+            attached_external_observer_targets(&app).is_empty(),
+            "parked detached runs must not keep observer polling hot"
         );
     }
 
@@ -2195,6 +2522,7 @@ mod tests {
                         ProviderResumeState::from_codex_thread_id("thread-owned-by-resume"),
                     )
                     .expect("agent runtime profile should update");
+                attach_test_session(&app, session.id());
                 let store = app.external_provider_session_index_store();
                 (session.id().to_string(), agent.id().to_string(), store)
             };
@@ -2280,6 +2608,7 @@ mod tests {
                         ProviderResumeState::from_codex_thread_id("thread-owned-discovered"),
                     )
                     .expect("agent runtime profile should update");
+                attach_test_session(&app, session.id());
                 let store = app.external_provider_session_index_store();
                 (session.id().to_string(), agent.id().to_string(), store)
             };
@@ -2492,6 +2821,7 @@ mod tests {
                 ProviderResumeState::from_codex_thread_id("thread-owned-by-arroba"),
             )
             .expect("agent runtime profile should update");
+        attach_test_session(&app, session.id());
         let store = app.external_provider_session_index_store();
         store.upsert(record(
             "codex",
