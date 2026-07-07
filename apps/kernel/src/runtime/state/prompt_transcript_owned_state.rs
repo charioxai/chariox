@@ -564,6 +564,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
         prompt_id: Option<&str>,
         workflow_run_id: Option<&str>,
         workflow_node_run_id: Option<&str>,
@@ -575,7 +576,8 @@ impl KernelRuntimeOwnedState {
             agent_id,
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
             attachments,
-        );
+        )
+        .with_prompt_origin(prompt_origin);
         if let Some(prompt_id) = prompt_id {
             entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
         }
@@ -612,6 +614,7 @@ impl KernelRuntimeOwnedState {
             prompt.target_agent_id(),
             &prompt_text,
             prompt.attachments(),
+            prompt.prompt_origin(),
             Some(prompt.id()),
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),

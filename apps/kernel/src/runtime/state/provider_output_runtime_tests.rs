@@ -400,6 +400,7 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
             agent.id(),
             "owned archive prompt",
             &[],
+            crate::session::PromptOrigin::Arroba,
             Some("prompt-owned-archive"),
             None,
             None,
@@ -453,6 +454,7 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
             agent.id(),
             "owned reload me",
             &[],
+            crate::session::PromptOrigin::Arroba,
             Some("prompt-owned-legacy-history-fail"),
             None,
             None,
@@ -468,6 +470,54 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
     assert_eq!(entries[0].text.trim_end(), "owned reload me");
 
     let _ = fs::remove_file(&legacy_history_root);
+}
+
+#[tokio::test]
+async fn owned_user_prompt_history_preserves_external_prompt_origin() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-external-user-history",
+            "worktree-external-user-history",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-external-user-history",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .append_user_prompt_history(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "external reload me",
+            &[],
+            crate::session::PromptOrigin::External,
+            Some("prompt-external-user-history"),
+            None,
+            None,
+        )
+        .expect("external prompt history should append");
+
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].text.trim_end(), "external reload me");
+    assert_eq!(
+        entries[0].prompt_origin,
+        Some(crate::session::PromptOrigin::External)
+    );
 }
 
 #[tokio::test]
@@ -2251,7 +2301,9 @@ async fn structured_terminal_failure_records_single_clean_notice() {
             .get_run(run.id())
             .expect("provider run should exist")
             .terminal_diagnostic(),
-        Some("Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model.")
+        Some(
+            "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
+        )
     );
 }
 

@@ -44,7 +44,10 @@ impl KernelRuntimeState {
             let summary = match kind {
                 "agents.spawned" => {
                     if omitted == 0 {
-                        format!("{} regular agents were spawned by the user in this session: {preview_refs}.", agent_refs.len())
+                        format!(
+                            "{} regular agents were spawned by the user in this session: {preview_refs}.",
+                            agent_refs.len()
+                        )
                     } else {
                         format!(
                             "{} regular agents were spawned by the user in this session: {preview_refs}, and {omitted} more.",
@@ -851,6 +854,7 @@ impl KernelRuntimeOwnedState {
             &target_agent_id,
             prompt.prompt(),
             prompt.attachments(),
+            prompt.prompt_origin(),
             Some(prompt.id()),
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
