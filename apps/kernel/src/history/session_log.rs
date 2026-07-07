@@ -209,6 +209,8 @@ pub fn external_provider_observed_merge_key_prefix(
     provider: &str,
     provider_session_id: &str,
 ) -> String {
+    let provider = normalize_external_provider_observed_provider(provider);
+    let provider_session_id = provider_session_id.trim();
     format!("external:{provider}:{provider_session_id}:")
 }
 
@@ -237,17 +239,21 @@ pub fn parse_external_provider_observed_id(value: &str) -> Option<ExternalProvid
     if marker != "external" {
         return None;
     }
-    let provider = parts.next()?.trim();
+    let provider = normalize_external_provider_observed_provider(parts.next()?);
     let provider_session_id = parts.next()?.trim();
     let provider_turn_id = parts.next()?.trim();
     if provider.is_empty() || provider_session_id.is_empty() || provider_turn_id.is_empty() {
         return None;
     }
     Some(ExternalProviderObservedId {
-        provider: provider.to_string(),
+        provider,
         provider_session_id: provider_session_id.to_string(),
         provider_turn_id: provider_turn_id.to_string(),
     })
+}
+
+fn normalize_external_provider_observed_provider(provider: &str) -> String {
+    provider.trim().to_ascii_lowercase()
 }
 
 pub fn external_provider_observed_state_merge_key(
@@ -403,6 +409,9 @@ impl SessionHistoryEntry {
         provider_turn_id: Option<String>,
         observed_at_ms: Option<u64>,
     ) -> Self {
+        let provider_turn_id = provider_turn_id
+            .map(|turn_id| turn_id.trim().to_string())
+            .filter(|turn_id| !turn_id.is_empty());
         Self::external_provider_observed_with_merge_key(
             session_id,
             provider_run_id,
@@ -432,6 +441,11 @@ impl SessionHistoryEntry {
         observed_at_ms: Option<u64>,
     ) -> Self {
         let observed_at_ms = observed_at_ms.unwrap_or_else(super::unix_epoch_ms);
+        let provider = normalize_external_provider_observed_provider(provider);
+        let provider_session_id = provider_session_id.trim().to_string();
+        let provider_turn_id = provider_turn_id
+            .map(|turn_id| turn_id.trim().to_string())
+            .filter(|turn_id| !turn_id.is_empty());
         Self {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
@@ -440,8 +454,8 @@ impl SessionHistoryEntry {
             kind,
             merge_key,
             source: Some(SessionHistoryEntrySource::ExternalProviderObserved),
-            external_provider: Some(provider.to_string()),
-            external_provider_session_id: Some(provider_session_id.to_string()),
+            external_provider: Some(provider),
+            external_provider_session_id: Some(provider_session_id),
             external_provider_turn_id: provider_turn_id,
             observed_at_ms: Some(observed_at_ms),
             external_observation: None,
@@ -817,15 +831,15 @@ mod tests {
     #[test]
     fn external_provider_observed_merge_keys_are_centralized() {
         assert_eq!(
-            external_provider_observed_merge_key_prefix("codex", "thread-1"),
+            external_provider_observed_merge_key_prefix(" Codex ", " thread-1 "),
             "external:codex:thread-1:"
         );
         assert_eq!(
-            external_provider_observed_merge_key("codex", "thread-1", "item-1"),
+            external_provider_observed_merge_key(" Codex ", " thread-1 ", "item-1"),
             "external:codex:thread-1:item-1"
         );
         assert_eq!(
-            parse_external_provider_observed_id("external: codex : thread-1 : item-1"),
+            parse_external_provider_observed_id("external: CODEX : thread-1 : item-1"),
             Some(ExternalProviderObservedId {
                 provider: "codex".to_string(),
                 provider_session_id: "thread-1".to_string(),
@@ -834,10 +848,34 @@ mod tests {
         );
         assert_eq!(parse_external_provider_observed_id("external:codex"), None);
         assert_eq!(parse_external_provider_observed_id("prompt-1"), None);
+        let observed = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "observed",
+            " CODEX ",
+            " thread-1 ",
+            Some(" item-1 ".to_string()),
+            Some(1_000),
+        );
+        assert_eq!(observed.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            observed.external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            observed.external_provider_turn_id.as_deref(),
+            Some("item-1")
+        );
+        assert_eq!(
+            observed.merge_key.as_deref(),
+            Some("external:codex:thread-1:item-1")
+        );
         assert_eq!(
             external_provider_observed_state_merge_key(
-                "codex",
-                "thread-1",
+                " Codex ",
+                " thread-1 ",
                 "settled",
                 "external:codex:thread-1:item-1"
             ),
