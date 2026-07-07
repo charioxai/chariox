@@ -11,7 +11,6 @@ export function promptOriginFromRecord(
   fallback?: string | null,
 ): string | null {
   return normalizePromptOrigin(record?.prompt_origin)
-    ?? inferExternalPromptOriginFromRecord(record)
     ?? normalizePromptOrigin(fallback)
 }
 
@@ -24,17 +23,4 @@ export type PromptOriginRecord = {
   readonly external_provider?: string | null | undefined
   readonly external_provider_session_id?: string | null | undefined
   readonly external_provider_turn_id?: string | null | undefined
-}
-
-function inferExternalPromptOriginFromRecord(
-  record: PromptOriginRecord | null | undefined,
-): string | null {
-  if (
-    record?.external_provider?.trim()
-    || record?.external_provider_session_id?.trim()
-    || record?.external_provider_turn_id?.trim()
-  ) {
-    return EXTERNAL_PROMPT_ORIGIN
-  }
-  return null
 }

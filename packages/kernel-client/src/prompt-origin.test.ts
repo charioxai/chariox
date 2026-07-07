@@ -15,10 +15,10 @@ test("prompt origin helpers normalize serialized kernel origin values", () => {
   assert.equal(promptOriginFromRecord({
     external_provider: " codex ",
     external_provider_session_id: " thread-1 ",
-  }, ARROBA_PROMPT_ORIGIN), EXTERNAL_PROMPT_ORIGIN)
+  }, ARROBA_PROMPT_ORIGIN), ARROBA_PROMPT_ORIGIN)
   assert.equal(promptOriginFromRecord({
     external_provider_turn_id: " turn-1 ",
-  }, ARROBA_PROMPT_ORIGIN), EXTERNAL_PROMPT_ORIGIN)
+  }, ARROBA_PROMPT_ORIGIN), ARROBA_PROMPT_ORIGIN)
   assert.equal(promptOriginFromRecord({
     prompt_origin: " arroba ",
     external_provider: " codex ",
