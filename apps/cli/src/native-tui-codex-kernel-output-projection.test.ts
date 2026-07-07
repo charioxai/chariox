@@ -2,6 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCodexKernelOutputProjection } from "./native-tui/codex-kernel-output-projection.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 
 test("codex kernel output projection ignores unscoped and wrong-agent records", () => {
   const broadcasts: unknown[] = []
@@ -65,7 +68,7 @@ test("codex kernel output projection suppresses passive external telemetry", () 
     agent_id: "agent-1",
     timestamp_ms: 1_700_000_000_001,
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "token-count",

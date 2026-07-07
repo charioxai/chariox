@@ -3,7 +3,10 @@ import test from "node:test"
 
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
-import { EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS } from "@arroba/kernel-client/external-provider-observation"
+import {
+  EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 
 function createDeps(overrides: Record<string, unknown> = {}) {
   const calls: string[] = []
@@ -150,7 +153,7 @@ test("external provider history update status triggers pane refresh hook", () =>
   controller.processTerminalOutputRecord({
     agent_id: "agent-a",
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     bytes: [...Buffer.from(EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, "utf8")],
   })
 
@@ -196,7 +199,7 @@ test("passive external provider telemetry status is ignored by live terminal ren
   controller.processTerminalOutputRecord({
     agent_id: "agent-a",
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "token-count",
@@ -223,7 +226,7 @@ test("external observed provider status rendering uses shared observed policy", 
   controller.processTerminalOutputRecord({
     agent_id: "agent-a",
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "opencode",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "reconnecting",
@@ -443,7 +446,7 @@ test("visible external observed output carries kernel observation metadata into 
     agent_id: "agent-a",
     kind: "provider_output",
     merge_key: "external:codex:thread-1:item-1",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "item-1",
@@ -459,7 +462,7 @@ test("visible external observed output carries kernel observation metadata into 
   assert.equal(chunks[0]?.role, "assistant")
   assert.equal(chunks[0]?.text, "observed reply\n")
   assert.deepEqual(chunks[0]?.metadata, {
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "item-1",

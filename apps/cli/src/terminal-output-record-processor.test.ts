@@ -3,6 +3,9 @@ import test from "node:test"
 
 import type { TerminalOutputRecord } from "./cli-types.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 
 test("terminal output record processor stores prompt echoes before kernel processing", () => {
   const harness = processorHarness()
@@ -30,7 +33,7 @@ test("terminal output record processor forwards non-prompt records without histo
 test("terminal output record processor follows shared prompt history projection", () => {
   const harness = processorHarness()
   const record = terminalRecord("prompt_echo", "token count", {
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: false,
       passive_telemetry: true,
