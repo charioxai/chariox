@@ -563,11 +563,13 @@ fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
-    if prompt
-        .to_session_history_entry()
-        .is_some_and(|entry| entry.is_external_provider_observed())
-    {
-        return PromptOrigin::External;
+    if let Some(entry) = prompt.to_session_history_entry() {
+        if let Some(prompt_origin) = entry.prompt_origin {
+            return prompt_origin;
+        }
+        if entry.is_external_provider_observed() {
+            return PromptOrigin::External;
+        }
     }
     PromptOrigin::Arroba
 }
@@ -1007,6 +1009,50 @@ mod tests {
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
         assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
         assert_eq!(turn.completed_at_ms, None);
+        assert_eq!(
+            turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+            Some("partial output")
+        );
+    }
+
+    #[test]
+    fn outline_turn_uses_persisted_prompt_origin_without_observed_source() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let external_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "external prompt without observed source",
+        )
+        .with_prompt_origin(PromptOrigin::External);
+        let external_assistant = SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some("assistant-1".to_string()),
+            "partial output",
+        )
+        .with_prompt_origin(PromptOrigin::External);
+        let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+        let assistant = HistoryEvent::transcript(11, &external_assistant, context);
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], false)
+            .expect("external-origin turn should be outlined");
+
+        assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
+        assert_eq!(turn.completed_at_ms, None);
+        assert_eq!(turn.external_provider, None);
+        assert_eq!(turn.external_provider_session_id, None);
+        assert_eq!(turn.external_provider_turn_id, None);
         assert_eq!(
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("partial output")
