@@ -26,7 +26,11 @@ import {
   mergePrependedTranscriptHistoryFragments,
   stitchPrependedTranscriptHistory,
 } from "./transcript-history-stitching.js"
-import { applyTranscriptDisplayState } from "./transcript-display-state.js"
+import {
+  applyTranscriptDisplayState,
+  transcriptHistoryTurnLifecycleFromCompletedAtMs,
+  type TranscriptHistoryTurnLifecycle,
+} from "./transcript-display-state.js"
 import {
   applyTranscriptPromptMetadata,
   reindexTranscriptEntries,
@@ -71,6 +75,7 @@ export type SessionHistoryTranscriptEntry = KernelTranscriptEntry & {
   historyBlobLoading?: boolean
   historyBlobError?: string
   historyTurnCompletedAtMs?: number | null
+  historyTurnLifecycle?: TranscriptHistoryTurnLifecycle
 }
 
 export type SessionHistoryTranscriptHydrateOptions = {
@@ -315,7 +320,7 @@ export function replaceSessionHistoryBlobPlaceholder(
     ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
   }
-  const activeTurnId = placeholder.historyTurnCompletedAtMs === null
+  const activeTurnId = transcriptHistoryTurnIsOpen(placeholder)
     && typeof turnId === "number"
     ? turnId
     : null
@@ -487,10 +492,16 @@ function applyOutlineTurnLifecycleMetadata(
   if (completedAtMs === undefined) {
     return entry
   }
+  const lifecycle = transcriptHistoryTurnLifecycleFromCompletedAtMs(completedAtMs)
   return {
     ...entry,
     historyTurnCompletedAtMs: completedAtMs,
+    ...(lifecycle !== undefined ? { historyTurnLifecycle: lifecycle } : {}),
   }
+}
+
+function transcriptHistoryTurnIsOpen(entry: SessionHistoryTranscriptEntry): boolean {
+  return entry.historyTurnLifecycle === "open"
 }
 
 function hydrateSessionHistoryPageEntriesForTurn(

@@ -519,6 +519,8 @@ test("session history outline hydration keeps incomplete external turns active",
   ])
   assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, null)
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, null)
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnLifecycle, "open")
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, "open")
 })
 
 test("session history outline hydration treats invalid completion markers as incomplete", () => {
@@ -546,6 +548,8 @@ test("session history outline hydration treats invalid completion markers as inc
   ])
   assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, null)
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, null)
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnLifecycle, "open")
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, "open")
 })
 
 test("session history outline hydration keeps absent completion markers active", () => {
@@ -572,6 +576,8 @@ test("session history outline hydration keeps absent completion markers active",
   ])
   assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, undefined)
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, undefined)
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnLifecycle, undefined)
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, undefined)
 })
 
 test("session history outline hydration projects sparse external turn metadata", () => {
@@ -606,6 +612,9 @@ test("session history outline hydration projects sparse external turn metadata",
   assert.equal(prompt?.externalProvider, "codex")
   assert.equal(prompt?.externalProviderSessionId, "thread-1")
   assert.equal(prompt?.externalProviderTurnId, undefined)
+  assert.equal(prompt?.historyTurnLifecycle, "completed")
+  assert.equal(assistant?.historyTurnLifecycle, "completed")
+  assert.equal(placeholder?.historyTurnLifecycle, "completed")
 })
 
 test("session history outline hydration does not infer external ownership for arroba-origin turns", () => {
@@ -686,6 +695,7 @@ test("session history blob replacement keeps incomplete external turns active", 
     "assistant",
   ])
   assert.equal(replaced.find((entry) => entry.role === "tool")?.historyTurnCompletedAtMs, null)
+  assert.equal(replaced.find((entry) => entry.role === "tool")?.historyTurnLifecycle, "open")
 })
 
 test("session history blob replacement preserves prompt and external turn metadata", () => {
@@ -742,6 +752,7 @@ test("session history blob replacement preserves prompt and external turn metada
   assert.equal(tool?.externalProvider, "codex")
   assert.equal(tool?.externalProviderSessionId, "thread-1")
   assert.equal(tool?.externalProviderTurnId, "user-1")
+  assert.equal(tool?.historyTurnLifecycle, "completed")
 })
 
 function pageEntry(

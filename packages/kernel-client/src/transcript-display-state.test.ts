@@ -27,6 +27,14 @@ function baseTurnEntries(): TranscriptDisplayEntry[] {
   ]
 }
 
+function openHistoryEntries(entries: TranscriptDisplayEntry[]): TranscriptDisplayEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    historyTurnCompletedAtMs: null,
+    historyTurnLifecycle: "open",
+  }))
+}
+
 test("applyTranscriptDisplayState keeps completed turns expanded by default", () => {
   const entries = applyTranscriptDisplayState(baseTurnEntries())
 
@@ -127,12 +135,9 @@ test("projectSettledTranscriptTurnDisplayState collapses a settled collapsible t
   )
 })
 
-test("projectSettledTranscriptTurnDisplayState keeps incomplete history turns expanded", () => {
+test("projectSettledTranscriptTurnDisplayState keeps open history turns expanded", () => {
   const projection = projectSettledTranscriptTurnDisplayState(
-    baseTurnEntries().map((entry) => ({
-      ...entry,
-      historyTurnCompletedAtMs: null,
-    })),
+    openHistoryEntries(baseTurnEntries()),
     [1],
   )
 
@@ -306,12 +311,9 @@ test("applyTranscriptDisplayState keeps active turns expanded even with stale co
   )
 })
 
-test("applyTranscriptDisplayState infers active turns from history lifecycle metadata", () => {
+test("applyTranscriptDisplayState keeps open history turns expanded from explicit lifecycle metadata", () => {
   const entries = applyTranscriptDisplayState(
-    baseTurnEntries().map((entry) => ({
-      ...entry,
-      historyTurnCompletedAtMs: null,
-    })),
+    openHistoryEntries(baseTurnEntries()),
     [1],
   )
 
@@ -322,15 +324,12 @@ test("applyTranscriptDisplayState infers active turns from history lifecycle met
   )
 })
 
-test("applyTranscriptDisplayState keeps every incomplete history turn expanded", () => {
+test("applyTranscriptDisplayState keeps every open history turn expanded", () => {
   const entries = applyTranscriptDisplayState([
-    ...baseTurnEntries().map((entry) => ({
-      ...entry,
-      historyTurnCompletedAtMs: null,
-    })),
-    { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null },
-    { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null },
-    { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null },
+    ...openHistoryEntries(baseTurnEntries()),
+    { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+    { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+    { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
   ], [1, 2])
 
   assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
@@ -350,9 +349,9 @@ test("applyTranscriptDisplayState keeps every incomplete history turn expanded",
 
 test("applyTranscriptDisplayState treats completed history metadata as authoritative over stale incomplete fragments", () => {
   const sourceEntries: TranscriptDisplayEntry[] = [
-    { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null },
-    { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null },
-    { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000 },
+    { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+    { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+    { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000, historyTurnLifecycle: "completed" },
   ]
   const entries = applyTranscriptDisplayState(sourceEntries, [1])
 
@@ -405,24 +404,18 @@ test("replaceCollapsedTranscriptTurnIds deduplicates, sorts, and preserves ident
 
 test("collapseLatestTranscriptTurn skips active history turns", () => {
   assert.deepEqual(
-    collapseLatestTranscriptTurn(baseTurnEntries().map((entry) => ({
-      ...entry,
-      historyTurnCompletedAtMs: null,
-    }))),
+    collapseLatestTranscriptTurn(openHistoryEntries(baseTurnEntries())),
     [],
   )
 })
 
-test("collapseLatestTranscriptTurn skips latest active history turn when earlier turns are also incomplete", () => {
+test("collapseLatestTranscriptTurn skips latest open history turn when earlier turns are also open", () => {
   assert.deepEqual(
     collapseLatestTranscriptTurn([
-      ...baseTurnEntries().map((entry) => ({
-        ...entry,
-        historyTurnCompletedAtMs: null,
-      })),
-      { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null },
-      { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null },
-      { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null },
+      ...openHistoryEntries(baseTurnEntries()),
+      { id: 5, role: "user", text: "Second external prompt", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+      { id: 6, role: "reasoning", text: "Second turn reasoning", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+      { id: 7, role: "assistant", text: "Second partial assistant", turnId: 2, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
     ]),
     [],
   )
@@ -431,9 +424,9 @@ test("collapseLatestTranscriptTurn skips latest active history turn when earlier
 test("collapseLatestTranscriptTurn collapses completed history turns with stale incomplete fragments", () => {
   assert.deepEqual(
     collapseLatestTranscriptTurn([
-      { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null },
-      { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null },
-      { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000 },
+      { id: 1, role: "user", text: "External prompt", turnId: 1, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+      { id: 2, role: "reasoning", text: "Stale partial reasoning", turnId: 1, historyTurnCompletedAtMs: null, historyTurnLifecycle: "open" },
+      { id: 3, role: "assistant", text: "Completed assistant summary", turnId: 1, historyTurnCompletedAtMs: 2_000, historyTurnLifecycle: "completed" },
     ]),
     [1],
   )

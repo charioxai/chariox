@@ -33,8 +33,11 @@ type TranscriptDisplayKernelFields = Pick<
 export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRoleEntry & TranscriptDisplayKernelFields & {
   readonly sourceText?: KernelTranscriptEntry["sourceText"] | null
   readonly historyTurnCompletedAtMs?: number | null
+  readonly historyTurnLifecycle?: TranscriptHistoryTurnLifecycle
   readonly turnTracking?: "none" | string | null
 }
+
+export type TranscriptHistoryTurnLifecycle = "open" | "completed"
 
 export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription
 
@@ -144,7 +147,7 @@ export function collapseLatestTranscriptTurn<TEntry extends TranscriptDisplayEnt
 
   const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
   if (
-    inferredActiveHistoryTurnIds(normalized).has(latestTurnId)
+    openHistoryTurnIds(normalized).has(latestTurnId)
     || !transcriptTurnIsCollapsible(turnEntries)
   ) {
     return sortedTurnIds(nextCollapsedTurnIds)
@@ -210,7 +213,7 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
   const collapsedTurnIdSet = new Set(collapsedTurnIds)
   let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
-  const activeHistoryTurnIds = inferredActiveHistoryTurnIds(normalized)
+  const activeHistoryTurnIds = openHistoryTurnIds(normalized)
 
   for (const turnId of turnIds) {
     const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
@@ -310,7 +313,7 @@ export function projectSettledTranscriptTurnDisplayState<TEntry extends Transcri
   const settledTurnId = computeCurrentTranscriptTurnId(normalized)
   const nextCollapsedTurnIds = new Set(collapsedTurnIds)
   if (settledTurnId !== null) {
-    const activeHistoryTurnIds = inferredActiveHistoryTurnIds(normalized)
+    const activeHistoryTurnIds = openHistoryTurnIds(normalized)
     const turnEntries = normalized.filter((entry) => entry.turnId === settledTurnId)
     if (
       !activeHistoryTurnIds.has(settledTurnId)
@@ -402,27 +405,37 @@ export function projectTranscriptBlobToggleDisplayState<TEntry extends Transcrip
   }
 }
 
-function inferredActiveHistoryTurnIds(
+export function transcriptHistoryTurnLifecycleFromCompletedAtMs(
+  completedAtMs: number | null | undefined,
+): TranscriptHistoryTurnLifecycle | undefined {
+  if (completedAtMs === undefined) {
+    return undefined
+  }
+  return completedAtMs === null ? "open" : "completed"
+}
+
+function openHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {
-  const lifecycleByTurnId = new Map<number, { completed: boolean; incomplete: boolean }>()
+  const lifecycleByTurnId = new Map<number, { completed: boolean; open: boolean }>()
   for (const entry of entries) {
     if (typeof entry.turnId !== "number") {
       continue
     }
-    if (entry.historyTurnCompletedAtMs !== null && typeof entry.historyTurnCompletedAtMs !== "number") {
+    const lifecycleName = entry.historyTurnLifecycle
+    if (lifecycleName === undefined) {
       continue
     }
-    const lifecycle = lifecycleByTurnId.get(entry.turnId) ?? { completed: false, incomplete: false }
-    if (typeof entry.historyTurnCompletedAtMs === "number") {
+    const lifecycle = lifecycleByTurnId.get(entry.turnId) ?? { completed: false, open: false }
+    if (lifecycleName === "completed") {
       lifecycle.completed = true
     } else {
-      lifecycle.incomplete = true
+      lifecycle.open = true
     }
     lifecycleByTurnId.set(entry.turnId, lifecycle)
   }
   return new Set([...lifecycleByTurnId.entries()]
-    .filter(([, lifecycle]) => lifecycle.incomplete && !lifecycle.completed)
+    .filter(([, lifecycle]) => lifecycle.open && !lifecycle.completed)
     .map(([turnId]) => turnId))
 }
 
