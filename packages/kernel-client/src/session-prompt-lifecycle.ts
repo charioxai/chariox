@@ -182,6 +182,7 @@ function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRec
   return [
     activePromptLifecycleRecordIdentityFingerprint(prompt),
     prompt.status ?? "",
+    prompt.source_attachment_id ?? "",
   ].join("\u001f")
 }
 

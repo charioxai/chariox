@@ -542,6 +542,70 @@ test("session prompt lifecycle transition treats decomposed metadata fill-in as 
   })
 })
 
+test("session prompt lifecycle transition reports active prompt attachment fill-in", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "external:codex:thread-1:turn-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "inspect attachment",
+            status: "running",
+            prompt_origin: "external",
+          },
+          queued_prompts: [],
+        },
+      },
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: true,
+    cancelledPromptSettled: false,
+    settledAgentIds: [],
+  })
+})
+
 test("session prompt lifecycle transition normalizes external identity fingerprints", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
