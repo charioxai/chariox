@@ -200,8 +200,8 @@
           <thead>
             <tr>
               <th>Repository</th>
-              <th>Oversized tracked files</th>
-              <th>Hand-authored targets</th>
+              <th>Initial oversized tracked files</th>
+              <th>Current hand-authored targets</th>
               <th>Main clusters</th>
             </tr>
           </thead>
@@ -209,14 +209,54 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>122 after excluding lockfiles, generated artifacts, and binary dumps</td>
+              <td>117 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>41 after excluding lockfiles and generated artifacts</td>
+              <td>13 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Migration Status</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Repo</th>
+              <th>Landed split</th>
+              <th>Boundary clarified</th>
+              <th>Verification used</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>5492901e5</code> <span class="muted">Extract workflow runtime request builders</span></td>
+              <td>Kernel-client workflow runtime request builders moved out of the broader workflow request facade.</td>
+              <td><code>pnpm --filter @arroba/kernel-client run build</code>, package tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>d0390bf0</code> <span class="muted">Split terminal side panel composition</span></td>
+              <td>Side-panel composition now delegates types, settings helpers, view helpers, DOM helpers, and settings state to named modules.</td>
+              <td>Web build, lint, focused side-panel/workspace/settings tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>9c2cb640</code> <span class="muted">Extract published workflows projection helpers</span></td>
+              <td>Published-workflow sidebar rendering is separated from publication projection, formatting, URL, schedule, and status derivation.</td>
+              <td>Web build, lint, 37 focused published-workflows tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>a21b7ade</code> <span class="muted">Extract workflow endpoint inspector</span></td>
+              <td>Workflow inspector now routes selection and owns node/edge/extension panels; endpoint run, schedule, publication, and endpoint-delete UI live in a dedicated endpoint inspector module.</td>
+              <td>Web build, lint, 31 focused workflow-inspector and route-render tests, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
           </tbody>
         </table>
