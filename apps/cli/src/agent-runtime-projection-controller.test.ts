@@ -154,6 +154,7 @@ test("agent runtime projection active prompt follows projected active turn ident
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
         active_turn: {
           prompt_id: "prompt-active",
           status: "running",

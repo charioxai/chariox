@@ -126,7 +126,7 @@ export function normalizeWaitingRoomState(
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     externalSessionIndex: externalProviderSessionSelectionIndex(externalSessions, {
-      selectedExternalProviderSessionIndex: state.externalSessionIndex,
+      selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
     }),
     machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),

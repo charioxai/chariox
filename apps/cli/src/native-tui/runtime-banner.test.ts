@@ -364,6 +364,7 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
       state: "authenticated",
       alias: "work",
       email: "work@example.com",
+      source: "slice",
     }],
     created_at_ms: 1,
     updated_at_ms: 1,

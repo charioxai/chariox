@@ -195,12 +195,10 @@ test("decideBootstrapAction respects explicit session refs before the waiting ro
       [
         {
           id: "deadbeef00000003",
-          alias: "newest",
           workspace_id: "/Users/miguel/arroba",
           worktree_id: "/Users/miguel/arroba",
           status: "Active",
           created_at_ms: 20,
-          attachment_ids: [],
         },
       ],
       "/Users/miguel/arroba",
@@ -217,12 +215,10 @@ test("decideBootstrapAction lands in the waiting room by default", () => {
       [
         {
           id: "deadbeef00000001",
-          alias: "old",
           workspace_id: "/Users/miguel/arroba",
           worktree_id: "/Users/miguel/arroba",
           status: "Ended",
           created_at_ms: 20,
-          attachment_ids: [],
         },
       ],
       "/Users/miguel/arroba",
@@ -239,12 +235,10 @@ test("decideBootstrapAction no longer auto-attaches existing sessions", () => {
       [
         {
           id: "deadbeef00000003",
-          alias: "newest",
           workspace_id: "/Users/miguel/arroba",
           worktree_id: "/Users/miguel/arroba",
           status: "Active",
           created_at_ms: 20,
-          attachment_ids: [],
         },
       ],
       "/Users/miguel/arroba",

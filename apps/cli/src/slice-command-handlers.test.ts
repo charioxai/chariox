@@ -80,15 +80,15 @@ test("slice command list renders concrete stale-auth recovery hints", async () =
         id: "slice-1",
         name: "linux-a",
         providers: ["codex"],
-        provider_auth: [{ provider: "codex", state: "not_configured" }],
+        provider_auth: [{ provider: "codex", state: "not_configured", source: "slice" }],
       }),
       slice({
         id: "slice-2",
         name: "linux-b",
         providers: ["codex", "opencode:openai"],
         provider_auth: [
-          { provider: "codex", state: "not_configured" },
-          { provider: "opencode:openai", state: "unknown" },
+          { provider: "codex", state: "not_configured", source: "slice" },
+          { provider: "opencode:openai", state: "unknown", source: "slice" },
         ],
       }),
     ],

@@ -263,7 +263,7 @@ function renderFooter(
     activeRun,
     null,
     selectionOverride
-      ? { provider: selectionOverride.provider, model: selectionOverride.model, variant: selectionOverride.effort }
+      ? { provider: selectionOverride.provider ?? null, model: selectionOverride.model, variant: selectionOverride.effort }
       : undefined,
   )
   const setPart = (

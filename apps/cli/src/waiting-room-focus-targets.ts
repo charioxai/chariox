@@ -29,7 +29,7 @@ export function moveWaitingRoomFocus(
   const order = waitingRoomFocusTargets(sessions, remote)
   const externalSessions = externalProviderSessionPageSessions(remote)
   const externalSessionIndex = externalProviderSessionSelectionIndex(externalSessions, {
-    selectedExternalProviderSessionIndex: state.externalSessionIndex,
+    selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
   })
   const currentIndex = Math.max(
     0,

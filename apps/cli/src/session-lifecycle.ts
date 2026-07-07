@@ -235,7 +235,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     try {
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
 
-      const provisionalSession = isCompleteSessionSnapshot(session as Parameters<typeof isCompleteSessionSnapshot>[0])
+      const provisionalSession = isCompleteSessionSnapshot(session)
         ? session
         : null
       if (provisionalSession) {

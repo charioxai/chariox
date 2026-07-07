@@ -51,19 +51,21 @@ test("cli stdin key controller routes exit and focused interaction shortcuts bef
 })
 
 test("cli stdin key controller delegates queued prompt shortcuts before command center prompt input", () => {
-  let queuedEvent: CliStdinKeyEvent | null = null
+  const queuedEvents: CliStdinKeyEvent[] = []
   const harness = createHarness({
     queuedPromptHandled: true,
     promptFocused: true,
     commandCenterOpen: true,
     parsedEvent: keyEvent("s", { meta: true }),
     onQueuedPromptKey: (event) => {
-      queuedEvent = event
+      queuedEvents.push(event)
       return true
     },
   })
 
   assert.equal(harness.controller.handleData("x"), true)
+  const queuedEvent = queuedEvents[0]
+  assert.ok(queuedEvent)
   assert.equal(queuedEvent?.alt, true)
   assert.equal(queuedEvent?.meta, false)
   assert.deepEqual(harness.calls(), [

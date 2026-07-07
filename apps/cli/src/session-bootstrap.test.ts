@@ -445,6 +445,7 @@ function outlineAgent(
       turn_id: "turn-1",
       prompt_id: "prompt-1",
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: {
         entry_index: 1,

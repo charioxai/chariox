@@ -130,9 +130,6 @@ function workflowWithPatch(
   if (Object.prototype.hasOwnProperty.call(patch, "run_output_schema_ref")) {
     next.run_output_schema_ref = patch.run_output_schema_ref ?? null
   }
-  if (Object.prototype.hasOwnProperty.call(patch, "intermediate_output_schema_ref")) {
-    next.intermediate_output_schema_ref = patch.intermediate_output_schema_ref ?? null
-  }
   return next
 }
 

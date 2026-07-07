@@ -84,6 +84,7 @@ test("attached session prime projects kernel-scoped history without local import
           external_provider_session_id: "thread-1",
           external_provider_turn_id: "user-1",
           started_at_ms: 1,
+          lifecycle: "completed",
           completed_at_ms: 2,
           user_prompt: historyEntry(1, "user_prompt", "codex prompt\n", "agent-1", externalObserved("codex", "thread-1", "user-1")),
           entries: [
@@ -132,10 +133,17 @@ test("attached session prime filters passive external provider statuses through 
           external_provider_session_id: "thread-1",
           external_provider_turn_id: "user-1",
           started_at_ms: 1,
+          lifecycle: "open",
           completed_at_ms: null,
           user_prompt: historyEntry(1, "user_prompt", "external prompt\n", "agent-1", externalObserved("codex", "thread-1", "user-1")),
           entries: [
-            historyEntry(2, "provider_status", "codex token_count\n{\"total\":42}", "agent-1", externalObserved("codex", "thread-1", "token-count")),
+            historyEntry(2, "provider_status", "codex token_count\n{\"total\":42}", "agent-1", {
+              ...externalObserved("codex", "thread-1", "token-count"),
+              external_observation: {
+                settles_active_prompt: false,
+                passive_telemetry: true,
+              },
+            }),
             historyEntry(3, "provider_output", "external output", "agent-1", externalObserved("codex", "thread-1", "assistant-1")),
           ],
           summary: null,
@@ -314,6 +322,7 @@ function outlineForAgents(
         turn_id: `${agentId}-turn-1`,
         prompt_id: `${agentId}-prompt-1`,
         started_at_ms: 1,
+        lifecycle: "completed",
         completed_at_ms: 2,
         user_prompt: historyEntry(index * 2, "user_prompt", prompt, agentId),
         entries: [],

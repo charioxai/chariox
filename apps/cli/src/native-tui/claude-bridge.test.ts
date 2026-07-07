@@ -19,6 +19,7 @@ test("native Claude bridge ignores stale prompts when projected activity is idle
         status: "idle",
         prompt_status: "none",
         busy: false,
+        unread_idle_output: false,
       },
     },
   })
@@ -42,6 +43,7 @@ test("native Claude bridge only uses prompt matching projected active turn", () 
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
         active_turn: {
           prompt_id: "prompt-active",
           status: "running",
@@ -57,6 +59,7 @@ test("native Claude bridge only uses prompt matching projected active turn", () 
       status: "working",
       prompt_status: "running",
       busy: true,
+      unread_idle_output: false,
       active_turn: {
         prompt_id: "prompt-active",
         status: "running",
@@ -95,6 +98,7 @@ test("native Claude bridge ignores legacy active prompt once projected activity 
         status: "working",
         prompt_status: "running",
         busy: true,
+        unread_idle_output: false,
       },
     },
   }), "agent-1"), null)

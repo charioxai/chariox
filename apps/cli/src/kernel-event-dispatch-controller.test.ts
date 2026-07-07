@@ -320,6 +320,7 @@ test("kernel event dispatch recovers after transport close", async () => {
 test("kernel event dispatch routes terminal output records and heartbeats", async () => {
   const harness = createHarness()
   const record: TerminalOutputRecord = {
+    timestamp_ms: 1,
     agent_id: "agent-1",
     kind: "provider_output",
     bytes: [...Buffer.from("hello", "utf8")],

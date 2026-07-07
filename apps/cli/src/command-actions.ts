@@ -409,7 +409,9 @@ async function handleRootWorkflowShortcut(
       focusedAgentId: focusedAgent.id,
       workflowId,
       invocationKind: payload.result.invocation?.kind ?? "invoked",
-      agentIdsByNode: payload.result.apply?.apply?.agent_ids,
+      ...(payload.result.apply?.apply?.agent_ids !== undefined
+        ? { agentIdsByNode: payload.result.apply.apply.agent_ids }
+        : {}),
     }),
     "info",
   )

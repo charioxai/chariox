@@ -16,7 +16,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
         worktree_id: "/repo",
         agent_ids: ["agent-1", "agent-2", "agent-3", "agent-4"],
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
-        provider_auth: [{ provider: "codex", state: "configured", alias: "work", account_id: "acct-1" }],
+        provider_auth: [{ provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" }],
       }),
     ],
   }, 16)
@@ -40,8 +40,8 @@ test("waiting room slice rows show partial provider auth coverage", () => {
         status: "running",
         providers: ["codex", "opencode", "claude"],
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1" },
-          { provider: "claude", state: "unknown" },
+          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" },
+          { provider: "claude", state: "unknown", source: "slice" },
         ],
       }),
     ],

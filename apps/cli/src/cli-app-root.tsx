@@ -113,8 +113,10 @@ import {
 } from "./session-chrome-update-controller.js"
 import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
-  focusedAgentIdForSession,
-} from "./session-state.js"
+} from "@arroba/kernel-client/session-config-projection"
+import {
+  sessionFocusedAgentId,
+} from "@arroba/kernel-client/session-runtime-transition"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
@@ -350,7 +352,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ToolTranscriptUpdate
   >({
     initialMountedTranscriptAgentId: initialBinding
-      ? focusedAgentIdForSession(initialSession)
+      ? sessionFocusedAgentId(initialSession)
       : null,
   })
   const transcriptSyntaxStyleController = createTranscriptSyntaxStyleController({
@@ -427,6 +429,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     resolveSessionAgent,
     agentBusyLatch,
     anyPromptWork,
+    anyTurnWork,
     focusedQueueDepth,
     focusedActivePrompt,
     focusedActivityLabel,
@@ -751,6 +754,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     daemonDisconnected,
     working,
     anyPromptWork,
+    anyTurnWork,
     submitting,
     focusedQueueDepth,
     fatalError,
@@ -868,7 +872,6 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     entryCounter,
     setEntryCounter,
     sessionState,
-    activePrompt,
     statusLine,
     setStatusLine,
     setWorking,
@@ -1278,10 +1281,11 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           ? await steerQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
           : await cancelQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
         if (action === "steer") {
+          const promptOrigin = payload.prompt.prompt_origin ?? queuedPrompt.promptOrigin
           appendSteeredPrompt(payload.prompt.prompt, queuedPrompt.agentId, {
             promptId: payload.prompt.id,
             sourceAttachmentId: payload.prompt.source_attachment_id,
-            promptOrigin: payload.prompt.prompt_origin ?? queuedPrompt.promptOrigin,
+            ...(promptOrigin !== undefined ? { promptOrigin } : {}),
           })
         }
         applySessionState(payload.session)

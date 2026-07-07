@@ -37,9 +37,9 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
   }>(response, "WaitingRoomPublicSnapshot").snapshot
   const slices = await listSlices(client).catch(() => [])
   const externalProviderSessions = externalProviderSessionPage({
-    sessions: payload.external_provider_sessions,
-    has_more: payload.external_provider_sessions_has_more,
-    next_cursor: payload.external_provider_sessions_next_cursor,
+    ...(payload.external_provider_sessions !== undefined ? { sessions: payload.external_provider_sessions } : {}),
+    ...(payload.external_provider_sessions_has_more !== undefined ? { has_more: payload.external_provider_sessions_has_more } : {}),
+    ...(payload.external_provider_sessions_next_cursor !== undefined ? { next_cursor: payload.external_provider_sessions_next_cursor } : {}),
   })
   return {
     inventoryVersion: payload.inventory_version,

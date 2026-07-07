@@ -175,7 +175,7 @@ test("waiting room start rows include selected slice provider account", () => {
       effort: "high",
       slice: slice({
         providers: ["opencode"],
-        provider_auth: [{ provider: "opencode:openai", state: "configured", account_id: "acct-1234567890abcdef" }],
+        provider_auth: [{ provider: "opencode:openai", state: "configured", account_id: "acct-1234567890abcdef", source: "slice" }],
       }),
     },
     {

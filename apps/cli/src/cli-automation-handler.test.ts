@@ -556,7 +556,7 @@ function baseDeps() {
 function queuedPromptItem(
   promptId: string,
   overrides: Partial<QueuedPromptStripItem> = {},
-) {
+): QueuedPromptStripItem {
   return {
     promptId,
     agentId: "agent-1",
@@ -570,6 +570,7 @@ function queuedPromptItem(
     steerDisabledReason: null,
     cancelDisabledReason: null,
     ...overrides,
+    promptOrigin: overrides.promptOrigin ?? "arroba",
   }
 }
 

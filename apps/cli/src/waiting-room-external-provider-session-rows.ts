@@ -24,7 +24,7 @@ export function waitingRoomExternalProviderSessionRows(
 ): WaitingRoomRow[] {
   const sessions = waitingRoomExternalProviderSessions(remote)
   const selectedIndex = externalProviderSessionSelectionIndex(sessions, {
-    selectedExternalProviderSessionIndex: state.externalSessionIndex,
+    selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
   })
   if (sessions.length === 0 && options.inventoryLoading) {
     return [{

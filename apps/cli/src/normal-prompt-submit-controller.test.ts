@@ -63,6 +63,8 @@ test("normal prompt submit appends prompt acknowledgement metadata", async () =>
           },
         },
         session: runtimeSession("session-submitted", "prompt-started"),
+        agent_activity: {},
+        agent_activity_revision: 1,
       },
       targetAgentId: "agent-1",
       outcomeName: "PromptSubmitted",
@@ -106,6 +108,8 @@ test("normal prompt submit reports queued status with active prompt id", async (
         session: runtimeSession("session-submitted", "prompt-active", {
           agents: [agent("agent-1")],
         }),
+        agent_activity: {},
+        agent_activity_revision: 1,
       },
     }),
   })
@@ -142,6 +146,8 @@ test("normal prompt submit projects queued runtime state from active session wor
             status: "queued",
           }],
         }),
+        agent_activity: {},
+        agent_activity_revision: 1,
       },
     }),
   })
@@ -180,6 +186,8 @@ test("normal prompt submit reports queued status from per-agent active prompt st
             },
           },
         }),
+        agent_activity: {},
+        agent_activity_revision: 1,
       },
     }),
   })
@@ -220,6 +228,8 @@ test("normal prompt submit logs projected queued prompt counts", async () => {
             },
           },
         }),
+        agent_activity: {},
+        agent_activity_revision: 1,
       },
     }),
   })
@@ -454,6 +464,8 @@ function promptSubmissionResult(
     payload: {
       outcome: {},
       session: runtimeSession(sessionId, activePromptId),
+      agent_activity: {},
+      agent_activity_revision: 1,
     },
     targetAgentId,
     outcomeName,

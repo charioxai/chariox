@@ -14,7 +14,7 @@ import type { runPollingLoop } from "./polling-effects.js"
 type PollLoopOptions = Parameters<typeof runPollingLoop>[0]
 
 test("cli polling controller queues terminal output records and records activity", async () => {
-  const record: TerminalOutputRecord = { kind: "provider_output", bytes: [104, 105] }
+  const record: TerminalOutputRecord = { timestamp_ms: 1, kind: "provider_output", bytes: [104, 105] }
   const harness = createHarness({
     pumpTerminalOutput: async () => [record],
   })
@@ -59,6 +59,7 @@ test("cli polling controller keeps provider run on terminal-output miss while pr
           status: "working",
           prompt_status: "running",
           busy: true,
+          unread_idle_output: false,
         },
       },
     }),

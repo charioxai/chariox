@@ -60,6 +60,7 @@ test("agent list summary renders aliases and pluralization", () => {
         state: "authenticated",
         alias: "work",
         email: "work@example.com",
+        source: "slice",
       }],
     })]),
     /agent-b \[Working; codex\/gpt-5.4; worktree \/repo\/feature; slice devbox \(lease=lease-1, leased_agent=leased-agent-1, run=run-worker\); auth codex=work \(work@example.com\);/,
@@ -146,6 +147,7 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
       state: "authenticated",
       email: "dev@example.com",
       alias: "daily",
+      source: "slice",
     }],
   })], {
     activeProviderRunId: "run-session",

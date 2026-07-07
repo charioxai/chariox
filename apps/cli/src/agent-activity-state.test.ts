@@ -83,7 +83,7 @@ test("agent activity labels are preserved for streaming, prompt work, and workin
   }), true)
   assert.equal(shouldPreserveAgentActivityLabel({
     agentId: "a1",
-    session: session({ agent_activity: { a1: { status: "working", prompt_status: "running", busy: true } } }),
+    session: session({ agent_activity: { a1: { status: "working", prompt_status: "running", busy: true, unread_idle_output: false } } }),
     streamingAgentId: null,
   }), true)
   assert.equal(shouldPreserveAgentActivityLabel({
@@ -106,6 +106,7 @@ test("projected idle activity suppresses stale legacy processing state", () => {
         status: "idle",
         prompt_status: "none",
         busy: false,
+        unread_idle_output: false,
       },
     },
   })

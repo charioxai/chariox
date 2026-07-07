@@ -55,9 +55,9 @@ export type QueuedPromptStripTranscriptEntry = {
   id: TranscriptEntry["id"]
   role: Extract<TranscriptEntry["role"], "user">
   text: TranscriptEntry["text"]
-  promptId?: SessionHistoryTranscriptEntry["promptId"]
-  sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
-  promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
+  promptId?: Exclude<SessionHistoryTranscriptEntry["promptId"], undefined>
+  sourceAttachmentId?: Exclude<SessionHistoryTranscriptEntry["sourceAttachmentId"], undefined>
+  promptOrigin?: Exclude<SessionHistoryTranscriptEntry["promptOrigin"], undefined>
   queuedPrompt?: QueuedPromptTranscriptMetadata
 }
 

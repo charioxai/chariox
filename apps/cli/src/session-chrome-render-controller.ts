@@ -68,7 +68,6 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         session: deps.getSession(),
         connectedClientCount: deps.getConnectedClientCount(),
         multiAgentMode: deps.getMultiAgentMode(),
-        responseLayout: deps.getResponseLayout(),
         sessionStatusMode: deps.getSessionStatusMode(),
         hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
         workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),

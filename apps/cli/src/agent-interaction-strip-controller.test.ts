@@ -89,6 +89,7 @@ function queuedPromptFixture(): QueuedPromptStripItem {
     agentId: "agent-a",
     sourceAttachmentId: "attachment-a",
     prompt: "Queued prompt",
+    promptOrigin: "arroba",
     status: "queued",
     attachmentCount: 0,
     steerDisabled: false,

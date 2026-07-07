@@ -84,6 +84,7 @@ test("off-focus agent output updates the agent pane and preview without mutating
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-b",
     kind: "provider_output",
     merge_key: "reply-1",
@@ -105,6 +106,7 @@ test("unscoped terminal output records do not render into the visible transcript
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: null,
     kind: "provider_output",
     merge_key: "reply-1",
@@ -124,6 +126,7 @@ test("visible ordinary provider status updates activity without appending transc
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     bytes: [...Buffer.from("OpenCode is thinking...", "utf8")],
@@ -151,6 +154,7 @@ test("external provider history update status triggers pane refresh hook", () =>
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -174,6 +178,7 @@ test("external provider history update status requires observed source", () => {
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     bytes: [...Buffer.from(EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, "utf8")],
@@ -197,6 +202,7 @@ test("passive external provider telemetry status is ignored by live terminal ren
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -224,6 +230,7 @@ test("external observed provider status rendering uses shared observed policy", 
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -258,6 +265,7 @@ test("idle provider status is ignored so it cannot create local live turn state"
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_status",
     bytes: [...Buffer.from("OpenCode is idle.", "utf8")],
@@ -356,6 +364,7 @@ test("duplicate trailing prompt echo is ignored for split-agent panes", () => {
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-b",
     kind: "prompt_echo",
     bytes: [...Buffer.from("ship it\n", "utf8")],
@@ -379,6 +388,7 @@ test("duplicate trailing steered prompt echo is ignored for visible transcript",
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "prompt_echo",
     prompt_id: "prompt-steered",
@@ -408,6 +418,7 @@ test("visible prompt echo carries kernel prompt identity into transcript entry",
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     prompt_id: "prompt-1",
     source_attachment_id: "attachment-1",
@@ -443,6 +454,7 @@ test("visible external observed output carries kernel observation metadata into 
   const controller = createKernelEventController(deps as never)
 
   controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
     agent_id: "agent-a",
     kind: "provider_output",
     merge_key: "external:codex:thread-1:item-1",

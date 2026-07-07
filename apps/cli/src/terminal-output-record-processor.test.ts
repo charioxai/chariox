@@ -75,5 +75,6 @@ function terminalRecord(
     kind,
     bytes: [...Buffer.from(text, "utf8")],
     ...fields,
+    timestamp_ms: fields.timestamp_ms ?? 1,
   }
 }

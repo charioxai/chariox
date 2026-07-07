@@ -96,9 +96,13 @@ export function createWaitingRoomInventoryRefreshController(
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
     const externalProviderSessionsPage = {
-      externalProviderSessions: snapshot.externalProviderSessions,
-      externalProviderSessionsHasMore: snapshot.externalProviderSessionsHasMore,
-      externalProviderSessionsNextCursor: snapshot.externalProviderSessionsNextCursor,
+      ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
+      ...(snapshot.externalProviderSessionsHasMore !== undefined
+        ? { externalProviderSessionsHasMore: snapshot.externalProviderSessionsHasMore }
+        : {}),
+      ...(snapshot.externalProviderSessionsNextCursor !== undefined
+        ? { externalProviderSessionsNextCursor: snapshot.externalProviderSessionsNextCursor }
+        : {}),
     }
     options.setExternalProviderSessions?.(externalProviderSessionPageSessions(externalProviderSessionsPage))
     options.setExternalProviderSessionsPage?.(externalProviderSessionPageState(externalProviderSessionsPage))
