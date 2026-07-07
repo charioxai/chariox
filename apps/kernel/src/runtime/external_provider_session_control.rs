@@ -695,12 +695,11 @@ async fn refresh_attached_external_provider_histories_matching(
         attached_external_observer_targets(&app)
             .into_iter()
             .filter(|target| {
-                provider_filter
-                    .map(|provider| target.provider == provider)
-                    .unwrap_or(true)
-                    && session_filter
-                        .map(|session_id| target.session_id == session_id)
-                        .unwrap_or(true)
+                attached_external_observer_target_matches_refresh_filters(
+                    target,
+                    provider_filter,
+                    session_filter,
+                )
             })
             .collect::<Vec<_>>()
     };
@@ -737,6 +736,29 @@ async fn refresh_attached_external_provider_histories_matching(
         )
         .await;
     }
+}
+
+fn attached_external_observer_target_matches_refresh_filters(
+    target: &AttachedExternalObserverTarget,
+    provider_filter: Option<&str>,
+    session_filter: Option<&str>,
+) -> bool {
+    attached_external_observer_provider_matches_filter(&target.provider, provider_filter)
+        && session_filter
+            .map(|session_id| target.session_id == session_id)
+            .unwrap_or(true)
+}
+
+fn attached_external_observer_provider_matches_filter(
+    target_provider: &str,
+    provider_filter: Option<&str>,
+) -> bool {
+    let Some(provider_filter) = provider_filter else {
+        return true;
+    };
+    let provider_filter = provider_filter.trim().to_ascii_lowercase();
+    external_provider_session_providers().contains(&provider_filter.as_str())
+        && target_provider == provider_filter
 }
 
 async fn dispatch_next_queued_prompt_after_external_settlement(
@@ -2045,6 +2067,37 @@ mod tests {
                 ),
             )
             .expect("test attachment should be created");
+    }
+
+    #[test]
+    fn attached_observer_refresh_filters_normalize_provider_ids() {
+        let target = observer_target("agent-1");
+
+        assert!(attached_external_observer_target_matches_refresh_filters(
+            &target,
+            Some(" Codex "),
+            None,
+        ));
+        assert!(attached_external_observer_target_matches_refresh_filters(
+            &target,
+            Some("CODEX"),
+            Some("session-agent-1"),
+        ));
+        assert!(!attached_external_observer_target_matches_refresh_filters(
+            &target,
+            Some("claude"),
+            None,
+        ));
+        assert!(!attached_external_observer_target_matches_refresh_filters(
+            &target,
+            Some("unknown"),
+            None,
+        ));
+        assert!(!attached_external_observer_target_matches_refresh_filters(
+            &target,
+            Some("codex"),
+            Some("session-other"),
+        ));
     }
 
     #[test]
