@@ -274,6 +274,24 @@ pub(super) fn snapshot(
                 ),
             });
         }
+        if let Some(active_prompt) = session
+            .prompt_states()
+            .get(&active_turn.agent_id)
+            .and_then(|state| state.active_prompt())
+        {
+            if !prompt_matches_active_turn(active_prompt, &active_turn.prompt_id) {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "active_turn_active_prompt_mismatch".to_string(),
+                    session_id: active_turn.session_id.clone(),
+                    agent_id: Some(active_turn.agent_id.clone()),
+                    details: format!(
+                        "active turn prompt {} does not match active prompt {}",
+                        active_turn.prompt_id,
+                        describe_prompt_with_pending_id(active_prompt)
+                    ),
+                });
+            }
+        }
     }
 
     for agent in canonical_agents {
@@ -315,14 +333,29 @@ fn describe_projected_prompt(prompt: &Option<PromptQueueItem>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
+fn prompt_matches_active_turn(prompt: &PromptQueueItem, active_turn_prompt_id: &str) -> bool {
+    prompt.id() == active_turn_prompt_id
+        || prompt.pending_prompt_id() == Some(active_turn_prompt_id)
+}
+
+fn describe_prompt_with_pending_id(prompt: &PromptQueueItem) -> String {
+    match prompt.pending_prompt_id() {
+        Some(pending_prompt_id) => {
+            format!("{} (pending {})", prompt.id(), pending_prompt_id)
+        }
+        None => prompt.id().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::prompt_matches_active_turn;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::runtime::projection::test_support::{launch_dev_stub_provider, submit_prompt};
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::session::CreateSessionRequest;
+    use crate::session::{CreateSessionRequest, PromptQueueItem};
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -599,6 +632,98 @@ mod tests {
                 && mismatch.details.contains(valid_run.id())
                 && mismatch.details.contains(ended_run.id())
         }));
+    }
+
+    #[test]
+    fn projection_invariant_health_reports_active_turn_prompt_identity_drift() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let provider_run = launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-projection-invariant-active-turn",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "active prompt",
+        );
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let active_prompt = session
+            .active_prompt_for_agent(&agent_id)
+            .expect("active prompt should exist");
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(session.clone());
+        agent_store.update_session(&session);
+        let provider_runs = vec![provider_run.clone()];
+        let mut active_turns = BTreeMap::new();
+        active_turns.insert(
+            provider_run.id().to_string(),
+            crate::app::ActiveTurnState::new(
+                session_id.clone(),
+                agent_id.clone(),
+                active_prompt.id().to_string(),
+                provider_run.id().to_string(),
+            ),
+        );
+
+        let clean_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+        assert!(
+            clean_snapshot.mismatches.is_empty(),
+            "{:?}",
+            clean_snapshot.mismatches
+        );
+
+        active_turns.insert(
+            provider_run.id().to_string(),
+            crate::app::ActiveTurnState::new(
+                session_id.clone(),
+                agent_id.clone(),
+                "different-prompt".to_string(),
+                provider_run.id().to_string(),
+            ),
+        );
+        let drift_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+
+        assert!(drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_active_prompt_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("different-prompt")
+                && mismatch.details.contains(active_prompt.id())
+        }));
+    }
+
+    #[test]
+    fn active_turn_prompt_identity_accepts_pending_prompt_id() {
+        let prompt: PromptQueueItem = serde_json::from_value(serde_json::json!({
+            "id": "prompt-real-1",
+            "pending_prompt_id": "pending-prompt-1",
+            "source_attachment_id": "attachment-1",
+            "target_agent_id": "agent-1",
+            "prompt": "prompt",
+            "attachments": [],
+            "status": "Running"
+        }))
+        .expect("prompt should deserialize");
+
+        assert!(prompt_matches_active_turn(&prompt, "prompt-real-1"));
+        assert!(prompt_matches_active_turn(&prompt, "pending-prompt-1"));
+        assert!(!prompt_matches_active_turn(&prompt, "other-prompt"));
     }
 
     #[test]
