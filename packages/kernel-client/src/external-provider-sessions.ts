@@ -66,9 +66,10 @@ export function externalProviderSessionPageSessions<T extends ExternalProviderSe
 export function externalProviderSessionPageState(
   page: ExternalProviderSessionPageLike | null | undefined,
 ): ExternalProviderSessionPageState {
+  const hasMore = externalProviderSessionPageHasMore(page)
   return {
-    hasMore: externalProviderSessionPageHasMore(page),
-    nextCursor: externalProviderSessionPageNextCursor(page),
+    hasMore,
+    nextCursor: hasMore ? externalProviderSessionPageNextCursor(page) : null,
   }
 }
 

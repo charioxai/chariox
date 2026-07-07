@@ -142,6 +142,10 @@ test("external provider session page projection accepts kernel and client page s
     externalProviderSessionsHasMore: true,
     externalProviderSessionsNextCursor: "remote-cursor",
   }), { hasMore: true, nextCursor: "remote-cursor" })
+  assert.deepEqual(externalProviderSessionPageState({
+    hasMore: false,
+    nextCursor: "stale-cursor",
+  }), { hasMore: false, nextCursor: null })
   assert.equal(externalProviderSessionPageHasMore(null), false)
   assert.equal(externalProviderSessionPageNextCursor({}), null)
 })
