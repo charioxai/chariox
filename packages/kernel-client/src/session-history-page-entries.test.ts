@@ -6,6 +6,9 @@ import {
   cloneSessionHistoryEntry,
   mergeAdjacentSessionHistoryPageEntries,
 } from "./session-history-page-entries.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("adjacent session history page entries merge only touching fragments of the same kind", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
@@ -115,7 +118,7 @@ test("adjacent session history page entries merge external observation settlemen
     pageEntry(3, 0, 4, {
       kind: "provider_status",
       text: "work",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
@@ -138,7 +141,7 @@ test("adjacent session history page entries merge external observation settlemen
   assert.deepEqual(merged[0]?.entry, {
     kind: "provider_status",
     text: "work done",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "turn-1",
