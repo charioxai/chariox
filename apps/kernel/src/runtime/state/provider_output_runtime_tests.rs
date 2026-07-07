@@ -1466,6 +1466,121 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 }
 
 #[tokio::test]
+async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-structured-history-turn",
+            "worktree-structured-history-turn",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-structured-history-turn",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let active_prompt = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should load")
+        .active_prompt_for_agent(agent.id())
+        .expect("active prompt should exist")
+        .clone();
+    runtime.owned.active_turns.start(
+        crate::app::ActiveTurnState::new(
+            session.id().to_string(),
+            agent.id().to_string(),
+            active_prompt.id().to_string(),
+            run.id().to_string(),
+        )
+        .with_trace_id("trace-structured-history-turn"),
+    );
+
+    let records = runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("structured-history-turn-1".to_string()),
+                        bytes: b"first".to_vec(),
+                    },
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderReasoning,
+                        merge_key: Some("structured-history-turn-2".to_string()),
+                        bytes: b"second".to_vec(),
+                    },
+                ],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("structured output batch should be accepted");
+    assert_eq!(records.len(), 2);
+
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("canonical operational events should load");
+    let chunk_turn_ids = ["structured-history-turn-1", "structured-history-turn-2"]
+        .into_iter()
+        .map(|merge_key| {
+            events
+                .iter()
+                .find(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(|value| value.as_str())
+                        == Some(merge_key)
+                })
+                .unwrap_or_else(|| panic!("event for merge key {merge_key} should exist"))
+                .turn_id
+                .as_deref()
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chunk_turn_ids,
+        vec![
+            Some("trace-structured-history-turn".to_string()),
+            Some("trace-structured-history-turn".to_string())
+        ]
+    );
+}
+
+#[tokio::test]
 async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

@@ -457,7 +457,7 @@ impl KernelRuntimeOwnedState {
         if entries.is_empty() {
             return;
         }
-        let mut active_turns = self.active_turns.snapshot();
+        let active_turns = self.active_turns.snapshot();
         let mut prepared = Vec::with_capacity(entries.len());
         for entry in entries {
             let provider_run = entry
@@ -479,7 +479,7 @@ impl KernelRuntimeOwnedState {
             let active_turn = entry
                 .provider_run_id
                 .as_deref()
-                .and_then(|provider_run_id| active_turns.remove(provider_run_id));
+                .and_then(|provider_run_id| active_turns.get(provider_run_id));
             let prompt_id = active_turn
                 .as_ref()
                 .map(|turn| turn.prompt_id.clone())
