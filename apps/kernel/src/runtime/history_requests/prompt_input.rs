@@ -159,20 +159,33 @@ fn prompt_input_history_events_for_kind(
             session_id: Some(session_id.to_string()),
             kind: Some(kind.to_string()),
             after_sequence: cursor,
-            limit: Some((limit - events.len()).min(500)),
+            limit: Some(500),
             ..HistoryEventQuery::default()
         })?;
         let Some(last_sequence) = batch.last().map(|event| event.sequence) else {
             break;
         };
         let batch_len = batch.len();
-        events.extend(batch);
+        events.extend(
+            batch
+                .into_iter()
+                .filter(prompt_input_history_event_projects_as_entry),
+        );
         cursor = Some(last_sequence);
         if batch_len < 500 {
             break;
         }
     }
+    events.truncate(limit);
     Ok(events)
+}
+
+fn prompt_input_history_event_projects_as_entry(event: &HistoryEvent) -> bool {
+    match event.kind {
+        HistoryEventKind::UserPrompt => user_prompt_event_counts_as_prompt_input_history(event),
+        HistoryEventKind::PromptInput => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -180,18 +193,49 @@ mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
 
-    #[test]
-    fn prompt_input_history_excludes_external_observed_prompts() {
+    fn temp_history_store(name: &str) -> (OperationalHistoryStore, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "arroba-prompt-input-history-{}-{}.db",
+            "arroba-prompt-input-history-{name}-{}-{}.db",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
-        let store =
-            OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+        (
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open"),
+            path,
+        )
+    }
+
+    fn remove_temp_history_store(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn append_prompt_entry(
+        store: &OperationalHistoryStore,
+        sequence: u64,
+        entry: &SessionHistoryEntry,
+    ) {
+        store
+            .append(&HistoryEvent::transcript(
+                sequence,
+                entry,
+                HistoryEventTurnContext {
+                    session_id: Some("session-1".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    prompt_id: Some(format!("prompt-{sequence}")),
+                    ..HistoryEventTurnContext::default()
+                },
+            ))
+            .expect("prompt event should append");
+    }
+
+    #[test]
+    fn prompt_input_history_excludes_external_observed_prompts() {
+        let (store, path) = temp_history_store("exclude-external");
         let arroba_prompt =
             SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
         let external_origin_prompt = SessionHistoryEntry::user_prompt(
@@ -217,18 +261,7 @@ mod tests {
             (2, external_origin_prompt),
             (3, external_observed_prompt),
         ] {
-            store
-                .append(&HistoryEvent::transcript(
-                    sequence,
-                    &entry,
-                    HistoryEventTurnContext {
-                        session_id: Some("session-1".to_string()),
-                        agent_id: Some("agent-1".to_string()),
-                        prompt_id: Some(format!("prompt-{sequence}")),
-                        ..HistoryEventTurnContext::default()
-                    },
-                ))
-                .expect("prompt event should append");
+            append_prompt_entry(&store, sequence, &entry);
         }
         let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
         runtime
@@ -265,8 +298,72 @@ mod tests {
             vec!["arroba", "draft input"]
         );
 
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        remove_temp_history_store(&path);
+    }
+
+    #[test]
+    fn prompt_input_history_pages_past_external_prompts() {
+        let (store, path) = temp_history_store("page-past-external");
+        append_prompt_entry(
+            &store,
+            1,
+            &SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                None,
+                "agent-1",
+                SessionHistoryEntryKind::UserPrompt,
+                "external observed one",
+                "codex",
+                "thread-1",
+                Some("turn-1".to_string()),
+                Some(1_000),
+            ),
+        );
+        append_prompt_entry(
+            &store,
+            2,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba one"),
+        );
+        append_prompt_entry(
+            &store,
+            3,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "external origin",
+            )
+            .with_prompt_origin(crate::session::PromptOrigin::External),
+        );
+        append_prompt_entry(
+            &store,
+            4,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba two"),
+        );
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        let response = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: Some(2),
+                },
+            ))
+            .expect("prompt input history should load");
+        let LocalDaemonResponse::PromptInputHistory { entries } = response else {
+            panic!("unexpected response");
+        };
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["arroba one", "arroba two"]
+        );
+
+        remove_temp_history_store(&path);
     }
 }
