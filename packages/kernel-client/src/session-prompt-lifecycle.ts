@@ -4,6 +4,7 @@ import type {
 } from "./kernel-types.js"
 import {
   type AgentRuntimeActivityProjection,
+  normalizeAgentRuntimePromptProjectionStatus,
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
 import {
@@ -98,9 +99,10 @@ export function sessionPromptLifecycleTransition(
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   const promptOrigin = promptOriginFromRecord(prompt)
+  const status = normalizeActivePromptLifecycleStatus(prompt.status)
   return {
     ...prompt,
-    status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
+    ...(status !== undefined ? { status } : {}),
     promptOrigin,
     ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider !== undefined
       ? { externalProvider: prompt.external_provider }
@@ -121,9 +123,12 @@ function activePromptLifecycleRecordFromProjectedTurn(
   if (!projection.activeTurnPromptId) {
     return null
   }
+  const normalizedActiveTurnStatus = normalizeActivePromptLifecycleStatus(projection.activeTurnStatus)
+  const normalizedPromptStatus = normalizeActivePromptLifecycleStatus(projection.promptStatus)
+  const status = normalizedActiveTurnStatus ?? normalizedPromptStatus
   return {
     id: projection.activeTurnPromptId,
-    status: projection.activeTurnStatus ?? projection.promptStatus,
+    ...(status !== undefined ? { status } : {}),
     promptOrigin: activePromptLifecycleRecordPromptOriginFromProjectedTurn(projection),
     target_agent_id: agentId,
     ...(projection.activeTurnProviderRunId ? { providerRunId: projection.activeTurnProviderRunId } : {}),
@@ -138,6 +143,12 @@ function activePromptLifecycleRecordFromProjectedTurn(
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
       : {}),
   }
+}
+
+function normalizeActivePromptLifecycleStatus(value: string | null | undefined): string | undefined {
+  return normalizeAgentRuntimePromptProjectionStatus(value)
+    ?? normalizeAgentRuntimePromptStatus(value)
+    ?? undefined
 }
 
 function activePromptLifecycleRecordPromptOriginFromProjectedTurn(

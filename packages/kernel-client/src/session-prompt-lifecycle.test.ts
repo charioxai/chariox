@@ -31,6 +31,25 @@ test("session prompt lifecycle records normalize active prompt status", () => {
   }])
 })
 
+test("session prompt lifecycle records fold terminal active prompt statuses into none", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-1",
+      prompt: "hello",
+      status: " Completed ",
+    },
+  })), [{
+    id: "prompt-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "none",
+    promptOrigin: null,
+  }])
+})
+
 test("session prompt lifecycle transition settles normalized cancelling prompts", () => {
   assert.deepEqual(sessionPromptLifecycleTransition(
     makeSession({
@@ -271,6 +290,32 @@ test("session prompt lifecycle records external active turn metadata", () => {
   }])
 })
 
+test("session prompt lifecycle records normalize projected active turn status", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-1",
+          status: " Running " as never,
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "prompt-1",
+    status: "running",
+    promptOrigin: null,
+    target_agent_id: "agent-1",
+  }])
+})
+
 test("session prompt lifecycle does not infer external active turn ownership from provider identity", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
@@ -456,6 +501,42 @@ test("session prompt lifecycle transition settles external active turns", () => 
             external_provider_turn_id: "turn-1",
             status: "cancelling",
             phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+        },
+      },
+    }),
+  ), {
+    activePromptChanged: true,
+    cancelledPromptSettled: true,
+    settledAgentIds: ["agent-1"],
+  })
+})
+
+test("session prompt lifecycle transition settles normalized projected cancelling turns", () => {
+  assert.deepEqual(sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "cancelling",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: " Cancelling " as never,
+            phase: "settling",
           },
         },
       },
