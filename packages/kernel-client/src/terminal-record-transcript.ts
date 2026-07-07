@@ -21,6 +21,7 @@ export type TerminalRecordTranscriptFields = {
   readonly external_provider_turn_id?: string | null
   readonly observed_at_ms?: number | null
   readonly external_observation?: ExternalProviderObservedTranscriptMetadata["externalObservation"] | null
+  readonly text?: string | null
 }
 
 export type TerminalRecordTranscriptRole =
@@ -89,7 +90,7 @@ export function terminalRecordTranscriptProjection(
 ): TerminalRecordTranscriptProjection {
   const metadata = terminalRecordTranscriptMetadata(record)
   const historyRefreshSignal = externalProviderObservedHistoryRefreshSignal(record, text)
-  const passiveExternalTelemetry = terminalRecordIsPassiveExternalProviderTelemetry(record)
+  const passiveExternalTelemetry = terminalRecordIsPassiveExternalProviderTelemetry({ ...record, text })
   const providerStatusIdle = record.kind === "provider_status" && options.isProviderIdleStatus(text)
   const renderProviderStatus = record.kind === "provider_status"
     && !historyRefreshSignal

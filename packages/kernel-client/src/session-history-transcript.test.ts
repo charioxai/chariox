@@ -181,6 +181,12 @@ test("session history transcript hydration renders only non-passive external pro
         passive_telemetry: true,
       },
     }),
+    pageEntry(4, "provider_status", "codex token_count {\"total\":43}", {
+      source: "external_provider_observed",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "legacy-token-count",
+    }),
   ])
 
   assert.deepEqual(entries.map((entry) => entry.text), [

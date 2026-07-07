@@ -165,6 +165,7 @@ export function externalProviderObservedProviderStatusShouldRender(
   const metadata = historyEntryExternalProviderObservedMetadata(entry)
   return metadata !== null
     && metadata.externalObservation?.passive_telemetry !== true
+    && !externalProviderObservedStatusMatchesPassiveProviderPolicy(entry)
     && shouldRenderProviderStatus(entry.text)
 }
 
@@ -175,6 +176,7 @@ export function externalProviderObservedEntryIsPassiveTelemetry(
     return false
   }
   return externalProviderObservedObservation(entry)?.passive_telemetry === true
+    || externalProviderObservedStatusMatchesPassiveProviderPolicy(entry)
 }
 
 export function externalProviderObservedStatusSettlesActivePrompt(
@@ -455,6 +457,9 @@ export type ExternalProviderObservedObservationFields = {
   readonly kind?: string | null | undefined
   readonly role?: string | null | undefined
   readonly source?: string | null | undefined
+  readonly text?: string | null | undefined
+  readonly external_provider?: string | null | undefined
+  readonly externalProvider?: string | null | undefined
   readonly external_observation?: SessionHistoryExternalObservation | null | undefined
   readonly externalObservation?: SessionHistoryExternalObservation | null | undefined
 }
@@ -564,4 +569,29 @@ function externalProviderObservedEntryCanBePassiveTelemetry(
     || entry.kind === "prompt_echo"
     || entry.kind === "user_prompt"
     || entry.role === "user"
+}
+
+function externalProviderObservedStatusMatchesPassiveProviderPolicy(
+  entry: ExternalProviderObservedObservationFields,
+): boolean {
+  if (!externalProviderObservedEntryIsStatus(entry) || !sessionHistoryEntryIsExternalProviderObserved(entry)) {
+    return false
+  }
+  const provider = normalizeExternalProviderId(entry.external_provider ?? entry.externalProvider)
+  if (!provider) {
+    return false
+  }
+  const text = entry.text ?? ""
+  return externalProviderPassiveStatusPrefixes(provider).some((prefix) => text.startsWith(prefix))
+}
+
+function externalProviderPassiveStatusPrefixes(provider: string): readonly string[] {
+  switch (provider) {
+    case "codex":
+      return ["codex token_count"]
+    case "claude":
+      return ["claude last-prompt", "claude ai-title"]
+    default:
+      return []
+  }
 }

@@ -173,6 +173,20 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
   assert.equal(projection.renderInAgentPane, false)
   assert.equal(projection.append, false)
   assert.equal(projection.replace, false)
+
+  const legacyProjection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "token-count-legacy",
+  }, "codex token_count {\"total\":43}", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+  assert.equal(legacyProjection.passiveExternalTelemetry, true)
+  assert.equal(legacyProjection.startsStreaming, false)
+  assert.equal(legacyProjection.appendsLiveTranscript, false)
 })
 
 test("terminalRecordTranscriptProjection keeps idle provider status out of live turn state", () => {
