@@ -345,7 +345,7 @@ impl TerminalStreamStore {
                 bytes,
                 external_observation_metadata,
             );
-        self.record_change();
+        self.record_change_for_record(&record);
         record
     }
 
@@ -2632,6 +2632,49 @@ mod tests {
             .await
             .is_err(),
             "unrelated attachment waiter should not wake"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_external_observed_output_does_not_wake_unrelated_attachment_waiters(
+    ) {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.attachment_change_sequence("session-1", "attachment-2");
+        let state_entry =
+            crate::history::SessionHistoryEntry::external_provider_observed_state_signal(
+                "session-1",
+                Some("provider-run-1"),
+                "agent-1",
+                "codex",
+                "thread-1",
+                crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+                "external:codex:thread-1:done",
+                "active_prompt_settled".to_string(),
+                Some(1_234),
+            );
+        let metadata =
+            TerminalOutputExternalObservationMetadata::from_session_history_entry(&state_entry)
+                .expect("external state history entry should produce terminal metadata");
+
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderStatus,
+            state_entry.merge_key.clone(),
+            vec!["attachment-1".to_string()],
+            crate::history::EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
+            metadata,
+        );
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                terminal.wait_for_attachment_change_after("session-1", "attachment-2", sequence),
+            )
+            .await
+            .is_err(),
+            "external observed output for one attachment should not wake unrelated attachment waiters"
         );
     }
 
