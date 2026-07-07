@@ -245,6 +245,18 @@ impl RelayAuthVerifier {
         ))
     }
 
+    /// Attach a live revocation registry to the scoped verifier so verification
+    /// rejects revoked tokens. A no-op for the shared-token verifier, which has
+    /// no per-token identity to revoke.
+    pub fn with_revocations(self, revocations: RelayRevocationRegistry) -> Self {
+        match self {
+            Self::ScopedToken(verifier) => {
+                Self::ScopedToken(verifier.with_revocations(revocations))
+            }
+            other => other,
+        }
+    }
+
     pub fn verify(
         &self,
         request: RelayAuthRequest<'_>,

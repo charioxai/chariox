@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
-use crate::auth::RelayAuthVerifier;
+use crate::auth::{RelayAuthVerifier, RelayRevocationRegistry};
 use crate::config::RelayConfig;
 
 mod connection;
@@ -24,6 +24,7 @@ pub struct RelayServer {
     registry: Arc<RwLock<RelayRegistry>>,
     relay_request_counter: Arc<AtomicU64>,
     auth_verifier: RelayAuthVerifier,
+    revocations: RelayRevocationRegistry,
     draining: Arc<AtomicBool>,
 }
 
@@ -36,13 +37,31 @@ impl RelayServer {
     }
 
     pub fn with_auth_verifier(config: RelayConfig, auth_verifier: RelayAuthVerifier) -> Self {
+        // Every server carries a live revocation registry attached to the
+        // verifier; it is empty (a no-op) until revocations are fed in, so
+        // scoped-token verification can reject revoked tokens without any
+        // additional wiring at the call sites.
+        let revocations = RelayRevocationRegistry::new();
         Self {
-            auth_verifier,
+            auth_verifier: auth_verifier.with_revocations(revocations.clone()),
             config,
             registry: Arc::new(RwLock::new(RelayRegistry::default())),
             relay_request_counter: Arc::new(AtomicU64::new(0)),
+            revocations,
             draining: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The live revocation registry consulted during scoped-token verification.
+    /// Feed it (`revoke_token_id`/`revoke_account`/`revoke_subject`/`prune`)
+    /// from the hosted control plane's revocation state.
+    pub fn revocations(&self) -> RelayRevocationRegistry {
+        self.revocations.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn auth_verifier(&self) -> &RelayAuthVerifier {
+        &self.auth_verifier
     }
 
     pub fn config(&self) -> &RelayConfig {
@@ -128,8 +147,8 @@ mod tests {
     use super::*;
 
     use crate::auth::{
-        RelayAction, RelayAuthVerifier, RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
-        DEFAULT_RELAY_REALM_ID,
+        RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelaySubjectKind,
+        RelayTokenClaims, ScopedTokenVerifier, DEFAULT_RELAY_REALM_ID,
     };
     use crate::protocol::{
         ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayDisplayTunnelHeader,
@@ -184,6 +203,55 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
         }
+    }
+
+    #[test]
+    fn server_revocation_registry_gates_the_attached_verifier() {
+        let mut claims = BTreeMap::new();
+        claims.insert(
+            "client-token".to_string(),
+            scoped_claim(
+                "client-token-id",
+                "client-1",
+                RelaySubjectKind::Client,
+                "realm-a",
+                vec![RelayAction::ClientConnect],
+                Some(vec!["daemon-1"]),
+            ),
+        );
+        let server = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                shared_token: None,
+            },
+            RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+                claims,
+                BTreeMap::new(),
+                Some(10),
+            )),
+        );
+        let request = || RelayAuthRequest {
+            token: "client-token",
+            action: RelayAction::ClientConnect,
+            target: Some("daemon-1"),
+        };
+
+        server
+            .auth_verifier()
+            .verify(request())
+            .expect("token verifies before revocation");
+
+        // Feeding the server's registry gates the verifier the server actually
+        // uses, proving the registry is wired into construction.
+        server.revocations().revoke_token_id("client-token-id", 100);
+        assert_eq!(
+            server
+                .auth_verifier()
+                .verify(request())
+                .expect_err("revoked token is rejected by the server verifier"),
+            RelayAuthError::TokenRevoked
+        );
     }
 
     fn scoped_claim(
