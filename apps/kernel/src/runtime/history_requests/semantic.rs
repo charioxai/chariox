@@ -126,13 +126,18 @@ where
         if remaining == 0 {
             break;
         }
-        let mut response = fetch(cursor, remaining)?;
+        let fetched_cursor = cursor.clone();
+        let mut response = fetch(fetched_cursor.clone(), remaining)?;
         response
             .results
             .retain(semantic_recall_match_projects_as_result);
         results.extend(response.results);
         cursor = response.next_cursor;
         if cursor.is_none() {
+            break;
+        }
+        if cursor == fetched_cursor {
+            cursor = None;
             break;
         }
     }
@@ -330,5 +335,54 @@ mod tests {
             vec!["visible one", "visible two"]
         );
         assert_eq!(next_cursor.as_deref(), Some("cursor-2"));
+    }
+
+    #[test]
+    fn semantic_recall_collection_stops_on_non_advancing_cursor() {
+        let hidden = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:turn-1",
+            "turn-1".to_string(),
+            Some(2_100),
+        );
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut calls = 0;
+
+        let (results, next_cursor) = collect_projected_semantic_recall_matches(
+            2,
+            Some("cursor-stuck".to_string()),
+            |cursor, _limit| {
+                calls += 1;
+                assert_eq!(cursor.as_deref(), Some("cursor-stuck"));
+                Ok(HistoryArchiveSemanticSearchResponse {
+                    results: vec![SemanticRecallMatch {
+                        event: crate::history::HistoryEvent::transcript(
+                            1,
+                            &hidden,
+                            context.clone(),
+                        ),
+                        score_millis: Some(1),
+                        chunk_index: Some(0),
+                        chunk_text: Some("settled".to_string()),
+                        reason: None,
+                    }],
+                    next_cursor: Some("cursor-stuck".to_string()),
+                })
+            },
+        )
+        .expect("semantic recall collection should stop");
+
+        assert_eq!(calls, 1);
+        assert!(results.is_empty());
+        assert_eq!(next_cursor, None);
     }
 }
