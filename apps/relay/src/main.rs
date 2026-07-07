@@ -54,8 +54,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         })
     );
+    // Optional: pull account/identity revocations from the hosted control
+    // plane into this relay's registry so revoked tokens are rejected.
+    let _revocation_shutdown_tx = if let Some((cloud_url, realm)) = revocation_sync_from_env() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        eprintln!(
+            "{}",
+            json!({
+                "component": "arroba-relay",
+                "level": "info",
+                "event": "revocation_sync_enabled",
+                "fields": { "realm_id": realm },
+            })
+        );
+        tokio::spawn(arroba_relay::revocation_sync::run_revocation_sync(
+            cloud_url,
+            realm,
+            server.revocations(),
+            revocation_sync_interval_from_env(),
+            shutdown_rx,
+        ));
+        Some(shutdown_tx)
+    } else {
+        None
+    };
     server.run().await?;
     Ok(())
+}
+
+fn revocation_sync_from_env() -> Option<(String, String)> {
+    let cloud_url = std::env::var("ARROBA_RELAY_REVOCATION_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let realm = std::env::var("ARROBA_RELAY_REVOCATION_REALM")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    Some((cloud_url, realm))
+}
+
+fn revocation_sync_interval_from_env() -> std::time::Duration {
+    std::env::var("ARROBA_RELAY_REVOCATION_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(arroba_relay::revocation_sync::DEFAULT_REVOCATION_SYNC_INTERVAL)
 }
 
 fn parse_relay_draining(value: Option<&str>) -> bool {

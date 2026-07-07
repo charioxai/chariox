@@ -13,6 +13,7 @@ sha2 = "0.10.8"
 sha1 = "0.10.6"
 subtle = "2.6"
 thiserror = "2.0.12"
+ureq = "2.12.1"
 tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.26.2"
 

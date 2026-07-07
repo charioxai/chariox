@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod config;
 pub mod protocol;
+pub mod revocation_sync;
 pub mod server;
 
 mod registry;
