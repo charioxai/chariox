@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scale &amp; Performance Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f5; --panel: #ffffff; --ink: #151714; --muted: #586057;
+      --line: #d9ded2; --strong-line: #aab4a1; --accent: #0d6b57; --accent-soft: #e5f1ec;
+      --warn: #9a6517; --warn-soft: #fff3d8; --bad: #a23a28; --bad-soft: #fae6e1;
+      --code: #eef1ea; --shadow: 0 16px 42px rgba(26,35,22,0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.55; }
+    main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; padding: 44px 0 72px; }
+    header { border-top: 6px solid var(--ink); padding-top: 22px; margin-bottom: 30px; }
+    h1 { margin: 0 0 12px; max-width: 860px; font-size: clamp(2.2rem, 5vw, 4rem); line-height: 0.98; }
+    h2 { margin: 40px 0 14px; font-size: clamp(1.4rem, 2vw, 2rem); border-bottom: 2px solid var(--strong-line); padding-bottom: 8px; }
+    h3 { margin: 24px 0 8px; font-size: 1.1rem; }
+    p.lede { max-width: 820px; font-size: 1.06rem; color: var(--muted); margin: 0 0 10px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    .meta span { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 14px; font-size: 0.85rem; color: var(--muted); }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 24px 26px; margin-bottom: 24px; }
+    section > h2:first-child { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 12px 0; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .table-scroll { overflow-x: auto; }
+    code { background: var(--code); border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; word-break: break-word; }
+    .finding { border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: 10px; padding: 14px 18px; margin: 14px 0; background: #fcfdfb; }
+    .finding.p2 { border-left-color: var(--warn); }
+    .finding.p3 { border-left-color: var(--accent); }
+    .finding h4 { margin: 0 0 6px; font-size: 1rem; }
+    .finding .where { font-size: 0.84rem; color: var(--muted); margin-bottom: 8px; }
+    .finding ul { margin: 6px 0 6px 20px; padding: 0; }
+    .finding li { margin: 4px 0; }
+    .finding .fix { margin-top: 10px; background: var(--accent-soft); border-radius: 8px; padding: 8px 12px; font-size: 0.9rem; }
+    .fix strong { color: var(--accent); }
+    .pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-left: 8px; vertical-align: middle; }
+    .pill.p1 { background: var(--bad-soft); color: var(--bad); }
+    .pill.p2 { background: var(--warn-soft); color: var(--warn); }
+    .pill.p3 { background: var(--accent-soft); color: var(--accent); }
+    .data { background: #10231c; color: #d7efe6; border-radius: 10px; padding: 14px 16px; font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; overflow-x: auto; margin: 12px 0; }
+    .data .k { color: #7fd7bd; }
+    .callout { border: 1px solid var(--strong-line); border-radius: 10px; background: var(--warn-soft); padding: 12px 16px; font-size: 0.94rem; margin: 14px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Scale &amp; Performance Plan</h1>
+    <p class="lede">
+      A measured, root-caused assessment of what stops Arroba from supporting hundreds of
+      sessions and agents across many terminals and multiple machines, with a prioritized
+      set of changes. Findings come from live benchmarks against a debug kernel plus source
+      analysis of <code>arroba</code> (kernel, relay) and <code>arroba-cloud</code>.
+    </p>
+    <div class="meta">
+      <span>Drafted: 2026-07-07</span>
+      <span>Method: live load benchmarks + code root-cause</span>
+      <span>Target: 100s of sessions/agents, many terminals, multi-machine</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>The headline: reads are O(n) full-clones behind one exclusive lock</h2>
+    <p>
+      The single most important result. A <em>read-only</em> <code>ListSessions</code> — the
+      call the web waiting room and session lists poll — scales linearly with the number of
+      sessions, at roughly <strong>1.1&nbsp;ms per session</strong>, on a single client with
+      no concurrency:
+    </p>
+    <div class="data">
+<span class="k">sessions</span>    2 → ListSessions median  <span class="k">2.7 ms</span>
+<span class="k">sessions</span>   52 → ListSessions median <span class="k">68.9 ms</span>
+<span class="k">sessions</span>  102 → ListSessions median <span class="k">125.4 ms</span>
+<span class="k">sessions</span>  152 → ListSessions median <span class="k">168.0 ms</span>
+    </div>
+    <p>
+      At 300 sessions a single list read is ~330&nbsp;ms. Now add concurrency. Throughput of
+      the same read across N parallel clients <strong>plateaus at ~300&nbsp;req/s</strong> and
+      per-request latency grows <strong>linearly with N</strong> — the textbook signature of a
+      single lock serializing everything:
+    </p>
+    <div class="data">
+<span class="k">N=1</span>  clients → p50   3 ms   165 req/s
+<span class="k">N=4</span>  clients → p50  18 ms   134 req/s
+<span class="k">N=8</span>  clients → p50  29 ms   274 req/s
+<span class="k">N=16</span> clients → p50  57 ms   276 req/s
+<span class="k">N=24</span> clients → p50  75 ms   301 req/s   (throughput flat)
+    </div>
+    <div class="callout">
+      Effective concurrency is ~1 despite an 8-permit admission semaphore: the reads serialize
+      on an exclusive mutex <em>before</em> the semaphore can help. Fix the lock and the clone
+      first; the semaphore is the next ceiling, not the current one.
+    </div>
+  </section>
+
+  <section>
+    <h2>Root causes (kernel)</h2>
+
+    <div class="finding">
+      <h4>1. Session store is a single exclusive mutex; list reads clone every session <span class="pill p1">P1</span></h4>
+      <div class="where">
+        <code>session/owner.rs</code> (<code>SessionStateStore { inner: Arc&lt;Mutex&lt;SessionService&gt;&gt; }</code>);
+        <code>runtime/state/session_lookup_state.rs</code> (<code>list_session_snapshots</code>)
+      </div>
+      <ul>
+        <li><code>SessionStateStore</code> guards all session state behind one <code>std::sync::Mutex</code>. Both <code>read()</code> and <code>write()</code> take the same exclusive lock, so reads cannot run concurrently — with each other or with writes.</li>
+        <li><code>list_session_snapshots()</code> calls <code>list_sessions()</code> (clones every <code>RuntimeSession</code>) and then <code>session_snapshot(id)</code> per session — O(n) full clones plus per-session lookups, on every call, under the lock. This is the ~1.1&nbsp;ms/session measured above.</li>
+        <li>The session-state <em>projection</em> (<code>runtime/projection/session_state_projection.rs</code>) is also an exclusive <code>std::sync::Mutex</code>, so warmed-list reads serialize too.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> serve list/read views from a warmed projection that stores an <code>Arc</code>-shared, pre-rendered snapshot updated on change, handed out by cloning an <code>Arc</code> (O(1)) rather than deep-cloning n sessions per call. Move the projection and session-store read paths to <code>RwLock</code> (or <code>parking_lot::RwLock</code>) so reads are concurrent. Return lightweight list summaries (id, title, agent count, status, revision) for list endpoints; keep full snapshots for single-session reads only.</div>
+    </div>
+
+    <div class="finding">
+      <h4>2. Provider-output streaming pumps through the global app lock <span class="pill p1">P1</span></h4>
+      <div class="where"><code>runtime/state/provider_output_runtime.rs</code> (repeated <code>with_app_side_effect</code> per pump cycle); <code>Arc&lt;Mutex&lt;DaemonApp&gt;&gt;</code></div>
+      <ul>
+        <li>Every provider-run output pump acquires the one global <code>DaemonApp</code> mutex multiple times per cycle (drain PTY, process bridge, settle prompts). With hundreds of agents streaming, every pump contends on the same lock — the streaming hot path serializes against all commands and all other agents.</li>
+        <li>This is the same global lock the earlier remediation plan (B1–B3) instrumented and began unblocking; at scale it is the dominant steady-state contention point, not just a tail-latency one.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> give each provider run / session actor ownership of its own output state so pumping does not touch the global app lock (continue the M4.5 ownership migration for the output path specifically). Where shared state must be read, use per-session/per-agent locks or lock-free projections, not the daemon-wide mutex. Batch the per-cycle lock acquisitions into one short critical section.</div>
+    </div>
+
+    <div class="finding p2">
+      <h4>3. Global 8-command admission cap <span class="pill p2">P2</span></h4>
+      <div class="where"><code>runtime_transport.rs</code>: <code>INBOUND_REQUEST_LIMIT = 8</code></div>
+      <ul>
+        <li>A single process-wide semaphore caps the kernel to 8 concurrent in-flight commands across <em>all</em> connections, terminals, and machines. Once findings 1–2 are fixed this becomes the next throughput ceiling.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> raise the cap and make it scale with cores / configurable; consider per-connection or per-session fairness limits instead of one global cap, so one busy terminal cannot starve others. Admission control should shed load gracefully (it already returns <code>kernel_request_overloaded</code>), but the steady-state ceiling must be far above 8.</div>
+    </div>
+
+    <div class="finding p2">
+      <h4>4. Coarse pump cadence and O(all-sessions) sweeps <span class="pill p2">P2</span></h4>
+      <div class="where"><code>runtime_transport.rs</code>: <code>PUMP_INTERVAL_MS=500</code>, <code>WATCH_INTERVAL_MS=100</code>; <code>pump_active_prompt_outputs</code> iterates every session</div>
+      <ul>
+        <li>The runtime pump wakes on change signals (good) but falls back to a 500&nbsp;ms poll, and several reap/pump passes iterate <em>all</em> sessions each cycle. At hundreds of sessions these O(n) sweeps run repeatedly regardless of which sessions are active.</li>
+        <li>The external-provider discovery poller (already trimmed once this session) and the git observer are similar periodic O(n) scans.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> drive pumps from a per-session ready-set / work queue so only sessions with pending output or due timers are visited, instead of sweeping all sessions. Keep the change-signal fast path; make the fallback poll a safety net, not the primary cadence.</div>
+    </div>
+
+    <div class="finding p3">
+      <h4>5. Per-read allocations and projection clone cost <span class="pill p3">P3</span></h4>
+      <div class="where">kernel projections and read models (~5,000 <code>.clone()</code> sites)</div>
+      <ul>
+        <li>Beyond the session list, many read/projection paths deep-clone their models per request. With the B1 <code>app_lock</code> instrumentation now live, the top clone hotspots can be measured and converted to <code>Arc</code>-shared read models.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> wrap warmed read models in <code>Arc</code> so handlers share rather than copy; measure with the daemon-health <code>app_lock</code> data under real load to pick the top three by cost.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Multi-machine &amp; relay path</h2>
+    <div class="finding p3">
+      <h4>6. Relay routing is already RwLock-based; watch registration write contention <span class="pill p3">P3</span></h4>
+      <div class="where"><code>relay/src/server/connection.rs</code>, <code>relay/src/registry.rs</code></div>
+      <ul>
+        <li>Good news: the relay registry is an <code>Arc&lt;RwLock&gt;</code> — packet routing takes read locks and can run concurrently across peers (the live relay was healthy at 22 peers).</li>
+        <li>At scale, watch two things: registration/heartbeat writes briefly block all routing (write lock), and per-message routing does a registry lookup under the read lock for every relayed packet. With many machines × many sessions, packet routing volume is the relay's scaling axis.</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> keep heartbeat/registration writes tiny and off the hot routing path (e.g., sharded or lock-free presence updates); consider sharding the registry by realm/target so a hot realm's writes don't block another's routing. Benchmark relay packet throughput separately (fan-out of provider output across machines is the real multi-machine load).</li></ul>
+    </div>
+    <div class="finding p3">
+      <h4>7. Cloud API read endpoints and DB query shape <span class="pill p3">P3</span></h4>
+      <div class="where"><code>arroba-cloud/apps/api</code> (Prisma over Postgres)</div>
+      <ul>
+        <li>The cloud control plane is off the runtime hot path (it issues tokens, tracks presence, lists targets), so it is not the session-scale bottleneck. But at many machines the waiting-room / relay-target and presence queries run often.</li>
+        <li>Verify these list endpoints are indexed (realm + status), paginated, and cached where possible (the waiting-room inventory cache exists — confirm it is used on the hot path), and that presence upserts are cheap. Add the CI-run Postgres so query regressions are caught (CI was added this session but without a DB service).</li>
+      </ul>
+      <div class="fix"><strong>Fix:</strong> add DB indexes for the relay-target/presence/revocation queries by realm+status; ensure list endpoints paginate; load-test the relay-target and presence endpoints with a seeded DB.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Recommended sequence</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th>Change</th><th>Priority</th><th>Expected effect</th><th>Risk</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Warmed <code>Arc</code>-shared session-list projection + lightweight summaries (kill the O(n) per-read clone)</td><td>P1</td><td>List reads go from O(n)·1.1ms to O(1); removes the biggest single cost</td><td>Med — new read model, test-guarded</td></tr>
+          <tr><td>2</td><td>Session store + projection read paths → <code>RwLock</code> (concurrent reads)</td><td>P1</td><td>Reads stop serializing; throughput scales with cores instead of flat ~300 req/s</td><td>Med — lock-type change</td></tr>
+          <tr><td>3</td><td>Take provider-output pumping off the global app lock (per-run/session ownership)</td><td>P1</td><td>Streaming from hundreds of agents no longer serializes on one mutex</td><td>High — needs live verification of output ordering</td></tr>
+          <tr><td>4</td><td>Raise / make configurable the 8-command admission cap; per-session fairness</td><td>P2</td><td>Removes the next ceiling once 1–3 land</td><td>Low</td></tr>
+          <tr><td>5</td><td>Per-session ready-set pump instead of all-session sweeps</td><td>P2</td><td>Periodic CPU no longer grows O(sessions)</td><td>Med</td></tr>
+          <tr><td>6</td><td><code>Arc</code>-share top projection clones (measure with B1 first)</td><td>P3</td><td>Steady-state CPU + latency</td><td>Low</td></tr>
+          <tr><td>7</td><td>Relay registry sharding + cloud DB indexes/pagination</td><td>P3</td><td>Multi-machine routing + control-plane headroom</td><td>Low–Med</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="margin-top: 12px">
+      Items 1 and 2 together should turn the flat ~300&nbsp;req/s / O(n)-per-read curve into
+      something that scales with cores and stays roughly constant per read as sessions grow —
+      the prerequisite for hundreds of sessions. Item 3 is the prerequisite for hundreds of
+      concurrently <em>streaming</em> agents. Verify each against the live benchmark harness
+      (create-N-sessions latency curve + N-client throughput) that produced the numbers above.
+    </p>
+  </section>
+
+  <section>
+    <h2>How these numbers were produced</h2>
+    <ul>
+      <li>Launched a debug <code>arroba-kernel</code> on an isolated port/state; drove it over the kernel WebSocket with a Node client.</li>
+      <li><strong>Session-count curve:</strong> created sessions in batches of 50, measuring median <code>ListSessions</code> latency at each step (single client).</li>
+      <li><strong>Concurrency curve:</strong> N parallel WebSocket clients each issuing sequential <code>ListSessions</code>, recording p50/p90/p99 and aggregate req/s.</li>
+      <li>Root causes traced in source: <code>SessionStateStore</code>/<code>SessionStateProjectionStore</code> lock types, <code>list_session_snapshots</code> clone shape, <code>INBOUND_REQUEST_LIMIT</code>, and the provider-output pump's <code>with_app_side_effect</code> usage.</li>
+      <li>The harness is trivial to re-run after each change to confirm the curve flattens; keep the before/after numbers next to this plan.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
