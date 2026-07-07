@@ -15,6 +15,7 @@ import {
   sessionHistoryOutlineBlobSequenceStart,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
+  sessionHistoryOutlineTurnKey,
   sessionHistoryOutlineTurnPromptMetadata,
   sessionHistoryOutlineTurnSourceAttachmentId,
   sessionHistoryPageEntryIndex,
@@ -57,6 +58,14 @@ test("session history outline sequence helpers use deterministic fallback values
 test("session history outline turn display id follows durable prompt sequence", () => {
   assert.equal(sessionHistoryOutlineTurnDisplayId(turn(20), 0), 21)
   assert.equal(sessionHistoryOutlineTurnDisplayId(turn(Number.NaN), 4), 5)
+})
+
+test("session history outline turn key follows durable prompt identity and sequence", () => {
+  assert.equal(sessionHistoryOutlineTurnKey("agent-1", {
+    ...turn(7),
+    prompt_id: "prompt-1",
+  }), "agent-1:prompt-1:7")
+  assert.equal(sessionHistoryOutlineTurnKey("agent-1", turn(7)), "agent-1:turn-7:7")
 })
 
 test("session history outline completion distinguishes absent, open, and settled markers", () => {

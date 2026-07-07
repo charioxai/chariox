@@ -49,6 +49,12 @@ export type SessionHistoryOutlineTurnCompletionLike = {
   readonly completed_at_ms?: number | null | undefined
 }
 
+export type SessionHistoryOutlineTurnKeyLike = {
+  readonly prompt_id?: string | null | undefined
+  readonly turn_id: string
+  readonly user_prompt: Pick<SessionHistoryPageEntry, "entry_index">
+}
+
 export type SessionHistoryOutlineTurnPromptMetadata = {
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
@@ -102,6 +108,13 @@ export function sessionHistoryOutlineTurnDisplayId(
   return Number.isFinite(promptIndex) && promptIndex < Number.MAX_SAFE_INTEGER
     ? promptIndex + 1
     : turnIndex + 1
+}
+
+export function sessionHistoryOutlineTurnKey(
+  agentId: string,
+  turn: SessionHistoryOutlineTurnKeyLike,
+): string {
+  return `${agentId}:${turn.prompt_id ?? turn.turn_id}:${sessionHistoryPageEntryIndex(turn.user_prompt)}`
 }
 
 export function sessionHistoryOutlineTurnCompletedAtMs(
