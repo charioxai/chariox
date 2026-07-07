@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>116 allowlisted files remain after initial splits</td>
+              <td>115 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -245,6 +245,12 @@
               <td><code>92d747138</code> <span class="muted">Split session runtime projection tests</span></td>
               <td>Session runtime projection coverage is now split into status, prompt-work, transition, prompt-identity, prompt-lifecycle, and shared test-support responsibilities.</td>
               <td><code>pnpm --filter @arroba/kernel-client run build</code>, 774 package tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>b6922e0a4</code> <span class="muted">Split agent type tests</span></td>
+              <td>Agent data types and layout helpers now stay in the source module, while layout and substitute-profile behavior coverage lives in a sibling test module.</td>
+              <td>Focused <code>agent::types::tests</code> kernel tests, <code>cargo fmt --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
