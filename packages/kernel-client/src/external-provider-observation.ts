@@ -141,7 +141,8 @@ export function historyEntryExternalProviderObservedMetadata(
   const mergeKeyIdentity = parseExternalProviderObservedId(entry.merge_key)
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: nonBlankString(entry.external_provider) ?? mergeKeyIdentity?.provider ?? null,
+    externalProvider: normalizeExternalProviderId(entry.external_provider)
+      ?? (mergeKeyIdentity ? normalizeExternalProviderId(mergeKeyIdentity.provider) : null),
     externalProviderSessionId:
       nonBlankString(entry.external_provider_session_id) ?? mergeKeyIdentity?.providerSessionId ?? null,
     externalProviderTurnId: nonBlankString(entry.external_provider_turn_id) ?? mergeKeyIdentity?.providerTurnId ?? null,
@@ -209,7 +210,7 @@ export function promptOriginExternalProviderObservedMetadata(
   }
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: nonBlankString(record.external_provider),
+    externalProvider: normalizeExternalProviderId(record.external_provider),
     externalProviderSessionId: nonBlankString(record.external_provider_session_id),
     externalProviderTurnId: nonBlankString(record.external_provider_turn_id),
   }
@@ -496,7 +497,7 @@ export function transcriptExternalProviderObservedTurnMetadata(
   }
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: nonBlankString(entry.externalProvider),
+    externalProvider: normalizeExternalProviderId(entry.externalProvider),
     externalProviderSessionId: nonBlankString(entry.externalProviderSessionId),
     externalProviderTurnId: nonBlankString(entry.externalProviderTurnId),
   }

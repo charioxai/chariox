@@ -147,7 +147,7 @@ test("external provider observed metadata projects kernel history fields", () =>
 test("external provider observed metadata falls back to merge key identity", () => {
   assert.deepEqual(historyEntryExternalProviderObservedMetadata({
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    merge_key: "external:codex:thread-1:item-1",
+    merge_key: "external:CODEX:thread-1:item-1",
   }), {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
@@ -172,7 +172,7 @@ test("external provider observed metadata falls back to merge key identity", () 
 test("external provider observed metadata normalizes nullable fields", () => {
   assert.deepEqual(historyEntryExternalProviderObservedMetadata({
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    external_provider: " codex ",
+    external_provider: " CODEX ",
     external_provider_session_id: " thread-1 ",
     external_provider_turn_id: "",
     observed_at_ms: Number.NaN,
@@ -209,7 +209,7 @@ test("external provider observed metadata treats settlement as non-passive", () 
 test("external provider observed metadata projects prompt-origin turn fields", () => {
   assert.deepEqual(promptOriginExternalProviderObservedMetadata({
     prompt_origin: " External ",
-    external_provider: " codex ",
+    external_provider: " CODEX ",
     external_provider_session_id: " thread-1 ",
     external_provider_turn_id: " turn-1 ",
   }), {
@@ -237,7 +237,7 @@ test("external provider observed metadata projects prompt-origin turn fields", (
 test("external provider observed metadata projects transcript turn fields", () => {
   assert.deepEqual(transcriptExternalProviderObservedTurnMetadata({
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: " codex ",
+    externalProvider: " CODEX ",
     externalProviderSessionId: " thread-1 ",
     externalProviderTurnId: " turn-1 ",
   }), {
