@@ -445,10 +445,25 @@ async fn refresh_external_provider_session_index(
             .collect::<Vec<_>>();
         store.replace_provider_sessions(provider, provider_sessions);
     }
-    let app =
-        crate::runtime::app_lock::lock_app_instrumented(&app, "external_provider_session_control")
-            .await;
-    mark_attached_external_provider_sessions(&app, runtime_state, &store);
+    // Read the attached-session refs under the app lock, then apply them to
+    // the index store (which has its own lock) without holding the app lock,
+    // so this background poller does not block foreground commands for the
+    // duration of the store writes.
+    let attached_refs = {
+        let app = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
+        attached_external_provider_session_refs(&app, runtime_state)
+    };
+    for attachment in attached_refs {
+        store.mark_attached(
+            &attachment.external_session_id,
+            &attachment.session_id,
+            &attachment.agent_id,
+        );
+    }
     let total_elapsed = refresh_started.elapsed();
     if force || total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH || !discovered.is_empty()
     {
