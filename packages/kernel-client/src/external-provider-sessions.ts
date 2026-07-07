@@ -81,7 +81,9 @@ export function externalProviderSessionPageHasMore(
 export function externalProviderSessionPageNextCursor(
   page: ExternalProviderSessionPageLike | null | undefined,
 ): string | null {
-  return page?.nextCursor ?? page?.next_cursor ?? page?.externalProviderSessionsNextCursor ?? null
+  const cursor = page?.nextCursor ?? page?.next_cursor ?? page?.externalProviderSessionsNextCursor ?? null
+  const normalized = cursor?.trim() ?? ""
+  return normalized ? normalized : null
 }
 
 export function mergeExternalProviderSessions<T extends ExternalProviderSessionRecord>(
