@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>103 allowlisted files remain after initial splits</td>
+              <td>102 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -323,6 +323,12 @@
               <td><code>bbed985e5</code> <span class="muted">Split runtime event log tests</span></td>
               <td>Runtime event log retention, persistence, and event-id allocation code now stays in the source module, while replay, gap, compaction, and restart coverage lives in a sibling test module.</td>
               <td>Focused <code>runtime::event_log</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>cec85de46</code> <span class="muted">Extract iOS root view components</span></td>
+              <td>The iOS root view now keeps stage and surface composition, while terminal fields, transcript rows, summary/status/footer views, and button styles live in a sibling component module.</td>
+              <td><code>swift test --package-path apps/ios/ArrobaPackage</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
