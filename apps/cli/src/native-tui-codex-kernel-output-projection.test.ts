@@ -64,7 +64,7 @@ test("codex kernel output projection suppresses passive external telemetry", () 
   projection.project([{
     agent_id: "agent-1",
     timestamp_ms: 1_700_000_000_001,
-    kind: "provider_output",
+    kind: "provider_status",
     source: "external_provider_observed",
     external_provider: "codex",
     external_provider_session_id: "thread-1",

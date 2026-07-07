@@ -113,7 +113,7 @@ test("unscoped terminal output records do not render into the visible transcript
   ])
 })
 
-test("visible provider status updates activity and appends renderable status chunks", () => {
+test("visible ordinary provider status updates activity without appending transcript chunks", () => {
   const { deps, calls } = createDeps({
     resolveTerminalRecordAgentId: () => "agent-a",
   })
@@ -134,8 +134,6 @@ test("visible provider status updates activity and appends renderable status chu
     "provider-activity:Thinking",
     "provider-active:true",
     "sync-visible-activity",
-    "chunk:status:OpenCode is thinking...:__provider_status__",
-    "sync-visible-preview",
   ])
 })
 
@@ -185,8 +183,6 @@ test("external provider history update status requires observed source", () => {
     "agent-activity:agent-a:null",
     "provider-activity:null",
     "provider-active:false",
-    "chunk:status:external_provider_history_updated:__provider_status__",
-    "sync-visible-preview",
   ])
 })
 
