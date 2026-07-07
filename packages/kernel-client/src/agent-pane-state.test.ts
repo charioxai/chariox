@@ -11,6 +11,9 @@ import {
   shouldRefreshAgentPanesForSessionChange,
   trimAgentPaneEntries,
 } from "./agent-pane-state.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("selectCurrentAgentPaneEntries prefers the live visible pane over stale cache", () => {
   const result = selectCurrentAgentPaneEntries({
@@ -92,7 +95,7 @@ test("shouldPreferCurrentPaneEntries preserves richer live entries with matching
     {
       role: "user",
       text: "prompt",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread",
       externalProviderTurnId: "turn",
@@ -100,7 +103,7 @@ test("shouldPreferCurrentPaneEntries preserves richer live entries with matching
     {
       role: "assistant",
       text: "longer live assistant output",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread",
       externalProviderTurnId: "turn",
@@ -109,7 +112,7 @@ test("shouldPreferCurrentPaneEntries preserves richer live entries with matching
     {
       role: "user",
       text: "prompt",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread",
       externalProviderTurnId: "turn",
@@ -120,7 +123,7 @@ test("shouldPreferCurrentPaneEntries preserves richer live entries with matching
     {
       role: "assistant",
       text: "other agent output",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "opencode",
       externalProviderSessionId: "other-thread",
       externalProviderTurnId: "turn",
@@ -129,7 +132,7 @@ test("shouldPreferCurrentPaneEntries preserves richer live entries with matching
     {
       role: "assistant",
       text: "current agent output",
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread",
       externalProviderTurnId: "turn",
@@ -213,7 +216,7 @@ test("refreshAgentPaneState projects kernel-scoped history pages without local i
         {
           role: "assistant",
           text: "codex current output",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "codex",
           externalProviderSessionId: "thread-1",
           externalProviderTurnId: "assistant-2",
@@ -222,7 +225,7 @@ test("refreshAgentPaneState projects kernel-scoped history pages without local i
         {
           role: "assistant",
           text: "opencode current output",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-2",
           externalProviderTurnId: "assistant-2",
@@ -236,7 +239,7 @@ test("refreshAgentPaneState projects kernel-scoped history pages without local i
         {
           role: "user",
           text: "codex older prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "codex",
           externalProviderSessionId: "thread-1",
           externalProviderTurnId: "user-1",
@@ -245,7 +248,7 @@ test("refreshAgentPaneState projects kernel-scoped history pages without local i
         {
           role: "user",
           text: "opencode older prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-2",
           externalProviderTurnId: "user-1",
@@ -471,7 +474,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -485,7 +488,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -493,7 +496,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
         {
           role: "assistant",
           text: "external assistant settled",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
