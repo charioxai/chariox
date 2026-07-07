@@ -3,7 +3,7 @@
 use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
 use crate::history::HistoryEventQuery;
-use crate::history_archive::HistoryArchiveClient;
+use crate::history_archive::{HistoryArchiveClient, HistoryArchiveSemanticSearchResponse};
 use crate::local::{
     SemanticRecallMatch, SemanticRecallSearchUtilityInput, SemanticSearchRecallMode,
     SemanticSearchRecallRequest,
@@ -30,12 +30,12 @@ pub(crate) async fn knn_semantic_recall_search(
         }
         let cursor = request.cursor.clone();
         let mut query = history_query_from_semantic_recall_request(request);
-        query.limit = Some(requested_limit);
-        let mut response = archive_client.semantic_search_events(query, cursor)?;
-        response
-            .results
-            .retain(semantic_recall_match_projects_as_result);
-        Ok((response.results, response.next_cursor, None))
+        let (results, next_cursor) =
+            collect_projected_semantic_recall_matches(requested_limit, cursor, |cursor, limit| {
+                query.limit = Some(limit);
+                archive_client.semantic_search_events(query.clone(), cursor)
+            })?;
+        Ok((results, next_cursor, None))
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -108,6 +108,36 @@ fn semantic_recall_match_projects_as_result(match_: &SemanticRecallMatch) -> boo
         .event
         .to_session_history_entry()
         .is_none_or(|entry| !entry.is_external_provider_observed_state_signal())
+}
+
+fn collect_projected_semantic_recall_matches<F>(
+    requested_limit: usize,
+    initial_cursor: Option<String>,
+    mut fetch: F,
+) -> Result<(Vec<SemanticRecallMatch>, Option<String>), DaemonError>
+where
+    F: FnMut(Option<String>, usize) -> Result<HistoryArchiveSemanticSearchResponse, DaemonError>,
+{
+    let requested_limit = requested_limit.clamp(1, 500);
+    let mut cursor = initial_cursor;
+    let mut results = Vec::new();
+    loop {
+        let remaining = requested_limit.saturating_sub(results.len());
+        if remaining == 0 {
+            break;
+        }
+        let mut response = fetch(cursor, remaining)?;
+        response
+            .results
+            .retain(semantic_recall_match_projects_as_result);
+        results.extend(response.results);
+        cursor = response.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    results.truncate(requested_limit);
+    Ok((results, cursor))
 }
 
 #[cfg(test)]
@@ -187,5 +217,118 @@ mod tests {
 
         assert!(semantic_recall_match_projects_as_result(&visible_match));
         assert!(!semantic_recall_match_projects_as_result(&hidden_match));
+    }
+
+    #[test]
+    fn semantic_recall_collection_pages_past_hidden_state_signals() {
+        let hidden = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:turn-1",
+            "turn-1".to_string(),
+            Some(2_100),
+        );
+        let visible_one = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "visible one",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_200),
+        );
+        let visible_two = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "visible two",
+            "codex",
+            "thread-1",
+            Some("turn-2".to_string()),
+            Some(2_300),
+        );
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut calls = Vec::new();
+
+        let (results, next_cursor) = collect_projected_semantic_recall_matches(
+            2,
+            Some("cursor-0".to_string()),
+            |cursor, limit| {
+                calls.push((cursor.clone(), limit));
+                let response = match cursor.as_deref() {
+                    Some("cursor-0") => HistoryArchiveSemanticSearchResponse {
+                        results: vec![SemanticRecallMatch {
+                            event: crate::history::HistoryEvent::transcript(
+                                1,
+                                &hidden,
+                                context.clone(),
+                            ),
+                            score_millis: Some(1),
+                            chunk_index: Some(0),
+                            chunk_text: Some("settled".to_string()),
+                            reason: None,
+                        }],
+                        next_cursor: Some("cursor-1".to_string()),
+                    },
+                    Some("cursor-1") => HistoryArchiveSemanticSearchResponse {
+                        results: vec![
+                            SemanticRecallMatch {
+                                event: crate::history::HistoryEvent::transcript(
+                                    2,
+                                    &visible_one,
+                                    context.clone(),
+                                ),
+                                score_millis: Some(2),
+                                chunk_index: Some(0),
+                                chunk_text: Some("visible one".to_string()),
+                                reason: None,
+                            },
+                            SemanticRecallMatch {
+                                event: crate::history::HistoryEvent::transcript(
+                                    3,
+                                    &visible_two,
+                                    context.clone(),
+                                ),
+                                score_millis: Some(3),
+                                chunk_index: Some(0),
+                                chunk_text: Some("visible two".to_string()),
+                                reason: None,
+                            },
+                        ],
+                        next_cursor: Some("cursor-2".to_string()),
+                    },
+                    other => panic!("unexpected cursor {other:?}"),
+                };
+                Ok(response)
+            },
+        )
+        .expect("semantic recall collection should succeed");
+
+        assert_eq!(
+            calls,
+            vec![
+                (Some("cursor-0".to_string()), 2),
+                (Some("cursor-1".to_string()), 2)
+            ]
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter_map(|match_| match_.event.content.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["visible one", "visible two"]
+        );
+        assert_eq!(next_cursor.as_deref(), Some("cursor-2"));
     }
 }
