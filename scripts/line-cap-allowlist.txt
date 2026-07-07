@@ -67,7 +67,6 @@ apps/kernel/src/runtime/router/tests/provider_projection.rs
 apps/kernel/src/app/provider_output_fanout.rs
 apps/kernel/tests/kernel_websocket_integration.rs
 apps/kernel/src/runtime/session_actor/tests/agent_lifecycle_execution.rs
-packages/kernel-client/src/ipc-workflow-requests.ts
 apps/cli/scripts/lib/drill-artifacts.mjs
 apps/kernel/src/session/service/tests/workflow_code_apply.rs
 apps/cli/scripts/live-workflow-runtime-drill.mjs
