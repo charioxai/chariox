@@ -342,7 +342,7 @@ export function projectTranscriptTurnToggleDisplayState<TEntry extends Transcrip
   activeTurnId: number | null = null,
   options: TranscriptDisplayStateOptions = {},
 ): TranscriptTurnToggleProjection<TEntry> | null {
-  if (!turnId) {
+  if (turnId === null || turnId === undefined) {
     return null
   }
   const toggleEntry = resolveVisibleTurnToggle(entries, turnId, preferredToggleEntryId)
@@ -466,7 +466,7 @@ export function findVisibleTurnToggle<TEntry extends TranscriptDisplayEntry>(
   turnId: number | null | undefined,
   toggleEntryId?: number,
 ): TEntry | undefined {
-  if (!turnId) {
+  if (turnId === null || turnId === undefined) {
     return undefined
   }
   return entries.find((entry) => {

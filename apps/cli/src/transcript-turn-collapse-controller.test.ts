@@ -30,6 +30,14 @@ test("transcript turn collapse controller ignores invalid targets", () => {
   assert.deepEqual(harness.collapsedTurnIdsByAgent, { "agent-1": [2] })
 })
 
+test("transcript turn collapse controller stores serialized zero turn ids", () => {
+  const harness = collapseHarness({ "agent-1": [0] })
+
+  harness.controller.setExpandedTurnState("agent-1", 0, true)
+
+  assert.deepEqual(harness.collapsedTurnIdsByAgent, {})
+})
+
 function collapseHarness(initial: Record<string, number[]> = {}) {
   const harness = {
     collapsedTurnIdsByAgent: initial,

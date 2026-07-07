@@ -48,7 +48,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
   }
 
   const toggleTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
-    if (!turnId) {
+    if (turnId === null || turnId === undefined) {
       return
     }
     const currentEntries = compactTranscriptDisplayEntries(deps.entries())

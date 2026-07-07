@@ -35,6 +35,28 @@ test("agent pane transcript interaction controller toggles turns", () => {
   assert.equal(harness.focusRetained, 1)
 })
 
+test("agent pane transcript interaction controller toggles serialized zero turn ids", () => {
+  const harness = interactionHarness({
+    "agent-1": [
+      entry(1, "user", "prompt", { turnId: 0 }),
+      entry(4, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
+      entry(2, "reasoning", "thinking", { turnId: 0, hidden: true, blobCollapsible: true }),
+      entry(3, "assistant", "summary", { turnId: 0 }),
+    ],
+  }, { "agent-1": [0] })
+
+  harness.controller.toggleTurn("agent-1", 0, 4)
+
+  assert.deepEqual(harness.expandedTurnUpdates, [{
+    agentId: "agent-1",
+    turnId: 0,
+    expanded: true,
+  }])
+  assert.equal(harness.committed.length, 1)
+  assert.equal(harness.reconciled.length, 1)
+  assert.equal(harness.focusRetained, 1)
+})
+
 test("agent pane transcript interaction controller ignores missing turn toggles", () => {
   const harness = interactionHarness({
     "agent-1": [entry(1, "assistant", "summary", { turnId: 1 })],

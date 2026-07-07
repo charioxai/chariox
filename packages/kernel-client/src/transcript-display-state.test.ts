@@ -164,6 +164,19 @@ test("projectTranscriptTurnToggleDisplayState projects expansion through shared 
   )
 })
 
+test("projectTranscriptTurnToggleDisplayState accepts serialized zero turn ids", () => {
+  const sourceEntries = baseTurnEntries().map((entry) => ({
+    ...entry,
+    turnId: 0,
+  }))
+  const current = applyTranscriptDisplayState(sourceEntries, [0])
+  const projection = projectTranscriptTurnToggleDisplayState(current, 0, [0])
+
+  assert.equal(projection?.turnId, 0)
+  assert.equal(projection?.expanded, true)
+  assert.deepEqual(projection?.collapsedTurnIds, [])
+})
+
 test("projectTranscriptTurnToggleDisplayState ignores invalid targets", () => {
   const current = applyTranscriptDisplayState(baseTurnEntries(), [1])
 

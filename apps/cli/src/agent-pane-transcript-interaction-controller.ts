@@ -39,7 +39,7 @@ export function createAgentPaneTranscriptInteractionController(
     turnId: number | null | undefined,
     toggleEntryId?: number,
   ) => {
-    if (!turnId) {
+    if (turnId === null || turnId === undefined) {
       return
     }
     const currentEntries = deps.currentAgentPaneEntries(agentId)

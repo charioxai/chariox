@@ -22,7 +22,7 @@ export function createTranscriptTurnCollapseController(deps: TranscriptTurnColla
     turnId: number | null | undefined,
     expanded: boolean,
   ) => {
-    if (!agentId || !turnId) {
+    if (!agentId || turnId === null || turnId === undefined) {
       return
     }
     deps.updateCollapsedTurnIdsByAgent((current) =>
