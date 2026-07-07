@@ -1,6 +1,7 @@
 use crate::agent::RemoteAgentBinding;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::error::DaemonError;
+use crate::provider::ProviderRunState;
 use crate::session::{PromptCompletion, PromptQueueItem};
 use crate::transport::flow_control;
 
@@ -360,16 +361,11 @@ impl<'a> KernelAgentService<'a> {
         if completion.started_next.is_some() {
             return Ok(());
         }
-        if self
-            .app
-            .providers
-            .get_run_for_agent(metaagent.session_id(), metaagent.id())
-            .is_some_and(|run| self.app.active_turns.snapshot().contains_key(run.id()))
-        {
-            return Ok(());
-        }
         let session_id = metaagent.session_id().to_string();
         let mut session = self.app.sessions.get_session(&session_id)?;
+        if self.metaagent_has_active_provider_run(&session, metaagent.id()) {
+            return Ok(());
+        }
         let Some(task) = session.metaagent_task(metaagent.id()).cloned() else {
             return Ok(());
         };
@@ -479,6 +475,45 @@ impl<'a> KernelAgentService<'a> {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn metaagent_has_active_provider_run(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent_id: &str,
+    ) -> bool {
+        let active_turns = self.app.active_turns.snapshot();
+        if self
+            .app
+            .providers
+            .get_run_for_agent(session.id(), metaagent_id)
+            .is_some_and(|run| {
+                matches!(
+                    run.state(),
+                    ProviderRunState::Starting | ProviderRunState::Running
+                ) || active_turns.contains_key(run.id())
+            })
+        {
+            return true;
+        }
+        let Some(active_provider_run_id) = session.active_provider_run_id() else {
+            return false;
+        };
+        let Ok(run) = self.app.providers.get_run(active_provider_run_id) else {
+            return false;
+        };
+        if run.session_id() != session.id() {
+            return false;
+        }
+        if let Some(agent_id) = run.agent_instance_id() {
+            if agent_id != metaagent_id {
+                return false;
+            }
+        }
+        matches!(
+            run.state(),
+            ProviderRunState::Starting | ProviderRunState::Running
+        ) || active_turns.contains_key(run.id())
     }
 
     fn metaagent_has_active_owned_regular_agent_work(
