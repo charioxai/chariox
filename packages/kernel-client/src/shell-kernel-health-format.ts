@@ -1,6 +1,11 @@
 import type { DaemonHealthProjection } from "./kernel-types.js"
 import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+import {
+  commandLaneHealthIssueCount,
+  commandLaneHealthSummary,
+  commandLaneInspectionTargets,
+} from "./shell-kernel-command-lanes.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
@@ -902,93 +907,6 @@ function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
 
 function providerRunActorHealthIssueCount(health: DaemonHealthProjection): number {
   return health.provider_run_actor.enqueue_rejections
-}
-
-function commandLaneHealthIssueCount(health: DaemonHealthProjection): number {
-  return commandLaneHealthSummary(health).saturated
-}
-
-function commandLaneHealthSummary(health: DaemonHealthProjection): {
-  session: CommandLaneKindSummary
-  agent: CommandLaneKindSummary
-  workflow: CommandLaneKindSummary
-  provider: CommandLaneKindSummary
-  saturated: number
-  saturatedLanes: CommandLaneIssue[]
-} {
-  const session = summarizeCommandLanes("session", health.session_command_lanes)
-  const agent = summarizeCommandLanes("agent", health.agent_command_lanes)
-  const workflow = summarizeCommandLanes("workflow", health.workflow_command_lanes)
-  const provider = summarizeCommandLanes("provider", health.provider_runtime_lanes)
-  const saturatedLanes = [
-    ...session.saturatedLanes,
-    ...agent.saturatedLanes,
-    ...workflow.saturatedLanes,
-    ...provider.saturatedLanes,
-  ]
-  return {
-    session,
-    agent,
-    workflow,
-    provider,
-    saturated: saturatedLanes.length,
-    saturatedLanes,
-  }
-}
-
-type CommandLaneKind = "session" | "agent" | "workflow" | "provider"
-
-type CommandLaneKindSummary = {
-  lanes: number
-  queued: number
-  saturatedLanes: CommandLaneIssue[]
-}
-
-type CommandLaneIssue = {
-  kind: CommandLaneKind
-  laneId: string
-  queued: number
-  limit: number
-}
-
-function commandLaneInspectionTargets(lanes: readonly CommandLaneIssue[]): string {
-  const targets = lanes.slice(0, 4).map(commandLaneInspectionTarget)
-  if (lanes.length > 4) {
-    targets.push(`${lanes.length - 4} more lane${lanes.length - 4 === 1 ? "" : "s"}`)
-  }
-  return targets.length > 0 ? targets.join(", ") : "stuck sessions/agents"
-}
-
-function commandLaneInspectionTarget(lane: CommandLaneIssue): string {
-  switch (lane.kind) {
-    case "session":
-      return `session ${lane.laneId}`
-    case "agent":
-      return `agent ${lane.laneId}`
-    case "workflow":
-      return `workflow ${lane.laneId}`
-    case "provider":
-      return `provider run ${lane.laneId}`
-  }
-}
-
-function summarizeCommandLanes(
-  kind: CommandLaneKind,
-  lanes: readonly { lane_id: string; queue_limit: number; queued_commands: number }[],
-): CommandLaneKindSummary {
-  const saturatedLanes = lanes
-    .filter((lane) => lane.queue_limit > 0 && lane.queued_commands >= lane.queue_limit)
-    .map((lane) => ({
-      kind,
-      laneId: lane.lane_id,
-      queued: lane.queued_commands,
-      limit: lane.queue_limit,
-    }))
-  return {
-    lanes: lanes.length,
-    queued: lanes.reduce((sum, lane) => sum + lane.queued_commands, 0),
-    saturatedLanes,
-  }
 }
 
 function formatBytes(bytes: number | null): string {

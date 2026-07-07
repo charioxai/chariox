@@ -116,7 +116,6 @@ apps/cli/scripts/live-unattached-agents-tui-parity-drill.mjs
 apps/kernel/src/runtime_transport/subscriptions.rs
 apps/kernel/src/io/coordinator.rs
 apps/kernel/src/runtime/state/agent_config_runtime_state.rs
-packages/kernel-client/src/shell-kernel-health-format.ts
 apps/cli/scripts/live-mcp-skill-drill.mjs
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/ArrobaAppModelTests.swift
 apps/kernel/src/agent/types.rs
