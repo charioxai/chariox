@@ -279,25 +279,25 @@ fn merge_active_turn_start(
     existing: &ActiveTurnState,
     mut incoming: ActiveTurnState,
 ) -> ActiveTurnState {
-    if existing.prompt_id == incoming.prompt_id
-        && existing.trace_id != existing.prompt_id
-        && incoming.trace_id == incoming.prompt_id
-    {
-        incoming.trace_id = existing.trace_id.clone();
-        incoming.started_at_ms = existing.started_at_ms;
-    }
-    if existing.phase.rank() > incoming.phase.rank() {
-        incoming.phase = existing.phase.clone();
-    }
-    if incoming.prompt_origin.is_none() {
-        incoming.prompt_origin = existing.prompt_origin;
-    }
-    if incoming.external_observed_id.is_none() {
-        incoming.external_observed_id = existing.external_observed_id.clone();
-    }
-    incoming.settlement_requested |= existing.settlement_requested;
-    if incoming.settlement_requested && incoming.phase.rank() < ActiveTurnPhase::Settling.rank() {
-        incoming.phase = ActiveTurnPhase::Settling;
+    if existing.prompt_id == incoming.prompt_id {
+        if existing.trace_id != existing.prompt_id && incoming.trace_id == incoming.prompt_id {
+            incoming.trace_id = existing.trace_id.clone();
+            incoming.started_at_ms = existing.started_at_ms;
+        }
+        if existing.phase.rank() > incoming.phase.rank() {
+            incoming.phase = existing.phase.clone();
+        }
+        if incoming.prompt_origin.is_none() {
+            incoming.prompt_origin = existing.prompt_origin;
+        }
+        if incoming.external_observed_id.is_none() {
+            incoming.external_observed_id = existing.external_observed_id.clone();
+        }
+        incoming.settlement_requested |= existing.settlement_requested;
+        if incoming.settlement_requested && incoming.phase.rank() < ActiveTurnPhase::Settling.rank()
+        {
+            incoming.phase = ActiveTurnPhase::Settling;
+        }
     }
     incoming
 }
@@ -497,6 +497,46 @@ mod tests {
         assert_eq!(external.provider, "codex");
         assert_eq!(external.provider_session_id, "session-1");
         assert_eq!(external.provider_turn_id, "user-1");
+    }
+
+    #[test]
+    fn active_turn_restart_for_new_prompt_does_not_preserve_old_turn_state() {
+        let store = ActiveTurnStore::default();
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "external:codex:session-1:user-1",
+            "codex",
+            "agent-1",
+            "external prompt",
+        );
+        store.start(
+            ActiveTurnState::new(
+                "session-1".to_string(),
+                "agent-1".to_string(),
+                external_prompt.id().to_string(),
+                "run-1".to_string(),
+            )
+            .with_prompt_metadata(&external_prompt)
+            .with_phase(ActiveTurnPhase::Streaming),
+        );
+        store.mark_settling("run-1");
+
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-2".to_string(),
+            "run-1".to_string(),
+        ));
+
+        let turn = store
+            .snapshot()
+            .remove("run-1")
+            .expect("new turn should be active");
+        assert_eq!(turn.prompt_id, "prompt-2");
+        assert_eq!(turn.trace_id, "prompt-2");
+        assert_eq!(turn.phase, ActiveTurnPhase::Accepted);
+        assert!(!turn.settlement_requested);
+        assert_eq!(turn.prompt_origin, None);
+        assert_eq!(turn.external_observed_id, None);
     }
 
     #[test]
