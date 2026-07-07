@@ -26,6 +26,7 @@ import {
   mergePrependedTranscriptHistoryFragments,
   stitchPrependedTranscriptHistory,
 } from "./transcript-history-stitching.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   applyTranscriptDisplayState,
   type TranscriptHistoryTurnLifecycle,
@@ -442,8 +443,10 @@ function historyEntryTranscriptIdentityOptions(
   entry: SessionHistoryEntry,
   turnPromptId?: string | null,
 ): Partial<SessionHistoryTranscriptEntry> {
+  const hasPromptOrigin = Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
+    ...(hasPromptOrigin ? { promptOrigin: promptOriginFromRecord(entry) } : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }

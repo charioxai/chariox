@@ -24,6 +24,9 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
       if (entry.entry.attachments !== undefined) {
         previous.entry.attachments = mergeSessionHistoryPromptAttachments(previous.entry.attachments, entry.entry.attachments)
       }
+      if (previous.entry.prompt_origin === undefined && entry.entry.prompt_origin !== undefined) {
+        previous.entry.prompt_origin = entry.entry.prompt_origin
+      }
       mergeExternalProviderObservedHistoryFields(previous.entry, entry.entry)
       continue
     }
@@ -46,6 +49,7 @@ export function cloneSessionHistoryEntry(entry: SessionHistoryEntry): SessionHis
     text: entry.text,
     ...(entry.agent_id !== undefined ? { agent_id: entry.agent_id } : {}),
     ...(entry.provider_run_id !== undefined ? { provider_run_id: entry.provider_run_id } : {}),
+    ...(entry.prompt_origin !== undefined ? { prompt_origin: entry.prompt_origin } : {}),
     ...(entry.merge_key !== undefined ? { merge_key: entry.merge_key } : {}),
     ...(entry.source !== undefined ? { source: entry.source } : {}),
     ...(entry.external_provider !== undefined ? { external_provider: entry.external_provider } : {}),

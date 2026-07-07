@@ -35,6 +35,7 @@ test("adjacent session history page entries preserve identity fields and richer 
       text: "look",
       agent_id: "agent-1",
       provider_run_id: "run-1",
+      prompt_origin: "external",
       merge_key: "prompt-1",
       source_attachment_id: "attachment-1",
       attachments: [{
@@ -60,6 +61,7 @@ test("adjacent session history page entries preserve identity fields and richer 
     text: "look now",
     agent_id: "agent-1",
     provider_run_id: "run-1",
+    prompt_origin: "external",
     merge_key: "prompt-1",
     source_attachment_id: "attachment-1",
     attachments: [{
@@ -69,6 +71,22 @@ test("adjacent session history page entries preserve identity fields and richer 
       preview_url: "file:///tmp/preview.png",
     }],
   })
+})
+
+test("adjacent session history page entries recover prompt ownership from later fragments", () => {
+  const merged = mergeAdjacentSessionHistoryPageEntries([
+    pageEntry(8, 0, 4, {
+      kind: "user_prompt",
+      text: "look",
+    }),
+    pageEntry(8, 4, 8, {
+      kind: "user_prompt",
+      text: " now",
+      prompt_origin: "external",
+    }),
+  ])
+
+  assert.equal(merged[0]?.entry.prompt_origin, "external")
 })
 
 test("adjacent session history page entries upgrade matching attachments without dropping extra chips", () => {
@@ -162,6 +180,7 @@ test("session history entry clone does not reuse attachment objects", () => {
   const cloned = cloneSessionHistoryEntry({
     kind: "user_prompt",
     text: "open",
+    prompt_origin: "arroba",
     attachments: [attachment],
     timestamp_ms: 10,
   })
@@ -169,6 +188,7 @@ test("session history entry clone does not reuse attachment objects", () => {
   assert.deepEqual(cloned, {
     kind: "user_prompt",
     text: "open",
+    prompt_origin: "arroba",
     attachments: [attachment],
     timestamp_ms: 10,
   })

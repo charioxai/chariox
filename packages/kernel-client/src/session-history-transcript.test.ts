@@ -280,6 +280,30 @@ test("session history transcript hydration preserves prompt attachment and promp
   })
 })
 
+test("session history transcript hydration preserves explicit prompt ownership", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(0, "user_prompt", "external prompt", {
+      prompt_origin: " External ",
+    }),
+    pageEntry(1, "provider_output", "external reply\n", {
+      prompt_origin: "external",
+    }),
+    pageEntry(2, "user_prompt", "arroba prompt", {
+      prompt_origin: "arroba",
+    }),
+    pageEntry(3, "provider_output", "arroba reply\n", {
+      prompt_origin: null,
+    }),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.promptOrigin), [
+    "external",
+    "external",
+    "arroba",
+    null,
+  ])
+})
+
 test("shared history transcript stitch helpers preserve metadata", () => {
   const stitched = stitchPrependedHistoryTranscript(
     [transcriptEntry(1, "assistant", "native ", {
