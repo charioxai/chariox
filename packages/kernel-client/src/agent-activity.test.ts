@@ -109,7 +109,15 @@ test("agent activity busy helper follows kernel projected activity semantics", (
     busy: false,
     active_turn: { prompt_id: "prompt-1", status: "cancelled" },
   }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "queued" },
+  }), false)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1" }), true)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "queued" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "dispatching" }), true)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "completed" }), false)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
@@ -204,6 +212,17 @@ test("agent activity turn-work helper distinguishes active turns from queued-onl
     active_prompt_count: 0,
     queued_prompt_count: 0,
   }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "queued",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+  }), false)
   assert.equal(agentRuntimeActivityHasTurnWork({
     status: "idle",
     prompt_status: "none",

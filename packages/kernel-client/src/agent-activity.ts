@@ -273,7 +273,7 @@ export function agentRuntimeActiveTurnIsBusy(activeTurn: unknown): boolean {
   }
   const rawStatus = (activeTurn as { readonly status?: unknown }).status
   const status = normalizeAgentRuntimePromptStatus(typeof rawStatus === "string" ? rawStatus : null)
-  return status === null || agentRuntimePromptStatusIsActive(status)
+  return status === null || agentRuntimePromptStatusIsActivePrompt(status)
 }
 
 export function readAgentRuntimeCompletedTurn(
