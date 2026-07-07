@@ -32,6 +32,10 @@ export function nextQueuedPromptSelectionId(
     return null
   }
   const currentIndex = selectedQueuedPromptIndex(items, selectedPromptId)
-  const nextIndex = (currentIndex + delta + items.length) % items.length
+  const nextIndex = positiveModulo(currentIndex + delta, items.length)
   return items[nextIndex]?.promptId ?? null
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor
 }

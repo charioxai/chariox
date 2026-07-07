@@ -37,6 +37,15 @@ test("queued prompt selection cycles through available prompts", () => {
   assert.equal(nextQueuedPromptSelectionId(items, "missing", -1), "prompt-3")
 })
 
+test("queued prompt selection handles multi-step deltas deterministically", () => {
+  const items = prompts("prompt-1", "prompt-2", "prompt-3")
+
+  assert.equal(nextQueuedPromptSelectionId(items, "prompt-1", 4), "prompt-2")
+  assert.equal(nextQueuedPromptSelectionId(items, "prompt-1", -4), "prompt-3")
+  assert.equal(nextQueuedPromptSelectionId(items, "prompt-2", 6), "prompt-2")
+  assert.equal(nextQueuedPromptSelectionId(items, "prompt-2", -6), "prompt-2")
+})
+
 test("queued prompt selection handles an empty queue", () => {
   assert.equal(selectedQueuedPromptIndex([], "prompt-1"), -1)
   assert.equal(selectedQueuedPromptId([], "prompt-1"), null)
