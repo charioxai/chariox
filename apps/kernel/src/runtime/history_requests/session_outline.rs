@@ -316,9 +316,6 @@ fn event_belongs_to_external_import(
     }
     let entry_provider = normalize_external_provider(entry.external_provider.as_deref());
     let entry_session_id = non_blank_trimmed(entry.external_provider_session_id.as_deref());
-    if entry_provider.is_none() && entry_session_id.is_none() {
-        return true;
-    }
     let Some(agent_import) = agent_import else {
         return true;
     };
@@ -330,7 +327,7 @@ fn event_belongs_to_external_import(
         return false;
     }
     let Some(entry_session_id) = entry_session_id else {
-        return true;
+        return false;
     };
     let import_session_id = non_blank_trimmed(Some(&agent_import.external_provider_session_id));
     let import_provider_session_id =
@@ -1226,6 +1223,66 @@ mod tests {
                 .append(&HistoryEvent::transcript(sequence + 1, &output, context))
                 .expect("external output should append");
         }
+        let missing_identity_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("missing-identity".to_string()),
+            prompt_id: Some("prompt-missing-identity".to_string()),
+            provider_run_id: Some("run-missing-identity".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut missing_identity_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-missing-identity"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "missing identity prompt",
+            "codex",
+            "thread-missing",
+            Some("turn-missing".to_string()),
+            Some(2_500),
+        );
+        missing_identity_prompt.external_provider = None;
+        missing_identity_prompt.external_provider_session_id = None;
+        let mut missing_identity_output = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-missing-identity"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "missing identity output",
+            "codex",
+            "thread-missing",
+            Some("turn-missing".to_string()),
+            Some(2_501),
+        );
+        missing_identity_output.external_provider = None;
+        missing_identity_output.external_provider_session_id = None;
+        let mut missing_identity_tool = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-missing-identity"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderTool,
+            r#"{"tool":"bash","status":"completed","input":{"command":"echo hidden"}}"#,
+            "codex",
+            "thread-missing",
+            Some("tool-missing".to_string()),
+            Some(2_502),
+        );
+        missing_identity_tool.external_provider = None;
+        missing_identity_tool.external_provider_session_id = None;
+        for (sequence, entry) in [
+            (25, missing_identity_prompt),
+            (26, missing_identity_tool),
+            (27, missing_identity_output),
+        ] {
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    missing_identity_context.clone(),
+                ))
+                .expect("missing-identity external entry should append");
+        }
 
         let outline =
             load_scoped_agent_outline(&store, "session-1", "agent-1", 2, None, Some(&import))
@@ -1274,10 +1331,29 @@ mod tests {
                     agent_id: "agent-1".to_string(),
                     blob_id: blob_id(21, 21),
                 },
-                Some(import),
+                Some(import.clone()),
             ))
             .expect("scoped blob content should load");
         let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } = wrong_blob_response
+        else {
+            panic!("unexpected response")
+        };
+        assert!(entries.is_empty());
+
+        let missing_identity_blob_response = tokio::runtime::Runtime::new()
+            .expect("runtime should create")
+            .block_on(execute_scoped_session_history_blob_content_request(
+                store.clone(),
+                GetSessionHistoryBlobContentRequest {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    blob_id: blob_id(26, 26),
+                },
+                Some(import),
+            ))
+            .expect("scoped blob content should load");
+        let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } =
+            missing_identity_blob_response
         else {
             panic!("unexpected response")
         };
