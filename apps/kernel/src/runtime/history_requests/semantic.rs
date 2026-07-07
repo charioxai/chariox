@@ -31,7 +31,10 @@ pub(crate) async fn knn_semantic_recall_search(
         let cursor = request.cursor.clone();
         let mut query = history_query_from_semantic_recall_request(request);
         query.limit = Some(requested_limit);
-        let response = archive_client.semantic_search_events(query, cursor)?;
+        let mut response = archive_client.semantic_search_events(query, cursor)?;
+        response
+            .results
+            .retain(semantic_recall_match_projects_as_result);
         Ok((response.results, response.next_cursor, None))
     })
     .await
@@ -100,9 +103,17 @@ fn history_query_from_semantic_recall_request(
     }
 }
 
+fn semantic_recall_match_projects_as_result(match_: &SemanticRecallMatch) -> bool {
+    match_
+        .event
+        .to_session_history_entry()
+        .is_none_or(|entry| !entry.is_external_provider_observed_state_signal())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
 
     #[test]
     fn semantic_utility_request_forces_knn_mode_and_preserves_filters() {
@@ -128,5 +139,53 @@ mod tests {
         assert_eq!(request.worktree_path.as_deref(), Some("/repo"));
         assert_eq!(request.kind.as_deref(), Some("terminal_output"));
         assert_eq!(request.limit, Some(12));
+    }
+
+    #[test]
+    fn semantic_recall_results_hide_external_observer_state_signals() {
+        let visible = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "visible output",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let hidden = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:turn-1",
+            "turn-1".to_string(),
+            Some(2_100),
+        );
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let visible_match = SemanticRecallMatch {
+            event: crate::history::HistoryEvent::transcript(1, &visible, context.clone()),
+            score_millis: Some(10),
+            chunk_index: Some(0),
+            chunk_text: Some("visible output".to_string()),
+            reason: None,
+        };
+        let hidden_match = SemanticRecallMatch {
+            event: crate::history::HistoryEvent::transcript(2, &hidden, context),
+            score_millis: Some(11),
+            chunk_index: Some(0),
+            chunk_text: Some("settled".to_string()),
+            reason: None,
+        };
+
+        assert!(semantic_recall_match_projects_as_result(&visible_match));
+        assert!(!semantic_recall_match_projects_as_result(&hidden_match));
     }
 }
