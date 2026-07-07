@@ -164,6 +164,17 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
     externalProvider?: string
     externalProviderSessionId?: string
     externalProviderTurnId?: string
+    attachments?: Array<{
+      url: string
+      mime: string
+      filename?: string | null
+      preview_url?: string | null
+    }>
+    observedAtMs?: number | null
+    externalObservation?: {
+      settles_active_prompt: boolean
+      passive_telemetry: boolean
+    } | null
     historyTurnCompletedAtMs?: number | null
     historyTurnLifecycle?: "open" | "completed"
     historyBlobId?: string
@@ -195,10 +206,21 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
         promptId: "prompt-1",
         promptOrigin: "external",
         sourceAttachmentId: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
         source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
         externalProvider: "codex",
         externalProviderSessionId: "thread-1",
         externalProviderTurnId: "turn-1",
+        observedAtMs: 1_000,
+        externalObservation: {
+          settles_active_prompt: true,
+          passive_telemetry: false,
+        },
         historyTurnCompletedAtMs: null,
         historyTurnLifecycle: "open",
         historyBlobId: "blob-1",
@@ -221,6 +243,13 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
   assert.equal(result[1]?.externalProvider, "codex")
   assert.equal(result[1]?.externalProviderSessionId, "thread-1")
   assert.equal(result[1]?.externalProviderTurnId, "turn-1")
+  assert.equal(result[1]?.attachments?.[0]?.filename, "Screenshot.png")
+  assert.equal(result[1]?.attachments?.[0]?.preview_url, "data:image/png;base64,aW1hZ2U=")
+  assert.equal(result[1]?.observedAtMs, 1_000)
+  assert.deepEqual(result[1]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
   assert.equal(result[1]?.historyTurnCompletedAtMs, null)
   assert.equal(result[1]?.historyTurnLifecycle, "open")
 })
@@ -250,6 +279,52 @@ test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritati
   })
 
   assert.equal(result[0]?.promptOrigin, "arroba")
+})
+
+test("preserveLoadedHistoryBlobs uses refreshed lifecycle metadata for loaded content", () => {
+  type BlobEntry = {
+    id?: number
+    role: string
+    turnId?: number
+    text: string
+    historyBlobId?: string
+    historyBlobAgentId?: string
+    historyBlobSourceId?: string
+    historyBlobSourceAgentId?: string
+    historyBlobLoaded?: boolean
+    historyTurnCompletedAtMs?: number | null
+    historyTurnLifecycle?: "open" | "completed"
+  }
+
+  const result = preserveLoadedHistoryBlobs<BlobEntry>({
+    currentEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "loaded tool output",
+      historyBlobSourceId: "blob-1",
+      historyBlobSourceAgentId: "agent-a",
+      historyBlobLoaded: true,
+      historyTurnCompletedAtMs: null,
+      historyTurnLifecycle: "open",
+    }],
+    refreshedEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "",
+      historyBlobId: "blob-1",
+      historyBlobAgentId: "agent-a",
+      historyTurnCompletedAtMs: 2_000,
+      historyTurnLifecycle: "completed" as const,
+    }],
+    collapsedTurnIds: [],
+    applyCollapsedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+  })
+
+  assert.equal(result[0]?.text, "loaded tool output")
+  assert.equal(result[0]?.historyBlobLoaded, true)
+  assert.equal(result[0]?.historyTurnCompletedAtMs, 2_000)
+  assert.equal(result[0]?.historyTurnLifecycle, "completed")
 })
 
 test("refreshAgentPaneState projects kernel-scoped history pages without local import repair", async () => {

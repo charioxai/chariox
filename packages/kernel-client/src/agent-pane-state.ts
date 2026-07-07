@@ -6,7 +6,13 @@ import {
   type TranscriptLineageEntry,
   type TranscriptRoleEntry,
 } from "./transcript-entry-lineage.js"
+import { mergeExternalProviderObservation } from "./external-provider-observation.js"
+import { mergeSessionHistoryPromptAttachments } from "./session-history-attachments.js"
 import { transcriptRetentionSlice } from "./transcript-entry-state.js"
+import type {
+  SessionHistoryExternalObservation,
+  SessionHistoryPromptAttachment,
+} from "./kernel-types.js"
 
 export type AgentPaneSession<TAgent extends { id: string }> = {
   readonly agents: readonly TAgent[]
@@ -21,6 +27,9 @@ export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly historyBlobLoaded?: boolean
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
+  readonly attachments?: readonly SessionHistoryPromptAttachment[]
+  readonly observedAtMs?: number | null
+  readonly externalObservation?: SessionHistoryExternalObservation | null
   readonly historyTurnCompletedAtMs?: number | null
   readonly historyTurnLifecycle?: "open" | "completed"
 }
@@ -201,12 +210,19 @@ function mergeLoadedHistoryBlobEntryMetadata<TEntry extends AgentPaneHistoryBlob
   loadedEntry: TEntry,
   placeholder: TEntry,
 ): TEntry {
+  const externalObservation = mergeExternalProviderObservation(
+    loadedEntry.externalObservation,
+    placeholder.externalObservation,
+  )
   return {
     ...loadedEntry,
     ...(loadedEntry.promptId === undefined && placeholder.promptId !== undefined ? { promptId: placeholder.promptId } : {}),
     ...(loadedEntry.promptOrigin === undefined && placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(loadedEntry.sourceAttachmentId === undefined && placeholder.sourceAttachmentId !== undefined
       ? { sourceAttachmentId: placeholder.sourceAttachmentId }
+      : {}),
+    ...(loadedEntry.attachments !== undefined || placeholder.attachments !== undefined
+      ? { attachments: mergeSessionHistoryPromptAttachments(loadedEntry.attachments, placeholder.attachments) }
       : {}),
     ...(loadedEntry.source === undefined && placeholder.source !== undefined ? { source: placeholder.source } : {}),
     ...(loadedEntry.externalProvider === undefined && placeholder.externalProvider !== undefined
@@ -218,10 +234,14 @@ function mergeLoadedHistoryBlobEntryMetadata<TEntry extends AgentPaneHistoryBlob
     ...(loadedEntry.externalProviderTurnId === undefined && placeholder.externalProviderTurnId !== undefined
       ? { externalProviderTurnId: placeholder.externalProviderTurnId }
       : {}),
-    ...(loadedEntry.historyTurnCompletedAtMs === undefined && placeholder.historyTurnCompletedAtMs !== undefined
+    ...(loadedEntry.observedAtMs === undefined && placeholder.observedAtMs !== undefined
+      ? { observedAtMs: placeholder.observedAtMs }
+      : {}),
+    ...(externalObservation !== undefined ? { externalObservation } : {}),
+    ...(placeholder.historyTurnCompletedAtMs !== undefined
       ? { historyTurnCompletedAtMs: placeholder.historyTurnCompletedAtMs }
       : {}),
-    ...(loadedEntry.historyTurnLifecycle === undefined && placeholder.historyTurnLifecycle !== undefined
+    ...(placeholder.historyTurnLifecycle !== undefined
       ? { historyTurnLifecycle: placeholder.historyTurnLifecycle }
       : {}),
   }
