@@ -63,8 +63,15 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut cache = ExternalProviderSessionDiscoveryCache::default();
-    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false)
+    if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
+        refresh_external_provider_session_index(
+            &app,
+            Some(&runtime_state),
+            Some(&mut cache),
+            false,
+        )
         .await;
+    }
     let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -75,10 +82,22 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                 }
             }
             _ = interval.tick() => {
-                refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
+                if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
+                    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
+                }
             }
         }
     }
+}
+
+async fn external_provider_session_discovery_has_demand(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+) -> bool {
+    let app =
+        crate::runtime::app_lock::lock_app_instrumented(app, "external_provider_session_control")
+            .await;
+    !attached_external_provider_session_refs(&app, runtime_state).is_empty()
 }
 
 #[derive(Debug, Clone)]
@@ -2026,6 +2045,39 @@ mod tests {
                 ),
             )
             .expect("test attachment should be created");
+    }
+
+    #[test]
+    fn external_provider_discovery_poller_is_demand_gated() {
+        let source = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("src/runtime/external_provider_session_control.rs"),
+        )
+        .expect("source should be readable");
+        let start = source
+            .find("pub(crate) async fn run_external_provider_session_discovery_poller")
+            .expect("discovery poller should exist");
+        let end = source[start..]
+            .find("#[derive(Debug, Clone)]\nstruct AttachedExternalObserverTarget")
+            .map(|offset| start + offset)
+            .expect("poller block should end before observer target");
+        let poller_source = &source[start..end];
+
+        assert!(
+            poller_source.contains("external_provider_session_discovery_has_demand"),
+            "external provider discovery must be demand gated while idle"
+        );
+        assert!(
+            poller_source.contains("attached_external_provider_session_refs"),
+            "external provider discovery demand must use the same live attachment/live run policy"
+        );
+        assert!(
+            poller_source
+                .matches("refresh_external_provider_session_index")
+                .count()
+                >= 2,
+            "discovery poller should refresh before the loop and on interval ticks"
+        );
     }
 
     #[test]
