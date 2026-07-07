@@ -31,6 +31,7 @@ pub(crate) async fn execute_query_recall_request(
                 .cmp(&right.sequence)
                 .then_with(|| left.event_id.cmp(&right.event_id))
         });
+        events.retain(history_event_projects_as_recall_result);
         events.truncate(requested_limit);
         let next_sequence = if query.before_sequence.is_none() && events.len() == requested_limit {
             events.last().map(|event| event.sequence)
@@ -97,12 +98,20 @@ fn merge_history_events(events: &mut Vec<HistoryEvent>, archive_events: Vec<Hist
     }
 }
 
+fn history_event_projects_as_recall_result(event: &HistoryEvent) -> bool {
+    event
+        .to_session_history_entry()
+        .is_none_or(|entry| !entry.is_external_provider_observed_state_signal())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::history::HistoryEventKind;
+    use crate::history::{
+        HistoryEventKind, HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind,
+    };
 
     fn history_event(event_id: &str, sequence: u64) -> HistoryEvent {
         HistoryEvent {
@@ -177,5 +186,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["event-1", "event-2"]
         );
+    }
+
+    #[test]
+    fn recall_results_hide_external_observer_state_signals() {
+        let visible = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "visible output",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let hidden = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:turn-1",
+            "turn-1".to_string(),
+            Some(2_100),
+        );
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let visible_event = HistoryEvent::transcript(1, &visible, context.clone());
+        let hidden_event = HistoryEvent::transcript(2, &hidden, context);
+
+        assert!(history_event_projects_as_recall_result(&visible_event));
+        assert!(!history_event_projects_as_recall_result(&hidden_event));
     }
 }
