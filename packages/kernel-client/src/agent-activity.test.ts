@@ -18,6 +18,7 @@ import {
   type AgentRuntimeCompletedTurnActionProjection,
   normalizeAgentRuntimeActivityProjectionStatus,
   normalizeAgentRuntimeActivityStatus,
+  normalizeAgentRuntimeProviderId,
   normalizeAgentRuntimePromptProjectionStatus,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
@@ -156,6 +157,8 @@ test("agent activity helpers normalize status vocabulary", () => {
   assert.equal(normalizeAgentRuntimeActivityStatus(""), null)
   assert.equal(normalizeAgentRuntimePromptStatus(" Cancelling "), "cancelling")
   assert.equal(normalizeAgentRuntimePromptStatus(""), null)
+  assert.equal(normalizeAgentRuntimeProviderId(" CODEX "), "codex")
+  assert.equal(normalizeAgentRuntimeProviderId(""), null)
   assert.equal(normalizeAgentRuntimeActivityProjectionStatus(" focused "), "idle")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" completed "), "none")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" Dispatching "), "dispatching")
@@ -232,7 +235,7 @@ test("agent activity turn-work helper distinguishes active turns from queued-onl
     prompt_status: "none",
     busy: false,
     active_turn: {
-      external_provider: "codex",
+      external_provider: " CODEX ",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
     },
@@ -356,7 +359,7 @@ test("agent activity projection exposes live active turn identity", () => {
       provider_run_id: "run-1",
       source_attachment_id: "attachment-1",
       prompt_origin: " external ",
-      external_provider: "codex",
+      external_provider: " CODEX ",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
       status: " Running ",
@@ -373,7 +376,7 @@ test("agent activity projection exposes live active turn identity", () => {
       provider_run_id: "run-1",
       source_attachment_id: "attachment-1",
       prompt_origin: " external ",
-      external_provider: "codex",
+      external_provider: " CODEX ",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
       status: " Running ",
