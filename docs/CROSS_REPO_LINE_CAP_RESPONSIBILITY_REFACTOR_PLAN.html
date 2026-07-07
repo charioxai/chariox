@@ -209,13 +209,13 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>117 allowlisted files remain after initial splits</td>
+              <td>116 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>13 allowlisted files remain after initial splits</td>
+              <td>12 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -241,6 +241,12 @@
               <td><code>pnpm --filter @arroba/kernel-client run build</code>, package tests, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
+              <td><code>arroba</code></td>
+              <td><code>92d747138</code> <span class="muted">Split session runtime projection tests</span></td>
+              <td>Session runtime projection coverage is now split into status, prompt-work, transition, prompt-identity, prompt-lifecycle, and shared test-support responsibilities.</td>
+              <td><code>pnpm --filter @arroba/kernel-client run build</code>, 774 package tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
               <td><code>arroba-cloud</code></td>
               <td><code>d0390bf0</code> <span class="muted">Split terminal side panel composition</span></td>
               <td>Side-panel composition now delegates types, settings helpers, view helpers, DOM helpers, and settings state to named modules.</td>
@@ -257,6 +263,12 @@
               <td><code>a21b7ade</code> <span class="muted">Extract workflow endpoint inspector</span></td>
               <td>Workflow inspector now routes selection and owns node/edge/extension panels; endpoint run, schedule, publication, and endpoint-delete UI live in a dedicated endpoint inspector module.</td>
               <td>Web build, lint, 31 focused workflow-inspector and route-render tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>55e8491b</code> <span class="muted">Split staging retail smoke generated evidence tests</span></td>
+              <td>Staging retail smoke coverage now separates baseline dry-run/report checks from generated-evidence and validation-platform pipeline checks.</td>
+              <td>23 focused staging retail smoke tests, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
           </tbody>
         </table>
