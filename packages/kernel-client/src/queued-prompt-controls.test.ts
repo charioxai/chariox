@@ -442,6 +442,26 @@ test("project queued prompt records attachment count and fallback target", () =>
   })
 })
 
+test("project queued prompt ignores non-finite creation timestamps", () => {
+  const nonFinite = projectQueuedPrompt({
+    id: "queued-nan",
+    source_attachment_id: "attachment-1",
+    prompt: "queued",
+    created_at_ms: Number.NaN,
+    status: "Queued",
+  })
+  const malformed = projectQueuedPrompt({
+    id: "queued-malformed",
+    source_attachment_id: "attachment-1",
+    prompt: "queued",
+    created_at_ms: "not-a-number",
+    status: "Queued",
+  } as unknown as PromptQueueItem)
+
+  assert.equal(nonFinite?.createdAtMs, undefined)
+  assert.equal(malformed?.createdAtMs, undefined)
+})
+
 test("project queued prompt uses pending prompt id as action identity", () => {
   assert.deepEqual(projectQueuedPrompt({
     id: "draft-queued",

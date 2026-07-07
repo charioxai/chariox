@@ -197,6 +197,7 @@ export function projectQueuedPrompt(
     return null
   }
   const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
+  const createdAtMs = finiteNumber(prompt.created_at_ms)
   return {
     id: pendingPromptId ?? promptId,
     pendingPromptId,
@@ -204,7 +205,7 @@ export function projectQueuedPrompt(
     targetAgentId: nonBlankString(prompt.target_agent_id) ?? nonBlankString(options.fallbackTargetAgentId) ?? null,
     prompt: prompt.prompt,
     promptOrigin: promptOriginFromRecord(prompt),
-    ...(prompt.created_at_ms !== undefined ? { createdAtMs: prompt.created_at_ms } : {}),
+    ...(createdAtMs !== null ? { createdAtMs } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
   }
@@ -278,6 +279,10 @@ function hasOwn<T extends object, K extends PropertyKey>(
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
+}
+
+function finiteNumber(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
 function compareProjectedQueuedPromptOrder(
