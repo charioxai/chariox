@@ -105,6 +105,12 @@ export function terminalRecordTranscriptProjection(
       externalObserved: sessionHistoryEntryIsExternalProviderObserved(metadata),
       passiveExternalTelemetry,
     })
+  const updatesProviderActivity = record.kind === "provider_status"
+    && !historyRefreshSignal
+    && !passiveExternalTelemetry
+    && !providerStatusIdle
+  const startsOrMarksLiveTurn = !terminalRecordKindIsUserPrompt(record.kind)
+    && (renderInAgentPane || updatesProviderActivity)
 
   return {
     metadata,
@@ -112,19 +118,10 @@ export function terminalRecordTranscriptProjection(
     text: transcriptText,
     historyRefreshSignal,
     passiveExternalTelemetry,
-    startsStreaming: !terminalRecordKindIsUserPrompt(record.kind)
-      && !historyRefreshSignal
-      && !passiveExternalTelemetry
-      && !providerStatusIdle,
-    marksAgentBusy: !terminalRecordKindIsUserPrompt(record.kind)
-      && !historyRefreshSignal
-      && !passiveExternalTelemetry
-      && !providerStatusIdle,
+    startsStreaming: startsOrMarksLiveTurn,
+    marksAgentBusy: startsOrMarksLiveTurn,
     providerStatusIdle,
-    updatesProviderActivity: record.kind === "provider_status"
-      && !historyRefreshSignal
-      && !passiveExternalTelemetry
-      && !providerStatusIdle,
+    updatesProviderActivity,
     appendsLiveTranscript: renderInAgentPane,
     renderProviderStatus,
     transcriptRole,

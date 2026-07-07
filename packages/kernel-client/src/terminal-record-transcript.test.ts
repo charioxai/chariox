@@ -327,8 +327,9 @@ test("terminalRecordTranscriptProjection keeps notices out of terminal record tr
   })
 
   assert.equal(terminalRecordShouldRenderInAgentPane("notice", "reattached"), false)
-  assert.equal(projection.startsStreaming, true)
-  assert.equal(projection.marksAgentBusy, true)
+  assert.equal(projection.startsStreaming, false)
+  assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.updatesProviderActivity, false)
   assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.renderInAgentPane, false)
   assert.equal(projection.append, false)
