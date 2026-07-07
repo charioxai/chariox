@@ -199,11 +199,10 @@ impl KernelRuntimeOwnedState {
                 let session_id = run.session_id().to_string();
                 let agent_id = run.agent_instance_id()?.to_string();
                 let session = self.session_store.get_session(&session_id).ok()?;
-                let prompt_id = self
+                let prompt = self
                     .prompt_state_owner
-                    .active_prompt_for_agent(&session, &agent_id)?
-                    .id()
-                    .to_string();
+                    .active_prompt_for_agent(&session, &agent_id)?;
+                let prompt_id = prompt.id().to_string();
                 Some(
                     crate::app::ActiveTurnState::new(
                         session_id,
@@ -211,6 +210,7 @@ impl KernelRuntimeOwnedState {
                         prompt_id,
                         provider_run_id.to_string(),
                     )
+                    .with_prompt_metadata(&prompt)
                     .with_phase(crate::app::ActiveTurnPhase::AwaitingFirstOutput),
                 )
             });

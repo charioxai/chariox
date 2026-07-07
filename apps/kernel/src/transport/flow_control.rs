@@ -19,14 +19,14 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
         .and_then(|run| {
             let session_id = run.session_id().to_string();
             let agent_id = run.agent_instance_id()?.to_string();
-            let prompt_id = app
+            let prompt = app
                 .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
                 .ok()
-                .flatten()?
-                .id()
-                .to_string();
+                .flatten()?;
+            let prompt_id = prompt.id().to_string();
             Some(
                 ActiveTurnState::new(session_id, agent_id, prompt_id, provider_run_id.to_string())
+                    .with_prompt_metadata(&prompt)
                     .with_phase(ActiveTurnPhase::AwaitingFirstOutput),
             )
         });

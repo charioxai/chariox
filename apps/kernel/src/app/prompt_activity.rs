@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::runtime::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceOperationClaimSnapshot};
+use crate::session::{PromptOrigin, PromptQueueItem};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActivePromptState {
@@ -45,6 +46,8 @@ pub(crate) struct ActiveTurnState {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) prompt_id: String,
+    pub(crate) prompt_origin: Option<PromptOrigin>,
+    pub(crate) external_observed_id: Option<crate::history::ExternalProviderObservedId>,
     pub(crate) provider_run_id: String,
     pub(crate) trace_id: String,
     pub(crate) started_at_ms: u64,
@@ -64,6 +67,8 @@ impl ActiveTurnState {
             session_id,
             agent_id,
             prompt_id,
+            prompt_origin: None,
+            external_observed_id: None,
             provider_run_id,
             trace_id,
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -74,6 +79,12 @@ impl ActiveTurnState {
 
     pub(crate) fn with_phase(mut self, phase: ActiveTurnPhase) -> Self {
         self.phase = phase;
+        self
+    }
+
+    pub(crate) fn with_prompt_metadata(mut self, prompt: &PromptQueueItem) -> Self {
+        self.prompt_origin = Some(prompt.prompt_origin());
+        self.external_observed_id = prompt.external_observed_id();
         self
     }
 
@@ -122,19 +133,7 @@ impl ActiveTurnStore {
         for replaced_turn in replaced {
             record_active_turn_clear(replaced_turn);
         }
-        crate::debug_trace::record_terminal_turn(
-            &turn.session_id,
-            "active_turn_start",
-            serde_json::json!({
-                "agent_id": &turn.agent_id,
-                "prompt_id": &turn.prompt_id,
-                "provider_run_id": &turn.provider_run_id,
-                "trace_id": &turn.trace_id,
-                "started_at_ms": turn.started_at_ms,
-                "phase": turn.phase.as_str(),
-                "settlement_requested": turn.settlement_requested,
-            }),
-        );
+        record_active_turn_event(&turn, "active_turn_start", turn.settlement_requested);
     }
 
     pub(crate) fn mark_awaiting_first_output(&self, provider_run_id: &str) {
@@ -164,19 +163,7 @@ impl ActiveTurnStore {
                 turn.phase = ActiveTurnPhase::Settling;
             }
             turn.settlement_requested = true;
-            crate::debug_trace::record_terminal_turn(
-                &turn.session_id,
-                "active_turn_mark_settling",
-                serde_json::json!({
-                    "agent_id": &turn.agent_id,
-                    "prompt_id": &turn.prompt_id,
-                    "provider_run_id": &turn.provider_run_id,
-                    "trace_id": &turn.trace_id,
-                    "started_at_ms": turn.started_at_ms,
-                    "phase": turn.phase.as_str(),
-                    "settlement_requested": true,
-                }),
-            );
+            record_active_turn_event(turn, "active_turn_mark_settling", true);
         }
     }
 
@@ -190,19 +177,7 @@ impl ActiveTurnStore {
             if turn.phase.rank() < phase.rank() {
                 turn.phase = phase;
             }
-            crate::debug_trace::record_terminal_turn(
-                &turn.session_id,
-                event,
-                serde_json::json!({
-                    "agent_id": &turn.agent_id,
-                    "prompt_id": &turn.prompt_id,
-                    "provider_run_id": &turn.provider_run_id,
-                    "trace_id": &turn.trace_id,
-                    "started_at_ms": turn.started_at_ms,
-                    "phase": turn.phase.as_str(),
-                    "settlement_requested": turn.settlement_requested,
-                }),
-            );
+            record_active_turn_event(turn, event, turn.settlement_requested);
         }
     }
 
@@ -266,19 +241,34 @@ impl ActiveTurnStore {
 }
 
 fn record_active_turn_clear(turn: ActiveTurnState) {
+    record_active_turn_event(&turn, "active_turn_clear", turn.settlement_requested);
+}
+
+fn record_active_turn_event(turn: &ActiveTurnState, event: &str, settlement_requested: bool) {
     crate::debug_trace::record_terminal_turn(
         &turn.session_id,
-        "active_turn_clear",
+        event,
         serde_json::json!({
-            "agent_id": turn.agent_id,
-            "prompt_id": turn.prompt_id,
-            "provider_run_id": turn.provider_run_id,
-            "trace_id": turn.trace_id,
+            "agent_id": &turn.agent_id,
+            "prompt_id": &turn.prompt_id,
+            "prompt_origin": turn.prompt_origin.map(prompt_origin_label),
+            "external_provider": turn.external_observed_id.as_ref().map(|metadata| metadata.provider.as_str()),
+            "external_provider_session_id": turn.external_observed_id.as_ref().map(|metadata| metadata.provider_session_id.as_str()),
+            "external_provider_turn_id": turn.external_observed_id.as_ref().map(|metadata| metadata.provider_turn_id.as_str()),
+            "provider_run_id": &turn.provider_run_id,
+            "trace_id": &turn.trace_id,
             "started_at_ms": turn.started_at_ms,
             "phase": turn.phase.as_str(),
-            "settlement_requested": turn.settlement_requested,
+            "settlement_requested": settlement_requested,
         }),
     );
+}
+
+fn prompt_origin_label(prompt_origin: PromptOrigin) -> &'static str {
+    match prompt_origin {
+        PromptOrigin::Arroba => "arroba",
+        PromptOrigin::External => "external",
+    }
 }
 
 fn merge_active_turn_start(
@@ -294,6 +284,12 @@ fn merge_active_turn_start(
     }
     if existing.phase.rank() > incoming.phase.rank() {
         incoming.phase = existing.phase.clone();
+    }
+    if incoming.prompt_origin.is_none() {
+        incoming.prompt_origin = existing.prompt_origin;
+    }
+    if incoming.external_observed_id.is_none() {
+        incoming.external_observed_id = existing.external_observed_id.clone();
     }
     incoming.settlement_requested |= existing.settlement_requested;
     if incoming.settlement_requested && incoming.phase.rank() < ActiveTurnPhase::Settling.rank() {
@@ -440,6 +436,45 @@ mod tests {
             .remove("run-1")
             .expect("turn should remain active");
         assert_eq!(turn.phase, ActiveTurnPhase::Streaming);
+    }
+
+    #[test]
+    fn active_turn_restart_preserves_prompt_metadata() {
+        let store = ActiveTurnStore::default();
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "external:codex:session-1:user-1",
+            "codex",
+            "agent-1",
+            "external prompt",
+        );
+        store.start(
+            ActiveTurnState::new(
+                "session-1".to_string(),
+                "agent-1".to_string(),
+                external_prompt.id().to_string(),
+                "run-1".to_string(),
+            )
+            .with_prompt_metadata(&external_prompt),
+        );
+
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            external_prompt.id().to_string(),
+            "run-1".to_string(),
+        ));
+
+        let turn = store
+            .snapshot()
+            .remove("run-1")
+            .expect("turn should remain active");
+        assert_eq!(turn.prompt_origin, Some(PromptOrigin::External));
+        let external = turn
+            .external_observed_id
+            .expect("external metadata should survive restart");
+        assert_eq!(external.provider, "codex");
+        assert_eq!(external.provider_session_id, "session-1");
+        assert_eq!(external.provider_turn_id, "user-1");
     }
 
     #[test]
