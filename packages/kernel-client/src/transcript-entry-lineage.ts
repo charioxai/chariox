@@ -238,6 +238,17 @@ function transcriptLineageSource(entry: TranscriptLineageEntry): string {
 }
 
 function transcriptTurnLineageIdentity(entry: TranscriptLineageEntry): string {
+  const externalIdentityKey = sessionHistoryEntryIsExternalProviderObserved(entry)
+    ? externalProviderObservedIdentityKey(entry)
+    : null
+  if (externalIdentityKey) {
+    return [
+      "external",
+      externalIdentityKey.provider,
+      externalIdentityKey.providerSessionId,
+      externalIdentityKey.providerTurnId,
+    ].join(":")
+  }
   const promptId = entry.promptId?.trim()
   if (promptId) {
     return `prompt:${promptId}`

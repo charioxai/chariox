@@ -63,7 +63,7 @@ test("transcript entry lineage keys prefer durable external observed identity", 
     externalProviderTurnId: "turn-1",
   }), [
     "external:codex:thread-1:turn-1:assistant",
-    "text:external_provider_observed::assistant:hello",
+    "text:external_provider_observed:external:codex:thread-1:turn-1:assistant:hello",
   ])
 })
 
@@ -77,7 +77,7 @@ test("transcript entry lineage keys normalize external observed identity", () =>
     externalProviderTurnId: " turn-1 ",
   }), [
     "external:codex:thread-1:turn-1:assistant",
-    "text:external_provider_observed::assistant:hello",
+    "text:external_provider_observed:external:codex:thread-1:turn-1:assistant:hello",
   ])
 })
 
@@ -127,7 +127,7 @@ test("transcript entry deduplication keys avoid broad turn-only identity", () =>
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   }), [
-    "text:external_provider_observed::assistant:hello",
+    "text:external_provider_observed:external:codex:thread-1:turn-1:assistant:hello",
   ])
 
   assert.deepEqual(transcriptEntryDeduplicationKeys({
@@ -275,6 +275,36 @@ test("transcript entry lineage prepending preserves distinct external blobs in t
   assert.deepEqual(entries.map((entry) => entry.text), [
     "first assistant blob",
     "second assistant blob",
+  ])
+})
+
+test("transcript entry lineage prepending preserves repeated external text from different provider turns", () => {
+  const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
+    role: "assistant",
+    text: "Done",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }, {
+    role: "assistant",
+    text: "Done",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-2",
+  }], [{
+    role: "assistant",
+    text: "Done",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-2",
+  }])
+
+  assert.deepEqual(entries.map((entry) => entry.externalProviderTurnId), [
+    "turn-1",
+    "turn-2",
   ])
 })
 
