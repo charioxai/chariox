@@ -569,6 +569,7 @@ pub(crate) async fn execute_external_provider_session_request(
     };
     match request {
         LocalDaemonRequest::ListExternalProviderSessions(request) => {
+            refresh_external_provider_session_index(app, runtime_state, None, true).await;
             {
                 let app = crate::runtime::app_lock::lock_app_instrumented(
                     &app,
