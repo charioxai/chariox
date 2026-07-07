@@ -12,6 +12,7 @@ import {
 test("runtime session normalization fills missing runtime arrays and prompt states", () => {
   const normalized = normalizeRuntimeSession({
     ...session(),
+    agents: [{ id: "agent-1" }, { id: "agent-2" }] as never,
     queued_prompts: null as never,
     active_interactions: null as never,
     metaagent_tasks: null as never,
@@ -29,6 +30,10 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
         active_prompt: { id: "prompt-1" } as never,
       } as never,
       "agent-2": null as never,
+      "agent-ghost": {
+        active_prompt: { id: "prompt-ghost" } as never,
+        queued_prompts: [{ id: "queued-ghost" }] as never,
+      } as never,
     },
   })
 
@@ -52,6 +57,54 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
     active_prompt: null,
     queued_prompts: [],
   })
+  assert.equal(Object.hasOwn(normalized.prompt_states ?? {}, "agent-ghost"), false)
+})
+
+test("runtime session normalization filters activity to session agents", () => {
+  const normalized = normalizeRuntimeSession({
+    ...session(),
+    agents: [{ id: "agent-1" }] as never,
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(Object.keys(normalized.agent_activity ?? {}), ["agent-1"])
+})
+
+test("runtime session normalization preserves empty authoritative projections after filtering", () => {
+  const normalized = normalizeRuntimeSession({
+    ...session(),
+    agents: [{ id: "agent-1" }] as never,
+    prompt_states: {
+      "agent-ghost": {
+        active_prompt: { id: "prompt-ghost" } as never,
+        queued_prompts: [{ id: "queued-ghost" }] as never,
+      } as never,
+    },
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+  })
+
+  assert.deepEqual(normalized.prompt_states, {})
+  assert.deepEqual(normalized.agent_activity, {})
 })
 
 test("runtime session normalization can apply projected agent activity payloads", () => {
@@ -124,6 +177,7 @@ test("runtime session normalization clears stale embedded activity when projecti
   const normalized = normalizeRuntimeSessionWithAgentActivity({
     session: {
       ...session(),
+      agents: [{ id: "agent-1" }] as never,
       agent_activity: {
         "agent-1": {
           status: "working",
@@ -146,6 +200,7 @@ test("runtime session normalization preserves embedded activity without a top-le
   const normalized = normalizeRuntimeSessionWithAgentActivity({
     session: {
       ...session(),
+      agents: [{ id: "agent-1" }] as never,
       agent_activity: {
         "agent-1": {
           status: "working",

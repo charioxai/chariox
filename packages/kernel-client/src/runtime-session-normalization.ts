@@ -14,12 +14,15 @@ export function normalizeAgentPromptState(
 
 export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
   const { workflow_watchdogs: legacyWorkflowWatchdogs, ...sessionWithoutLegacyWorkflowWatchdogs } = session
+  const agentIds = runtimeSessionAgentIds(session)
   const promptStates = session.prompt_states
     ? Object.fromEntries(
-      Object.entries(session.prompt_states).map(([agentId, state]) => [
-        agentId,
-        normalizeAgentPromptState(state),
-      ]),
+      Object.entries(session.prompt_states)
+        .filter(([agentId]) => agentIds.has(agentId))
+        .map(([agentId, state]) => [
+          agentId,
+          normalizeAgentPromptState(state),
+        ]),
     )
     : undefined
   const workflowSchedules = Array.isArray(session.workflow_schedules)
@@ -45,6 +48,9 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
   }
   if (promptStates) {
     normalized.prompt_states = promptStates
+  }
+  if (normalized.agent_activity) {
+    normalized.agent_activity = filterRuntimeSessionAgentRecord(normalized.agent_activity, agentIds)
   }
   return normalized
 }
@@ -74,4 +80,17 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
 
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
   return sessions.map((session) => normalizeRuntimeSession(session))
+}
+
+function runtimeSessionAgentIds(session: RuntimeSession): ReadonlySet<string> {
+  return new Set(session.agents.map((agent) => agent.id))
+}
+
+function filterRuntimeSessionAgentRecord<T>(
+  record: Record<string, T>,
+  agentIds: ReadonlySet<string>,
+): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([agentId]) => agentIds.has(agentId)),
+  )
 }
