@@ -155,7 +155,9 @@ function activePromptLifecycleRecordPromptOriginFromProjectedTurn(
   projection: AgentRuntimeActivityProjection,
 ): string | null {
   if (projection.activeTurnPromptOrigin !== undefined) {
-    return projection.activeTurnPromptOrigin
+    return promptOriginFromRecord({
+      prompt_origin: projection.activeTurnPromptOrigin,
+    })
   }
   return null
 }
