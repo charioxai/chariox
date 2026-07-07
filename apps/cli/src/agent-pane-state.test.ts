@@ -12,6 +12,9 @@ import {
   applyTranscriptDisplayState,
   type TranscriptDisplayEntry,
 } from "@arroba/kernel-client/transcript-display-state"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -164,7 +167,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
         {
           role: "user",
           text: "agent a prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "opencode:agent-a-thread",
           externalProviderTurnId: "agent-a-turn",
@@ -172,7 +175,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
         {
           role: "assistant",
           text: "agent a output",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "opencode:agent-a-thread",
           externalProviderTurnId: "agent-a-turn",
@@ -186,7 +189,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
           {
             role: "user",
             text: "agent b prompt",
-            source: "external_provider_observed",
+            source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
             externalProvider: "opencode",
             externalProviderSessionId: "opencode:agent-b-thread",
             externalProviderTurnId: "agent-b-turn",
@@ -194,7 +197,7 @@ test("refreshAgentPaneState does not preserve current entries from another agent
           {
             role: "assistant",
             text: "agent b output",
-            source: "external_provider_observed",
+            source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
             externalProvider: "opencode",
             externalProviderSessionId: "opencode:agent-b-thread",
             externalProviderTurnId: "agent-b-turn",
@@ -229,7 +232,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
         {
           role: "user",
           text: "prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "codex",
           externalProviderSessionId: "codex-thread",
           externalProviderTurnId: "codex-turn",
@@ -237,7 +240,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
         {
           role: "assistant",
           text: "longer live assistant output",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "codex",
           externalProviderSessionId: "codex-thread",
           externalProviderTurnId: "codex-turn",
@@ -250,7 +253,7 @@ test("refreshAgentPaneState preserves compatible current live entries while busy
         {
           role: "user",
           text: "prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "codex",
           externalProviderSessionId: "codex-thread",
           externalProviderTurnId: "codex-turn",
@@ -291,7 +294,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -319,7 +322,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -327,7 +330,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
         {
           role: "assistant",
           text: "external assistant settled",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -368,7 +371,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -376,7 +379,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
         {
           role: "assistant",
           text: "external assistant settled",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -404,7 +407,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
         {
           role: "user",
           text: "external prompt",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -412,7 +415,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
         {
           role: "assistant",
           text: "external assistant settled",
-          source: "external_provider_observed",
+          source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
           externalProvider: "opencode",
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
@@ -453,7 +456,7 @@ test("refreshAgentPaneState does not repair mismatched imported-agent live pane 
       "agent-b": [{
         role: "assistant",
         text: "agent a output",
-        source: "external_provider_observed",
+        source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
         externalProvider: "opencode",
         externalProviderSessionId: "agent-a-thread",
         externalProviderTurnId: "agent-a-turn",
