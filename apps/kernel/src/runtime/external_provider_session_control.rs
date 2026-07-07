@@ -5070,6 +5070,98 @@ mod tests {
     }
 
     #[test]
+    fn arroba_owned_echo_without_completion_does_not_settle_queued_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = test_codex_run(
+            session.id(),
+            agent.id(),
+            "run-arroba-owned",
+            "thread-arroba",
+        );
+        app.providers_mut().insert_run_for_test(run.clone());
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "arroba owned prompt",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started {
+            prompt: active_prompt,
+        } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("Arroba prompt should start")
+        else {
+            panic!("first Arroba prompt should start");
+        };
+        let queued_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "queued Arroba prompt",
+            PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Queued {
+            prompt: queued_prompt,
+        } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+            .expect("second Arroba prompt should queue")
+        else {
+            panic!("second Arroba prompt should queue");
+        };
+        let target = single_attached_target(&app);
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "arroba owned prompt".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "provider reply before completion".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("observed Arroba-owned echo should append without settlement");
+
+        assert_eq!(outcome.changed_count, 0);
+        assert!(!outcome.external_active_prompt_settled);
+        let mirrored_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should load");
+        let prompt_state = mirrored_session
+            .prompt_states()
+            .get(agent.id())
+            .expect("prompt state should exist");
+        assert_eq!(
+            prompt_state.active_prompt().map(|prompt| prompt.id()),
+            Some(active_prompt.id())
+        );
+        assert_eq!(prompt_state.queued_prompts().len(), 1);
+        assert_eq!(prompt_state.queued_prompts()[0].id(), queued_prompt.id());
+    }
+
+    #[test]
     fn append_observed_external_turns_consumes_arroba_owned_prompt_matches_once() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)

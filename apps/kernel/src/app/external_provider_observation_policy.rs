@@ -210,6 +210,20 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Some(latest)
     }
 
+    fn latest_prompt_scope_is_arroba_owned(
+        self,
+        turns: &[ObservedExternalProviderTurn],
+        arroba_owned_provider_turn_ids: &BTreeSet<String>,
+    ) -> bool {
+        turns
+            .iter()
+            .rev()
+            .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+            .is_some_and(|turn| {
+                arroba_owned_provider_turn_ids.contains(&turn.provider_turn_id_or_fallback())
+            })
+    }
+
     pub(crate) fn active_prompt_sync<'turn>(
         self,
         turns: &'turn [ObservedExternalProviderTurn],
@@ -227,10 +241,13 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         let has_active_relevant_observation = turns
             .iter()
             .any(|turn| !self.turn_is_passive_telemetry(turn));
+        let latest_prompt_scope_is_arroba_owned =
+            self.latest_prompt_scope_is_arroba_owned(turns, arroba_owned_provider_turn_ids);
         let should_sync_active_prompt = active_prompt_turn.is_some()
             || latest_observation_settles
             || (allow_stable_settlement
                 && has_active_relevant_observation
+                && !latest_prompt_scope_is_arroba_owned
                 && (changed_count == 0 || active_relevant_changed_count == 0));
         ExternalProviderActivePromptSync {
             active_prompt_turn,
@@ -678,5 +695,59 @@ mod tests {
         assert!(!sync.should_sync_active_prompt);
         assert!(sync.active_prompt_turn.is_none());
         assert!(!sync.latest_observation_settles);
+    }
+
+    #[test]
+    fn active_prompt_sync_does_not_stably_settle_arroba_owned_echoes() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let turns = vec![
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "arroba prompt".to_string(),
+                provider_turn_id: Some("user-owned".to_string()),
+                observed_at_ms: None,
+            },
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Assistant,
+                text: "intermediate response".to_string(),
+                provider_turn_id: Some("assistant-owned".to_string()),
+                observed_at_ms: None,
+            },
+        ];
+        let mut arroba_owned = BTreeSet::new();
+        arroba_owned.insert("user-owned".to_string());
+
+        let sync = policy.active_prompt_sync(&turns, 0, 0, true, &arroba_owned);
+
+        assert!(!sync.should_sync_active_prompt);
+        assert!(sync.active_prompt_turn.is_none());
+        assert!(!sync.latest_observation_settles);
+    }
+
+    #[test]
+    fn active_prompt_sync_preserves_explicit_settlement_for_arroba_owned_echoes() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let turns = vec![
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "arroba prompt".to_string(),
+                provider_turn_id: Some("user-owned".to_string()),
+                observed_at_ms: None,
+            },
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{}".to_string(),
+                provider_turn_id: Some("complete-owned".to_string()),
+                observed_at_ms: None,
+            },
+        ];
+        let mut arroba_owned = BTreeSet::new();
+        arroba_owned.insert("user-owned".to_string());
+
+        let sync = policy.active_prompt_sync(&turns, 0, 0, true, &arroba_owned);
+
+        assert!(sync.should_sync_active_prompt);
+        assert!(sync.active_prompt_turn.is_none());
+        assert!(sync.latest_observation_settles);
     }
 }
