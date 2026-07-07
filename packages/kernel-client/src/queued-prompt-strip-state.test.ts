@@ -227,6 +227,7 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
 
   assert.equal(entry.role, "user")
   assert.equal(entry.text, "queued prompt")
+  assert.equal(entry.promptId, "prompt-1")
   assert.equal(entry.promptOrigin, null)
   assert.deepEqual(entry.queuedPrompt, {
     promptId: "prompt-1",
@@ -262,7 +263,9 @@ test("queuedPromptStripItemToTranscriptEntry mirrors prompt ownership at transcr
   const entry = queuedPromptStripItemToTranscriptEntry(item!)
 
   assert.equal(entry.promptOrigin, "external")
+  assert.equal(entry.promptId, "prompt-external")
   assert.equal(entry.queuedPrompt?.promptOrigin, "external")
+  assert.equal(entry.queuedPrompt?.promptId, "prompt-external")
 })
 
 test("syncQueuedPromptTranscriptEntriesForAgent removes stale queued rows when projection is authoritative", () => {

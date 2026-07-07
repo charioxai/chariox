@@ -55,6 +55,7 @@ export type QueuedPromptStripTranscriptEntry = {
   id: TranscriptEntry["id"]
   role: Extract<TranscriptEntry["role"], "user">
   text: TranscriptEntry["text"]
+  promptId?: SessionHistoryTranscriptEntry["promptId"]
   sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
   promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
   queuedPrompt?: QueuedPromptTranscriptMetadata
@@ -64,6 +65,7 @@ export type QueuedPromptStripSourceEntry = {
   readonly id?: TranscriptEntry["id"]
   readonly role?: TranscriptEntry["role"] | string
   readonly text: TranscriptEntry["text"]
+  readonly promptId?: SessionHistoryTranscriptEntry["promptId"]
   readonly sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
   readonly promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
   readonly queuedPrompt?: Readonly<QueuedPromptTranscriptMetadata>
@@ -125,6 +127,7 @@ export function queuedPromptStripItemToTranscriptEntry(
     id: 0,
     role: "user",
     text: item.prompt,
+    promptId: item.promptId,
     sourceAttachmentId: item.sourceAttachmentId,
     promptOrigin: item.promptOrigin,
     queuedPrompt: {
