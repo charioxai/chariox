@@ -109,7 +109,10 @@ test("runtime session normalization preserves empty authoritative projections af
 
 test("runtime session normalization can apply projected agent activity payloads", () => {
   const normalized = normalizeRuntimeSessionWithAgentActivity({
-    session: session(),
+    session: {
+      ...session(),
+      agents: [{ id: "agent-1" }] as never,
+    },
     agent_activity: {
       "agent-1": {
         status: "working",
@@ -123,6 +126,64 @@ test("runtime session normalization can apply projected agent activity payloads"
 
   assert.equal(normalized.agent_activity?.["agent-1"]?.busy, true)
   assert.equal(normalized.agent_activity_revision, 7)
+})
+
+test("runtime session normalization filters projected activity payloads to session agents", () => {
+  const normalized = normalizeRuntimeSessionWithAgentActivity({
+    session: {
+      ...session(),
+      agents: [{ id: "agent-1" }] as never,
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+      },
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agent_activity_revision: 8,
+  })
+
+  assert.deepEqual(Object.keys(normalized.agent_activity ?? {}), ["agent-1"])
+  assert.equal(normalized.agent_activity?.["agent-ghost"], undefined)
+  assert.equal(normalized.agent_activity_revision, 8)
+})
+
+test("runtime session normalization preserves empty projected activity as authoritative", () => {
+  const normalized = normalizeRuntimeSessionWithAgentActivity({
+    session: {
+      ...session(),
+      agents: [{ id: "agent-1" }] as never,
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+      agent_activity_revision: 6,
+    },
+    agent_activity: {
+      "agent-ghost": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
+    agent_activity_revision: 8,
+  })
+
+  assert.deepEqual(normalized.agent_activity, {})
+  assert.equal(normalized.agent_activity_revision, 8)
 })
 
 test("runtime session normalization canonicalizes legacy workflow watchdog arrays", () => {
@@ -149,6 +210,7 @@ test("runtime session normalization clears stale activity revision when replacem
   const normalized = normalizeRuntimeSessionWithAgentActivity({
     session: {
       ...session(),
+      agents: [{ id: "agent-1" }] as never,
       agent_activity: {
         "agent-stale": {
           status: "working",

@@ -69,9 +69,10 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
     return normalized
   }
   const { agent_activity_revision: _revision, ...withoutRevision } = normalized
+  const agentIds = runtimeSessionAgentIds(normalized)
   return {
     ...withoutRevision,
-    agent_activity: payload.agent_activity,
+    agent_activity: filterRuntimeSessionAgentRecord(payload.agent_activity, agentIds),
     ...(typeof payload.agent_activity_revision === "number"
       ? { agent_activity_revision: payload.agent_activity_revision }
       : {}),
