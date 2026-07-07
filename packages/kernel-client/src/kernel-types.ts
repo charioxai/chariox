@@ -1521,7 +1521,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 229
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 230
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1682,6 +1682,7 @@ export type TerminalOutputRecord = {
   timestamp_ms: number
   agent_id?: string | null
   prompt_id?: string | null
+  prompt_origin?: "arroba" | "external" | string | null
   source_attachment_id?: string | null
   kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string

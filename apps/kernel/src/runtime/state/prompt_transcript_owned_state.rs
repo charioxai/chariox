@@ -79,8 +79,15 @@ impl KernelRuntimeOwnedState {
         let mut recipient_scope_cache =
             std::collections::BTreeMap::<Option<String>, std::sync::Arc<[String]>>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
+        let session = self.session_store.get_session(session_id).ok();
         for output in outputs {
             let agent_id = output.agent_id;
+            let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
+                session
+                    .as_ref()
+                    .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(session, agent_id))
+                    .map(|prompt| prompt.prompt_origin())
+            });
             let scoped_recipient_attachment_ids = recipient_scope_cache
                 .entry(agent_id.clone())
                 .or_insert_with(|| {
@@ -118,6 +125,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
+                prompt_origin,
                 kind: output.kind,
                 merge_key: output.merge_key,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
@@ -145,6 +153,13 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
+            self.session_store
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
+                .map(|prompt| prompt.prompt_origin())
+        });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
@@ -152,12 +167,13 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        let record = self.terminal_stream.fan_out_output(
+        let record = self.terminal_stream.fan_out_output_with_prompt_origin(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             kind.clone(),
             merge_key.clone(),
+            prompt_origin,
             recipient_attachment_ids,
             bytes,
         );
@@ -743,6 +759,14 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
+            self.session_store
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
+                .filter(|prompt| prompt.id() == prompt_id)
+                .map(|prompt| prompt.prompt_origin())
+        });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
@@ -755,6 +779,7 @@ impl KernelRuntimeOwnedState {
             provider_run_id,
             agent_id.as_deref(),
             prompt_id,
+            prompt_origin,
             source_attachment_id,
             recipient_attachment_ids,
             &bytes,

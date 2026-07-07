@@ -505,11 +505,23 @@ impl DaemonApp {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
+            self.sessions
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, agent_id)
+                })
+                .filter(|prompt| prompt.id() == prompt_id)
+                .map(|prompt| prompt.prompt_origin())
+        });
         self.terminal.fan_out_prompt_output(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             prompt_id,
+            prompt_origin,
             source_attachment_id,
             recipient_attachment_ids,
             &bytes,

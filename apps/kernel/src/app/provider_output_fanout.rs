@@ -131,6 +131,7 @@ impl ProviderOutputFanout {
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),
                 prompt_id: None,
+                prompt_origin: None,
                 source_attachment_id: None,
                 kind,
                 merge_key,
@@ -144,12 +145,14 @@ impl ProviderOutputFanout {
             self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
-        let record = self.terminal.fan_out_output(
+        let prompt_origin = self.active_prompt_origin_for_agent(session_id, agent_id);
+        let record = self.terminal.fan_out_output_with_prompt_origin(
             session_id,
             provider_run_id,
             agent_id,
             kind.clone(),
             merge_key.clone(),
+            prompt_origin,
             recipient_attachment_ids,
             &bounded_bytes,
         );
@@ -179,6 +182,19 @@ impl ProviderOutputFanout {
             );
         }
         record
+    }
+
+    fn active_prompt_origin_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Option<crate::session::PromptOrigin> {
+        let agent_id = agent_id?;
+        self.session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
+            .map(|prompt| prompt.prompt_origin())
     }
 
     fn record_workflow_thinking_trace(

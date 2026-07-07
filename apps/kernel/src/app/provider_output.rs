@@ -722,6 +722,7 @@ mod tests {
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: None,
                 prompt_id: None,
+                prompt_origin: None,
                 source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: None,

@@ -1026,6 +1026,7 @@ mod tests {
                 provider_run_id: "provider-run-a".to_string(),
                 agent_id: Some("agent-a".to_string()),
                 prompt_id: None,
+                prompt_origin: None,
                 source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some(marker.to_string()),

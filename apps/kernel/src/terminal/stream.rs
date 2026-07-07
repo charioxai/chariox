@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
-use crate::session::unix_epoch_ms;
+use crate::session::{unix_epoch_ms, PromptOrigin};
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
@@ -43,6 +43,8 @@ pub struct TerminalOutputRecord {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_origin: Option<PromptOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_attachment_id: Option<String>,
     pub kind: TerminalOutputKind,
@@ -89,6 +91,7 @@ pub struct TerminalOutputAppend {
     pub session_id: String,
     pub provider_run_id: String,
     pub agent_id: Option<String>,
+    pub prompt_origin: Option<PromptOrigin>,
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,
     pub recipient_attachment_ids: Arc<[String]>,
@@ -259,16 +262,41 @@ impl TerminalStreamStore {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_output_with_prompt_origin(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_output_with_prompt_origin(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        prompt_origin: Option<PromptOrigin>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
         let record = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fan_out_output(
+            .fan_out_output_with_prompt_origin(
                 session_id,
                 provider_run_id,
                 agent_id,
                 kind,
                 merge_key,
+                prompt_origin,
                 recipient_attachment_ids,
                 bytes,
             );
@@ -328,6 +356,7 @@ impl TerminalStreamStore {
         provider_run_id: &str,
         agent_id: Option<&str>,
         prompt_id: &str,
+        prompt_origin: Option<PromptOrigin>,
         source_attachment_id: &str,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
@@ -341,6 +370,7 @@ impl TerminalStreamStore {
                 provider_run_id,
                 agent_id,
                 prompt_id,
+                prompt_origin,
                 source_attachment_id,
                 recipient_attachment_ids,
                 bytes,
@@ -691,6 +721,30 @@ impl TerminalStreamService {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_output_with_prompt_origin(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_output_with_prompt_origin(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        prompt_origin: Option<PromptOrigin>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
             timestamp_ms: unix_epoch_ms(),
@@ -698,6 +752,7 @@ impl TerminalStreamService {
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
             prompt_id: None,
+            prompt_origin,
             source_attachment_id: None,
             kind,
             merge_key,
@@ -739,6 +794,7 @@ impl TerminalStreamService {
                 provider_run_id: output.provider_run_id,
                 agent_id: output.agent_id,
                 prompt_id: None,
+                prompt_origin: output.prompt_origin,
                 source_attachment_id: None,
                 kind: output.kind,
                 merge_key: output.merge_key,
@@ -796,6 +852,7 @@ impl TerminalStreamService {
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
             prompt_id: None,
+            prompt_origin: Some(PromptOrigin::External),
             source_attachment_id: None,
             kind,
             merge_key,
@@ -823,6 +880,7 @@ impl TerminalStreamService {
         provider_run_id: &str,
         agent_id: Option<&str>,
         prompt_id: &str,
+        prompt_origin: Option<PromptOrigin>,
         source_attachment_id: &str,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
@@ -834,6 +892,7 @@ impl TerminalStreamService {
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
             prompt_id: Some(prompt_id.to_string()),
+            prompt_origin,
             source_attachment_id: Some(source_attachment_id.to_string()),
             kind: TerminalOutputKind::PromptEcho,
             merge_key: None,
@@ -1407,6 +1466,7 @@ fn scoped_output_record(
         provider_run_id: record.provider_run_id.clone(),
         agent_id: record.agent_id.clone(),
         prompt_id: record.prompt_id.clone(),
+        prompt_origin: record.prompt_origin,
         source_attachment_id: record.source_attachment_id.clone(),
         kind: record.kind.clone(),
         merge_key: record.merge_key.clone(),
@@ -1752,6 +1812,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("chunk-1".to_string()),
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -1761,6 +1822,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("chunk-2".to_string()),
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -1826,6 +1888,7 @@ mod tests {
                     session_id: "session-1".to_string(),
                     provider_run_id: format!("provider-run-{index}"),
                     agent_id: Some(format!("agent-{index}")),
+                    prompt_origin: None,
                     kind: TerminalOutputKind::ProviderTool,
                     merge_key: Some(format!("chunk-{index}")),
                     recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -1855,6 +1918,7 @@ mod tests {
             "provider-run-1",
             Some("agent-1"),
             "prompt-42",
+            Some(crate::session::PromptOrigin::External),
             "attachment-1",
             vec!["attachment-2".to_string()],
             b"hello\n",
@@ -1862,6 +1926,10 @@ mod tests {
 
         assert_eq!(output.kind, TerminalOutputKind::PromptEcho);
         assert_eq!(output.prompt_id.as_deref(), Some("prompt-42"));
+        assert_eq!(
+            output.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
         assert_eq!(output.source_attachment_id.as_deref(), Some("attachment-1"));
         let drained = terminal.drain_output_records("session-1", "attachment-2");
         assert_eq!(drained[0].prompt_id.as_deref(), Some("prompt-42"));
@@ -1911,6 +1979,7 @@ mod tests {
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-\"1\"".to_string()),
             prompt_id: Some("prompt-1".to_string()),
+            prompt_origin: None,
             source_attachment_id: Some("attachment-source".to_string()),
             kind: TerminalOutputKind::ProviderReasoning,
             merge_key: Some("merge\\key".to_string()),
@@ -2625,6 +2694,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("batch-key".to_string()),
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -2634,6 +2704,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some("batch-key".to_string()),
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -2670,6 +2741,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some("batch-key-1".to_string()),
                 recipient_attachment_ids: Arc::from(vec![
@@ -2682,6 +2754,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_origin: None,
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some("batch-key-2".to_string()),
                 recipient_attachment_ids: Arc::from(vec![
