@@ -39,5 +39,59 @@ export function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProvider
     && left.variant === right.variant
     && left.client_interface === right.client_interface
     && left.usage_tokens_total === right.usage_tokens_total
+    && sameProviderRunUsage(left.usage, right.usage)
     && left.state === right.state
+    && left.endpoint_mode === right.endpoint_mode
+    && left.process_label === right.process_label
+    && left.structured_endpoint === right.structured_endpoint
+    && left.provider_session_id === right.provider_session_id
+    && left.working_directory === right.working_directory
+    && left.started_at_ms === right.started_at_ms
+    && left.last_activity_at_ms === right.last_activity_at_ms
+    && sameProviderRunControlCapabilities(left.control_capabilities, right.control_capabilities)
+    && sameProviderRunExternalImport(left.external_provider_import, right.external_provider_import)
+}
+
+function sameProviderRunUsage(
+  left: RuntimeProviderRun["usage"],
+  right: RuntimeProviderRun["usage"],
+): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+  return left.total_tokens === right.total_tokens
+    && left.last_tokens === right.last_tokens
+    && left.context_tokens === right.context_tokens
+    && left.context_window === right.context_window
+}
+
+function sameProviderRunControlCapabilities(
+  left: RuntimeProviderRun["control_capabilities"],
+  right: RuntimeProviderRun["control_capabilities"],
+): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+  return left.length === right.length
+    && left.every((capability, index) =>
+      capability.operation === right[index]?.operation
+      && capability.mode === right[index]?.mode)
+}
+
+function sameProviderRunExternalImport(
+  left: RuntimeProviderRun["external_provider_import"],
+  right: RuntimeProviderRun["external_provider_import"],
+): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+  return left.external_provider_session_id === right.external_provider_session_id
+    && left.external_provider === right.external_provider
+    && left.external_provider_session_provider_id === right.external_provider_session_provider_id
+    && left.imported_at_ms === right.imported_at_ms
+    && left.last_observed_turn_id === right.last_observed_turn_id
+    && left.last_observed_at_ms === right.last_observed_at_ms
+    && left.observed_cursor.last_observed_turn_id === right.observed_cursor.last_observed_turn_id
+    && left.observed_cursor.last_observed_at_ms === right.observed_cursor.last_observed_at_ms
+    && left.observed_cursor.last_observed_merge_key === right.observed_cursor.last_observed_merge_key
 }
