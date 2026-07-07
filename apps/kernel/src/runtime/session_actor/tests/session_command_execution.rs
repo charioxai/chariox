@@ -538,9 +538,17 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (end_session_id, delete_session_id, delete_agent_id, delete_cursor_key, terminal_stream) = {
+    let (
+        end_session_id,
+        end_agent_id,
+        end_cursor_key,
+        delete_session_id,
+        delete_agent_id,
+        delete_cursor_key,
+        terminal_stream,
+    ) = {
         let mut app_locked = app.lock().await;
-        let (end_session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+        let (end_session, end_agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("end session should be created");
         let (delete_session, delete_agent) = crate::app::KernelSessionService::new(&mut app_locked)
@@ -549,6 +557,16 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
             )
             .expect("delete session should be created");
         let external_sessions = app_locked.external_provider_session_index_store();
+        external_sessions.upsert(session_command_external_provider_session_record(
+            "codex",
+            "ended-session-thread",
+            30,
+        ));
+        external_sessions.mark_attached(
+            "codex:ended-session-thread",
+            end_session.id(),
+            end_agent.id(),
+        );
         external_sessions.upsert(session_command_external_provider_session_record(
             "codex",
             "deleted-session-thread",
@@ -565,6 +583,19 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
             "codex",
             "deleted-session-thread",
         );
+        let end_cursor_key = crate::app::AttachedProviderTranscriptCursorKey::new(
+            end_session.id(),
+            end_agent.id(),
+            "codex",
+            "ended-session-thread",
+        );
+        app_locked.attached_provider_transcript_cursor_store().set(
+            end_cursor_key.clone(),
+            crate::provider::ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-before-end".to_string()),
+                ..crate::provider::ExternalProviderObservedCursor::default()
+            },
+        );
         app_locked.attached_provider_transcript_cursor_store().set(
             delete_cursor_key.clone(),
             crate::provider::ExternalProviderObservedCursor {
@@ -574,6 +605,8 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         );
         (
             end_session.id().to_string(),
+            end_agent.id().to_string(),
+            end_cursor_key,
             delete_session.id().to_string(),
             delete_agent.id().to_string(),
             delete_cursor_key,
@@ -610,6 +643,31 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         session_projection.get(&end_session_id).is_some(),
         "ended session should remain projected"
     );
+    let end_page = _locked_app.external_provider_session_index_store().list(
+        &ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        },
+    );
+    let ended_record = end_page
+        .sessions
+        .iter()
+        .find(|session| session.external_session_id == "codex:ended-session-thread")
+        .expect("ending a session with an attached external provider agent should return its provider thread to the unattached list");
+    assert!(ended_record.is_attachable_to_arroba());
+    assert_eq!(
+        ended_record.attached_agent_ids,
+        Vec::<String>::new(),
+        "ended session agent `{end_agent_id}` should not remain attached to the external provider session"
+    );
+    assert_eq!(
+        _locked_app
+            .attached_provider_transcript_cursor_store()
+            .get(&end_cursor_key),
+        crate::provider::ExternalProviderObservedCursor::default(),
+        "ending a session should prune its attached provider transcript cursor"
+    );
 
     let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
         session_ref: "delete-owned".to_string(),
@@ -639,17 +697,27 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
             limit: None,
         },
     );
-    assert_eq!(
-        page.sessions
-            .iter()
-            .map(|session| session.external_session_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["codex:deleted-session-thread"],
+    let listed_external_session_ids = page
+        .sessions
+        .iter()
+        .map(|session| session.external_session_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        listed_external_session_ids.contains(&"codex:deleted-session-thread"),
         "deleting a session with an attached external provider agent should return its provider thread to the unattached list"
     );
-    assert!(page.sessions[0].is_attachable_to_arroba());
+    assert!(
+        listed_external_session_ids.contains(&"codex:ended-session-thread"),
+        "ending a session should leave its returned provider thread in the unattached list"
+    );
+    let deleted_record = page
+        .sessions
+        .iter()
+        .find(|session| session.external_session_id == "codex:deleted-session-thread")
+        .expect("deleted provider thread should be listed as unattached");
+    assert!(deleted_record.is_attachable_to_arroba());
     assert_eq!(
-        page.sessions[0].attached_agent_ids,
+        deleted_record.attached_agent_ids,
         Vec::<String>::new(),
         "deleted session agent `{delete_agent_id}` should not remain attached to the external provider session"
     );
