@@ -350,7 +350,7 @@ test("agent activity projection exposes live active turn identity", () => {
       external_provider_session_id: "thread-1",
       status: "running",
     },
-  }).activeTurnPromptOrigin, "external")
+  }).activeTurnPromptOrigin, undefined)
 
   assert.equal(projectAgentRuntimeActivity({
     active_turn: {
@@ -358,14 +358,14 @@ test("agent activity projection exposes live active turn identity", () => {
       external_provider_turn_id: "turn-1",
       status: "running",
     },
-  }).activeTurnPromptOrigin, "external")
+  }).activeTurnPromptOrigin, undefined)
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
     active_turn: {
       prompt_id: "prompt-external",
       external_provider_turn_id: "turn-1",
       status: "running",
     },
-  })), true)
+  })), false)
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
     active_turn: {
       prompt_id: "prompt-arroba",
@@ -378,6 +378,20 @@ test("agent activity projection exposes live active turn identity", () => {
     promptStatus: "running",
     busy: true,
     activeTurn: null,
+    activeTurnExternalProviderSessionId: "thread-1",
+    activePromptCount: 1,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  }), false)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn({
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: null,
+    activeTurnPromptOrigin: "external",
     activeTurnExternalProviderSessionId: "thread-1",
     activePromptCount: 1,
     activePromptCountExplicit: true,

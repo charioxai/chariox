@@ -431,12 +431,8 @@ function historyEntryTranscriptIdentityOptions(
   entry: SessionHistoryEntry,
   turnPromptId?: string | null,
 ): Partial<SessionHistoryTranscriptEntry> {
-  const promptOrigin = promptOriginFromRecord(entry)
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
-    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
-      ? { promptOrigin }
-      : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
