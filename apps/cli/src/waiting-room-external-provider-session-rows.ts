@@ -3,6 +3,7 @@ import {
   externalProviderSessionModeLabel,
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
+  externalProviderSessionSelectionIndex,
   externalProviderSessionTitle,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
@@ -22,6 +23,9 @@ export function waitingRoomExternalProviderSessionRows(
   },
 ): WaitingRoomRow[] {
   const sessions = waitingRoomExternalProviderSessions(remote)
+  const selectedIndex = externalProviderSessionSelectionIndex(sessions, {
+    selectedExternalProviderSessionIndex: state.externalSessionIndex,
+  })
   if (sessions.length === 0 && options.inventoryLoading) {
     return [{
       id: "external-provider-sessions-loading",
@@ -72,7 +76,7 @@ export function waitingRoomExternalProviderSessionRows(
         column(externalProviderSessionModifiedLabel(session, { utcSuffix: true }), modifiedWidth),
       ],
       indent: 1,
-      focused: state.focus === "external-session" && state.externalSessionIndex === index,
+      focused: state.focus === "external-session" && selectedIndex === index,
       selectable: true,
       scrollbar: "",
     })

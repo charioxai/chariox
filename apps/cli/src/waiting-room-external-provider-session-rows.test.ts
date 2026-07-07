@@ -117,6 +117,33 @@ test("unattached agents are projected newest first with normalized title fallbac
   assert.equal(rows[2]?.focused, true)
 })
 
+test("unattached agent rows focus the shared clamped selection", () => {
+  const rows = waitingRoomExternalProviderSessionRows(
+    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    {
+      externalProviderSessions: [
+        externalSession({
+          external_session_id: "codex:old",
+          provider_session_id: "old",
+          last_modified_at_ms: 100,
+        }),
+        externalSession({
+          external_session_id: "claude:recent",
+          provider: "claude",
+          provider_session_id: "recent",
+          last_modified_at_ms: 200,
+        }),
+      ],
+    },
+    { inventoryLoading: false, loadingText: "loading", titleWidth: 28 },
+  )
+
+  assert.equal(rows[1]?.id, "external-session:claude:recent")
+  assert.equal(rows[1]?.focused, false)
+  assert.equal(rows[2]?.id, "external-session:codex:old")
+  assert.equal(rows[2]?.focused, true)
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
