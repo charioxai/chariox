@@ -1,6 +1,7 @@
 import {
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
+  externalProviderSessionSelectionIndex,
 } from "@arroba/kernel-client/external-provider-sessions"
 import {
   normalizeBackendProviderId,
@@ -124,7 +125,9 @@ export function normalizeWaitingRoomState(
     focus,
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
-    externalSessionIndex: externalSessions.length === 0 ? 0 : modulo(state.externalSessionIndex ?? 0, externalSessions.length),
+    externalSessionIndex: externalProviderSessionSelectionIndex(externalSessions, {
+      selectedExternalProviderSessionIndex: state.externalSessionIndex,
+    }),
     machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
     sliceIndex: allSlices.length === 0 ? 0 : modulo(state.sliceIndex ?? 0, allSlices.length),

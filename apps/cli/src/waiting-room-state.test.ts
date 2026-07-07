@@ -75,6 +75,41 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   assert.equal(withoutSessions.sessionIndex, 0)
 })
 
+test("waiting room state normalization clamps stale unattached agent indexes", () => {
+  const catalog = fallbackProviderCatalog()
+  const normalizedHigh = normalizeWaitingRoomState(
+    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    [],
+    catalog,
+    undefined,
+    {
+      externalProviderSessions: [
+        externalSession("codex:old", 100),
+        externalSession("opencode:middle", 200),
+        externalSession("claude:recent", 300),
+      ],
+    },
+  )
+  const normalizedLow = normalizeWaitingRoomState(
+    waitingRoomState({ focus: "external-session", externalSessionIndex: -4 }),
+    [],
+    catalog,
+    undefined,
+    {
+      externalProviderSessions: [
+        externalSession("codex:old", 100),
+        externalSession("opencode:middle", 200),
+        externalSession("claude:recent", 300),
+      ],
+    },
+  )
+
+  assert.equal(normalizedHigh.focus, "external-session")
+  assert.equal(normalizedHigh.externalSessionIndex, 2)
+  assert.equal(normalizedLow.focus, "external-session")
+  assert.equal(normalizedLow.externalSessionIndex, 0)
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
@@ -125,5 +160,21 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     created_at_ms: 0,
     updated_at_ms: 0,
     ...overrides,
+  }
+}
+
+function externalSession(externalSessionId: string, lastModifiedAtMs: number) {
+  const [provider = "codex", providerSessionId = externalSessionId] = externalSessionId.split(":")
+  return {
+    external_session_id: externalSessionId,
+    provider,
+    provider_session_id: providerSessionId,
+    title: null,
+    title_source: null,
+    first_prompt_preview: null,
+    created_at_ms: null,
+    last_modified_at_ms: lastModifiedAtMs,
+    worktree_path: null,
+    account_profile: null,
   }
 }
