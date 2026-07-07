@@ -112,4 +112,3 @@ apps/kernel/src/slice/store.rs
 apps/cli/scripts/live-unattached-agents-tui-parity-drill.mjs
 apps/kernel/src/runtime_transport/subscriptions.rs
 apps/kernel/src/io/coordinator.rs
-apps/kernel/src/runtime/state/agent_config_runtime_state.rs
