@@ -11,6 +11,12 @@ use super::model::{
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
+mod invariants;
+
+use invariants::{
+    reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliceHostRuntimeState {
     Running,
@@ -988,63 +994,4 @@ impl SliceStore {
                 message: format!("slice `{}` has no display endpoint", record.name),
             })
     }
-}
-
-fn reconcile_slice_status_after_kernel_restart(
-    status: SliceStatus,
-    host_runtime: SliceHostRuntimeState,
-) -> SliceStatus {
-    match status {
-        SliceStatus::Starting | SliceStatus::Stopping => SliceStatus::Unhealthy,
-        SliceStatus::Running => match host_runtime {
-            SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
-            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
-                SliceStatus::Unhealthy
-            }
-        },
-        SliceStatus::Stopped => match host_runtime {
-            SliceHostRuntimeState::Running => SliceStatus::Unhealthy,
-            SliceHostRuntimeState::Stopped
-            | SliceHostRuntimeState::Missing
-            | SliceHostRuntimeState::Unknown => SliceStatus::Stopped,
-        },
-        SliceStatus::Unhealthy => match host_runtime {
-            SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
-            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
-                SliceStatus::Unhealthy
-            }
-        },
-    }
-}
-
-fn validate_slice_name(name: &str) -> Result<(), DaemonError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "slice.validate",
-            message: "slice name must not be empty".to_string(),
-        });
-    }
-    if !name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "slice.validate",
-            message: "slice name may only contain ASCII letters, numbers, '-', '_' or '.'"
-                .to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn redact_slice_operation_error(error: &str) -> String {
-    error
-        .replace('\n', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(500)
-        .collect()
 }
