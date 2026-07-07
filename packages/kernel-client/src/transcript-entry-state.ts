@@ -25,12 +25,15 @@ export type TranscriptTurnAssignmentEntry<TTurnId extends TranscriptTurnAssignme
   readonly createdAtMs?: number | null
 }
 
-export type TranscriptTurnAssignmentOptions<TTurnId extends TranscriptTurnAssignmentId = number> = {
+export type TranscriptTurnAssignmentOptions<
+  TTurnId extends TranscriptTurnAssignmentId = number,
+  TEntry extends TranscriptTurnAssignmentEntry<TTurnId> = TranscriptTurnAssignmentEntry<TTurnId>,
+> = {
   readonly turnId: TTurnId
   readonly promptId?: string | null
   readonly providerRunId?: string | null
   readonly nowMs?: () => number
-  readonly onAssigned?: (turnId: TTurnId, entry: TranscriptTurnAssignmentEntry<TTurnId>, assignedAtMs: number | null) => void
+  readonly onAssigned?: (turnId: TTurnId, entry: TEntry, assignedAtMs: number | null) => void
 }
 
 export type TranscriptEquivalentOutput<TEntry extends TranscriptTurnAssignmentEntry<TTurnId>, TTurnId extends TranscriptTurnAssignmentId = number> = {
@@ -38,9 +41,12 @@ export type TranscriptEquivalentOutput<TEntry extends TranscriptTurnAssignmentEn
   readonly previousTurnId?: TTurnId | null
 }
 
-export type TranscriptTurnSiblingRetargetOptions<TTurnId extends TranscriptTurnAssignmentId = number> = {
+export type TranscriptTurnSiblingRetargetOptions<
+  TTurnId extends TranscriptTurnAssignmentId = number,
+  TEntry extends TranscriptTurnAssignmentEntry<TTurnId> = TranscriptTurnAssignmentEntry<TTurnId>,
+> = {
   readonly nowMs?: () => number
-  readonly onRetargeted?: (turnId: TTurnId, entry: TranscriptTurnAssignmentEntry<TTurnId>, retargetedAtMs: number | null) => void
+  readonly onRetargeted?: (turnId: TTurnId, entry: TEntry, retargetedAtMs: number | null) => void
 }
 
 export type TranscriptPromptMetadata = {
@@ -270,7 +276,7 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
 >(
   entries: readonly TEntry[],
   promptEntry: TEntry,
-  options: TranscriptTurnAssignmentOptions<TTurnId>,
+  options: TranscriptTurnAssignmentOptions<TTurnId, TEntry>,
 ): number {
   const promptId = promptEntry.promptId ?? options.promptId
   const providerRunId = promptEntry.providerRunId ?? options.providerRunId
@@ -309,7 +315,7 @@ export function retargetEquivalentTranscriptTurnSiblings<
   entries: readonly TEntry[],
   equivalentOutput: TranscriptEquivalentOutput<TEntry, TTurnId>,
   canonicalEntry: TEntry,
-  options: TranscriptTurnSiblingRetargetOptions<TTurnId> = {},
+  options: TranscriptTurnSiblingRetargetOptions<TTurnId, TEntry> = {},
 ): number {
   if (
     canonicalEntry.turnId === undefined

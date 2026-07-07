@@ -204,7 +204,7 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to 
   const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<number, AssignmentEntry<number>>(entries, entries[0]!, {
     turnId,
     onAssigned: (turnId, assignedEntry, assignedAtMs) => {
-      assignedAt.push([turnId, assignedEntry.text ?? "", assignedAtMs])
+      assignedAt.push([turnId, assignedEntry.text, assignedAtMs])
     },
   })
 
@@ -250,7 +250,7 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
     previousTurnId: 3,
   }, assignmentEntry("canonical", "assistant", { turnId: 8 }), {
     onRetargeted: (turnId, retargetedEntry, retargetedAtMs) => {
-      retargetedAt.push([turnId, retargetedEntry.text ?? "", retargetedAtMs])
+      retargetedAt.push([turnId, retargetedEntry.text, retargetedAtMs])
     },
   })
 
