@@ -496,6 +496,19 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
             && mismatch.details.contains("external")
     }));
 
+    let mut missing_origin = active_turn.clone();
+    missing_origin.prompt_origin = None;
+    active_turns.insert(provider_run.id().to_string(), missing_origin);
+    let missing_origin_snapshot =
+        session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+    assert!(missing_origin_snapshot.mismatches.iter().any(|mismatch| {
+        mismatch.kind == "active_turn_prompt_origin_mismatch"
+            && mismatch.session_id == session_id
+            && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+            && mismatch.details.contains("none")
+            && mismatch.details.contains("external")
+    }));
+
     let mut wrong_external_identity = active_turn.clone();
     wrong_external_identity.external_observed_id =
         crate::history::parse_external_provider_observed_id("external:codex:thread-1:user-2");

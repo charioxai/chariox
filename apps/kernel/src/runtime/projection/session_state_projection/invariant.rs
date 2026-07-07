@@ -311,19 +311,19 @@ pub(super) fn snapshot(
                     ),
                 });
             }
-            if let Some(active_turn_prompt_origin) = active_turn.prompt_origin {
-                if active_turn_prompt_origin != active_prompt.prompt_origin() {
-                    mismatches.push(ProjectionInvariantMismatch {
-                        kind: "active_turn_prompt_origin_mismatch".to_string(),
-                        session_id: active_turn.session_id.clone(),
-                        agent_id: Some(active_turn.agent_id.clone()),
-                        details: format!(
-                            "active turn prompt origin {} does not match active prompt origin {}",
-                            prompt_origin_label(active_turn_prompt_origin),
-                            prompt_origin_label(active_prompt.prompt_origin())
-                        ),
-                    });
-                }
+            if active_turn.prompt_origin != Some(active_prompt.prompt_origin())
+                && (active_turn.prompt_origin.is_some() || active_prompt.is_external())
+            {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "active_turn_prompt_origin_mismatch".to_string(),
+                    session_id: active_turn.session_id.clone(),
+                    agent_id: Some(active_turn.agent_id.clone()),
+                    details: format!(
+                        "active turn prompt origin {} does not match active prompt origin {}",
+                        describe_prompt_origin(active_turn.prompt_origin),
+                        describe_prompt_origin(Some(active_prompt.prompt_origin()))
+                    ),
+                });
             }
             let active_turn_external_observed_id = active_turn.external_observed_id.as_ref();
             let active_prompt_external_observed_id = active_prompt.external_observed_id();
@@ -417,6 +417,13 @@ fn describe_prompt_with_pending_id(prompt: &PromptQueueItem) -> String {
             format!("{} (pending {})", prompt.id(), pending_prompt_id)
         }
         None => prompt.id().to_string(),
+    }
+}
+
+fn describe_prompt_origin(prompt_origin: Option<crate::session::PromptOrigin>) -> &'static str {
+    match prompt_origin {
+        None => "none",
+        Some(prompt_origin) => prompt_origin_label(prompt_origin),
     }
 }
 
