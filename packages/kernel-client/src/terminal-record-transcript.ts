@@ -63,11 +63,24 @@ export function terminalRecordTranscriptMetadata(
   record: TerminalRecordTranscriptFields,
 ): TerminalRecordTranscriptMetadata {
   const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
+  const promptId = nullableStringField(record, "prompt_id")
+  const sourceAttachmentId = nullableStringField(record, "source_attachment_id")
   return {
-    ...(record.prompt_id !== undefined ? { promptId: record.prompt_id } : {}),
-    ...(record.source_attachment_id !== undefined ? { sourceAttachmentId: record.source_attachment_id } : {}),
+    ...(promptId !== undefined ? { promptId } : {}),
+    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
     ...(externalObservedMetadata ?? {}),
   }
+}
+
+function nullableStringField(
+  record: TerminalRecordTranscriptFields,
+  field: "prompt_id" | "source_attachment_id",
+): string | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    return undefined
+  }
+  const value = record[field]
+  return typeof value === "string" ? value : null
 }
 
 export function transcriptEntryWithTerminalMetadata<TEntry extends TerminalTranscriptMetadataTarget>(

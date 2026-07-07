@@ -26,6 +26,28 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
   })
 })
 
+test("terminalRecordTranscriptMetadata preserves explicit null prompt identity", () => {
+  assert.deepEqual(terminalRecordTranscriptMetadata({
+    kind: "provider_output",
+    prompt_id: null,
+    source_attachment_id: null,
+  }), {
+    promptId: null,
+    sourceAttachmentId: null,
+  })
+})
+
+test("terminalRecordTranscriptMetadata normalizes malformed prompt identity to null", () => {
+  assert.deepEqual(terminalRecordTranscriptMetadata({
+    kind: "provider_output",
+    prompt_id: 42,
+    source_attachment_id: false,
+  } as unknown as Parameters<typeof terminalRecordTranscriptMetadata>[0]), {
+    promptId: null,
+    sourceAttachmentId: null,
+  })
+})
+
 test("terminalRecordTranscriptMetadata projects external observed metadata", () => {
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "provider_output",
