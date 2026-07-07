@@ -4,7 +4,6 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import {
   normalizeRuntimeSessionWithAgentActivity,
-  type PromptQueueItem,
   type RuntimeSession,
 } from "../cli-types.js"
 import {
@@ -110,7 +109,7 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
                 options.promptOrigin.current = "native"
               } else {
                 const state = await sessionState(options.client, options.sessionId)
-                activePromptId = promptForAgent(state, options.agentId)?.id ?? activePromptId
+                activePromptId = sessionActivePromptForAgent(state, options.agentId)?.id ?? activePromptId
                 if (activePromptId) {
                   nativeSubmittedPromptIds.add(activePromptId)
                   options.promptOrigin.current = "native"
@@ -142,7 +141,7 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
         }
 
         const state = await sessionState(options.client, options.sessionId)
-        const activePrompt = promptForAgent(state, options.agentId)
+        const activePrompt = sessionActivePromptForAgent(state, options.agentId)
         if (activePrompt && activePrompt.id !== activePromptId && !nativeSubmittedPromptIds.has(activePrompt.id)) {
           activePromptId = activePrompt.id
           injectedPromptIds.add(activePrompt.id)
@@ -194,13 +193,6 @@ function extractHiddenInstructions(prompt: string): string {
   const end = prompt.indexOf(hiddenInstructionsEnd, start)
   if (end < 0) return prompt.slice(start)
   return prompt.slice(start + hiddenInstructionsStart.length, end).trim()
-}
-
-export function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  return sessionActivePromptForAgent(
-    session as Parameters<typeof sessionActivePromptForAgent>[0],
-    agentId,
-  ) as PromptQueueItem | null
 }
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {

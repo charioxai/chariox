@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "../cli-types.js"
-import { promptForAgent } from "./claude-bridge.js"
+import { sessionActivePromptForAgent } from "@arroba/kernel-client/session-prompt-identity"
 
 test("native Claude bridge ignores stale prompts when projected activity is idle", () => {
   const stalePrompt = prompt("prompt-stale", "agent-1")
@@ -23,7 +23,7 @@ test("native Claude bridge ignores stale prompts when projected activity is idle
     },
   })
 
-  assert.equal(promptForAgent(runtimeSession, "agent-1"), null)
+  assert.equal(sessionActivePromptForAgent(runtimeSession, "agent-1"), null)
 })
 
 test("native Claude bridge only uses prompt matching projected active turn", () => {
@@ -51,7 +51,7 @@ test("native Claude bridge only uses prompt matching projected active turn", () 
     },
   })
 
-  assert.equal(promptForAgent(runtimeSession, "agent-1")?.id, "prompt-active")
+  assert.equal(sessionActivePromptForAgent(runtimeSession, "agent-1")?.id, "prompt-active")
   const projectedActivity = {
     "agent-1": {
       status: "working",
@@ -76,19 +76,19 @@ test("native Claude bridge only uses prompt matching projected active turn", () 
     agent_activity: projectedActivity,
   })
 
-  assert.equal(promptForAgent(mismatchedSession, "agent-1"), null)
+  assert.equal(sessionActivePromptForAgent(mismatchedSession, "agent-1"), null)
 })
 
 test("native Claude bridge falls back to legacy prompt fields before projected activity exists", () => {
   const activePrompt = prompt("prompt-legacy", "agent-1")
 
-  assert.equal(promptForAgent(session({ active_prompt: activePrompt }), "agent-1")?.id, "prompt-legacy")
+  assert.equal(sessionActivePromptForAgent(session({ active_prompt: activePrompt }), "agent-1")?.id, "prompt-legacy")
 })
 
 test("native Claude bridge ignores legacy active prompt once projected activity exists", () => {
   const activePrompt = prompt("prompt-stale", "agent-1")
 
-  assert.equal(promptForAgent(session({
+  assert.equal(sessionActivePromptForAgent(session({
     active_prompt: activePrompt,
     agent_activity: {
       "agent-1": {
@@ -103,11 +103,11 @@ test("native Claude bridge ignores legacy active prompt once projected activity 
 test("native Claude bridge prefers explicit prompt state over stale top-level prompt", () => {
   const activePrompt = prompt("prompt-stale", "agent-1")
 
-  assert.equal(promptForAgent(session({
+  assert.equal(sessionActivePromptForAgent(session({
     active_prompt: activePrompt,
     prompt_states: {},
   }), "agent-1"), null)
-  assert.equal(promptForAgent(session({
+  assert.equal(sessionActivePromptForAgent(session({
     active_prompt: activePrompt,
     prompt_states: {
       "agent-1": {
@@ -119,7 +119,7 @@ test("native Claude bridge prefers explicit prompt state over stale top-level pr
 })
 
 test("native Claude bridge does not inject queued prompts as active work", () => {
-  assert.equal(promptForAgent(session({
+  assert.equal(sessionActivePromptForAgent(session({
     prompt_states: {
       "agent-1": {
         active_prompt: null,
