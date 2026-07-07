@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>102 allowlisted files remain after initial splits</td>
+              <td>101 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -329,6 +329,12 @@
               <td><code>cec85de46</code> <span class="muted">Extract iOS root view components</span></td>
               <td>The iOS root view now keeps stage and surface composition, while terminal fields, transcript rows, summary/status/footer views, and button styles live in a sibling component module.</td>
               <td><code>swift test --package-path apps/ios/ArrobaPackage</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>830106df6</code> <span class="muted">Extract session lifecycle test support</span></td>
+              <td>Session lifecycle behavior tests now stay focused on attach/no-session scenarios, while shared CLI options, waiting-room state, transition fixtures, and dependency spies live in a sibling test-support module.</td>
+              <td><code>pnpm --filter @arroba/cli run build</code>, <code>node --test apps/cli/dist/session-lifecycle.test.js</code>. Local <code>node scripts/check-line-cap.mjs</code> was blocked by unrelated dirty kernel files.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
