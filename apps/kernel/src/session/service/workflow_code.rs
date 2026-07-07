@@ -371,6 +371,7 @@ impl SessionService {
                     session_id: session_id.to_string(),
                     workflow_id: workflow_id.to_string(),
                 })?;
+        workflow.set_prompt(definition.workflow.prompt.clone());
         if let Some(value) = definition.workflow.flush_agent_context_before_run {
             workflow.set_flush_agent_context_before_run(value);
         }

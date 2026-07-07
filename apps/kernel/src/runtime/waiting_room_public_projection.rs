@@ -386,6 +386,7 @@ fn waiting_room_public_workflow_summaries(
         .map(|workflow| WaitingRoomPublicWorkflowSummary {
             id: workflow.id().to_string(),
             alias: workflow.alias().map(ToOwned::to_owned),
+            prompt: workflow.prompt().map(ToOwned::to_owned),
             created_at_ms: workflow.created_at_ms(),
             revision: workflow.revision(),
             canvas_layout: workflow.canvas_layout().cloned(),
@@ -438,7 +439,7 @@ mod tests {
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, waiting_room_session_summaries,
     };
-    use crate::session::RuntimeSession;
+    use crate::session::{RuntimeSession, WorkflowDefinition};
 
     #[test]
     fn waiting_room_session_summaries_project_workspace_metadata() {
@@ -574,6 +575,34 @@ mod tests {
             .expect("regular agent summary should project")
             .metaagent_event_counts
             .is_none());
+    }
+
+    #[test]
+    fn waiting_room_session_summaries_project_workflow_prompt() {
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        let mut workflow = WorkflowDefinition::new("workflow-1", Some("review".to_string()));
+        workflow.set_prompt(Some("Shared workflow context".to_string()));
+        session.create_workflow(workflow);
+
+        let metaagent_events = MetaagentEventStore::default();
+        let summaries = waiting_room_session_summaries(
+            vec![session],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        assert_eq!(summaries[0].workflows.len(), 1);
+        assert_eq!(
+            summaries[0].workflows[0].prompt.as_deref(),
+            Some("Shared workflow context")
+        );
     }
 
     #[test]

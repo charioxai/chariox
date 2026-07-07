@@ -776,6 +776,8 @@ pub struct WorkflowDesignWorkflow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flush_agent_context_before_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
@@ -789,6 +791,8 @@ pub struct WorkflowDesignWorkflow {
 pub struct WorkflowDesignWorkflowPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flush_agent_context_before_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

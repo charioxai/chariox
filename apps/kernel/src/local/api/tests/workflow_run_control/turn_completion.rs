@@ -256,6 +256,19 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let second_mechanics = workflow_mechanics_text(&second_active_prompt);
     assert!(second_mechanics.contains("Workflow handoff payloads (JSON array):"));
     assert!(second_mechanics.contains("`ack_workflow_turn`"));
+    let second_history_prompts = harness.with_app(|app| {
+        app.operational_history_store()
+            .load_session_history_entries(session.id(), Some(second_agent.id()))
+            .expect("second agent operational history should load")
+    });
+    let second_history_prompt = second_history_prompts
+        .iter()
+        .find(|entry| entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt)
+        .expect("second agent workflow prompt should be recorded");
+    assert!(second_history_prompt
+        .text
+        .contains("Workflow handoff payloads (JSON array):"));
+    assert!(second_history_prompt.text.contains("`ack_workflow_turn`"));
 
     let second_run_id = routed
         .active_node_run_id()

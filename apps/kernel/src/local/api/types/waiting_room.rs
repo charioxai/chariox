@@ -153,6 +153,8 @@ pub struct WaitingRoomPublicWorkflowSummary {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     pub created_at_ms: u64,
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

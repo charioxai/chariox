@@ -583,11 +583,12 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<u64, DaemonError> {
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        let prompt_text = workflow_prompt_history_text(prompt);
         self.append_user_prompt_history(
             session_id,
             source_attachment_id,
             prompt.target_agent_id(),
-            prompt.prompt(),
+            &prompt_text,
             prompt.attachments(),
             Some(prompt.id()),
             prompt.workflow_run_id(),
@@ -804,6 +805,19 @@ impl KernelRuntimeOwnedState {
             self.metaagent_trace_subscriptions
                 .record_target_activity(session_id, agent_id);
         }
+    }
+}
+
+fn workflow_prompt_history_text(prompt: &crate::session::PromptQueueItem) -> String {
+    if prompt.workflow_node_run_id().is_none() || prompt.hidden_system_context().trim().is_empty() {
+        return prompt.prompt().to_string();
+    }
+    match (
+        prompt.prompt().trim(),
+        prompt.hidden_system_context().trim(),
+    ) {
+        ("", hidden) => hidden.to_string(),
+        (visible, hidden) => format!("{visible}\n\n{hidden}"),
     }
 }
 

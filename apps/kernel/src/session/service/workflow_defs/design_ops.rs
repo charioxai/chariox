@@ -13,6 +13,7 @@ impl SessionService {
                 let alias =
                     self.workflow_alias_for_create(session_id, workflow.alias, "workflow")?;
                 let mut definition = WorkflowDefinition::new(workflow.id, alias);
+                definition.set_prompt(workflow.prompt);
                 if let Some(value) = workflow.flush_agent_context_before_run {
                     definition.set_flush_agent_context_before_run(value);
                 }
@@ -74,6 +75,9 @@ impl SessionService {
                 })?;
                 if let Some(alias) = alias {
                     workflow.set_alias(alias);
+                }
+                if let Some(prompt) = patch.prompt {
+                    workflow.set_prompt(prompt);
                 }
                 if let Some(value) = patch.flush_agent_context_before_run {
                     workflow.set_flush_agent_context_before_run(value);

@@ -97,6 +97,7 @@ fn workflow_design_create_generates_default_alias() {
                 workflow: crate::local::WorkflowDesignWorkflow {
                     id: "workflow-design-1".to_string(),
                     alias: None,
+                    prompt: None,
                     flush_agent_context_before_run: None,
                     max_concurrent: None,
                     run_output_schema_ref: None,
@@ -109,6 +110,53 @@ fn workflow_design_create_generates_default_alias() {
 
     assert_eq!(created.id(), "workflow-design-1");
     assert_eq!(created.alias(), Some("workflow-1"));
+}
+
+#[test]
+fn workflow_design_create_and_update_persist_workflow_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowCreate {
+                workflow: crate::local::WorkflowDesignWorkflow {
+                    id: "workflow-design-prompt".to_string(),
+                    alias: Some("prompted".to_string()),
+                    prompt: Some("  Shared context for all nodes  ".to_string()),
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                    schemas: Vec::new(),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design create should apply");
+
+    assert_eq!(created.prompt(), Some("Shared context for all nodes"));
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowUpdate {
+                workflow_id: created.id().to_string(),
+                patch: crate::local::WorkflowDesignWorkflowPatch {
+                    alias: None,
+                    prompt: Some(None),
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design update should apply");
+
+    assert_eq!(updated.prompt(), None);
 }
 
 #[test]

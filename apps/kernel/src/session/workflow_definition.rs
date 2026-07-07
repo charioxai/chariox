@@ -80,6 +80,8 @@ pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_by_metaagent_id: Option<String>,
     #[serde(default = "unix_epoch_ms")]
     created_at_ms: u64,
@@ -105,6 +107,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            prompt: None,
             controlled_by_metaagent_id: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
@@ -140,6 +143,10 @@ impl WorkflowDefinition {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
     }
 
     pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
@@ -202,6 +209,13 @@ impl WorkflowDefinition {
 
     pub fn set_alias(&mut self, alias: Option<String>) {
         self.alias = alias;
+        self.bump_revision();
+    }
+
+    pub fn set_prompt(&mut self, prompt: Option<String>) {
+        self.prompt = prompt
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         self.bump_revision();
     }
 

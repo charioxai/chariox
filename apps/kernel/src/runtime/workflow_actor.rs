@@ -627,6 +627,7 @@ mod tests {
                 workflow: WorkflowDesignWorkflow {
                     id: "workflow-design-lock-free".to_string(),
                     alias: Some("lock-free".to_string()),
+                    prompt: None,
                     flush_agent_context_before_run: None,
                     max_concurrent: None,
                     run_output_schema_ref: None,

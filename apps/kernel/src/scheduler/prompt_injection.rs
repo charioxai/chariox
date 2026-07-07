@@ -153,15 +153,20 @@ pub(crate) fn render_workflow_turn_prompt_assembly(
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)
         .ok();
+    let workflow = workflow_run.as_ref().and_then(|run| {
+        app.sessions()
+            .resolve_workflow_ref(session_id, run.workflow_id())
+            .ok()
+    });
     Ok(build_workflow_turn_prompt_assembly(
         WorkflowPromptInjectionContext {
             workflow_ref: workflow_run
                 .as_ref()
                 .map(|run| run.workflow_id().to_string()),
             endpoint_prompt: endpoint_prompt.to_string(),
-            workflow_prompt: workflow_run
+            workflow_prompt: workflow
                 .as_ref()
-                .and_then(|run| run.invocation_prompt().map(str::to_string))
+                .and_then(|workflow| workflow.prompt().map(str::to_string))
                 .unwrap_or_default(),
             node_id: Some(node_id.to_string()),
             node_instructions: workflow_node_instructions(
@@ -789,6 +794,85 @@ mod tests {
         assert!(legacy.contains("ENDPOINT_VISIBLE_TOKEN"));
         assert!(legacy.contains("WORKFLOW_HIDDEN_TOKEN"));
         assert!(legacy.contains("NODE_HIDDEN_TOKEN"));
+    }
+
+    #[test]
+    fn render_workflow_turn_prompt_reads_workflow_prompt_from_definition() {
+        let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-prompt-render",
+                "worktree-prompt-render",
+            ))
+            .expect("session should be created");
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("prompt-render".to_string()))
+            .expect("workflow should be created")
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::WorkflowUpdate {
+                    workflow_id: workflow_id.clone(),
+                    patch: crate::local::WorkflowDesignWorkflowPatch {
+                        alias: None,
+                        prompt: Some(Some("WORKFLOW_DEFINITION_PROMPT".to_string())),
+                        flush_agent_context_before_run: None,
+                        max_concurrent: None,
+                        run_output_schema_ref: None,
+                    },
+                },
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect("workflow prompt should update");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, "agent-prompt-render")
+            .expect("node should be added");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should be created");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                endpoint.id(),
+                Some("ENDPOINT_INVOCATION_PROMPT".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+
+        let assembly = render_workflow_turn_prompt_assembly(
+            &app,
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            node.id(),
+            "ENDPOINT_INVOCATION_PROMPT",
+            None,
+            None,
+        )
+        .expect("workflow turn prompt should render");
+
+        assert!(assembly
+            .visible_user_prompt
+            .contains("ENDPOINT_INVOCATION_PROMPT"));
+        assert!(!assembly
+            .visible_user_prompt
+            .contains("WORKFLOW_DEFINITION_PROMPT"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("WORKFLOW_DEFINITION_PROMPT"));
     }
 
     #[test]
