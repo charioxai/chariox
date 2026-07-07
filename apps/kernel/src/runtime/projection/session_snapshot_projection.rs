@@ -207,8 +207,8 @@ pub(crate) fn agent_activity_for_session_projection(
             });
         let active_turn = provider_turn_activity
             .map(|turn| {
-                let active_prompt_for_turn =
-                    active_prompt.filter(|prompt| prompt.id() == turn.prompt_id);
+                let active_prompt_for_turn = active_prompt
+                    .filter(|prompt| prompt_matches_active_turn(prompt, &turn.prompt_id));
                 let prompt_origin = active_prompt_for_turn
                     .map(PromptQueueItem::prompt_origin)
                     .or(turn.prompt_origin);
@@ -289,6 +289,11 @@ fn active_turn_for_session_agent<'a>(
                 .cmp(&right.started_at_ms)
                 .then_with(|| left.provider_run_id.cmp(&right.provider_run_id))
         })
+}
+
+fn prompt_matches_active_turn(prompt: &PromptQueueItem, active_turn_prompt_id: &str) -> bool {
+    prompt.id() == active_turn_prompt_id
+        || prompt.pending_prompt_id() == Some(active_turn_prompt_id)
 }
 
 fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatus) -> bool {
@@ -672,6 +677,62 @@ mod tests {
         assert_eq!(
             active_turn.external_provider_session_id.as_deref(),
             Some("session-1")
+        );
+        assert_eq!(
+            active_turn.external_provider_turn_id.as_deref(),
+            Some("user-1")
+        );
+    }
+
+    #[test]
+    fn session_snapshot_projection_matches_active_turn_by_pending_prompt_id() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let active_prompt: crate::session::PromptQueueItem =
+            serde_json::from_value(serde_json::json!({
+                "id": "prompt-real-1",
+                "pending_prompt_id": "pending-prompt-1",
+                "source_attachment_id": "external:codex",
+                "target_agent_id": agent.id(),
+                "prompt": "external prompt",
+                "attachments": [],
+                "status": "Running",
+                "prompt_origin": "external",
+                "external_provider": "codex",
+                "external_provider_session_id": "thread-1",
+                "external_provider_turn_id": "user-1"
+            }))
+            .expect("active prompt should deserialize");
+        app.prompt_owner_activate_prompt(session.id(), active_prompt)
+            .expect("active prompt should activate");
+        app.active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "pending-prompt-1".to_string(),
+                provider_run.id().to_string(),
+            ));
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let active_turn = projection
+            .agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.active_turn.as_ref())
+            .expect("active turn should be projected");
+
+        assert_eq!(active_turn.prompt_id, "pending-prompt-1");
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            active_turn.external_provider_session_id.as_deref(),
+            Some("thread-1")
         );
         assert_eq!(
             active_turn.external_provider_turn_id.as_deref(),
