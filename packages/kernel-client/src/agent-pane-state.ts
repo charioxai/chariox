@@ -19,6 +19,10 @@ export type AgentPaneLineageEntry = TranscriptLineageEntry & {
 
 export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly historyBlobLoaded?: boolean
+  readonly promptOrigin?: string | null
+  readonly sourceAttachmentId?: string | null
+  readonly historyTurnCompletedAtMs?: number | null
+  readonly historyTurnLifecycle?: "open" | "completed"
 }
 
 export type AgentPaneRefreshResult<TEntry, TCursor> = {
@@ -182,7 +186,7 @@ export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEn
       return [entry]
     }
     replaced = true
-    return loadedEntries.map((loadedEntry) => ({ ...loadedEntry }))
+    return loadedEntries.map((loadedEntry) => mergeLoadedHistoryBlobEntryMetadata(loadedEntry, entry))
   })
   if (!replaced) {
     return options.refreshedEntries
@@ -191,6 +195,36 @@ export function preserveLoadedHistoryBlobs<TEntry extends AgentPaneHistoryBlobEn
     options.applyCollapsedTurns(nextEntries, options.collapsedTurnIds),
     0,
   )
+}
+
+function mergeLoadedHistoryBlobEntryMetadata<TEntry extends AgentPaneHistoryBlobEntry>(
+  loadedEntry: TEntry,
+  placeholder: TEntry,
+): TEntry {
+  return {
+    ...loadedEntry,
+    ...(loadedEntry.promptId === undefined && placeholder.promptId !== undefined ? { promptId: placeholder.promptId } : {}),
+    ...(loadedEntry.promptOrigin === undefined && placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
+    ...(loadedEntry.sourceAttachmentId === undefined && placeholder.sourceAttachmentId !== undefined
+      ? { sourceAttachmentId: placeholder.sourceAttachmentId }
+      : {}),
+    ...(loadedEntry.source === undefined && placeholder.source !== undefined ? { source: placeholder.source } : {}),
+    ...(loadedEntry.externalProvider === undefined && placeholder.externalProvider !== undefined
+      ? { externalProvider: placeholder.externalProvider }
+      : {}),
+    ...(loadedEntry.externalProviderSessionId === undefined && placeholder.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: placeholder.externalProviderSessionId }
+      : {}),
+    ...(loadedEntry.externalProviderTurnId === undefined && placeholder.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: placeholder.externalProviderTurnId }
+      : {}),
+    ...(loadedEntry.historyTurnCompletedAtMs === undefined && placeholder.historyTurnCompletedAtMs !== undefined
+      ? { historyTurnCompletedAtMs: placeholder.historyTurnCompletedAtMs }
+      : {}),
+    ...(loadedEntry.historyTurnLifecycle === undefined && placeholder.historyTurnLifecycle !== undefined
+      ? { historyTurnLifecycle: placeholder.historyTurnLifecycle }
+      : {}),
+  }
 }
 
 export function historyBlobSourceKey(

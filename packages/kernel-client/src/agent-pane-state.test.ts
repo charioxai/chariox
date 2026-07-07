@@ -157,6 +157,15 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
     role: string
     turnId?: number
     text: string
+    promptId?: string | null
+    promptOrigin?: string | null
+    sourceAttachmentId?: string | null
+    source?: string
+    externalProvider?: string
+    externalProviderSessionId?: string
+    externalProviderTurnId?: string
+    historyTurnCompletedAtMs?: number | null
+    historyTurnLifecycle?: "open" | "completed"
     historyBlobId?: string
     historyBlobAgentId?: string
     historyBlobSourceId?: string
@@ -183,6 +192,15 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
         role: "tool",
         turnId: 1,
         text: "",
+        promptId: "prompt-1",
+        promptOrigin: "external",
+        sourceAttachmentId: "attachment-1",
+        source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+        externalProvider: "codex",
+        externalProviderSessionId: "thread-1",
+        externalProviderTurnId: "turn-1",
+        historyTurnCompletedAtMs: null,
+        historyTurnLifecycle: "open",
         historyBlobId: "blob-1",
         historyBlobAgentId: "agent-a",
       },
@@ -196,6 +214,42 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
   assert.deepEqual(result.map((entry) => entry.text), ["question", "loaded tool output", "answer"])
   assert.equal(result[1]?.historyBlobLoaded, true)
   assert.equal(result[1]?.id, 2)
+  assert.equal(result[1]?.promptId, "prompt-1")
+  assert.equal(result[1]?.promptOrigin, "external")
+  assert.equal(result[1]?.sourceAttachmentId, "attachment-1")
+  assert.equal(result[1]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(result[1]?.externalProvider, "codex")
+  assert.equal(result[1]?.externalProviderSessionId, "thread-1")
+  assert.equal(result[1]?.externalProviderTurnId, "turn-1")
+  assert.equal(result[1]?.historyTurnCompletedAtMs, null)
+  assert.equal(result[1]?.historyTurnLifecycle, "open")
+})
+
+test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritative", () => {
+  const result = preserveLoadedHistoryBlobs({
+    currentEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "loaded tool output",
+      promptOrigin: "arroba",
+      historyBlobSourceId: "blob-1",
+      historyBlobSourceAgentId: "agent-a",
+      historyBlobLoaded: true,
+    }],
+    refreshedEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "",
+      promptOrigin: "external",
+      historyBlobId: "blob-1",
+      historyBlobAgentId: "agent-a",
+    }],
+    collapsedTurnIds: [],
+    applyCollapsedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+  })
+
+  assert.equal(result[0]?.promptOrigin, "arroba")
 })
 
 test("refreshAgentPaneState projects kernel-scoped history pages without local import repair", async () => {
