@@ -28,7 +28,7 @@ import {
 } from "./external-provider-observation.js"
 
 test("external provider observed id parser follows runtime merge key shape", () => {
-  assert.deepEqual(parseExternalProviderObservedId("external: codex : thread-1 : item:with:colon "), {
+  assert.deepEqual(parseExternalProviderObservedId("external: CODEX : thread-1 : item:with:colon "), {
     provider: "codex",
     providerSessionId: "thread-1",
     providerTurnId: "item:with:colon",

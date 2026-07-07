@@ -65,7 +65,7 @@ export function parseExternalProviderObservedId(
   if (!parts || parts.length < 4 || parts[0] !== "external") {
     return null
   }
-  const provider = parts[1]?.trim() ?? ""
+  const provider = normalizeExternalProviderId(parts[1]) ?? ""
   const providerSessionId = parts[2]?.trim() ?? ""
   const providerTurnId = parts.slice(3).join(":").trim()
   if (!provider || !providerSessionId || !providerTurnId) {
