@@ -133,6 +133,7 @@ export function hydrateSessionHistoryTranscriptEntries(
       mergeAdjacentUnkeyedRoles: ["reasoning"],
       metadata: {
         promptId: options.promptId,
+        promptOrigin: options.promptOrigin,
         sourceAttachmentId: options.sourceAttachmentId,
       },
     })

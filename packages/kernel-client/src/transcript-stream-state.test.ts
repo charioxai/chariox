@@ -118,6 +118,7 @@ test("transcript stream state preserves prompt identity while merging chunks", (
     mergeKey: "reply-1",
     metadata: {
       promptId: "prompt-1",
+      promptOrigin: "external",
       sourceAttachmentId: "attachment-1",
     },
   })
@@ -127,6 +128,7 @@ test("transcript stream state preserves prompt identity while merging chunks", (
     mergeKey: "reply-1",
     metadata: {
       promptId: "prompt-1",
+      promptOrigin: "external",
       sourceAttachmentId: "attachment-1",
     },
   })
@@ -134,6 +136,7 @@ test("transcript stream state preserves prompt identity while merging chunks", (
   assert.equal(second.kind, "merged")
   assert.equal(second.entries[0]?.text, "hello")
   assert.equal(second.entries[0]?.promptId, "prompt-1")
+  assert.equal(second.entries[0]?.promptOrigin, "external")
   assert.equal(second.entries[0]?.sourceAttachmentId, "attachment-1")
 })
 

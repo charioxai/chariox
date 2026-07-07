@@ -30,11 +30,13 @@ export type TranscriptStreamEntry = {
   readonly mergeKey?: TranscriptStreamKernelFields["mergeKey"]
   readonly sourceText?: TranscriptStreamKernelFields["sourceText"]
   readonly promptId?: string | null
+  readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
 }
 
 export type TranscriptStreamMetadata = {
   readonly promptId?: string | null | undefined
+  readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
 }
 
@@ -81,13 +83,14 @@ export type TranscriptStreamRuntimeOptions = {
 }
 
 type MutableTranscriptStreamEntry =
-  Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "sourceAttachmentId"> & {
+  Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "promptOrigin" | "sourceAttachmentId"> & {
     text: string
     turnId?: number | null
     providerRunId?: string | null
     mergeKey?: string | null
     sourceText?: string | null
     promptId?: string | null
+    promptOrigin?: string | null
     sourceAttachmentId?: string | null
   }
 
@@ -346,6 +349,9 @@ function createTranscriptEntry(
 function applyStreamMetadata(entry: MutableTranscriptStreamEntry, metadata: TranscriptStreamMetadata): void {
   if (metadata.promptId !== undefined) {
     entry.promptId = metadata.promptId
+  }
+  if (metadata.promptOrigin !== undefined) {
+    entry.promptOrigin = metadata.promptOrigin
   }
   if (metadata.sourceAttachmentId !== undefined) {
     entry.sourceAttachmentId = metadata.sourceAttachmentId
