@@ -2,6 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
+import {
   terminalRecordIsPassiveExternalProviderTelemetry,
   terminalRecordPromptHistoryText,
   terminalRecordProviderStatusShouldRender,
@@ -127,8 +131,8 @@ test("terminalRecordIsPassiveExternalProviderTelemetry follows observed metadata
 test("terminalRecordTranscriptProjection classifies external history refresh without transcript work", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
-    source: "external_provider_observed",
-  }, "external_provider_history_updated", {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, {
     isProviderIdleStatus: () => false,
     shouldRenderProviderStatus: () => true,
   })
@@ -362,8 +366,8 @@ test("terminalRecordPromptHistoryText only accepts user prompt terminal records"
   }, "hello"), null)
   assert.equal(terminalRecordPromptHistoryText({
     kind: "provider_status",
-    source: "external_provider_observed",
-  }, "external_provider_history_updated"), null)
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), null)
   assert.equal(terminalRecordPromptHistoryText({
     kind: "prompt_echo",
     source: "external_provider_observed",

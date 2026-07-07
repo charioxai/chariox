@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
+import { EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS } from "@arroba/kernel-client/external-provider-observation"
 
 function createDeps(overrides: Record<string, unknown> = {}) {
   const calls: string[] = []
@@ -150,7 +151,7 @@ test("external provider history update status triggers pane refresh hook", () =>
     agent_id: "agent-a",
     kind: "provider_status",
     source: "external_provider_observed",
-    bytes: [...Buffer.from("external_provider_history_updated", "utf8")],
+    bytes: [...Buffer.from(EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, "utf8")],
   })
 
   assert.deepEqual(calls, [
@@ -172,7 +173,7 @@ test("external provider history update status requires observed source", () => {
   controller.processTerminalOutputRecord({
     agent_id: "agent-a",
     kind: "provider_status",
-    bytes: [...Buffer.from("external_provider_history_updated", "utf8")],
+    bytes: [...Buffer.from(EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, "utf8")],
   })
 
   assert.deepEqual(calls, [
