@@ -596,12 +596,33 @@ fn outline_turn_external_identity(events: &[HistoryEvent]) -> Option<OutlineExte
 fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
     match event.kind {
         HistoryEventKind::ProviderOutput => true,
-        HistoryEventKind::ProviderStatus => event
-            .to_session_history_entry()
-            .is_some_and(|entry| entry.is_external_provider_observed()),
+        HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
         HistoryEventKind::UserPrompt => is_steering_prompt_event(event),
         _ => false,
     }
+}
+
+fn event_provider_status_projects_as_outline_entry(event: &HistoryEvent) -> bool {
+    let Some(entry) = event.to_session_history_entry() else {
+        return false;
+    };
+    if !entry.is_external_provider_observed() {
+        return false;
+    }
+    if entry
+        .external_observation
+        .as_ref()
+        .is_some_and(|observation| observation.passive_telemetry)
+    {
+        return false;
+    }
+    if entry.external_provider.as_deref().is_some_and(|provider| {
+        crate::app::ExternalProviderObservationPolicy::for_provider(provider)
+            .status_is_passive_telemetry(&entry.text)
+    }) {
+        return false;
+    }
+    true
 }
 
 fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
@@ -853,6 +874,23 @@ mod tests {
                 passive_telemetry: false,
             });
         let external_status = HistoryEvent::transcript(15, &external_status_entry, context.clone());
+        let mut passive_status_entry = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}",
+            "codex",
+            "thread-1",
+            Some("token-count-1".to_string()),
+            Some(16),
+        );
+        passive_status_entry.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: false,
+                passive_telemetry: true,
+            });
+        let passive_status = HistoryEvent::transcript(16, &passive_status_entry, context.clone());
         let summary = HistoryEvent::transcript(
             14,
             &SessionHistoryEntry::provider_output(
@@ -874,6 +912,7 @@ mod tests {
                 tool,
                 status,
                 external_status,
+                passive_status,
                 summary,
             ],
             false,
@@ -920,6 +959,47 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
         );
+    }
+
+    #[test]
+    fn outline_filters_external_provider_status_passive_by_provider_policy() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let prompt = HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+            context.clone(),
+        );
+        let passive_status = HistoryEvent::transcript(
+            11,
+            &SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                Some("run-1"),
+                "agent-1",
+                SessionHistoryEntryKind::ProviderStatus,
+                "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}",
+                "codex",
+                "thread-1",
+                Some("token-count-1".to_string()),
+                Some(2_100),
+            ),
+            context,
+        );
+
+        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), passive_status], false)
+            .expect("turn should be outlined");
+
+        assert!(
+            turn.entries.is_empty(),
+            "provider-policy passive telemetry should not render after reload"
+        );
+        assert!(turn.blobs.is_empty());
     }
 
     #[test]
