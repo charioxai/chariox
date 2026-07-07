@@ -33,11 +33,15 @@ impl AttachedProviderTranscriptCursorKey {
         provider: impl Into<String>,
         provider_session_id: impl Into<String>,
     ) -> Self {
+        let provider = provider.into();
+        let provider_session_id = provider_session_id.into();
+        let provider = normalize_external_provider_filter(&provider).unwrap_or(provider);
+        let provider_session_id = provider_session_id.trim().to_string();
         Self {
             session_id: session_id.into(),
             agent_id: agent_id.into(),
-            provider: provider.into(),
-            provider_session_id: provider_session_id.into(),
+            provider,
+            provider_session_id,
         }
     }
 }
@@ -925,6 +929,36 @@ mod tests {
                 .last_observed_turn_id
                 .as_deref(),
             Some("turn-2")
+        );
+    }
+
+    #[test]
+    fn transcript_cursor_key_canonicalizes_provider_session_identity() {
+        let store = AttachedProviderTranscriptCursorStore::default();
+        store.set(
+            AttachedProviderTranscriptCursorKey::new(
+                "session-1",
+                "agent-1",
+                " Codex ",
+                " thread-1 ",
+            ),
+            ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-1".to_string()),
+                ..ExternalProviderObservedCursor::default()
+            },
+        );
+
+        assert_eq!(
+            store
+                .get(&AttachedProviderTranscriptCursorKey::new(
+                    "session-1",
+                    "agent-1",
+                    "codex",
+                    "thread-1"
+                ))
+                .last_observed_turn_id
+                .as_deref(),
+            Some("turn-1")
         );
     }
 
