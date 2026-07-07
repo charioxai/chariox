@@ -30,7 +30,7 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
   assert.equal(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",
     prompt_id: "external:codex:thread-1:turn-1",
-  }).promptOrigin, "external")
+  }).promptOrigin, undefined)
 
   assert.equal(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",
@@ -68,6 +68,7 @@ test("terminalRecordTranscriptMetadata normalizes malformed prompt identity to n
 test("terminalRecordTranscriptMetadata projects external observed metadata", () => {
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "provider_output",
+    prompt_origin: "external",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",

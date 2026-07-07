@@ -351,6 +351,7 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
           target_agent_id: "agent-1",
           prompt: "hello from outside",
           status: "Running",
+          prompt_origin: "external",
         },
       },
     },

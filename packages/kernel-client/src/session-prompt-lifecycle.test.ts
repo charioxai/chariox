@@ -228,7 +228,7 @@ test("session prompt lifecycle records external active turn metadata", () => {
   }])
 })
 
-test("session prompt lifecycle infers external active turn ownership from provider identity", () => {
+test("session prompt lifecycle does not infer external active turn ownership from provider identity", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],
     agent_activity: {
@@ -252,7 +252,7 @@ test("session prompt lifecycle infers external active turn ownership from provid
   assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
     id: "external:codex:thread-1:turn-1",
     status: "running",
-    promptOrigin: "external",
+    promptOrigin: null,
     target_agent_id: "agent-1",
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
@@ -538,6 +538,7 @@ test("session prompt lifecycle transition treats decomposed metadata fill-in as 
           unread_idle_output: false,
           active_turn: {
             prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
             external_provider: "codex",
             external_provider_session_id: "thread-1",
             status: "running",
@@ -556,6 +557,7 @@ test("session prompt lifecycle transition treats decomposed metadata fill-in as 
           unread_idle_output: false,
           active_turn: {
             prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
             external_provider: "codex",
             external_provider_session_id: "thread-1",
             external_provider_turn_id: "turn-1",
@@ -586,6 +588,7 @@ test("session prompt lifecycle transition treats explicit external origin fill-i
           unread_idle_output: false,
           active_turn: {
             prompt_id: "external:codex:thread-1:turn-1",
+            prompt_origin: "external",
             external_provider: "codex",
             external_provider_session_id: "thread-1",
             external_provider_turn_id: "turn-1",

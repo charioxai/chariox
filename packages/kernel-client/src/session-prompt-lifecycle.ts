@@ -100,13 +100,13 @@ export function sessionPromptLifecycleTransition(
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   const promptOrigin = promptOriginFromRecord(prompt)
-  const externalObservedId = promptOrigin === ARROBA_PROMPT_ORIGIN
-    ? null
-    : parseExternalProviderObservedId(prompt.id)
+  const externalObservedId = promptOrigin === EXTERNAL_PROMPT_ORIGIN
+    ? parseExternalProviderObservedId(prompt.id)
+    : null
   return {
     ...prompt,
     status: normalizeAgentRuntimePromptStatus(prompt.status) ?? prompt.status,
-    promptOrigin: promptOrigin ?? (externalObservedId ? EXTERNAL_PROMPT_ORIGIN : null),
+    promptOrigin,
     ...(externalObservedId
       ? {
         externalProvider: externalObservedId.provider,
@@ -148,16 +148,6 @@ function activePromptLifecycleRecordPromptOriginFromProjectedTurn(
 ): string | null {
   if (projection.activeTurnPromptOrigin !== undefined) {
     return projection.activeTurnPromptOrigin
-  }
-  if (parseExternalProviderObservedId(projection.activeTurnPromptId)) {
-    return EXTERNAL_PROMPT_ORIGIN
-  }
-  if (
-    projection.activeTurnExternalProvider
-    || projection.activeTurnExternalProviderSessionId
-    || projection.activeTurnExternalProviderTurnId
-  ) {
-    return EXTERNAL_PROMPT_ORIGIN
   }
   return null
 }

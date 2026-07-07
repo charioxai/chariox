@@ -1,6 +1,6 @@
 import {
   normalizePromptOrigin,
-  promptOriginFromPromptRecord,
+  promptOriginFromRecord,
 } from "./prompt-origin.js"
 import {
   applyTranscriptPromptMetadata,
@@ -87,14 +87,10 @@ export function terminalRecordTranscriptMetadata(
 function terminalRecordPromptOrigin(
   record: TerminalRecordTranscriptFields,
 ): string | null {
-  return promptOriginFromPromptRecord({
-    id: nullableStringField(record, "prompt_id"),
+  return promptOriginFromRecord({
     prompt_origin: hasOwn(record, "prompt_origin")
       ? normalizePromptOrigin(nullableStringField(record, "prompt_origin"))
       : undefined,
-    external_provider: nullableStringField(record, "external_provider"),
-    external_provider_session_id: nullableStringField(record, "external_provider_session_id"),
-    external_provider_turn_id: nullableStringField(record, "external_provider_turn_id"),
   })
 }
 

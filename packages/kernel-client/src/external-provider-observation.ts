@@ -1,6 +1,6 @@
 import type { SessionHistoryExternalObservation } from "./kernel-types.js"
 import {
-  promptOriginFromPromptRecord,
+  promptOriginFromRecord,
   promptOriginIsExternal,
   type PromptOriginRecord,
 } from "./prompt-origin.js"
@@ -200,10 +200,7 @@ export function externalProviderObservedCompletionAtMs(
 export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
-  if (!promptOriginIsExternal(promptOriginFromPromptRecord({
-    ...record,
-    id: record.id ?? record.prompt_id,
-  }))) {
+  if (!promptOriginIsExternal(promptOriginFromRecord(record))) {
     return null
   }
   const promptIdentity = parseExternalProviderObservedId(record.id ?? record.prompt_id)

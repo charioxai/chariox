@@ -218,17 +218,13 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   })
-  assert.deepEqual(promptOriginExternalProviderObservedMetadata({
+  assert.equal(promptOriginExternalProviderObservedMetadata({
     external_provider: " codex ",
     external_provider_session_id: " thread-1 ",
-  }), {
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: null,
-  })
+  }), null)
   assert.deepEqual(promptOriginExternalProviderObservedMetadata({
     id: "external:codex:thread-1:turn-1",
+    prompt_origin: "external",
   }), {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
@@ -237,6 +233,7 @@ test("external provider observed metadata projects prompt-origin turn fields", (
   })
   assert.deepEqual(promptOriginExternalProviderObservedMetadata({
     prompt_id: "external:codex:thread-2:turn-2",
+    prompt_origin: "external",
   }), {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
