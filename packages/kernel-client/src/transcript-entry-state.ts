@@ -12,6 +12,37 @@ export type TranscriptEntryStateEntry = {
   readonly promptId?: string | null
 }
 
+export type TranscriptTurnAssignmentId = string | number
+
+export type TranscriptTurnAssignmentEntry<TTurnId extends TranscriptTurnAssignmentId = number> = {
+  readonly role: string
+  readonly text?: string
+  turnId?: TTurnId | null
+  readonly turnTracking?: "none"
+  readonly promptId?: string | null
+  readonly providerRunId?: string | null
+  readonly outputIdentity?: string | null
+  readonly createdAtMs?: number | null
+}
+
+export type TranscriptTurnAssignmentOptions<TTurnId extends TranscriptTurnAssignmentId = number> = {
+  readonly turnId: TTurnId
+  readonly promptId?: string | null
+  readonly providerRunId?: string | null
+  readonly nowMs?: () => number
+  readonly onAssigned?: (turnId: TTurnId, entry: TranscriptTurnAssignmentEntry<TTurnId>, assignedAtMs: number | null) => void
+}
+
+export type TranscriptEquivalentOutput<TEntry extends TranscriptTurnAssignmentEntry<TTurnId>, TTurnId extends TranscriptTurnAssignmentId = number> = {
+  readonly entry: TEntry
+  readonly previousTurnId?: TTurnId | null
+}
+
+export type TranscriptTurnSiblingRetargetOptions<TTurnId extends TranscriptTurnAssignmentId = number> = {
+  readonly nowMs?: () => number
+  readonly onRetargeted?: (turnId: TTurnId, entry: TranscriptTurnAssignmentEntry<TTurnId>, retargetedAtMs: number | null) => void
+}
+
 export type TranscriptPromptMetadata = {
   readonly promptId?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -231,6 +262,86 @@ export function createNextTranscriptEntry<
     }
   }
   return nextEntry
+}
+
+export function assignMatchingUntrackedTranscriptEntriesToTurn<
+  TTurnId extends TranscriptTurnAssignmentId,
+  TEntry extends TranscriptTurnAssignmentEntry<TTurnId>,
+>(
+  entries: readonly TEntry[],
+  promptEntry: TEntry,
+  options: TranscriptTurnAssignmentOptions<TTurnId>,
+): number {
+  const promptId = promptEntry.promptId ?? options.promptId
+  const providerRunId = promptEntry.providerRunId ?? options.providerRunId
+  if (!promptId && !providerRunId) {
+    return 0
+  }
+  let assigned = 0
+  for (const entry of entries) {
+    if (
+      entry === promptEntry
+      || entry.role === "user"
+      || entry.turnId !== undefined && entry.turnId !== null
+      || entry.turnTracking === "none"
+    ) {
+      continue
+    }
+    const matchesPrompt = Boolean(promptId && entry.promptId === promptId)
+    const matchesProviderRun = Boolean(providerRunId && (
+      entry.providerRunId === providerRunId
+      || entry.outputIdentity?.startsWith(`${providerRunId}:`) === true
+    ))
+    if (!matchesPrompt && !matchesProviderRun) {
+      continue
+    }
+    entry.turnId = options.turnId
+    options.onAssigned?.(options.turnId, entry, transcriptAssignmentTimestamp(entry, options.nowMs))
+    assigned += 1
+  }
+  return assigned
+}
+
+export function retargetEquivalentTranscriptTurnSiblings<
+  TTurnId extends TranscriptTurnAssignmentId,
+  TEntry extends TranscriptTurnAssignmentEntry<TTurnId>,
+>(
+  entries: readonly TEntry[],
+  equivalentOutput: TranscriptEquivalentOutput<TEntry, TTurnId>,
+  canonicalEntry: TEntry,
+  options: TranscriptTurnSiblingRetargetOptions<TTurnId> = {},
+): number {
+  if (
+    canonicalEntry.turnId === undefined
+    || canonicalEntry.turnId === null
+    || equivalentOutput.previousTurnId === undefined
+    || equivalentOutput.previousTurnId === null
+    || canonicalEntry.turnId === equivalentOutput.previousTurnId
+  ) {
+    return 0
+  }
+  let retargeted = 0
+  for (const sibling of entries) {
+    if (
+      sibling === equivalentOutput.entry
+      || sibling.role === "user"
+      || sibling.turnId !== equivalentOutput.previousTurnId
+      || sibling.turnTracking === "none"
+    ) {
+      continue
+    }
+    sibling.turnId = canonicalEntry.turnId
+    options.onRetargeted?.(canonicalEntry.turnId, sibling, transcriptAssignmentTimestamp(sibling, options.nowMs))
+    retargeted += 1
+  }
+  return retargeted
+}
+
+function transcriptAssignmentTimestamp<TTurnId extends TranscriptTurnAssignmentId>(
+  entry: TranscriptTurnAssignmentEntry<TTurnId>,
+  nowMs: (() => number) | undefined,
+): number | null {
+  return entry.createdAtMs ?? nowMs?.() ?? null
 }
 
 function finiteIntegerOrZero(value: number): number {

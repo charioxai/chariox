@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  assignMatchingUntrackedTranscriptEntriesToTurn,
   computeCurrentTranscriptTurnId,
   computeMaxTranscriptEntryId,
   computeNextTranscriptEntryId,
@@ -10,11 +11,13 @@ import {
   createTranscriptUserPromptTurn,
   createNextTranscriptEntry,
   reindexTranscriptEntries,
+  retargetEquivalentTranscriptTurnSiblings,
   shouldSkipConsecutiveTranscriptEntry,
   transcriptEntryRuntimeOptions,
   transcriptHasTrailingUserPrompt,
   transcriptRetentionSlice,
   trimSingleTrailingNewline,
+  type TranscriptTurnAssignmentEntry,
   type TranscriptEntryStateEntry,
 } from "./transcript-entry-state.js"
 
@@ -187,6 +190,78 @@ test("createNextTranscriptEntry preserves explicit turn ids", () => {
   assert.deepEqual(next, entry(5, "assistant", "reply", { turnId: 12 }))
 })
 
+test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to prompt turn", () => {
+  const turnId = 7
+  const entries: AssignmentEntry<number>[] = [
+    assignmentEntry("prompt", "user", { promptId: "prompt-1", providerRunId: "run-1", turnId: 7 }),
+    assignmentEntry("assistant-by-prompt", "assistant", { promptId: "prompt-1", createdAtMs: 1_100 }),
+    assignmentEntry("assistant-by-run", "assistant", { outputIdentity: "run-1:assistant", createdAtMs: 1_200 }),
+    assignmentEntry("unrelated", "assistant", { promptId: "prompt-2", providerRunId: "run-2", createdAtMs: 1_300 }),
+    assignmentEntry("already-assigned", "assistant", { promptId: "prompt-1", turnId: 9, createdAtMs: 1_400 }),
+  ]
+  const assignedAt: Array<[number, string, number | null]> = []
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<number, AssignmentEntry<number>>(entries, entries[0]!, {
+    turnId,
+    onAssigned: (turnId, assignedEntry, assignedAtMs) => {
+      assignedAt.push([turnId, assignedEntry.text ?? "", assignedAtMs])
+    },
+  })
+
+  assert.equal(assigned, 2)
+  assert.equal(entries[1]?.turnId, 7)
+  assert.equal(entries[2]?.turnId, 7)
+  assert.equal(entries[3]?.turnId, undefined)
+  assert.equal(entries[4]?.turnId, 9)
+  assert.deepEqual(assignedAt, [
+    [7, "assistant-by-prompt", 1_100],
+    [7, "assistant-by-run", 1_200],
+  ])
+})
+
+test("assignMatchingUntrackedTranscriptEntriesToTurn accepts fallback prompt identity", () => {
+  const turnId = "turn-1"
+  const prompt: AssignmentEntry<string> = assignmentEntry("prompt", "user", { turnId })
+  const entries: AssignmentEntry<string>[] = [
+    prompt,
+    assignmentEntry("assistant", "assistant", { providerRunId: "run-1" }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<string, AssignmentEntry<string>>(entries, prompt, {
+    turnId,
+    providerRunId: "run-1",
+  })
+
+  assert.equal(assigned, 1)
+  assert.equal(entries[1]?.turnId, "turn-1")
+})
+
+test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canonical turn", () => {
+  const entries: AssignmentEntry<number>[] = [
+    assignmentEntry("equivalent", "assistant", { turnId: 3, outputIdentity: "run-1:assistant", createdAtMs: 1_100 }),
+    assignmentEntry("tool", "tool", { turnId: 3, createdAtMs: 1_200 }),
+    assignmentEntry("other-turn", "assistant", { turnId: 4, createdAtMs: 1_300 }),
+    assignmentEntry("user", "user", { turnId: 3, createdAtMs: 1_400 }),
+  ]
+  const retargetedAt: Array<[number, string, number | null]> = []
+
+  const retargeted = retargetEquivalentTranscriptTurnSiblings<number, AssignmentEntry<number>>(entries, {
+    entry: entries[0]!,
+    previousTurnId: 3,
+  }, assignmentEntry("canonical", "assistant", { turnId: 8 }), {
+    onRetargeted: (turnId, retargetedEntry, retargetedAtMs) => {
+      retargetedAt.push([turnId, retargetedEntry.text ?? "", retargetedAtMs])
+    },
+  })
+
+  assert.equal(retargeted, 1)
+  assert.equal(entries[0]?.turnId, 3)
+  assert.equal(entries[1]?.turnId, 8)
+  assert.equal(entries[2]?.turnId, 4)
+  assert.equal(entries[3]?.turnId, 3)
+  assert.deepEqual(retargetedAt, [[8, "tool", 1_200]])
+})
+
 test("transcriptRetentionSlice trims old entries by count", () => {
   const entries = [
     entry(1, "assistant", "one"),
@@ -231,6 +306,29 @@ function entry(
 ): TranscriptEntryStateEntry {
   return {
     id,
+    role,
+    text,
+    ...overrides,
+  }
+}
+
+type AssignmentEntry<TTurnId extends string | number> = TranscriptTurnAssignmentEntry<TTurnId> & {
+  readonly text: string
+}
+
+function assignmentEntry<TTurnId extends string | number>(
+  text: string,
+  role: string,
+  overrides: {
+    readonly turnId?: TTurnId
+    readonly turnTracking?: "none"
+    readonly promptId?: string | null
+    readonly providerRunId?: string | null
+    readonly outputIdentity?: string | null
+    readonly createdAtMs?: number | null
+  } = {},
+): AssignmentEntry<TTurnId> {
+  return {
     role,
     text,
     ...overrides,
