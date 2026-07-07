@@ -38,51 +38,31 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &mut crate::session::RuntimeSession,
     ) {
-        if let Some(active_provider_run_id) = session.active_provider_run_id() {
-            if let Ok(active_run) =
+        let prompt_session = session.clone();
+        let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
+        let projected_run_id = crate::runtime::projection::projected_active_provider_run_id(
+            session,
+            |provider_run_id| {
                 self.provider_store
-                    .get_run(active_provider_run_id)
-                    .or_else(|_| {
+                    .get_run(provider_run_id)
+                    .ok()
+                    .or_else(|| self.provider_run_projection.get(provider_run_id))
+            },
+            |agent_id| {
+                self.provider_store
+                    .get_run_for_agent(session.id(), agent_id)
+                    .or_else(|| {
                         self.provider_run_projection
-                            .get(active_provider_run_id)
-                            .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                                provider_run_id: active_provider_run_id.to_string(),
-                            })
+                            .get_for_agent(session.id(), agent_id)
                     })
-            {
-                let active_run_agent_id = active_run.agent_instance_id();
-                let active_prompt_is_running = active_run_agent_id
-                    .and_then(|agent_id| {
-                        self.prompt_state_owner
-                            .active_prompt_for_agent_snapshot(session, agent_id)
-                    })
-                    .is_some();
-                if active_run.state() == crate::provider::ProviderRunState::Running
-                    && active_prompt_is_running
-                {
-                    return;
-                }
-            }
-        }
-
-        let projected_agent_id = self
-            .prompt_state_owner
-            .active_prompt_agent_id(session)
-            .or_else(|| session.focused_agent_id().map(str::to_string));
-        let projected_run_id = projected_agent_id.as_deref().and_then(|agent_id| {
-            self.provider_store
-                .get_run_for_agent(session.id(), agent_id)
-                .or_else(|| {
-                    self.provider_run_projection
-                        .get_for_agent(session.id(), agent_id)
-                })
-                .and_then(|run| match run.state() {
-                    crate::provider::ProviderRunState::Running
-                    | crate::provider::ProviderRunState::Starting => Some(run.id().to_string()),
-                    crate::provider::ProviderRunState::Parked
-                    | crate::provider::ProviderRunState::Ended => None,
-                })
-        });
+            },
+            |agent_id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent_snapshot(&prompt_session, agent_id)
+                    .is_some()
+            },
+            active_prompt_agent_id,
+        );
         session.set_active_provider_run(projected_run_id);
     }
 

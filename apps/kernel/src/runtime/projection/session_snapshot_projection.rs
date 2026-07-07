@@ -454,6 +454,85 @@ mod tests {
     }
 
     #[test]
+    fn session_snapshot_projection_preserves_projected_active_run_with_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let focused_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("focused"))
+            .expect("focused agent should be created");
+
+        app.sessions_mut()
+            .set_focused_agent(session.id(), Some(focused_agent.id().to_string()))
+            .expect("focused agent should be set");
+        for agent in [&first_agent, &focused_agent] {
+            let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+                format!("external:codex:session-1:{}-turn", agent.id()),
+                "codex",
+                agent.id(),
+                format!("external prompt for {}", agent.id()),
+            );
+            app.prompt_owner_sync_external_active_prompt(
+                session.id(),
+                agent.id(),
+                Some(external_prompt),
+            )
+            .expect("external active prompt should sync");
+        }
+
+        let mut first_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "projected-run-first",
+            session.id().to_string(),
+            Some(first_agent.id().to_string()),
+            "codex".to_string(),
+        );
+        first_run.mark_running();
+        let mut focused_run =
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "projected-run-focused",
+                session.id().to_string(),
+                Some(focused_agent.id().to_string()),
+                "codex".to_string(),
+            );
+        focused_run.mark_running();
+        app.update_provider_run_projection(first_run.clone());
+        app.update_provider_run_projection(focused_run);
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(first_run.id().to_string()))
+            .expect("active provider run should be set");
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let projected_run = projection
+            .provider_run
+            .as_ref()
+            .expect("provider run should be projected from fallback");
+
+        assert_eq!(
+            projection.session.active_provider_run_id(),
+            Some(first_run.id())
+        );
+        assert_eq!(projected_run.id(), first_run.id());
+        assert_eq!(
+            projection
+                .agent_activity
+                .get(first_agent.id())
+                .expect("first agent activity should project")
+                .status,
+            AgentRuntimeStatus::Working
+        );
+        assert_eq!(
+            projection
+                .agent_activity
+                .get(focused_agent.id())
+                .expect("focused agent activity should project")
+                .status,
+            AgentRuntimeStatus::Working
+        );
+    }
+
+    #[test]
     fn session_snapshot_projection_marks_settling_prompt_as_working() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
