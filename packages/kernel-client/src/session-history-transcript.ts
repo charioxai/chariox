@@ -35,12 +35,13 @@ import {
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
-import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
+  sessionHistoryOutlineTurnPromptMetadata,
+  type SessionHistoryOutlineTurnPromptMetadata,
 } from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
 import type {
@@ -263,7 +264,7 @@ export function hydrateSessionHistoryOutlineAgentEntries(
       activeTurnId = turnId
     }
     const externalMetadata = outlineTurnExternalMetadata(turn)
-    const promptMetadata = outlineTurnPromptMetadata(turn)
+    const promptMetadata = sessionHistoryOutlineTurnPromptMetadata(turn)
     const promptEntries = hydrateSessionHistoryPageEntriesForTurn([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
       entries.push(applyOutlineTurnMetadata(
@@ -310,7 +311,7 @@ export function replaceSessionHistoryBlobPlaceholder(
   }
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder)
-  const promptMetadata: OutlineTurnPromptMetadata = {
+  const promptMetadata: SessionHistoryOutlineTurnPromptMetadata = {
     ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
   }
@@ -442,32 +443,15 @@ function historyEntryTranscriptIdentityOptions(
 }
 
 type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
-type OutlineTurnPromptMetadata = {
-  readonly promptOrigin?: string | null
-  readonly sourceAttachmentId?: string | null
-}
-
 function outlineTurnExternalMetadata(
   turn: SessionHistoryOutlineTurn,
 ): OutlineTurnExternalMetadata | null {
   return promptOriginExternalProviderObservedMetadata(turn)
 }
 
-function outlineTurnPromptMetadata(turn: SessionHistoryOutlineTurn): OutlineTurnPromptMetadata {
-  const promptOrigin = promptOriginFromRecord(turn)
-  return {
-    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
-      ? { promptOrigin }
-      : {}),
-    ...(turn.user_prompt.entry.source_attachment_id !== undefined
-      ? { sourceAttachmentId: turn.user_prompt.entry.source_attachment_id }
-      : {}),
-  }
-}
-
 function applyOutlineTurnPromptMetadata(
   entry: SessionHistoryTranscriptEntry,
-  metadata: OutlineTurnPromptMetadata,
+  metadata: SessionHistoryOutlineTurnPromptMetadata,
 ): SessionHistoryTranscriptEntry {
   return applyTranscriptPromptMetadata({ ...entry }, metadata, { preserveExisting: true })
 }
@@ -475,7 +459,7 @@ function applyOutlineTurnPromptMetadata(
 function applyOutlineTurnMetadata(
   entry: SessionHistoryTranscriptEntry,
   externalMetadata: OutlineTurnExternalMetadata | null,
-  promptMetadata: OutlineTurnPromptMetadata,
+  promptMetadata: SessionHistoryOutlineTurnPromptMetadata,
 ): SessionHistoryTranscriptEntry {
   return applyOutlineTurnPromptMetadata(
     applyOutlineTurnExternalMetadata(entry, externalMetadata),

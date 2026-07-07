@@ -7,6 +7,7 @@ import type {
   SessionHistoryPageEntry,
   TranscriptEntry,
 } from "./kernel-types.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type SessionHistoryCursorSelection = {
@@ -46,6 +47,11 @@ export type SessionHistoryOutlineTurnItemsLike<
 
 export type SessionHistoryOutlineTurnCompletionLike = {
   readonly completed_at_ms?: number | null | undefined
+}
+
+export type SessionHistoryOutlineTurnPromptMetadata = {
+  readonly promptOrigin?: string | null
+  readonly sourceAttachmentId?: string | null
 }
 
 export function orderedSessionHistoryOutlineTurns<TTurn extends SessionHistoryOutlineTurnLike>(
@@ -107,6 +113,29 @@ export function sessionHistoryOutlineTurnCompletedAtMs(
   return typeof turn.completed_at_ms === "number" && Number.isFinite(turn.completed_at_ms)
     ? turn.completed_at_ms
     : null
+}
+
+export function sessionHistoryOutlineTurnSourceAttachmentId(
+  turn: Pick<SessionHistoryOutlineTurn, "user_prompt">,
+): string | null | undefined {
+  const entry = turn.user_prompt.entry
+  if (!Object.prototype.hasOwnProperty.call(entry, "source_attachment_id")) {
+    return undefined
+  }
+  return entry.source_attachment_id === undefined ? undefined : entry.source_attachment_id
+}
+
+export function sessionHistoryOutlineTurnPromptMetadata(
+  turn: Pick<SessionHistoryOutlineTurn, "prompt_origin" | "user_prompt">,
+): SessionHistoryOutlineTurnPromptMetadata {
+  const promptOrigin = promptOriginFromRecord(turn)
+  const sourceAttachmentId = sessionHistoryOutlineTurnSourceAttachmentId(turn)
+  return {
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
+    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
+  }
 }
 
 export function sessionHistoryCursorForVisibleAgent(

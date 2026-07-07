@@ -15,6 +15,8 @@ import {
   sessionHistoryOutlineBlobSequenceStart,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
+  sessionHistoryOutlineTurnPromptMetadata,
+  sessionHistoryOutlineTurnSourceAttachmentId,
   sessionHistoryPageEntryIndex,
 } from "./session-history-outline.js"
 
@@ -63,6 +65,36 @@ test("session history outline completion distinguishes absent, open, and settled
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: null }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: Number.NaN }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: 123 }), 123)
+})
+
+test("session history outline prompt metadata follows durable prompt entry identity", () => {
+  const external = {
+    ...turn(1),
+    prompt_origin: " External ",
+    user_prompt: pageEntry(1, "user_prompt", "prompt", {
+      source_attachment_id: "attachment-1",
+    }),
+  } satisfies SessionHistoryOutlineTurn
+
+  assert.equal(sessionHistoryOutlineTurnSourceAttachmentId(external), "attachment-1")
+  assert.deepEqual(sessionHistoryOutlineTurnPromptMetadata(external), {
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
+  })
+  assert.deepEqual(sessionHistoryOutlineTurnPromptMetadata({
+    ...external,
+    prompt_origin: null,
+  }), {
+    promptOrigin: null,
+    sourceAttachmentId: "attachment-1",
+  })
+  assert.deepEqual(sessionHistoryOutlineTurnPromptMetadata(turn(2)), {})
+  assert.equal(sessionHistoryOutlineTurnSourceAttachmentId({
+    ...external,
+    user_prompt: pageEntry(1, "user_prompt", "prompt", {
+      source_attachment_id: null,
+    }),
+  }), null)
 })
 
 test("session history cursor selection follows the visible agent", () => {
@@ -114,13 +146,14 @@ function pageEntry(
   entryIndex: number,
   kind: SessionHistoryEntry["kind"],
   text: string,
+  overrides: Partial<SessionHistoryEntry> = {},
 ): SessionHistoryPageEntry {
   return {
     entry_index: entryIndex,
     fragment_start: 0,
     fragment_end: text.length,
     total_chars: text.length,
-    entry: { kind, text },
+    entry: { kind, text, ...overrides },
   }
 }
 
