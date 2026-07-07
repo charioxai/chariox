@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>101 allowlisted files remain after initial splits</td>
+              <td>100 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -341,6 +341,12 @@
               <td><code>2d230635d</code> <span class="muted">Split external provider session tests</span></td>
               <td>External provider session index production code now stays in the source module, while pagination, canonicalization, attachment, detach, and transcript-cursor coverage lives in a sibling test module.</td>
               <td>Focused <code>app::external_provider_sessions</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>96b8aa4f4</code> <span class="muted">Split shell executor workflow code tests</span></td>
+              <td>Shell executor workflow command coverage now keeps workflow list, registry, graph, publication, and queue scenarios in the parent file, while workflow-code package/source/artifact command scenarios live in a dedicated test module.</td>
+              <td><code>pnpm --filter @arroba/kernel-client run build</code>, focused compiled shell-executor workflow tests, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
