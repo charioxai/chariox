@@ -212,6 +212,18 @@ test("terminalRecordTranscriptProjection keeps ordinary status merge separate fr
 })
 
 test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {
+  const userPrompt = terminalRecordTranscriptProjection({
+    kind: "user_prompt",
+  }, "build it", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+  assert.equal(userPrompt.transcriptRole, "user")
+  assert.equal(userPrompt.startsStreaming, false)
+  assert.equal(userPrompt.marksAgentBusy, false)
+  assert.equal(userPrompt.updatesProviderActivity, false)
+  assert.equal(userPrompt.appendsLiveTranscript, true)
+
   const assistant = terminalRecordTranscriptProjection({
     kind: "provider_output",
     merge_key: "reply-1",
@@ -252,6 +264,9 @@ test("terminalRecordPromptHistoryText only accepts user prompt terminal records"
   assert.equal(terminalRecordPromptHistoryText({
     kind: "prompt_echo",
   }, "hello"), "hello")
+  assert.equal(terminalRecordPromptHistoryText({
+    kind: "user_prompt",
+  }, "from history"), "from history")
   assert.equal(terminalRecordPromptHistoryText({
     kind: "provider_output",
   }, "hello"), null)

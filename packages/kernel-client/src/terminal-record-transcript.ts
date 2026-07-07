@@ -97,11 +97,11 @@ export function terminalRecordTranscriptProjection(
     metadata,
     historyRefreshSignal,
     passiveExternalTelemetry,
-    startsStreaming: record.kind !== "prompt_echo"
+    startsStreaming: !terminalRecordKindIsUserPrompt(record.kind)
       && !historyRefreshSignal
       && !passiveExternalTelemetry
       && !providerStatusIdle,
-    marksAgentBusy: record.kind !== "prompt_echo"
+    marksAgentBusy: !terminalRecordKindIsUserPrompt(record.kind)
       && !historyRefreshSignal
       && !passiveExternalTelemetry
       && !providerStatusIdle,
@@ -159,10 +159,14 @@ export function normalizeTerminalRecordErrorText(text: string): string {
 }
 
 function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRole | null {
-  if (kind === "prompt_echo") {
+  if (terminalRecordKindIsUserPrompt(kind)) {
     return "user"
   }
   return providerTranscriptRoleForKind(kind) ?? "assistant"
+}
+
+function terminalRecordKindIsUserPrompt(kind: string): boolean {
+  return kind === "prompt_echo" || kind === "user_prompt"
 }
 
 type TerminalTranscriptMetadataTarget = ExternalProviderObservedMutableTranscriptMetadataFields & {
