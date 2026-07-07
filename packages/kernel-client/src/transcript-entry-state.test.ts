@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyTranscriptPromptMetadata,
   assignMatchingUntrackedTranscriptEntriesToTurn,
   computeCurrentTranscriptTurnId,
   computeMaxTranscriptEntryId,
@@ -36,6 +37,47 @@ test("reindexTranscriptEntries assigns ids after the starting id without mutatin
 
   assert.deepEqual(reindexed.map((item) => item.id), [11, 12])
   assert.deepEqual(entries.map((item) => item.id), [99, 100])
+})
+
+test("applyTranscriptPromptMetadata writes prompt identity fields", () => {
+  const item: {
+    promptId?: string | null
+    promptOrigin?: string | null
+    sourceAttachmentId?: string | null
+  } = {
+    promptId: "old-prompt",
+  }
+
+  assert.equal(applyTranscriptPromptMetadata(item, {
+    promptId: "prompt-1",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
+  }), item)
+  assert.deepEqual(item, {
+    promptId: "prompt-1",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
+  })
+})
+
+test("applyTranscriptPromptMetadata can preserve existing prompt identity fields", () => {
+  const item = {
+    promptId: "prompt-existing",
+    promptOrigin: undefined as string | null | undefined,
+    sourceAttachmentId: null as string | null | undefined,
+  }
+
+  applyTranscriptPromptMetadata(item, {
+    promptId: "prompt-next",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-next",
+  }, { preserveExisting: true })
+
+  assert.deepEqual(item, {
+    promptId: "prompt-existing",
+    promptOrigin: "external",
+    sourceAttachmentId: null,
+  })
 })
 
 test("transcript turn id helpers project current and next turn identity", () => {

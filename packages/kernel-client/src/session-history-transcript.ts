@@ -27,8 +27,11 @@ import {
   stitchPrependedTranscriptHistory,
 } from "./transcript-history-stitching.js"
 import { applyTranscriptDisplayState } from "./transcript-display-state.js"
-import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
-import { reindexTranscriptEntries } from "./transcript-entry-state.js"
+import {
+  applyTranscriptPromptMetadata,
+  reindexTranscriptEntries,
+  trimSingleTrailingNewline,
+} from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
@@ -399,9 +402,7 @@ function applySessionHistoryTranscriptMetadata(
 ) {
   if (options.providerRunId !== undefined) entry.providerRunId = options.providerRunId
   applyExternalProviderObservedTranscriptMetadata(entry, options)
-  if (options.promptId !== undefined) entry.promptId = options.promptId
-  if (options.promptOrigin !== undefined) entry.promptOrigin = options.promptOrigin
-  if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
+  applyTranscriptPromptMetadata(entry, options)
   if (options.attachments !== undefined) {
     entry.attachments = mergeSessionHistoryPromptAttachments(entry.attachments, options.attachments)
   }
@@ -468,14 +469,7 @@ function applyOutlineTurnPromptMetadata(
   entry: SessionHistoryTranscriptEntry,
   metadata: OutlineTurnPromptMetadata,
 ): SessionHistoryTranscriptEntry {
-  let next = entry
-  if (metadata.promptOrigin !== undefined && next.promptOrigin === undefined) {
-    next = { ...next, promptOrigin: metadata.promptOrigin }
-  }
-  if (metadata.sourceAttachmentId !== undefined && next.sourceAttachmentId === undefined) {
-    next = { ...next, sourceAttachmentId: metadata.sourceAttachmentId }
-  }
-  return next
+  return applyTranscriptPromptMetadata({ ...entry }, metadata, { preserveExisting: true })
 }
 
 function applyOutlineTurnMetadata(

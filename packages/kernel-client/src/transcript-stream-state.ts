@@ -5,6 +5,7 @@ import {
   type ToolTranscriptUpdate,
 } from "@arroba/tool-display"
 import {
+  applyTranscriptPromptMetadata,
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
 } from "./transcript-entry-state.js"
@@ -347,15 +348,7 @@ function createTranscriptEntry(
 }
 
 function applyStreamMetadata(entry: MutableTranscriptStreamEntry, metadata: TranscriptStreamMetadata): void {
-  if (metadata.promptId !== undefined) {
-    entry.promptId = metadata.promptId
-  }
-  if (metadata.promptOrigin !== undefined) {
-    entry.promptOrigin = metadata.promptOrigin
-  }
-  if (metadata.sourceAttachmentId !== undefined) {
-    entry.sourceAttachmentId = metadata.sourceAttachmentId
-  }
+  applyTranscriptPromptMetadata(entry, metadata)
 }
 
 function cloneEntries<TEntry extends TranscriptStreamEntry>(entries: readonly TEntry[]): TEntry[] {

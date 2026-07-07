@@ -2,6 +2,10 @@ import {
   normalizePromptOrigin,
 } from "./prompt-origin.js"
 import {
+  applyTranscriptPromptMetadata,
+  type TranscriptPromptMetadataTarget,
+} from "./transcript-entry-state.js"
+import {
   applyExternalProviderObservedTranscriptMetadata,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
@@ -104,9 +108,7 @@ export function transcriptEntryWithTerminalMetadata<TEntry extends TerminalTrans
   metadata: TerminalRecordTranscriptMetadata,
 ): TEntry {
   const next = { ...entry }
-  if (metadata.promptId !== undefined) next.promptId = metadata.promptId
-  if (metadata.promptOrigin !== undefined) next.promptOrigin = metadata.promptOrigin
-  if (metadata.sourceAttachmentId !== undefined) next.sourceAttachmentId = metadata.sourceAttachmentId
+  applyTranscriptPromptMetadata(next, metadata)
   applyExternalProviderObservedTranscriptMetadata(next, metadata)
   return next
 }
@@ -244,8 +246,6 @@ function terminalRecordKindIsUserPrompt(kind: string): boolean {
   return kind === "prompt_echo" || kind === "user_prompt"
 }
 
-type TerminalTranscriptMetadataTarget = ExternalProviderObservedMutableTranscriptMetadataFields & {
-  promptId?: string | null
-  promptOrigin?: string | null
-  sourceAttachmentId?: string | null
-}
+type TerminalTranscriptMetadataTarget =
+  & ExternalProviderObservedMutableTranscriptMetadataFields
+  & TranscriptPromptMetadataTarget

@@ -57,6 +57,33 @@ export type TranscriptPromptMetadata = {
   readonly promptOrigin?: string | null | undefined
 }
 
+export type TranscriptPromptMetadataTarget = {
+  promptId?: string | null | undefined
+  promptOrigin?: string | null | undefined
+  sourceAttachmentId?: string | null | undefined
+}
+
+export function applyTranscriptPromptMetadata<TEntry extends object>(
+  entry: TEntry,
+  metadata: TranscriptPromptMetadata,
+  options: { readonly preserveExisting?: boolean } = {},
+): TEntry {
+  const target = entry as TEntry & TranscriptPromptMetadataTarget
+  if (metadata.promptId !== undefined && (!options.preserveExisting || target.promptId === undefined)) {
+    target.promptId = metadata.promptId
+  }
+  if (metadata.promptOrigin !== undefined && (!options.preserveExisting || target.promptOrigin === undefined)) {
+    target.promptOrigin = metadata.promptOrigin
+  }
+  if (
+    metadata.sourceAttachmentId !== undefined
+    && (!options.preserveExisting || target.sourceAttachmentId === undefined)
+  ) {
+    target.sourceAttachmentId = metadata.sourceAttachmentId
+  }
+  return entry
+}
+
 export type TranscriptUserPromptTurn = {
   readonly entry: {
     readonly role: "user"
@@ -194,15 +221,14 @@ export function createTranscriptUserPromptTurn(
   turnId: number,
   metadata: TranscriptPromptMetadata = {},
 ): TranscriptUserPromptTurn {
+  const entry = {
+    role: "user" as const,
+    text: trimSingleTrailingNewline(text),
+    turnId,
+  }
+  applyTranscriptPromptMetadata(entry, metadata)
   return {
-    entry: {
-      role: "user",
-      text: trimSingleTrailingNewline(text),
-      turnId,
-      ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
-      ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
-      ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
-    },
+    entry,
     currentTurnId: turnId,
     nextTurnId: turnId + 1,
   }
@@ -216,14 +242,12 @@ export function createTranscriptSteeredPromptEntry(
   if (!normalized) {
     return null
   }
-  return {
+  const entry = {
     role: "user",
     text: normalized,
     turnTracking: "none",
-    ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
-    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
-    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
-  }
+  } satisfies TranscriptSteeredPromptEntry
+  return applyTranscriptPromptMetadata(entry, metadata)
 }
 
 export function shouldSkipConsecutiveTranscriptEntry(
