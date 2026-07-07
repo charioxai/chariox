@@ -1,8 +1,5 @@
 import type { SessionHistoryExternalObservation } from "./kernel-types.js"
 import {
-  externalProviderStatusIsPassiveTelemetry,
-} from "./external-provider-observation-policy.js"
-import {
   promptOriginFromRecord,
   promptOriginIsExternal,
   type PromptOriginRecord,
@@ -169,7 +166,6 @@ export function externalProviderObservedProviderStatusShouldRender(
   const metadata = historyEntryExternalProviderObservedMetadata(entry)
   return metadata !== null
     && metadata.externalObservation?.passive_telemetry !== true
-    && !externalProviderObservedStatusMatchesPassiveProviderPolicy(entry)
     && shouldRenderProviderStatus(entry.text)
 }
 
@@ -180,7 +176,6 @@ export function externalProviderObservedEntryIsPassiveTelemetry(
     return false
   }
   return externalProviderObservedObservation(entry)?.passive_telemetry === true
-    || externalProviderObservedStatusMatchesPassiveProviderPolicy(entry)
 }
 
 export function externalProviderObservedStatusSettlesActivePrompt(
@@ -574,22 +569,4 @@ function externalProviderObservedEntryCanBePassiveTelemetry(
     || entry.kind === "prompt_echo"
     || entry.kind === "user_prompt"
     || entry.role === "user"
-}
-
-function externalProviderObservedStatusMatchesPassiveProviderPolicy(
-  entry: ExternalProviderObservedObservationFields,
-): boolean {
-  if (!externalProviderObservedEntryIsStatus(entry) || !sessionHistoryEntryIsExternalProviderObserved(entry)) {
-    return false
-  }
-  const provider = normalizeExternalProviderId(
-    entry.external_provider
-      ?? entry.externalProvider
-      ?? historyEntryExternalProviderObservedMetadata(entry)?.externalProvider,
-  )
-  if (!provider) {
-    return false
-  }
-  const text = entry.text ?? ""
-  return externalProviderStatusIsPassiveTelemetry(provider, text)
 }

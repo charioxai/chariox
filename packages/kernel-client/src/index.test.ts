@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  externalProviderStatusIsPassiveTelemetry,
   formatWorkspaceLiveSyncModeLabel,
   nextQueuedPromptSelectionId,
   normalizePromptOrigin,
@@ -10,7 +9,6 @@ import {
 } from "./index.js"
 
 test("kernel client root barrel exposes shared runtime projection helpers", () => {
-  assert.equal(externalProviderStatusIsPassiveTelemetry("codex", "codex token_count {}"), true)
   assert.equal(normalizePromptOrigin(" External "), "external")
   assert.equal(nextQueuedPromptSelectionId([{ promptId: "a" }, { promptId: "b" }], "a", 1), "b")
   assert.equal(

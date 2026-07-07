@@ -307,19 +307,19 @@ test("external provider observed status render policy requires observed non-pass
     text: "codex token_count {\"total\":42}",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
-  }), false)
+  }), true)
   assert.equal(externalProviderObservedProviderStatusShouldRender({
     kind: "provider_status",
     text: "codex token_count {\"total\":42}",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     merge_key: "external:codex:thread-1:token-count-1",
-  }), false)
+  }), true)
   assert.equal(externalProviderObservedProviderStatusShouldRender({
     kind: "provider_status",
     text: "claude ai-title {\"title\":\"x\"}",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "claude",
-  }), false)
+  }), true)
   assert.equal(externalProviderObservedProviderStatusShouldRender({
     kind: "provider_status",
     text: "codex token_count {\"total\":42}",
@@ -355,19 +355,19 @@ test("external provider observed passive telemetry helper accepts history and tr
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     text: "codex token_count {\"total\":42}",
-  }), true)
+  }), false)
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     merge_key: "external:codex:thread-1:token-count-1",
     text: "codex token_count {\"total\":42}",
-  }), true)
+  }), false)
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
     role: "status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "claude",
     text: "claude last-prompt {\"lastPrompt\":\"hello\"}",
-  }), true)
+  }), false)
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,

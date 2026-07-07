@@ -616,12 +616,6 @@ fn event_provider_status_projects_as_outline_entry(event: &HistoryEvent) -> bool
     {
         return false;
     }
-    if entry.external_provider.as_deref().is_some_and(|provider| {
-        crate::app::ExternalProviderObservationPolicy::for_provider(provider)
-            .status_is_passive_telemetry(&entry.text)
-    }) {
-        return false;
-    }
     true
 }
 
@@ -959,47 +953,6 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
         );
-    }
-
-    #[test]
-    fn outline_filters_external_provider_status_passive_by_provider_policy() {
-        let context = HistoryEventTurnContext {
-            session_id: Some("session-1".to_string()),
-            agent_id: Some("agent-1".to_string()),
-            turn_id: Some("turn-1".to_string()),
-            prompt_id: Some("prompt-1".to_string()),
-            provider_run_id: Some("run-1".to_string()),
-            ..HistoryEventTurnContext::default()
-        };
-        let prompt = HistoryEvent::transcript(
-            10,
-            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
-            context.clone(),
-        );
-        let passive_status = HistoryEvent::transcript(
-            11,
-            &SessionHistoryEntry::external_provider_observed(
-                "session-1",
-                Some("run-1"),
-                "agent-1",
-                SessionHistoryEntryKind::ProviderStatus,
-                "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}",
-                "codex",
-                "thread-1",
-                Some("token-count-1".to_string()),
-                Some(2_100),
-            ),
-            context,
-        );
-
-        let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), passive_status], false)
-            .expect("turn should be outlined");
-
-        assert!(
-            turn.entries.is_empty(),
-            "provider-policy passive telemetry should not render after reload"
-        );
-        assert!(turn.blobs.is_empty());
     }
 
     #[test]
