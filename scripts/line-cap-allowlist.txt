@@ -110,4 +110,3 @@ apps/kernel/src/runtime_transport.rs
 apps/cli/scripts/lib/hosted-cloud-kernel-scenarios.mjs
 apps/kernel/src/slice/store.rs
 apps/cli/scripts/live-unattached-agents-tui-parity-drill.mjs
-apps/kernel/src/runtime_transport/subscriptions.rs
