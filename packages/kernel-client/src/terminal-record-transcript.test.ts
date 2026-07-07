@@ -29,7 +29,7 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
 test("terminalRecordTranscriptMetadata projects external observed metadata", () => {
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "provider_output",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "item-1",
@@ -39,7 +39,7 @@ test("terminalRecordTranscriptMetadata projects external observed metadata", () 
       passive_telemetry: false,
     },
   }), {
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "item-1",
@@ -58,7 +58,7 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
     sourceAttachmentId: "existing",
   }, {
     promptId: "prompt-1",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
   })
@@ -68,7 +68,7 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
     text: "reply",
     sourceAttachmentId: "existing",
     promptId: "prompt-1",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
   })
@@ -77,7 +77,7 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
 test("terminalRecordProviderStatusShouldRender uses external observed status policy", () => {
   assert.equal(terminalRecordProviderStatusShouldRender({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "opencode",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "reconnecting",
@@ -89,7 +89,7 @@ test("terminalRecordProviderStatusShouldRender uses external observed status pol
 
   assert.equal(terminalRecordProviderStatusShouldRender({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "token-count",
@@ -112,7 +112,7 @@ test("terminalRecordProviderStatusShouldRender delegates ordinary statuses to fa
 test("terminalRecordIsPassiveExternalProviderTelemetry follows observed metadata", () => {
   assert.equal(terminalRecordIsPassiveExternalProviderTelemetry({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: false,
       passive_telemetry: true,
@@ -120,7 +120,7 @@ test("terminalRecordIsPassiveExternalProviderTelemetry follows observed metadata
   }), true)
   assert.equal(terminalRecordIsPassiveExternalProviderTelemetry({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: true,
       passive_telemetry: false,
@@ -154,7 +154,7 @@ test("terminalRecordTranscriptProjection classifies external history refresh wit
 test("terminalRecordTranscriptProjection suppresses passive external telemetry", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "token-count",
@@ -180,7 +180,7 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
 
   const legacyProjection = terminalRecordTranscriptProjection({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "token-count-legacy",
@@ -234,7 +234,7 @@ test("terminalRecordTranscriptProjection keeps ordinary status merge separate fr
 
   assert.equal(ordinary.statusMergeKey, "__provider_status__")
   assert.equal(external.statusMergeKey, null)
-  assert.equal(external.metadata.source, "external_provider_observed")
+  assert.equal(external.metadata.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
 })
 
 test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and normalized errors", () => {
@@ -302,7 +302,7 @@ test("terminalRecordTranscriptProjection keeps ordinary provider status activity
 test("terminalRecordTranscriptProjection admits useful external provider statuses as transcript entries", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: true,
       passive_telemetry: false,
@@ -370,7 +370,7 @@ test("terminalRecordPromptHistoryText only accepts user prompt terminal records"
   }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), null)
   assert.equal(terminalRecordPromptHistoryText({
     kind: "prompt_echo",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: false,
       passive_telemetry: true,
