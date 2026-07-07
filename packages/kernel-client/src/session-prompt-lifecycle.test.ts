@@ -309,6 +309,102 @@ test("session prompt lifecycle transition detects same prompt status changes", (
   })
 })
 
+test("session prompt lifecycle transition settles reused prompt ids when provider run changes", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-reused",
+            provider_run_id: "run-1",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-reused",
+            provider_run_id: "run-2",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: true,
+    cancelledPromptSettled: false,
+    settledAgentIds: ["agent-1"],
+  })
+})
+
+test("session prompt lifecycle transition settles reused prompt ids when external turn identity changes", () => {
+  const transition = sessionPromptLifecycleTransition(
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "cancelling",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "provider-active",
+            prompt_origin: "external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-1",
+            status: "cancelling",
+            phase: "settling",
+          },
+        },
+      },
+    }),
+    makeSession({
+      agents: [makeAgent({ id: "agent-1" })],
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "provider-active",
+            prompt_origin: "external",
+            external_provider: "codex",
+            external_provider_session_id: "thread-1",
+            external_provider_turn_id: "turn-2",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+  )
+
+  assert.deepEqual(transition, {
+    activePromptChanged: true,
+    cancelledPromptSettled: true,
+    settledAgentIds: ["agent-1"],
+  })
+})
+
 test("session prompt lifecycle transition treats decomposed metadata fill-in as stable", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({

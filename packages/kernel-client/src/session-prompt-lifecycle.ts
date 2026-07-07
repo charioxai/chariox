@@ -78,11 +78,10 @@ export function sessionPromptLifecycleTransition(
   const currentPromptRecords = sessionActivePromptLifecycleRecords(currentSession)
   const previousPromptFingerprints = currentPromptRecords.map(activePromptLifecycleRecordFingerprint)
   const nextPromptRecords = sessionActivePromptLifecycleRecords(nextSession)
-  const nextPromptIds = nextPromptRecords.map((prompt) => prompt.id)
   const nextPromptFingerprints = nextPromptRecords.map(activePromptLifecycleRecordFingerprint)
-  const nextPromptIdSet = new Set(nextPromptIds)
+  const nextPromptIdentitySet = new Set(nextPromptRecords.map(activePromptLifecycleRecordIdentityFingerprint))
   const settledPromptRecords = currentPromptRecords
-    .filter((prompt) => !nextPromptIdSet.has(prompt.id))
+    .filter((prompt) => !nextPromptIdentitySet.has(activePromptLifecycleRecordIdentityFingerprint(prompt)))
 
   return {
     activePromptChanged:
@@ -92,7 +91,9 @@ export function sessionPromptLifecycleTransition(
       .map((prompt) => prompt.target_agent_id)
       .filter((agentId): agentId is string => Boolean(agentId)),
     cancelledPromptSettled:
-      currentPromptRecords.some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
+      currentPromptRecords.some((prompt) =>
+        prompt.status === "cancelling"
+        && !nextPromptIdentitySet.has(activePromptLifecycleRecordIdentityFingerprint(prompt))),
   }
 }
 
@@ -139,10 +140,16 @@ function activePromptLifecycleRecordFromProjectedTurn(
 }
 
 function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {
+  return [
+    activePromptLifecycleRecordIdentityFingerprint(prompt),
+    prompt.status ?? "",
+  ].join("\u001f")
+}
+
+function activePromptLifecycleRecordIdentityFingerprint(prompt: ActivePromptLifecycleRecord): string {
   const externalIdentityKey = activePromptLifecycleRecordExternalIdentityKey(prompt)
   return [
     prompt.id,
-    prompt.status ?? "",
     prompt.promptOrigin ?? "",
     prompt.target_agent_id ?? "",
     prompt.providerRunId ?? "",
