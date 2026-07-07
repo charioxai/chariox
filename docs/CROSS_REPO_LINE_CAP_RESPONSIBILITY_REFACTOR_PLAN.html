@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>12 allowlisted files remain after initial splits</td>
+              <td>10 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -269,6 +269,18 @@
               <td><code>55e8491b</code> <span class="muted">Split staging retail smoke generated evidence tests</span></td>
               <td>Staging retail smoke coverage now separates baseline dry-run/report checks from generated-evidence and validation-platform pipeline checks.</td>
               <td>23 focused staging retail smoke tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>9a1be052</code> <span class="muted">Split cloud artifact summary diagnostics tests</span></td>
+              <td>Artifact-index summary coverage now separates aggregation/freshness/generated-metadata scenarios from validation, failure-classification, runtime-signal, runtime-authority, and rejection diagnostics.</td>
+              <td>20 focused artifact-index summary tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>5b8403c3</code> <span class="muted">Extract cloud artifact summary diagnostics</span></td>
+              <td>The artifact-index summary CLI now keeps parsing, discovery, freshness, and process flow separate from diagnostic projection, metadata emission, summary formatting, and next-action synthesis.</td>
+              <td>20 focused artifact-index summary tests, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
           </tbody>
         </table>
