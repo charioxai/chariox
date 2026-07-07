@@ -270,9 +270,17 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
 }
 
 fn status_text_starts_with(text: &str, prefix: &str) -> bool {
-    text.trim_start()
-        .get(..prefix.len())
-        .is_some_and(|header| header.eq_ignore_ascii_case(prefix))
+    let text = text.trim_start();
+    let Some(header) = text.get(..prefix.len()) else {
+        return false;
+    };
+    if !header.eq_ignore_ascii_case(prefix) {
+        return false;
+    }
+    text[prefix.len()..]
+        .chars()
+        .next()
+        .is_none_or(char::is_whitespace)
 }
 
 fn first_u64_path(value: &serde_json::Value, paths: &[&[&str]]) -> Option<u64> {
@@ -412,6 +420,25 @@ mod tests {
                 "{provider} policy must not settle from foreign marker {foreign_text:?}"
             );
         }
+    }
+
+    #[test]
+    fn status_prefix_markers_require_boundaries() {
+        let codex = ExternalProviderObservationPolicy::for_provider("codex");
+        assert!(codex.status_settles("codex task_complete\n{}"));
+        assert!(!codex.status_settles("codex task_completed\n{}"));
+        assert!(codex.status_is_passive_telemetry("codex token_count\n{}"));
+        assert!(!codex.status_is_passive_telemetry("codex token_count_extra\n{}"));
+
+        let claude = ExternalProviderObservationPolicy::for_provider("claude");
+        assert!(claude.status_settles("claude message completed {}"));
+        assert!(!claude.status_settles("claude message completedness {}"));
+        assert!(claude.status_is_passive_telemetry("claude ai-title {}"));
+        assert!(!claude.status_is_passive_telemetry("claude ai-title-extra {}"));
+
+        let opencode = ExternalProviderObservationPolicy::for_provider("opencode");
+        assert!(opencode.status_settles("opencode message completed {}"));
+        assert!(!opencode.status_settles("opencode message completedness {}"));
     }
 
     #[test]
