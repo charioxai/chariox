@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>6 allowlisted files remain after initial splits</td>
+              <td>5 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -329,6 +329,12 @@
               <td><code>cec85de46</code> <span class="muted">Extract iOS root view components</span></td>
               <td>The iOS root view now keeps stage and surface composition, while terminal fields, transcript rows, summary/status/footer views, and button styles live in a sibling component module.</td>
               <td><code>swift test --package-path apps/ios/ArrobaPackage</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>7b24ea3d</code> <span class="muted">Split workflow canvas visual drill</span></td>
+              <td>The local workflow canvas drill now keeps process/session orchestration in the entrypoint, while mode-specific drills, workflow-code topology validation, and browser route stubs live in named helper modules.</td>
+              <td><code>node --check</code> for the entrypoint and extracted helper modules, <code>node scripts/check-line-cap.mjs</code>. Full live drill was not run because it launches local runtime/browser processes.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
