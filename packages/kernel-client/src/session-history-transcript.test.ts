@@ -364,6 +364,7 @@ test("session history outline hydration carries prompt identity into entries and
       external_provider_session_id: " thread-1 ",
       external_provider_turn_id: " user-1 ",
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: pageEntry(0, "user_prompt", "build\n", {
         source_attachment_id: "attachment-1",
@@ -410,6 +411,7 @@ test("session history outline hydration maps blob kinds to stable transcript rol
       turn_id: "turn-1",
       prompt_id: "prompt-1",
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: pageEntry(0, "user_prompt", "prompt\n"),
       entries: [],
@@ -501,6 +503,7 @@ test("session history outline hydration keeps incomplete external turns active",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
+      lifecycle: "open",
       completed_at_ms: null,
       user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
       entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
@@ -530,6 +533,7 @@ test("session history outline hydration treats invalid completion markers as inc
       turn_id: "turn-1",
       prompt_id: "prompt-1",
       started_at_ms: 1,
+      lifecycle: "open",
       completed_at_ms: Number.NaN,
       user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
       entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
@@ -559,6 +563,7 @@ test("session history outline hydration keeps absent completion markers active",
       turn_id: "turn-1",
       prompt_id: "prompt-1",
       started_at_ms: 1,
+      lifecycle: "open",
       user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
       entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
       summary: pageEntry(2, "provider_output", "partial assistant\n"),
@@ -576,8 +581,8 @@ test("session history outline hydration keeps absent completion markers active",
   ])
   assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnCompletedAtMs, undefined)
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnCompletedAtMs, undefined)
-  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnLifecycle, undefined)
-  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, undefined)
+  assert.equal(entries.find((entry) => entry.role === "user")?.historyTurnLifecycle, "open")
+  assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, "open")
 })
 
 test("session history outline hydration projects sparse external turn metadata", () => {
@@ -591,6 +596,7 @@ test("session history outline hydration projects sparse external turn metadata",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: null,
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
       entries: [pageEntry(1, "provider_output", "external reply\n")],
@@ -628,6 +634,7 @@ test("session history outline hydration does not infer external ownership for ar
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: pageEntry(0, "user_prompt", "arroba prompt\n"),
       entries: [pageEntry(1, "provider_output", "arroba reply\n")],
@@ -661,6 +668,7 @@ test("session history blob replacement keeps incomplete external turns active", 
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
+      lifecycle: "open",
       completed_at_ms: null,
       user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
       entries: [pageEntry(1, "provider_reasoning", "still thinking\n")],
@@ -709,6 +717,7 @@ test("session history blob replacement preserves prompt and external turn metada
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
+      lifecycle: "completed",
       completed_at_ms: 2,
       user_prompt: pageEntry(0, "user_prompt", "build\n", {
         source_attachment_id: "attachment-1",
@@ -789,6 +798,7 @@ function outlineTurn(
     turn_id: `turn-${entryIndex}`,
     prompt_id: promptId,
     started_at_ms: entryIndex,
+    lifecycle: "completed",
     completed_at_ms: entryIndex + 1,
     user_prompt: pageEntry(entryIndex, "user_prompt", promptText),
     entries: [pageEntry(entryIndex + 1, "provider_output", replyText)],

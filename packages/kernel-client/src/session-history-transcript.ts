@@ -28,7 +28,6 @@ import {
 } from "./transcript-history-stitching.js"
 import {
   applyTranscriptDisplayState,
-  transcriptHistoryTurnLifecycleFromCompletedAtMs,
   type TranscriptHistoryTurnLifecycle,
 } from "./transcript-display-state.js"
 import {
@@ -44,6 +43,7 @@ import {
   orderedSessionHistoryOutlineTurns,
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
+  sessionHistoryOutlineTurnLifecycle,
   sessionHistoryOutlineTurnPromptMetadata,
   type SessionHistoryOutlineTurnPromptMetadata,
 } from "./session-history-outline.js"
@@ -265,7 +265,8 @@ export function hydrateSessionHistoryOutlineAgentEntries(
   orderedSessionHistoryOutlineTurns(agent.turns).forEach((turn, turnIndex) => {
     const turnId = sessionHistoryOutlineTurnDisplayId(turn, turnIndex)
     const completedAtMs = sessionHistoryOutlineTurnCompletedAtMs(turn)
-    if (completedAtMs === null || completedAtMs === undefined) {
+    const lifecycle = sessionHistoryOutlineTurnLifecycle(turn)
+    if (lifecycle === "open") {
       activeTurnId = turnId
     }
     const externalMetadata = outlineTurnExternalMetadata(turn)
@@ -273,7 +274,7 @@ export function hydrateSessionHistoryOutlineAgentEntries(
     const promptEntries = hydrateSessionHistoryPageEntriesForTurn([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
       entries.push(applyOutlineTurnMetadata(
-        applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+        applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs, lifecycle),
         externalMetadata,
         promptMetadata,
       ))
@@ -284,6 +285,7 @@ export function hydrateSessionHistoryOutlineAgentEntries(
           applyOutlineTurnLifecycleMetadata(
             outlineBlobTranscriptEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
             completedAtMs,
+            lifecycle,
           ),
           externalMetadata,
           promptMetadata,
@@ -293,7 +295,7 @@ export function hydrateSessionHistoryOutlineAgentEntries(
       const hydratedEntries = hydrateSessionHistoryPageEntriesForTurn([item.entry], turnId, turn.prompt_id ?? null)
       for (const entry of hydratedEntries) {
         entries.push(applyOutlineTurnMetadata(
-          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs),
+          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs, lifecycle),
           externalMetadata,
           promptMetadata,
         ))
@@ -337,7 +339,7 @@ export function replaceSessionHistoryBlobPlaceholder(
       next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
     }
     return applyOutlineTurnMetadata(
-      applyOutlineTurnLifecycleMetadata(next, placeholder.historyTurnCompletedAtMs),
+      applyOutlineTurnLifecycleMetadata(next, placeholder.historyTurnCompletedAtMs, placeholder.historyTurnLifecycle),
       externalMetadata,
       promptMetadata,
     )
@@ -488,14 +490,14 @@ function transcriptEntryExternalMetadata(
 function applyOutlineTurnLifecycleMetadata(
   entry: SessionHistoryTranscriptEntry,
   completedAtMs: number | null | undefined,
+  lifecycle: TranscriptHistoryTurnLifecycle | undefined,
 ): SessionHistoryTranscriptEntry {
-  if (completedAtMs === undefined) {
+  if (completedAtMs === undefined && lifecycle === undefined) {
     return entry
   }
-  const lifecycle = transcriptHistoryTurnLifecycleFromCompletedAtMs(completedAtMs)
   return {
     ...entry,
-    historyTurnCompletedAtMs: completedAtMs,
+    ...(completedAtMs !== undefined ? { historyTurnCompletedAtMs: completedAtMs } : {}),
     ...(lifecycle !== undefined ? { historyTurnLifecycle: lifecycle } : {}),
   }
 }

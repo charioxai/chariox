@@ -16,6 +16,7 @@ import {
   sessionHistoryOutlineTurnCompletedAtMs,
   sessionHistoryOutlineTurnDisplayId,
   sessionHistoryOutlineTurnKey,
+  sessionHistoryOutlineTurnLifecycle,
   sessionHistoryOutlineTurnPromptMetadata,
   sessionHistoryOutlineTurnSourceAttachmentId,
   sessionHistoryPageEntryIndex,
@@ -74,6 +75,11 @@ test("session history outline completion distinguishes absent, open, and settled
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: null }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: Number.NaN }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: 123 }), 123)
+})
+
+test("session history outline lifecycle follows explicit protocol state", () => {
+  assert.equal(sessionHistoryOutlineTurnLifecycle({ ...turn(1), lifecycle: "open" }), "open")
+  assert.equal(sessionHistoryOutlineTurnLifecycle({ ...turn(1), lifecycle: "completed" }), "completed")
 })
 
 test("session history outline prompt metadata follows durable prompt entry identity", () => {
@@ -160,6 +166,7 @@ function turn(promptEntryIndex: number): SessionHistoryOutlineTurn {
   return {
     turn_id: `turn-${promptEntryIndex}`,
     started_at_ms: promptEntryIndex,
+    lifecycle: "open",
     completed_at_ms: null,
     user_prompt: pageEntry(promptEntryIndex, "user_prompt", "prompt"),
     entries: [],

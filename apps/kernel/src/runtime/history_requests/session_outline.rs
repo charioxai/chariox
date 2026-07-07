@@ -10,7 +10,7 @@ use crate::history::{
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
     SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
-    SessionHistoryOutlineTurn,
+    SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
 };
 use crate::provider::ExternalProviderImportMetadata;
 use crate::session::PromptOrigin;
@@ -468,6 +468,7 @@ fn outline_turn_from_events(
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, &events, prompt_origin, has_newer_prompt);
+    let lifecycle = outline_turn_lifecycle(completed_at_ms);
     let summary_sequence = events
         .iter()
         .rev()
@@ -512,12 +513,21 @@ fn outline_turn_from_events(
             .map(|identity| identity.provider_session_id.clone()),
         external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
+        lifecycle,
         completed_at_ms,
         user_prompt,
         entries,
         summary,
         blobs,
     })
+}
+
+fn outline_turn_lifecycle(completed_at_ms: Option<u64>) -> SessionHistoryOutlineTurnLifecycle {
+    if completed_at_ms.is_some() {
+        SessionHistoryOutlineTurnLifecycle::Completed
+    } else {
+        SessionHistoryOutlineTurnLifecycle::Open
+    }
 }
 
 fn outline_turn_completed_at_ms(
@@ -920,6 +930,10 @@ mod tests {
             Some("thread-1")
         );
         assert_eq!(turn.external_provider_turn_id.as_deref(), Some("done-1"));
+        assert_eq!(
+            turn.lifecycle,
+            SessionHistoryOutlineTurnLifecycle::Completed
+        );
         assert_eq!(turn.completed_at_ms, Some(15));
         assert_eq!(turn.entries.len(), 2);
         assert_eq!(
@@ -994,6 +1008,7 @@ mod tests {
             .expect("external active turn should be outlined");
 
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
         assert_eq!(turn.completed_at_ms, None);
         assert_eq!(
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
@@ -1040,6 +1055,10 @@ mod tests {
             .expect("external bounded turn should be outlined");
 
         assert_eq!(turn.prompt_origin, PromptOrigin::External);
+        assert_eq!(
+            turn.lifecycle,
+            SessionHistoryOutlineTurnLifecycle::Completed
+        );
         assert_eq!(turn.completed_at_ms, Some(2_100));
     }
 

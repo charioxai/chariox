@@ -45,6 +45,7 @@ pub struct SessionHistoryOutlineTurn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_turn_id: Option<String>,
     pub started_at_ms: u64,
+    pub lifecycle: SessionHistoryOutlineTurnLifecycle,
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
     pub user_prompt: SessionHistoryPageEntry,
@@ -52,6 +53,13 @@ pub struct SessionHistoryOutlineTurn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<SessionHistoryPageEntry>,
     pub blobs: Vec<SessionHistoryOutlineBlob>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHistoryOutlineTurnLifecycle {
+    Open,
+    Completed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1521,7 +1521,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 231
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 232
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
@@ -1783,6 +1783,7 @@ export type SessionHistoryOutlineTurn = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   started_at_ms: number
+  lifecycle: "open" | "completed" | string
   completed_at_ms: number | null
   user_prompt: SessionHistoryPageEntry
   entries: SessionHistoryPageEntry[]

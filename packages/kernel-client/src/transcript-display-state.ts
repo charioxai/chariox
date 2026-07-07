@@ -405,15 +405,6 @@ export function projectTranscriptBlobToggleDisplayState<TEntry extends Transcrip
   }
 }
 
-export function transcriptHistoryTurnLifecycleFromCompletedAtMs(
-  completedAtMs: number | null | undefined,
-): TranscriptHistoryTurnLifecycle | undefined {
-  if (completedAtMs === undefined) {
-    return undefined
-  }
-  return completedAtMs === null ? "open" : "completed"
-}
-
 function openHistoryTurnIds(
   entries: readonly TranscriptDisplayEntry[],
 ): ReadonlySet<number> {

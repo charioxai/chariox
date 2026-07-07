@@ -49,6 +49,12 @@ export type SessionHistoryOutlineTurnCompletionLike = {
   readonly completed_at_ms?: number | null | undefined
 }
 
+export type SessionHistoryOutlineTurnLifecycle = "open" | "completed"
+
+export type SessionHistoryOutlineTurnLifecycleLike = {
+  readonly lifecycle: "open" | "completed" | string
+}
+
 export type SessionHistoryOutlineTurnKeyLike = {
   readonly prompt_id?: string | null | undefined
   readonly turn_id: string
@@ -126,6 +132,12 @@ export function sessionHistoryOutlineTurnCompletedAtMs(
   return typeof turn.completed_at_ms === "number" && Number.isFinite(turn.completed_at_ms)
     ? turn.completed_at_ms
     : null
+}
+
+export function sessionHistoryOutlineTurnLifecycle(
+  turn: SessionHistoryOutlineTurnLifecycleLike,
+): SessionHistoryOutlineTurnLifecycle {
+  return turn.lifecycle === "completed" ? "completed" : "open"
 }
 
 export function sessionHistoryOutlineTurnSourceAttachmentId(
