@@ -191,6 +191,9 @@ export function terminalRecordProviderStatusShouldRender(
   text: string,
   fallbackShouldRender: (text: string) => boolean,
 ): boolean {
+  if (record.kind !== "provider_status") {
+    return false
+  }
   if (historyEntryExternalProviderObservedMetadata(record) !== null) {
     return externalProviderObservedProviderStatusShouldRender({ ...record, text })
   }

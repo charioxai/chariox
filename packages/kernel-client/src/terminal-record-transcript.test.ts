@@ -138,6 +138,9 @@ test("terminalRecordProviderStatusShouldRender delegates ordinary statuses to fa
   assert.equal(terminalRecordProviderStatusShouldRender({
     kind: "provider_status",
   }, "OpenCode is idle", () => false), false)
+  assert.equal(terminalRecordProviderStatusShouldRender({
+    kind: "provider_output",
+  }, "ordinary output", () => true), false)
 })
 
 test("terminalRecordIsPassiveExternalProviderTelemetry follows observed metadata", () => {
