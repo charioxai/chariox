@@ -100,5 +100,4 @@ apps/kernel/src/session/service/tests/workflow_runs.rs
 apps/kernel/src/runtime/state/tool_dispatch/home_extension_execution_policy.rs
 apps/kernel/src/provider/registry/dev_stub_adapter.rs
 packages/kernel-client/src/shell-executor-workflow.test.ts
-apps/cli/src/session-lifecycle.test.ts
 apps/kernel/src/runtime/projection/session_snapshot_projection.rs
