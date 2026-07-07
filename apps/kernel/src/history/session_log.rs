@@ -116,6 +116,14 @@ impl SessionHistoryPromptAttachment {
     }
 }
 
+impl SessionHistoryEntry {
+    pub fn rehydrate_attachment_preview_urls(&mut self) {
+        for attachment in &mut self.attachments {
+            attachment.rehydrate_preview_url();
+        }
+    }
+}
+
 fn image_prompt_attachment_preview_url(
     attachment: &crate::session::PromptAttachment,
 ) -> Option<String> {
@@ -561,13 +569,15 @@ impl SessionHistoryStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let entry = serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session.id().to_string()),
-                    operation: "decode session history",
-                    message: error.to_string(),
-                }
-            })?;
+            let mut entry =
+                serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
+                    DaemonError::SessionHistoryFailed {
+                        session_id: Some(session.id().to_string()),
+                        operation: "decode session history",
+                        message: error.to_string(),
+                    }
+                })?;
+            entry.rehydrate_attachment_preview_urls();
             entries.push(entry);
         }
         Ok(entries)

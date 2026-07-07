@@ -314,7 +314,7 @@ impl HistoryEvent {
             .get("source_attachment_id")
             .and_then(|value| value.as_str())
             .map(str::to_string);
-        Some(SessionHistoryEntry {
+        let mut entry = SessionHistoryEntry {
             session_id,
             provider_run_id: self.provider_run_id.clone(),
             agent_id: self.agent_id.clone(),
@@ -367,7 +367,9 @@ impl HistoryEvent {
                 .unwrap_or_default(),
             text: self.content.clone().unwrap_or_default(),
             timestamp_ms: self.timestamp_ms,
-        })
+        };
+        entry.rehydrate_attachment_preview_urls();
+        Some(entry)
     }
 
     pub fn session_history_external_observation(
@@ -1001,7 +1003,8 @@ mod tests {
     use super::{
         HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventRole,
         HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
-        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
+        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryPromptAttachment,
+        SessionHistoryStore,
     };
 
     #[test]
@@ -1101,6 +1104,46 @@ mod tests {
         );
         assert_eq!(entries[1].kind, SessionHistoryEntryKind::ProviderOutput);
         assert_eq!(entries[1].prompt_origin, None);
+    }
+
+    #[test]
+    fn session_history_load_rehydrates_file_image_attachment_previews() {
+        let config = DaemonConfig::for_tests();
+        let mut sessions = SessionService::new(&config);
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let store = SessionHistoryStore::new(config.session_history_root.clone())
+            .expect("history store should initialize");
+        let image_path = std::env::temp_dir().join(format!(
+            "arroba-jsonl-history-preview-{}-{}.png",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        std::fs::write(&image_path, b"file-image").expect("fixture image should write");
+        let mut entry =
+            SessionHistoryEntry::user_prompt(session.id(), "attachment-1", "agent-1", "inspect");
+        entry.attachments = vec![SessionHistoryPromptAttachment {
+            url: format!("file://{}", image_path.display()),
+            mime: "image/png".to_string(),
+            filename: Some("file-screenshot.png".to_string()),
+            preview_url: None,
+        }];
+
+        store
+            .append(&session, &entry)
+            .expect("entry should persist");
+        let entries = store.load(&session).expect("history should load");
+
+        assert_eq!(
+            entries[0]
+                .attachments
+                .first()
+                .and_then(|attachment| attachment.preview_url.as_deref()),
+            Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
+        );
+
+        let _ = std::fs::remove_file(image_path);
     }
 
     #[test]
@@ -1212,6 +1255,38 @@ mod tests {
             round_tripped
                 .attachments
                 .get(1)
+                .and_then(|attachment| attachment.preview_url.as_deref()),
+            Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
+        );
+
+        let _ = std::fs::remove_file(image_path);
+    }
+
+    #[test]
+    fn canonical_history_events_rehydrate_file_image_attachment_previews() {
+        let image_path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-preview-{}-{}.png",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        std::fs::write(&image_path, b"file-image").expect("fixture image should write");
+        let mut entry =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "inspect");
+        entry.attachments = vec![SessionHistoryPromptAttachment {
+            url: format!("file://{}", image_path.display()),
+            mime: "image/png".to_string(),
+            filename: Some("file-screenshot.png".to_string()),
+            preview_url: None,
+        }];
+        let event = HistoryEvent::transcript(7, &entry, HistoryEventTurnContext::default());
+        let round_tripped = event
+            .to_session_history_entry()
+            .expect("transcript event should convert back");
+
+        assert_eq!(
+            round_tripped
+                .attachments
+                .first()
                 .and_then(|attachment| attachment.preview_url.as_deref()),
             Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
         );
