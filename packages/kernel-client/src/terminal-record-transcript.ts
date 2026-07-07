@@ -38,6 +38,8 @@ export type TerminalRecordTranscriptMetadata = ExternalProviderObservedTranscrip
 
 export type TerminalRecordTranscriptProjection = {
   readonly metadata: TerminalRecordTranscriptMetadata
+  readonly role: TerminalRecordTranscriptRole | null
+  readonly text: string
   readonly historyRefreshSignal: boolean
   readonly passiveExternalTelemetry: boolean
   readonly startsStreaming: boolean
@@ -50,6 +52,9 @@ export type TerminalRecordTranscriptProjection = {
   readonly transcriptText: string
   readonly mergeKey?: string | null
   readonly statusMergeKey: "__provider_status__" | null
+  readonly renderInAgentPane: boolean
+  readonly append: boolean
+  readonly replace: boolean
 }
 
 export function terminalRecordTranscriptMetadata(
@@ -91,10 +96,20 @@ export function terminalRecordTranscriptProjection(
     && !providerStatusIdle
     ? terminalRecordProviderStatusShouldRender(record, text, options.shouldRenderProviderStatus)
     : false
-  const appendsLiveTranscript = !historyRefreshSignal && !passiveExternalTelemetry && !providerStatusIdle
+  const transcriptRole = terminalRecordTranscriptRole(record.kind)
+  const transcriptText = record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text
+  const renderInAgentPane = !historyRefreshSignal
+    && !passiveExternalTelemetry
+    && !providerStatusIdle
+    && terminalRecordShouldRenderInAgentPane(record.kind, text, {
+      externalObserved: sessionHistoryEntryIsExternalProviderObserved(metadata),
+      passiveExternalTelemetry,
+    })
 
   return {
     metadata,
+    role: transcriptRole,
+    text: transcriptText,
     historyRefreshSignal,
     passiveExternalTelemetry,
     startsStreaming: !terminalRecordKindIsUserPrompt(record.kind)
@@ -110,14 +125,17 @@ export function terminalRecordTranscriptProjection(
       && !historyRefreshSignal
       && !passiveExternalTelemetry
       && !providerStatusIdle,
-    appendsLiveTranscript,
+    appendsLiveTranscript: renderInAgentPane,
     renderProviderStatus,
-    transcriptRole: terminalRecordTranscriptRole(record.kind),
-    transcriptText: record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text,
+    transcriptRole,
+    transcriptText,
     mergeKey: record.merge_key ?? null,
     statusMergeKey: record.kind === "provider_status" && !sessionHistoryEntryIsExternalProviderObserved(metadata)
       ? "__provider_status__"
       : null,
+    renderInAgentPane,
+    append: renderInAgentPane && terminalRecordRoleShouldAppend(transcriptRole),
+    replace: renderInAgentPane && terminalRecordRoleShouldReplace(transcriptRole),
   }
 }
 
@@ -148,6 +166,26 @@ export function terminalRecordProviderStatusShouldRender(
   return fallbackShouldRender(text)
 }
 
+export function terminalRecordShouldRenderInAgentPane(
+  kind: string,
+  text: string,
+  options: {
+    readonly externalObserved?: boolean
+    readonly passiveExternalTelemetry?: boolean
+  } = {},
+): boolean {
+  if (kind === "provider_status") {
+    return terminalRecordProviderStatusShouldRender({
+      kind,
+      source: options.externalObserved === true ? "external_provider_observed" : null,
+      external_observation: options.passiveExternalTelemetry === true
+        ? { settles_active_prompt: false, passive_telemetry: true }
+        : null,
+    }, text, () => false)
+  }
+  return kind !== "notice"
+}
+
 export function terminalRecordIsPassiveExternalProviderTelemetry(
   record: TerminalRecordTranscriptFields,
 ): boolean {
@@ -156,6 +194,14 @@ export function terminalRecordIsPassiveExternalProviderTelemetry(
 
 export function normalizeTerminalRecordErrorText(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+}
+
+export function terminalRecordRoleShouldAppend(role: TerminalRecordTranscriptRole | null): boolean {
+  return role === "assistant" || role === "reasoning"
+}
+
+export function terminalRecordRoleShouldReplace(role: TerminalRecordTranscriptRole | null): boolean {
+  return role === "tool" || role === "status"
 }
 
 function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRole | null {

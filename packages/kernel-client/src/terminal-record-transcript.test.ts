@@ -5,6 +5,7 @@ import {
   terminalRecordIsPassiveExternalProviderTelemetry,
   terminalRecordPromptHistoryText,
   terminalRecordProviderStatusShouldRender,
+  terminalRecordShouldRenderInAgentPane,
   terminalRecordTranscriptProjection,
   terminalRecordTranscriptMetadata,
   transcriptEntryWithTerminalMetadata,
@@ -141,6 +142,9 @@ test("terminalRecordTranscriptProjection classifies external history refresh wit
   assert.equal(projection.renderProviderStatus, false)
   assert.equal(projection.transcriptRole, "status")
   assert.equal(projection.statusMergeKey, null)
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
 })
 
 test("terminalRecordTranscriptProjection suppresses passive external telemetry", () => {
@@ -166,6 +170,9 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
   assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.renderProviderStatus, false)
   assert.equal(projection.metadata.externalProvider, "codex")
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
 })
 
 test("terminalRecordTranscriptProjection keeps idle provider status out of live turn state", () => {
@@ -182,6 +189,7 @@ test("terminalRecordTranscriptProjection keeps idle provider status out of live 
   assert.equal(projection.updatesProviderActivity, false)
   assert.equal(projection.appendsLiveTranscript, false)
   assert.equal(projection.renderProviderStatus, false)
+  assert.equal(projection.renderInAgentPane, false)
 })
 
 test("terminalRecordTranscriptProjection keeps ordinary status merge separate from external statuses", () => {
@@ -223,6 +231,9 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   assert.equal(userPrompt.marksAgentBusy, false)
   assert.equal(userPrompt.updatesProviderActivity, false)
   assert.equal(userPrompt.appendsLiveTranscript, true)
+  assert.equal(userPrompt.renderInAgentPane, true)
+  assert.equal(userPrompt.append, false)
+  assert.equal(userPrompt.replace, false)
 
   const assistant = terminalRecordTranscriptProjection({
     kind: "provider_output",
@@ -237,6 +248,9 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   assert.equal(assistant.marksAgentBusy, true)
   assert.equal(assistant.updatesProviderActivity, false)
   assert.equal(assistant.appendsLiveTranscript, true)
+  assert.equal(assistant.renderInAgentPane, true)
+  assert.equal(assistant.append, true)
+  assert.equal(assistant.replace, false)
 
   const error = terminalRecordTranscriptProjection({
     kind: "provider_error",
@@ -246,9 +260,12 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   })
   assert.equal(error.transcriptRole, "error")
   assert.equal(error.transcriptText, "failed")
+  assert.equal(error.renderInAgentPane, true)
+  assert.equal(error.append, false)
+  assert.equal(error.replace, false)
 })
 
-test("terminalRecordTranscriptProjection marks active provider status as activity-only candidate", () => {
+test("terminalRecordTranscriptProjection keeps ordinary provider status activity separate from transcript admission", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
   }, "OpenCode is thinking", {
@@ -257,7 +274,65 @@ test("terminalRecordTranscriptProjection marks active provider status as activit
   })
 
   assert.equal(projection.updatesProviderActivity, true)
+  assert.equal(projection.renderProviderStatus, true)
+  assert.equal(projection.appendsLiveTranscript, false)
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
+})
+
+test("terminalRecordTranscriptProjection admits useful external provider statuses as transcript entries", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+    source: "external_provider_observed",
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }, "codex task_complete", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.updatesProviderActivity, true)
+  assert.equal(projection.renderProviderStatus, true)
   assert.equal(projection.appendsLiveTranscript, true)
+  assert.equal(projection.renderInAgentPane, true)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, true)
+})
+
+test("terminalRecordTranscriptProjection keeps non-rendered provider status out of transcript admission", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "provider_status",
+  }, "OpenCode task_complete", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+
+  assert.equal(projection.updatesProviderActivity, true)
+  assert.equal(projection.renderProviderStatus, false)
+  assert.equal(projection.appendsLiveTranscript, false)
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
+})
+
+test("terminalRecordTranscriptProjection keeps notices out of terminal record transcript admission", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: "notice",
+  }, "reattached", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(terminalRecordShouldRenderInAgentPane("notice", "reattached"), false)
+  assert.equal(projection.startsStreaming, true)
+  assert.equal(projection.marksAgentBusy, true)
+  assert.equal(projection.appendsLiveTranscript, false)
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
 })
 
 test("terminalRecordPromptHistoryText only accepts user prompt terminal records", () => {
