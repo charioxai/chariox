@@ -459,6 +459,7 @@ export type ExternalProviderObservedProviderStatusFields = ExternalProviderObser
 export type ExternalProviderObservedObservationFields = {
   readonly kind?: string | null | undefined
   readonly role?: string | null | undefined
+  readonly merge_key?: string | null | undefined
   readonly source?: string | null | undefined
   readonly text?: string | null | undefined
   readonly external_provider?: string | null | undefined
@@ -580,7 +581,11 @@ function externalProviderObservedStatusMatchesPassiveProviderPolicy(
   if (!externalProviderObservedEntryIsStatus(entry) || !sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return false
   }
-  const provider = normalizeExternalProviderId(entry.external_provider ?? entry.externalProvider)
+  const provider = normalizeExternalProviderId(
+    entry.external_provider
+      ?? entry.externalProvider
+      ?? historyEntryExternalProviderObservedMetadata(entry)?.externalProvider,
+  )
   if (!provider) {
     return false
   }

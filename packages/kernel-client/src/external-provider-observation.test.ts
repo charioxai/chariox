@@ -310,6 +310,12 @@ test("external provider observed status render policy requires observed non-pass
   }), false)
   assert.equal(externalProviderObservedProviderStatusShouldRender({
     kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:token-count-1",
+  }), false)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
     text: "claude ai-title {\"title\":\"x\"}",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "claude",
@@ -348,6 +354,12 @@ test("external provider observed passive telemetry helper accepts history and tr
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
+    text: "codex token_count {\"total\":42}",
+  }), true)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:token-count-1",
     text: "codex token_count {\"total\":42}",
   }), true)
   assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
