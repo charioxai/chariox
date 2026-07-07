@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
-use crate::history_archive::HistoryArchiveClient;
+use crate::history_archive::{HistoryArchiveClient, HistoryArchiveSearchResponse};
 use crate::local::{LocalDaemonResponse, QueryRecallRequest, SearchRecallRequest};
 
 pub(crate) async fn execute_query_recall_request(
@@ -23,8 +23,11 @@ pub(crate) async fn execute_query_recall_request(
             .map(|capabilities| capabilities.search)
             .unwrap_or(false)
         {
-            let archive_response = archive_client.search_events(query.clone())?;
-            merge_history_events(&mut events, archive_response.events);
+            let archive_events =
+                query_projected_archive_history_events(query.clone(), requested_limit, |query| {
+                    archive_client.search_events(query)
+                })?;
+            merge_history_events(&mut events, archive_events);
         }
         events.sort_by(|left, right| {
             left.sequence
@@ -135,6 +138,52 @@ fn query_projected_history_events(
         } else {
             page_query.after_sequence = Some(last_sequence);
         }
+    }
+
+    projected_events.sort_by(|left, right| {
+        left.sequence
+            .cmp(&right.sequence)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    projected_events.truncate(requested_limit);
+    Ok(projected_events)
+}
+
+fn query_projected_archive_history_events<F>(
+    query: HistoryEventQuery,
+    requested_limit: usize,
+    mut fetch: F,
+) -> Result<Vec<HistoryEvent>, DaemonError>
+where
+    F: FnMut(HistoryEventQuery) -> Result<HistoryArchiveSearchResponse, DaemonError>,
+{
+    let requested_limit = requested_limit.clamp(1, 500);
+    let raw_limit = requested_limit;
+    let can_page_forward = query.before_sequence.is_none();
+    let mut page_query = query;
+    page_query.limit = Some(raw_limit);
+    let mut projected_events = Vec::new();
+
+    while projected_events.len() < requested_limit {
+        let previous_after_sequence = page_query.after_sequence;
+        let response = fetch(page_query.clone())?;
+        let raw_len = response.events.len();
+        projected_events.extend(
+            response
+                .events
+                .into_iter()
+                .filter(history_event_projects_as_recall_result),
+        );
+        if projected_events.len() >= requested_limit || raw_len == 0 || !can_page_forward {
+            break;
+        }
+        let Some(next_sequence) = response.next_sequence else {
+            break;
+        };
+        if previous_after_sequence.is_some_and(|previous| next_sequence <= previous) {
+            break;
+        }
+        page_query.after_sequence = Some(next_sequence);
     }
 
     projected_events.sort_by(|left, right| {
@@ -430,5 +479,84 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn archive_recall_pages_past_hidden_state_signals() {
+        let hidden = observed_state_signal("turn-1", 1_100);
+        let visible = observed_output("archived visible", "turn-1", 1_200);
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut calls = Vec::new();
+
+        let events = query_projected_archive_history_events(
+            HistoryEventQuery {
+                session_id: Some("session-1".to_string()),
+                limit: Some(1),
+                ..HistoryEventQuery::default()
+            },
+            1,
+            |query| {
+                calls.push((query.after_sequence, query.limit));
+                let response = match query.after_sequence {
+                    None => HistoryArchiveSearchResponse {
+                        events: vec![HistoryEvent::transcript(1, &hidden, context.clone())],
+                        next_sequence: Some(1),
+                    },
+                    Some(1) => HistoryArchiveSearchResponse {
+                        events: vec![HistoryEvent::transcript(2, &visible, context.clone())],
+                        next_sequence: Some(2),
+                    },
+                    other => panic!("unexpected after sequence {other:?}"),
+                };
+                Ok(response)
+            },
+        )
+        .expect("archive recall should collect");
+
+        assert_eq!(calls, vec![(None, Some(1)), (Some(1), Some(1))]);
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| event.content.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["archived visible"]
+        );
+    }
+
+    #[test]
+    fn archive_recall_stops_on_non_advancing_sequence() {
+        let hidden = observed_state_signal("turn-1", 1_100);
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut calls = 0;
+
+        let events = query_projected_archive_history_events(
+            HistoryEventQuery {
+                session_id: Some("session-1".to_string()),
+                after_sequence: Some(1),
+                limit: Some(1),
+                ..HistoryEventQuery::default()
+            },
+            1,
+            |query| {
+                calls += 1;
+                assert_eq!(query.after_sequence, Some(1));
+                Ok(HistoryArchiveSearchResponse {
+                    events: vec![HistoryEvent::transcript(2, &hidden, context.clone())],
+                    next_sequence: Some(1),
+                })
+            },
+        )
+        .expect("archive recall should stop");
+
+        assert_eq!(calls, 1);
+        assert!(events.is_empty());
     }
 }
