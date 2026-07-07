@@ -345,6 +345,7 @@ impl PromptStateOwner {
                 });
             }
         }
+        validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
         let mut active = state
             .queued_prompts
             .pop_front()
@@ -390,6 +391,7 @@ impl PromptStateOwner {
                 });
             }
         }
+        validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
         let mut active = state
             .queued_prompts
             .pop_front()
@@ -445,6 +447,19 @@ impl PromptStateOwner {
         let state = owner.ensure_agent_state(session, agent_id);
         match active_prompt {
             Some(mut prompt) => {
+                if prompt.target_agent_id() != agent_id {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_state",
+                        "ignored external active prompt with mismatched target agent",
+                        serde_json::json!({
+                            "session_id": session.id(),
+                            "agent_id": agent_id,
+                            "prompt_id": prompt.id(),
+                            "prompt_target_agent_id": prompt.target_agent_id(),
+                        }),
+                    );
+                    return false;
+                }
                 if state
                     .active_prompt
                     .as_ref()
@@ -592,6 +607,24 @@ impl PromptStateOwner {
         }
         removed
     }
+}
+
+fn validate_prompt_target_agent(
+    operation: &'static str,
+    agent_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<(), DaemonError> {
+    if prompt.target_agent_id() == agent_id {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "prompt `{}` targets agent `{}` but is stored under agent `{agent_id}`",
+            prompt.id(),
+            prompt.target_agent_id()
+        ),
+    })
 }
 
 impl PromptStateOwnerState {
@@ -809,6 +842,87 @@ mod tests {
             .expect("dispatching prompt should become running");
         assert_eq!(running.id(), "prompt-real-2");
         assert_eq!(running.status(), PromptStatus::Running);
+    }
+
+    #[test]
+    fn queued_prompt_activation_rejects_prompt_stored_under_wrong_agent() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let queued_prompt = PromptQueueItem::new(
+            "prompt-wrong-agent",
+            "attachment-1",
+            "agent-2",
+            "queued",
+            PromptStatus::Queued,
+        );
+        owner
+            .state
+            .lock()
+            .expect("prompt state lock should not be poisoned")
+            .states
+            .insert(
+                PromptStateKey::new(session.id(), "agent-1"),
+                OwnedAgentPromptState {
+                    active_prompt: None,
+                    queued_prompts: VecDeque::from([queued_prompt]),
+                },
+            );
+
+        let error = owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                Some("prompt-wrong-agent"),
+                "prompt-real-1".to_string(),
+            )
+            .expect_err("mismatched queued prompt target must be rejected");
+
+        assert!(error.to_string().contains("prompt `prompt-wrong-agent`"));
+        assert!(error.to_string().contains("targets agent `agent-2`"));
+        assert!(error.to_string().contains("stored under agent `agent-1`"));
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
+        assert_eq!(
+            owner
+                .peek_next_queued_prompt(&session, "agent-1")
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some("prompt-wrong-agent")
+        );
+    }
+
+    #[test]
+    fn external_active_prompt_sync_ignores_prompt_targeting_different_agent() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "external:codex:thread-1:user-1",
+            "codex",
+            "agent-2",
+            "external prompt",
+        );
+
+        let changed = owner.sync_external_active_prompt(&session, "agent-1", Some(external_prompt));
+
+        assert!(!changed);
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
     }
 
     #[test]
