@@ -735,7 +735,7 @@ fn compact_replay_events(events: Vec<LoggedEvent<KernelEvent>>) -> Vec<LoggedEve
     events
         .into_iter()
         .filter(|event| match &event.event {
-            KernelEvent::Heartbeat { .. } | KernelEvent::TransportResumed { .. } => false,
+            KernelEvent::TransportResumed { .. } => false,
             KernelEvent::SessionSnapshot { .. } => {
                 latest_session_snapshot_event_id == Some(event.event_id)
             }
@@ -946,7 +946,7 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     #[test]
-    fn compact_replay_events_preserves_output_and_latest_snapshot_only() {
+    fn compact_replay_events_preserves_heartbeat_output_and_latest_snapshot_only() {
         let events = vec![
             logged_event(
                 1,
@@ -974,18 +974,19 @@ mod tests {
                 .iter()
                 .map(|event| event.event_id)
                 .collect::<Vec<_>>(),
-            vec![3, 4, 6]
+            vec![1, 3, 4, 6]
         );
+        assert!(matches!(compacted[0].event, KernelEvent::Heartbeat { .. }));
         assert!(matches!(
-            compacted[0].event,
+            compacted[1].event,
             KernelEvent::TerminalOutput { .. }
         ));
         assert!(matches!(
-            compacted[1].event,
+            compacted[2].event,
             KernelEvent::SessionSnapshot { .. }
         ));
         assert!(matches!(
-            compacted[2].event,
+            compacted[3].event,
             KernelEvent::TerminalOutput { .. }
         ));
     }
