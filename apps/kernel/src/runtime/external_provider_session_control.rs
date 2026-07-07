@@ -9,6 +9,7 @@ use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
     external_session_id_for_provider_session, normalized_observed_prompt_text,
     AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
+    ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
@@ -1581,14 +1582,32 @@ fn prune_stale_external_provider_session_refs(
     attached_refs: &BTreeSet<AttachedExternalProviderSessionRef>,
     store: &crate::app::ExternalProviderSessionIndexStore,
 ) {
-    let desired_agents = attached_refs
-        .iter()
-        .map(|attachment| (attachment.session_id.as_str(), attachment.agent_id.as_str()))
+    let known_agents = app
+        .agents()
+        .list_agents()
+        .into_iter()
+        .map(|agent| (agent.session_id().to_string(), agent.id().to_string()))
         .collect::<BTreeSet<_>>();
-    for agent in app.agents().list_agents() {
-        if !desired_agents.contains(&(agent.session_id(), agent.id())) {
-            store.detach_agent(agent.session_id(), agent.id());
+    let desired_refs = attached_refs
+        .iter()
+        .map(|attachment| ExternalProviderSessionAttachmentRef {
+            external_session_id: attachment.external_session_id.clone(),
+            session_id: attachment.session_id.clone(),
+            agent_id: attachment.agent_id.clone(),
+        })
+        .collect::<BTreeSet<_>>();
+    for attachment in store.attachment_refs() {
+        if desired_refs.contains(&attachment) {
+            continue;
         }
+        if !known_agents.contains(&(attachment.session_id.clone(), attachment.agent_id.clone())) {
+            continue;
+        }
+        store.detach_attachment(
+            &attachment.external_session_id,
+            &attachment.session_id,
+            &attachment.agent_id,
+        );
     }
 }
 
@@ -2877,6 +2896,66 @@ mod tests {
         assert!(attached.is_attached_to_arroba());
         assert_eq!(attached.first_attached_session_id(), Some(session.id()));
         assert_eq!(attached.first_attached_agent_id(), Some(agent.id()));
+    }
+
+    #[test]
+    fn changed_attached_resume_state_returns_previous_provider_session_to_attachable_list() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        attach_test_session(&app, session.id());
+        let store = app.external_provider_session_index_store();
+        store.upsert(record("codex", "thread-old", "/tmp/thread-old"));
+        store.upsert(record("codex", "thread-new", "/tmp/thread-new"));
+        app.agents()
+            .set_agent_runtime_profile(
+                agent.id(),
+                "codex",
+                Some("gpt-test".to_string()),
+                None,
+                ProviderResumeState::from_codex_thread_id("thread-old"),
+            )
+            .expect("agent runtime profile should update");
+
+        mark_attached_external_provider_sessions(&app, None, &store);
+
+        assert!(store
+            .get("codex:thread-old")
+            .expect("old provider session should be indexed")
+            .is_attached_to_arroba());
+
+        app.agents()
+            .set_agent_runtime_profile(
+                agent.id(),
+                "codex",
+                Some("gpt-test".to_string()),
+                None,
+                ProviderResumeState::from_codex_thread_id("thread-new"),
+            )
+            .expect("agent runtime profile should update");
+
+        mark_attached_external_provider_sessions(&app, None, &store);
+
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        });
+        assert_eq!(
+            page.sessions
+                .iter()
+                .map(|session| session.external_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex:thread-old"],
+            "the previous provider session should be attachable once the agent points elsewhere"
+        );
+        let current = store
+            .get("codex:thread-new")
+            .expect("new provider session should be indexed");
+        assert!(current.is_attached_to_arroba());
+        assert_eq!(current.first_attached_session_id(), Some(session.id()));
+        assert_eq!(current.first_attached_agent_id(), Some(agent.id()));
     }
 
     #[test]

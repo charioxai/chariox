@@ -56,7 +56,8 @@ pub(crate) use external_provider_session_discovery::{
 };
 pub(crate) use external_provider_sessions::{
     external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
-    AttachedProviderTranscriptCursorStore, ExternalProviderSessionIndexStore,
+    AttachedProviderTranscriptCursorStore, ExternalProviderSessionAttachmentRef,
+    ExternalProviderSessionIndexStore,
 };
 pub(crate) use prompt_activity::{
     ActivePromptState, ActiveTurnPhase, ActiveTurnState, ActiveTurnStore, PromptActivityStore,

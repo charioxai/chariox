@@ -108,6 +108,13 @@ struct ExternalProviderSessionAttachment {
     agent_ids_by_session_id: BTreeMap<String, BTreeSet<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ExternalProviderSessionAttachmentRef {
+    pub(crate) external_session_id: String,
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+}
+
 impl ExternalProviderSessionAttachment {
     fn insert(&mut self, session_id: &str, agent_id: &str) {
         self.agent_ids_by_session_id
@@ -337,6 +344,63 @@ impl ExternalProviderSessionIndexStore {
                 }
             }
         }
+    }
+
+    pub(crate) fn detach_attachment(
+        &self,
+        external_session_id: &str,
+        session_id: &str,
+        agent_id: &str,
+    ) -> bool {
+        let mut index = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let external_session_id = normalize_external_session_id_key(external_session_id);
+        let Some(attachment) = index.attached.get_mut(&external_session_id) else {
+            return false;
+        };
+        if !attachment.remove_agent(session_id, agent_id) {
+            return false;
+        }
+        let attachment = if attachment.is_empty() {
+            index.attached.remove(&external_session_id);
+            None
+        } else {
+            index.attached.get(&external_session_id).cloned()
+        };
+        if let Some(session) = index.sessions.get_mut(&external_session_id) {
+            if let Some(attachment) = attachment.as_ref() {
+                apply_attachment_marker(session, attachment);
+            } else {
+                clear_attachment_marker(session);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn attachment_refs(&self) -> BTreeSet<ExternalProviderSessionAttachmentRef> {
+        let index = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index
+            .attached
+            .iter()
+            .flat_map(|(external_session_id, attachment)| {
+                attachment.agent_ids_by_session_id.iter().flat_map(
+                    move |(session_id, agent_ids)| {
+                        agent_ids
+                            .iter()
+                            .map(move |agent_id| ExternalProviderSessionAttachmentRef {
+                                external_session_id: external_session_id.clone(),
+                                session_id: session_id.clone(),
+                                agent_id: agent_id.clone(),
+                            })
+                    },
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn get(&self, external_session_id: &str) -> Option<ExternalProviderSessionRecord> {
@@ -819,6 +883,36 @@ mod tests {
         assert!(page.sessions[0].is_attachable_to_arroba());
         assert_eq!(page.sessions[0].first_attached_session_id(), None);
         assert_eq!(page.sessions[0].first_attached_agent_id(), None);
+    }
+
+    #[test]
+    fn detach_attachment_removes_only_exact_provider_session_agent_ref() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-old", 30));
+        store.upsert(record("codex", "thread-new", 40));
+        store.mark_attached("codex:thread-old", "session-1", "agent-1");
+        store.mark_attached("codex:thread-new", "session-1", "agent-1");
+
+        assert!(store.detach_attachment("codex:thread-old", "session-1", "agent-1"));
+
+        let old = store
+            .get("codex:thread-old")
+            .expect("old provider session should remain indexed");
+        assert!(old.is_attachable_to_arroba());
+        let new = store
+            .get("codex:thread-new")
+            .expect("new provider session should remain indexed");
+        assert!(new.is_attached_to_arroba());
+        assert_eq!(new.first_attached_session_id(), Some("session-1"));
+        assert_eq!(new.first_attached_agent_id(), Some("agent-1"));
+        assert_eq!(
+            store.attachment_refs(),
+            BTreeSet::from([ExternalProviderSessionAttachmentRef {
+                external_session_id: "codex:thread-new".to_string(),
+                session_id: "session-1".to_string(),
+                agent_id: "agent-1".to_string(),
+            }])
+        );
     }
 
     #[test]
