@@ -19,9 +19,11 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",
     prompt_id: "prompt-1",
+    prompt_origin: "external",
     source_attachment_id: "attachment-1",
   }), {
     promptId: "prompt-1",
+    promptOrigin: "external",
     sourceAttachmentId: "attachment-1",
   })
 })
@@ -30,9 +32,11 @@ test("terminalRecordTranscriptMetadata preserves explicit null prompt identity",
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "provider_output",
     prompt_id: null,
+    prompt_origin: null,
     source_attachment_id: null,
   }), {
     promptId: null,
+    promptOrigin: null,
     sourceAttachmentId: null,
   })
 })
@@ -41,9 +45,11 @@ test("terminalRecordTranscriptMetadata normalizes malformed prompt identity to n
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "provider_output",
     prompt_id: 42,
+    prompt_origin: true,
     source_attachment_id: false,
   } as unknown as Parameters<typeof terminalRecordTranscriptMetadata>[0]), {
     promptId: null,
+    promptOrigin: null,
     sourceAttachmentId: null,
   })
 })
@@ -77,9 +83,11 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
   const entry = transcriptEntryWithTerminalMetadata({
     role: "assistant",
     text: "reply",
+    promptOrigin: "arroba",
     sourceAttachmentId: "existing",
   }, {
     promptId: "prompt-1",
+    promptOrigin: "external",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
@@ -90,6 +98,7 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
     text: "reply",
     sourceAttachmentId: "existing",
     promptId: "prompt-1",
+    promptOrigin: "external",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",

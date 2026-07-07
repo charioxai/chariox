@@ -14,6 +14,7 @@ import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type TerminalRecordTranscriptFields = {
   readonly prompt_id?: string | null
+  readonly prompt_origin?: string | null
   readonly source_attachment_id?: string | null
   readonly kind: string
   readonly source?: string | null
@@ -35,6 +36,7 @@ export type TerminalRecordTranscriptRole =
 
 export type TerminalRecordTranscriptMetadata = ExternalProviderObservedTranscriptFields & {
   readonly promptId?: string | null
+  readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
 }
 
@@ -64,9 +66,11 @@ export function terminalRecordTranscriptMetadata(
 ): TerminalRecordTranscriptMetadata {
   const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
   const promptId = nullableStringField(record, "prompt_id")
+  const promptOrigin = nullableStringField(record, "prompt_origin")
   const sourceAttachmentId = nullableStringField(record, "source_attachment_id")
   return {
     ...(promptId !== undefined ? { promptId } : {}),
+    ...(promptOrigin !== undefined ? { promptOrigin } : {}),
     ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
     ...(externalObservedMetadata ?? {}),
   }
@@ -74,7 +78,7 @@ export function terminalRecordTranscriptMetadata(
 
 function nullableStringField(
   record: TerminalRecordTranscriptFields,
-  field: "prompt_id" | "source_attachment_id",
+  field: "prompt_id" | "prompt_origin" | "source_attachment_id",
 ): string | null | undefined {
   if (!Object.prototype.hasOwnProperty.call(record, field)) {
     return undefined
@@ -89,6 +93,7 @@ export function transcriptEntryWithTerminalMetadata<TEntry extends TerminalTrans
 ): TEntry {
   const next = { ...entry }
   if (metadata.promptId !== undefined) next.promptId = metadata.promptId
+  if (metadata.promptOrigin !== undefined) next.promptOrigin = metadata.promptOrigin
   if (metadata.sourceAttachmentId !== undefined) next.sourceAttachmentId = metadata.sourceAttachmentId
   applyExternalProviderObservedTranscriptMetadata(next, metadata)
   return next
@@ -229,5 +234,6 @@ function terminalRecordKindIsUserPrompt(kind: string): boolean {
 
 type TerminalTranscriptMetadataTarget = ExternalProviderObservedMutableTranscriptMetadataFields & {
   promptId?: string | null
+  promptOrigin?: string | null
   sourceAttachmentId?: string | null
 }
