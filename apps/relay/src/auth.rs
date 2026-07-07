@@ -147,6 +147,10 @@ pub struct RelayRevocationRegistry {
 struct RevocationState {
     revoked_token_ids: BTreeMap<String, u64>,
     revoked_accounts: BTreeMap<String, u64>,
+    // The hosted control plane revokes paired identities by their client or
+    // machine subject id, so the registry mirrors those against a token's
+    // client_id / machine_id claims.
+    revoked_subjects: BTreeMap<String, u64>,
 }
 
 impl RelayRevocationRegistry {
@@ -176,6 +180,15 @@ impl RelayRevocationRegistry {
             .insert(account_id.into(), expires_at_ms);
     }
 
+    /// Revoke every token whose `client_id` or `machine_id` matches this
+    /// subject id, mirroring how the hosted control plane revokes paired
+    /// client/machine identities.
+    pub fn revoke_subject(&self, subject: impl Into<String>, expires_at_ms: u64) {
+        self.lock()
+            .revoked_subjects
+            .insert(subject.into(), expires_at_ms);
+    }
+
     /// Drop entries whose expiry has passed so the registry stays bounded.
     pub fn prune(&self, now_ms: u64) {
         let mut state = self.lock();
@@ -185,23 +198,31 @@ impl RelayRevocationRegistry {
         state
             .revoked_accounts
             .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        state
+            .revoked_subjects
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
     }
 
     fn is_revoked(&self, claims: &RelayTokenClaims, now_ms: u64) -> bool {
         let state = self.lock();
-        if state
-            .revoked_token_ids
-            .get(&claims.token_id)
-            .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
+        let active = |map: &BTreeMap<String, u64>, key: &str| {
+            map.get(key)
+                .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
+        };
+        if active(&state.revoked_token_ids, &claims.token_id) {
+            return true;
+        }
+        if claims
+            .account_id
+            .as_deref()
+            .is_some_and(|account_id| active(&state.revoked_accounts, account_id))
         {
             return true;
         }
-        claims.account_id.as_ref().is_some_and(|account_id| {
-            state
-                .revoked_accounts
-                .get(account_id)
-                .is_some_and(|expires_at_ms| *expires_at_ms > now_ms)
-        })
+        [claims.client_id.as_deref(), claims.machine_id.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|subject| active(&state.revoked_subjects, subject))
     }
 }
 
@@ -958,6 +979,21 @@ mod tests {
                 .expect_err("revoked account rejected"),
             RelayAuthError::TokenRevoked
         );
+        revocations.prune(2_000);
+        verifier
+            .verify(request())
+            .expect("pruned account revocation no longer applies");
+
+        // Subject-level revocation blocks tokens by client/machine id, the way
+        // the hosted control plane revokes paired identities.
+        revocations.revoke_subject("client-1", 1_000);
+        assert_eq!(
+            verifier
+                .verify(request())
+                .expect_err("revoked client subject rejected"),
+            RelayAuthError::TokenRevoked
+        );
+        revocations.prune(2_000);
 
         // A verifier without the registry is unaffected.
         let unrevoked = ScopedTokenVerifier::new(tokens, BTreeMap::new(), Some(100));
