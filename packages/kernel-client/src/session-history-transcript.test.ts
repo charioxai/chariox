@@ -380,6 +380,44 @@ test("session history outline hydration carries prompt identity into entries and
   assert.equal(placeholder?.externalProviderTurnId, "user-1")
 })
 
+test("session history outline hydration maps blob kinds to stable transcript roles", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      completed_at_ms: 2,
+      user_prompt: pageEntry(0, "user_prompt", "prompt\n"),
+      entries: [],
+      summary: null,
+      blobs: [
+        blob("blob-output", "provider_output", 1, "assistant", "assistant summary"),
+        blob("blob-reasoning", "provider_reasoning", 2, "reasoning", "reasoning summary"),
+        blob("blob-tool", "provider_tool", 3, "tool", "tool summary"),
+        blob("blob-error", "provider_error", 4, "error", "error summary"),
+        blob("blob-status", "provider_status", 5, "status", "status summary"),
+        blob("blob-notice", "notice", 6, "notice", "notice summary"),
+      ],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  assert.deepEqual(
+    entries
+      .filter((entry) => entry.historyBlobId)
+      .map((entry) => [entry.historyBlobId, entry.role]),
+    [
+      ["blob-output", "tool"],
+      ["blob-reasoning", "reasoning"],
+      ["blob-tool", "tool"],
+      ["blob-error", "error"],
+      ["blob-status", "status"],
+      ["blob-notice", "status"],
+    ],
+  )
+})
+
 test("session history blob load target resolves only expandable unloaded placeholders", () => {
   const placeholder = transcriptEntry(1, "tool", "placeholder", {
     historyBlobId: "blob-1",

@@ -30,6 +30,7 @@ import { applyTranscriptDisplayState } from "./transcript-display-state.js"
 import { trimSingleTrailingNewline } from "./transcript-entry-state.js"
 import { reindexTranscriptEntries } from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
+import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
@@ -526,7 +527,7 @@ function outlineBlobTranscriptEntry(
 ): SessionHistoryTranscriptEntry {
   return {
     id,
-    role: sessionHistoryEntryKindTranscriptRole(blob.kind),
+    role: sessionHistoryOutlineBlobTranscriptRole(blob.kind),
     text: "",
     sourceText: "",
     turnId,
@@ -543,4 +544,16 @@ function outlineBlobTranscriptEntry(
     historyFragmentEnd: blob.total_chars,
     historyTotalChars: blob.total_chars,
   }
+}
+
+function sessionHistoryOutlineBlobTranscriptRole(
+  kind: SessionHistoryOutlineBlob["kind"],
+): SessionHistoryTranscriptEntry["role"] {
+  if (kind === "notice") {
+    return "status"
+  }
+  const role = providerTranscriptRoleForKind(kind)
+  return role === "reasoning" || role === "error" || role === "status"
+    ? role
+    : "tool"
 }
