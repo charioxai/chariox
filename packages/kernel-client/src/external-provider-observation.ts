@@ -1,5 +1,8 @@
 import type { SessionHistoryExternalObservation } from "./kernel-types.js"
 import {
+  externalProviderStatusIsPassiveTelemetry,
+} from "./external-provider-observation-policy.js"
+import {
   promptOriginFromRecord,
   promptOriginIsExternal,
   type PromptOriginRecord,
@@ -582,16 +585,5 @@ function externalProviderObservedStatusMatchesPassiveProviderPolicy(
     return false
   }
   const text = entry.text ?? ""
-  return externalProviderPassiveStatusPrefixes(provider).some((prefix) => text.startsWith(prefix))
-}
-
-function externalProviderPassiveStatusPrefixes(provider: string): readonly string[] {
-  switch (provider) {
-    case "codex":
-      return ["codex token_count"]
-    case "claude":
-      return ["claude last-prompt", "claude ai-title"]
-    default:
-      return []
-  }
+  return externalProviderStatusIsPassiveTelemetry(provider, text)
 }
