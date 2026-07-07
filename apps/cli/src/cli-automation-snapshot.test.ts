@@ -3,6 +3,9 @@ import test from "node:test"
 
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
 import type { ShellContext } from "@arroba/kernel-client/shell-core"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -165,7 +168,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         filename: "Screenshot.png",
         preview_url: "data:image/png;base64,aW1hZ2U=",
       }],
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "opencode",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -243,7 +246,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
       preview_url: "data:image/png;base64,aW1hZ2U=",
     }],
     queuedPrompt: null,
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "opencode",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",

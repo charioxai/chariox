@@ -9,6 +9,9 @@ import type {
   SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@arroba/kernel-client/external-provider-observation"
 
 test("attached session prime clears the transcript when no agent is visible", async () => {
   const harness = primeHarness()
@@ -291,7 +294,7 @@ function externalObserved(
   turnId: string,
 ): Record<string, unknown> {
   return {
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: provider,
     external_provider_session_id: sessionId,
     external_provider_turn_id: turnId,
