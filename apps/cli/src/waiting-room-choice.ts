@@ -1,4 +1,7 @@
-import { externalProviderSessionPageSessions } from "@arroba/kernel-client/external-provider-sessions"
+import {
+  externalProviderSessionAtSelection,
+  externalProviderSessionPageSessions,
+} from "@arroba/kernel-client/external-provider-sessions"
 import {
   catalogModelOptions,
   providerCatalogIsLocalFallback,
@@ -57,7 +60,9 @@ export function waitingRoomChoice(
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
-    externalProviderSession: externalProviderSessions[state.externalSessionIndex ?? 0] ?? null,
+    externalProviderSession: externalProviderSessionAtSelection(externalProviderSessions, {
+      selectedExternalProviderSessionIndex: state.externalSessionIndex ?? 0,
+    }),
     sliceInventory: allSlices[state.sliceIndex ?? 0] ?? null,
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),

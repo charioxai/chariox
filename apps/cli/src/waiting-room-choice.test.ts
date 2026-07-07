@@ -65,6 +65,29 @@ test("waiting room choice selects unattached agents in shared projected order", 
   assert.equal(choice.externalProviderSession?.external_session_id, "claude:recent")
 })
 
+test("waiting room choice clamps stale unattached agent indexes", () => {
+  const catalog = fallbackProviderCatalog()
+  const remote = {
+    externalProviderSessions: [
+      externalSession("codex:old", { last_modified_at_ms: 100 }),
+      externalSession("claude:recent", { last_modified_at_ms: 200 }),
+    ],
+  }
+
+  assert.equal(waitingRoomChoice(
+    waitingRoomState({ externalSessionIndex: 99 }),
+    [],
+    catalog,
+    remote,
+  ).externalProviderSession?.external_session_id, "codex:old")
+  assert.equal(waitingRoomChoice(
+    waitingRoomState({ externalSessionIndex: -4 }),
+    [],
+    catalog,
+    remote,
+  ).externalProviderSession?.external_session_id, "claude:recent")
+})
+
 function remoteState(): WaitingRoomRemoteState {
   return {
     slices: [slice()],
