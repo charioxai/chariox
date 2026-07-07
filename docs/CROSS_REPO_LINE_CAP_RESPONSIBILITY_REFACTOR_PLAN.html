@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>114 allowlisted files remain after initial splits</td>
+              <td>113 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -257,6 +257,12 @@
               <td><code>15915f1a1</code> <span class="muted">Extract iOS app model test support</span></td>
               <td>iOS app-model behavior tests now stay focused on scenarios while shared mock kernel clients, provider catalogs, and projection fixtures live in a sibling test-support file.</td>
               <td><code>swift test --package-path apps/ios/ArrobaPackage</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>9f25625ef</code> <span class="muted">Extract MCP skill drill options</span></td>
+              <td>The live MCP/skill drill entrypoint now keeps runtime scenario orchestration separate from CLI option defaults, argument parsing, and help text.</td>
+              <td><code>node --check</code> for both drill modules, <code>node apps/cli/scripts/live-mcp-skill-drill.mjs --help</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
