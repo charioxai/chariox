@@ -2,11 +2,14 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  expectPromptSubmittedPayload,
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
   detachedPromptSubmitDecision,
+  promptSubmittedPayloadFromResponse,
   promptSubmissionFailureRuntimeState,
   promptSubmissionFailureTransition,
+  promptSubmissionOutcomeName,
   promptSubmissionPrompt,
   promptSubmissionTranscriptMetadata,
   promptSubmissionRuntimeState,
@@ -136,6 +139,26 @@ test("resolvePromptSubmissionTargetAgentId keeps only live requested agents", ()
   assert.equal(resolvePromptSubmissionTargetAgentId({
     hasAgent,
   }), null)
+})
+
+test("prompt submitted response helpers parse acknowledgement shape", () => {
+  const payload = {
+    outcome: { Started: {} },
+    session: makeSession(),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }
+
+  assert.equal(promptSubmittedPayloadFromResponse({ PromptSubmitted: payload }), payload)
+  assert.equal(promptSubmittedPayloadFromResponse({ SessionState: {} }), null)
+  assert.equal(expectPromptSubmittedPayload({ PromptSubmitted: payload }), payload)
+  assert.throws(
+    () => expectPromptSubmittedPayload({ SessionState: {} }),
+    /unexpected response variant: expected PromptSubmitted/,
+  )
+  assert.equal(promptSubmissionOutcomeName(payload), "Started")
+  assert.equal(promptSubmissionOutcomeName({ outcome: {} }), "unknown")
+  assert.equal(promptSubmissionOutcomeName({}), "unknown")
 })
 
 test("prompt submission target agent id reads outcome prompt identity", () => {

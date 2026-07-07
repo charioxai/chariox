@@ -11,6 +11,7 @@ import {
   sessionActivePromptForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
 import {
+  promptSubmittedPayloadFromResponse,
   promptSubmissionPrompt,
 } from "@arroba/kernel-client/prompt-submission"
 import { LocalIpcClient } from "../ipc.js"
@@ -204,20 +205,15 @@ export function promptForAgent(session: RuntimeSession, agentId: string): Prompt
 }
 
 export function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
-  const payload = response.PromptSubmitted as {
-    outcome?: Record<string, unknown>
-    session?: RuntimeSession
-    agent_activity?: RuntimeSession["agent_activity"] | null
-    agent_activity_revision?: number | null
-  } | undefined
+  const payload = promptSubmittedPayloadFromResponse(response)
   if (!payload) return null
   if (!payload.session) {
     return promptSubmissionPrompt(payload, agentId)?.id ?? null
   }
   const session = normalizeRuntimeSessionWithAgentActivity({
     session: payload.session,
-    agent_activity: payload.agent_activity,
-    agent_activity_revision: payload.agent_activity_revision,
+    agent_activity: payload.agent_activity ?? undefined,
+    agent_activity_revision: payload.agent_activity_revision ?? undefined,
   })
   return promptSubmissionPrompt({
     ...payload,

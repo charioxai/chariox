@@ -20,6 +20,13 @@ type SparsePromptSubmissionPromptPayload = {
   readonly session?: RuntimeSession | null
 }
 
+export type PromptSubmittedResponsePayload = {
+  readonly outcome?: Record<string, unknown> | null
+  readonly session?: RuntimeSession | null
+  readonly agent_activity?: PromptSubmittedPayload["agent_activity"] | null
+  readonly agent_activity_revision?: number | null
+}
+
 export type PromptSubmitPreparationDecision =
   | { readonly action: "clear_empty" }
   | { readonly action: "workspace_shell" }
@@ -111,6 +118,27 @@ export function resolvePromptSubmissionTargetAgentId(options: {
   return requestedTargetAgentId && options.hasAgent(requestedTargetAgentId)
     ? requestedTargetAgentId
     : null
+}
+
+export function promptSubmittedPayloadFromResponse(
+  response: Record<string, unknown>,
+): PromptSubmittedResponsePayload | null {
+  const payload = response.PromptSubmitted
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as PromptSubmittedResponsePayload
+    : null
+}
+
+export function expectPromptSubmittedPayload(response: Record<string, unknown>): PromptSubmittedPayload {
+  const payload = promptSubmittedPayloadFromResponse(response)
+  if (!payload) {
+    throw new Error("unexpected response variant: expected PromptSubmitted")
+  }
+  return payload as PromptSubmittedPayload
+}
+
+export function promptSubmissionOutcomeName(payload: { readonly outcome?: Record<string, unknown> | null }): string {
+  return Object.keys(payload.outcome ?? {})[0] ?? "unknown"
 }
 
 export function promptSubmissionTargetAgentId(payload: PromptSubmittedPayload): string | null {

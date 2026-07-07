@@ -17,12 +17,14 @@ import {
   steerQueuedPromptRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
-import { expectVariant, firstVariantName } from "./ipc-response.js"
+import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
 import { resolvePromptRecoveryProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
 import {
+  expectPromptSubmittedPayload,
+  promptSubmissionOutcomeName,
   promptSubmissionTargetAgentId,
   promptSubmissionTranscriptMetadata,
 } from "@arroba/kernel-client/prompt-submission"
@@ -101,7 +103,7 @@ async function submitPrompt(
   const response = await client.send<Record<string, unknown>>(
     submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
   )
-  const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+  const payload = expectPromptSubmittedPayload(response) as PromptSubmittedPayload
   const normalizedPayload = {
     ...payload,
     session: normalizeRuntimeSessionWithAgentActivity(payload),
@@ -109,7 +111,7 @@ async function submitPrompt(
   return {
     payload: normalizedPayload,
     targetAgentId: promptSubmissionTargetAgentId(normalizedPayload),
-    outcomeName: firstVariantName(normalizedPayload.outcome),
+    outcomeName: promptSubmissionOutcomeName(normalizedPayload),
   }
 }
 
