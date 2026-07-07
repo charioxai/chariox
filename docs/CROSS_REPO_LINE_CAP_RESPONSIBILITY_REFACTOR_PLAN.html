@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>113 allowlisted files remain after initial splits</td>
+              <td>112 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -263,6 +263,12 @@
               <td><code>9f25625ef</code> <span class="muted">Extract MCP skill drill options</span></td>
               <td>The live MCP/skill drill entrypoint now keeps runtime scenario orchestration separate from CLI option defaults, argument parsing, and help text.</td>
               <td><code>node --check</code> for both drill modules, <code>node apps/cli/scripts/live-mcp-skill-drill.mjs --help</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>0c9a41528</code> <span class="muted">Split agent config runtime tests</span></td>
+              <td>Agent extension configuration runtime code now stays in the source module, while remote extension manifest retry/revoke behavior coverage lives in a sibling test module.</td>
+              <td>Focused <code>remote_extension_manifest_pending_revoke</code> kernel tests, <code>cargo fmt --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
