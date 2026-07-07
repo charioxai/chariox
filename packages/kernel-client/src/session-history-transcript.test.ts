@@ -165,7 +165,7 @@ test("session history transcript hydration recovers external observed metadata f
   assert.equal(entries[0]?.externalProviderTurnId, "item-1")
 })
 
-test("session history transcript hydration renders only non-passive external provider statuses", () => {
+test("session history transcript hydration hides only metadata-marked passive external provider statuses", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(1, "provider_status", "OpenCode status: reconnecting"),
     pageEntry(2, "provider_status", "codex event turn_aborted {\"reason\":\"user\"}", {
@@ -194,6 +194,7 @@ test("session history transcript hydration renders only non-passive external pro
 
   assert.deepEqual(entries.map((entry) => entry.text), [
     "codex event turn_aborted {\"reason\":\"user\"}",
+    "codex token_count {\"total\":43}",
   ])
   assert.equal(entries[0]?.role, "status")
   assert.equal(entries[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
