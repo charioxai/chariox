@@ -92,6 +92,38 @@ test("transcript entry lineage keys ignore provider-only external observed ident
   ])
 })
 
+test("transcript entry lineage keys ignore partial external observed identities", () => {
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "hello",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProviderSessionId: "thread-1",
+  }), [
+    "text:external_provider_observed::assistant:hello",
+  ])
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "hello",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), [
+    "text:external_provider_observed::assistant:hello",
+  ])
+})
+
+test("transcript entry lineage keys recover exact external identity from prompt id", () => {
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "hello",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    promptId: "external:codex:thread-1:turn-1",
+  }), [
+    "external:codex:thread-1:turn-1:assistant",
+    "text:external_provider_observed:external:codex:thread-1:turn-1:assistant:hello",
+  ])
+})
+
 test("transcript entry lineage keys include durable history blob identity", () => {
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",

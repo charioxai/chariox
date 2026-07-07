@@ -1,6 +1,6 @@
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-  externalProviderObservedIdentityKey,
+  externalProviderObservedExactIdentityKey,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
@@ -92,7 +92,7 @@ export function transcriptTurnIsCollapsible<TEntry extends TranscriptTurnDisplay
 
 export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): string[] {
   const keys: string[] = []
-  const externalIdentityKey = externalProviderObservedIdentityKey(entry)
+  const externalIdentityKey = externalProviderObservedExactIdentityKey(entry)
   const source = transcriptLineageSource(entry)
   if (
     sessionHistoryEntryIsExternalProviderObserved(entry)
@@ -239,7 +239,7 @@ function transcriptLineageSource(entry: TranscriptLineageEntry): string {
 
 function transcriptTurnLineageIdentity(entry: TranscriptLineageEntry): string {
   const externalIdentityKey = sessionHistoryEntryIsExternalProviderObserved(entry)
-    ? externalProviderObservedIdentityKey(entry)
+    ? externalProviderObservedExactIdentityKey(entry)
     : null
   if (externalIdentityKey) {
     return [

@@ -104,6 +104,16 @@ export function externalProviderObservedIdentityKey(
   }
 }
 
+export function externalProviderObservedExactIdentityKey(
+  value: ExternalProviderObservedIdentityFields,
+): ExternalProviderObservedIdentityKey | null {
+  const key = externalProviderObservedIdentityKey(value)
+  if (!key?.provider || !key.providerSessionId || !key.providerTurnId) {
+    return null
+  }
+  return key
+}
+
 export function externalProviderObservedIdentityMatches(
   candidate: ExternalProviderObservedIdentityFields,
   expected: ExternalProviderObservedIdentityFields,

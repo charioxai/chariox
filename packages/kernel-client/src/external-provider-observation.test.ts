@@ -8,6 +8,7 @@ import {
   applyExternalProviderObservedTurnMetadata,
   externalProviderObservedCompletionAtMs,
   externalProviderObservedEntryIsPassiveTelemetry,
+  externalProviderObservedExactIdentityKey,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedIdentityIsPresent,
   externalProviderObservedIdentityKey,
@@ -60,6 +61,20 @@ test("external provider observed identity matching normalizes provider and trims
     providerSessionId: "thread-1",
     providerTurnId: "user-1",
   })
+  assert.deepEqual(externalProviderObservedExactIdentityKey({
+    promptId: "external: CODEX : thread-1 : user-1",
+  }), {
+    provider: "codex",
+    providerSessionId: "thread-1",
+    providerTurnId: "user-1",
+  })
+  assert.equal(externalProviderObservedExactIdentityKey({
+    externalProviderSessionId: "thread-1",
+  }), null)
+  assert.equal(externalProviderObservedExactIdentityKey({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), null)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: " CODEX ",
     externalProviderSessionId: " thread-1 ",
