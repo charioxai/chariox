@@ -1,6 +1,7 @@
 import {
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
+  externalProviderSessionSelectionIndex,
 } from "@arroba/kernel-client/external-provider-sessions"
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomRemoteKernels, waitingRoomRemoteMachines } from "./waiting-room-remote-rows.js"
@@ -26,6 +27,10 @@ export function moveWaitingRoomFocus(
   remote: WaitingRoomRemoteState = {},
 ) {
   const order = waitingRoomFocusTargets(sessions, remote)
+  const externalSessions = externalProviderSessionPageSessions(remote)
+  const externalSessionIndex = externalProviderSessionSelectionIndex(externalSessions, {
+    selectedExternalProviderSessionIndex: state.externalSessionIndex,
+  })
   const currentIndex = Math.max(
     0,
     order.findIndex((target) => (
@@ -35,7 +40,7 @@ export function moveWaitingRoomFocus(
       && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
       && (target.focus !== "slice-entry" || target.sliceIndex === (state.sliceIndex ?? 0))
       && (target.focus !== "terminal" || target.terminalIndex === state.terminalIndex)
-      && (target.focus !== "external-session" || target.externalSessionIndex === (state.externalSessionIndex ?? 0))
+      && (target.focus !== "external-session" || target.externalSessionIndex === externalSessionIndex)
     )),
   )
   const next = order[modulo(currentIndex + delta, order.length)] ?? order[0]
@@ -50,7 +55,11 @@ export function moveWaitingRoomFocus(
     machineIndex: next.focus === "machine" ? next.machineIndex : state.machineIndex,
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
     terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
-    ...(next.focus === "external-session" ? { externalSessionIndex: next.externalSessionIndex } : {}),
+    ...(next.focus === "external-session"
+      ? { externalSessionIndex: next.externalSessionIndex }
+      : state.focus === "external-session"
+        ? { externalSessionIndex }
+        : {}),
   }
   return next.focus === "slice-entry"
     ? { ...nextState, sliceIndex: next.sliceIndex }

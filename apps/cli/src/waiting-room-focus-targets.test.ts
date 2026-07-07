@@ -99,6 +99,26 @@ test("waiting room focus targets include unattached agents and pagination", () =
   )
 })
 
+test("waiting room focus movement clamps stale unattached agent indexes", () => {
+  const state = moveWaitingRoomFocus(
+    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    [],
+    1,
+    {
+      externalProviderSessions: [
+        externalSession({ external_session_id: "codex:old", last_modified_at_ms: 100 }),
+        externalSession({ external_session_id: "opencode:middle", provider: "opencode", last_modified_at_ms: 200 }),
+        externalSession({ external_session_id: "claude:recent", provider: "claude", last_modified_at_ms: 300 }),
+      ],
+      externalProviderSessionsHasMore: true,
+      externalProviderSessionsNextCursor: "cursor-2",
+    },
+  )
+
+  assert.equal(state.focus, "external-session-more")
+  assert.equal(state.externalSessionIndex, 2)
+})
+
 function remoteState(): WaitingRoomRemoteState {
   return {
     slices: [slice()],
