@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>107 allowlisted files remain after initial splits</td>
+              <td>106 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -299,6 +299,12 @@
               <td><code>9cc24ef96</code> <span class="muted">Extract slice store invariants</span></td>
               <td>Slice store persistence and mutation code now stays in the store module, while slice name validation, operation-error redaction, and restart status reconciliation live in a dedicated invariants helper.</td>
               <td>Focused <code>slice_store</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>2728a743c</code> <span class="muted">Extract hosted cloud runtime helpers</span></td>
+              <td>Hosted cloud second-kernel scenarios now keep orchestration in the scenario module, while runtime MCP calls, transient relay retries, tool waits, rejection assertions, and child command execution live in a shared helper.</td>
+              <td><code>node --check</code> for both scenario helper modules, <code>node scripts/check-line-cap.mjs</code>. Full hosted drill was not run because it requires live hosted runtime setup.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
