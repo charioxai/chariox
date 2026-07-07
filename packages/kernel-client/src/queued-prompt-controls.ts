@@ -290,8 +290,8 @@ function compareProjectedQueuedPromptOrder(
 }
 
 function projectedActivityAllowsPromptQueue(projection: AgentRuntimeActivityProjection): boolean {
-  if (projection.queuedPromptCountExplicit && projection.queuedPromptCount === 0) {
-    return false
+  if (projection.queuedPromptCountExplicit) {
+    return projection.queuedPromptCount > 0
   }
   return projection.busy
 }
