@@ -9,7 +9,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
-use crate::session::RuntimeSession;
+use crate::session::{PromptOrigin, RuntimeSession};
 use crate::terminal::TerminalOutputKind;
 
 const SESSION_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -34,6 +34,8 @@ pub struct SessionHistoryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     pub source_attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_origin: Option<PromptOrigin>,
     pub kind: SessionHistoryEntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
@@ -301,6 +303,11 @@ impl SessionHistoryEntry {
             .flatten()
     }
 
+    pub fn with_prompt_origin(mut self, prompt_origin: impl Into<Option<PromptOrigin>>) -> Self {
+        self.prompt_origin = prompt_origin.into();
+        self
+    }
+
     pub fn user_prompt(
         session_id: &str,
         source_attachment_id: &str,
@@ -322,6 +329,7 @@ impl SessionHistoryEntry {
             provider_run_id: None,
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(source_attachment_id.to_string()),
+            prompt_origin: Some(PromptOrigin::Arroba),
             kind: SessionHistoryEntryKind::UserPrompt,
             merge_key: None,
             source: None,
@@ -352,6 +360,7 @@ impl SessionHistoryEntry {
             provider_run_id: Some(provider_run_id.to_string()),
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
+            prompt_origin: None,
             kind: match kind {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
                 TerminalOutputKind::ProviderReasoning => SessionHistoryEntryKind::ProviderReasoning,
@@ -384,6 +393,7 @@ impl SessionHistoryEntry {
             provider_run_id: provider_run_id.map(str::to_string),
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
+            prompt_origin: None,
             kind: SessionHistoryEntryKind::Notice,
             merge_key: None,
             source: None,
@@ -451,6 +461,7 @@ impl SessionHistoryEntry {
             provider_run_id: provider_run_id.map(str::to_string),
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: None,
+            prompt_origin: Some(PromptOrigin::External),
             kind,
             merge_key,
             source: Some(SessionHistoryEntrySource::ExternalProviderObserved),

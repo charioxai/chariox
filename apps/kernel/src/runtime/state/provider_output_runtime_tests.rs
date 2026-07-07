@@ -1319,6 +1319,20 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
         records[0].prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
+
+    let history_entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load");
+    let output_entry = history_entries
+        .iter()
+        .find(|entry| entry.merge_key.as_deref() == Some("external-output"))
+        .expect("structured output should be persisted as history");
+    assert_eq!(
+        output_entry.prompt_origin,
+        Some(crate::session::PromptOrigin::External)
+    );
 }
 
 #[tokio::test]

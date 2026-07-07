@@ -79,15 +79,10 @@ impl KernelRuntimeOwnedState {
         let mut recipient_scope_cache =
             std::collections::BTreeMap::<Option<String>, std::sync::Arc<[String]>>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
-        let session = self.session_store.get_session(session_id).ok();
         for output in outputs {
             let agent_id = output.agent_id;
-            let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
-                session
-                    .as_ref()
-                    .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(session, agent_id))
-                    .map(|prompt| prompt.prompt_origin())
-            });
+            let prompt_origin =
+                self.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
             let scoped_recipient_attachment_ids = recipient_scope_cache
                 .entry(agent_id.clone())
                 .or_insert_with(|| {
@@ -153,13 +148,7 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
-            self.session_store
-                .get_session(session_id)
-                .ok()
-                .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
-                .map(|prompt| prompt.prompt_origin())
-        });
+        let prompt_origin = self.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
@@ -199,10 +188,27 @@ impl KernelRuntimeOwnedState {
                     kind,
                     merge_key,
                     text,
-                ),
+                )
+                .with_prompt_origin(prompt_origin),
             );
         }
         record
+    }
+
+    pub(super) fn active_prompt_origin_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Option<crate::session::PromptOrigin> {
+        let agent_id = agent_id?;
+        self.session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .map(|prompt| prompt.prompt_origin())
     }
 
     fn record_workflow_thinking_trace(
@@ -763,7 +769,10 @@ impl KernelRuntimeOwnedState {
             self.session_store
                 .get_session(session_id)
                 .ok()
-                .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
+                .and_then(|session| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, agent_id)
+                })
                 .filter(|prompt| prompt.id() == prompt_id)
                 .map(|prompt| prompt.prompt_origin())
         });

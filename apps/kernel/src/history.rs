@@ -221,6 +221,12 @@ impl HistoryEvent {
                 serde_json::Value::String(source_attachment_id),
             );
         }
+        if let Some(prompt_origin) = entry.prompt_origin {
+            metadata.insert(
+                "prompt_origin".to_string(),
+                serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if let Some(source) = entry.source {
             metadata.insert(
                 "source".to_string(),
@@ -313,6 +319,11 @@ impl HistoryEvent {
             provider_run_id: self.provider_run_id.clone(),
             agent_id: self.agent_id.clone(),
             source_attachment_id,
+            prompt_origin: self
+                .metadata
+                .get("prompt_origin")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
             kind,
             merge_key: self
                 .metadata
@@ -1031,11 +1042,19 @@ mod tests {
             observed.external_provider_observed_turn_id(),
             Some("turn-1")
         );
+        assert_eq!(
+            observed.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
 
         let arroba_owned =
             SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
         assert!(!arroba_owned.is_external_provider_observed());
         assert_eq!(arroba_owned.external_provider_observed_turn_id(), None);
+        assert_eq!(
+            arroba_owned.prompt_origin,
+            Some(crate::session::PromptOrigin::Arroba)
+        );
     }
 
     #[test]
@@ -1076,7 +1095,12 @@ mod tests {
         let entries = store.load(&session).expect("history should load");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, SessionHistoryEntryKind::UserPrompt);
+        assert_eq!(
+            entries[0].prompt_origin,
+            Some(crate::session::PromptOrigin::Arroba)
+        );
         assert_eq!(entries[1].kind, SessionHistoryEntryKind::ProviderOutput);
+        assert_eq!(entries[1].prompt_origin, None);
     }
 
     #[test]
@@ -1088,7 +1112,8 @@ mod tests {
             TerminalOutputKind::ProviderTool,
             Some("tool:browser".to_string()),
             "called browser",
-        );
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
         let event = HistoryEvent::transcript(
             7,
             &entry,
@@ -1122,12 +1147,23 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("tool:browser")
         );
+        assert_eq!(
+            event
+                .metadata
+                .get("prompt_origin")
+                .and_then(|value| value.as_str()),
+            Some("external")
+        );
         let round_tripped = event
             .to_session_history_entry()
             .expect("transcript event should convert back");
         assert_eq!(round_tripped.kind, SessionHistoryEntryKind::ProviderTool);
         assert_eq!(round_tripped.text, "called browser");
         assert_eq!(round_tripped.merge_key.as_deref(), Some("tool:browser"));
+        assert_eq!(
+            round_tripped.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
     }
 
     #[test]

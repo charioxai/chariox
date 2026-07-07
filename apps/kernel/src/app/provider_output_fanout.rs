@@ -178,7 +178,8 @@ impl ProviderOutputFanout {
                     kind,
                     merge_key,
                     text,
-                ),
+                )
+                .with_prompt_origin(prompt_origin),
             );
         }
         record
@@ -193,7 +194,10 @@ impl ProviderOutputFanout {
         self.session_store
             .get_session(session_id)
             .ok()
-            .and_then(|session| self.prompt_state_owner.active_prompt_for_agent(&session, agent_id))
+            .and_then(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
             .map(|prompt| prompt.prompt_origin())
     }
 

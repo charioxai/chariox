@@ -311,20 +311,24 @@ impl KernelRuntimeState {
             owned.provider_run_projection.update(run);
         }
         let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
+        let prompt_origin = owned.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
         let terminal_outputs = poll_result
             .chunks
             .into_iter()
             .map(|chunk| {
                 let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
                 if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                    history_entries.push(crate::history::SessionHistoryEntry::provider_output(
-                        session_id,
-                        provider_run_id,
-                        agent_id.as_deref(),
-                        chunk.kind.clone(),
-                        chunk.merge_key.clone(),
-                        history_text.clone(),
-                    ));
+                    history_entries.push(
+                        crate::history::SessionHistoryEntry::provider_output(
+                            session_id,
+                            provider_run_id,
+                            agent_id.as_deref(),
+                            chunk.kind.clone(),
+                            chunk.merge_key.clone(),
+                            history_text.clone(),
+                        )
+                        .with_prompt_origin(prompt_origin),
+                    );
                 }
                 super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                     provider_run_id: provider_run_id.to_string(),

@@ -170,15 +170,21 @@ impl KernelRuntimeState {
                     agent_id
                 }
             };
+            let prompt_origin = self
+                .owned
+                .active_prompt_origin_for_agent(&request.session_id, agent_id.as_deref());
             if output.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                history_entries.push(crate::history::SessionHistoryEntry::provider_output(
-                    &request.session_id,
-                    &output.provider_run_id,
-                    agent_id.as_deref(),
-                    output.kind.clone(),
-                    output.merge_key.clone(),
-                    output.text.clone(),
-                ));
+                history_entries.push(
+                    crate::history::SessionHistoryEntry::provider_output(
+                        &request.session_id,
+                        &output.provider_run_id,
+                        agent_id.as_deref(),
+                        output.kind.clone(),
+                        output.merge_key.clone(),
+                        output.text.clone(),
+                    )
+                    .with_prompt_origin(prompt_origin),
+                );
             }
             terminal_outputs.push(
                 super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
