@@ -202,7 +202,13 @@ test("createNextTranscriptEntry preserves explicit turn ids", () => {
 test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to prompt turn", () => {
   const turnId = 7
   const entries: AssignmentEntry<number>[] = [
-    assignmentEntry("prompt", "user", { promptId: "prompt-1", providerRunId: "run-1", turnId: 7 }),
+    assignmentEntry("prompt", "user", {
+      promptId: "prompt-1",
+      promptOrigin: "external",
+      sourceAttachmentId: "attachment-1",
+      providerRunId: "run-1",
+      turnId: 7,
+    }),
     assignmentEntry("assistant-by-prompt", "assistant", { promptId: "prompt-1", createdAtMs: 1_100 }),
     assignmentEntry("assistant-by-run", "assistant", { outputIdentity: "run-1:assistant", createdAtMs: 1_200 }),
     assignmentEntry("unrelated", "assistant", { promptId: "prompt-2", providerRunId: "run-2", createdAtMs: 1_300 }),
@@ -220,9 +226,13 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to 
   assert.equal(assigned, 2)
   assert.equal(entries[1]?.turnId, 7)
   assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.equal(entries[1]?.promptOrigin, "external")
+  assert.equal(entries[1]?.sourceAttachmentId, "attachment-1")
   assert.equal(entries[1]?.providerRunId, "run-1")
   assert.equal(entries[2]?.turnId, 7)
   assert.equal(entries[2]?.promptId, "prompt-1")
+  assert.equal(entries[2]?.promptOrigin, "external")
+  assert.equal(entries[2]?.sourceAttachmentId, "attachment-1")
   assert.equal(entries[2]?.providerRunId, "run-1")
   assert.equal(entries[3]?.turnId, undefined)
   assert.equal(entries[4]?.turnId, 9)
@@ -279,6 +289,8 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   }, assignmentEntry("canonical", "assistant", {
     turnId: 8,
     promptId: "prompt-1",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
     providerRunId: "run-1",
   }), {
     onRetargeted: (turnId, retargetedEntry, retargetedAtMs) => {
@@ -290,6 +302,8 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   assert.equal(entries[0]?.turnId, 3)
   assert.equal(entries[1]?.turnId, 8)
   assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.equal(entries[1]?.promptOrigin, "external")
+  assert.equal(entries[1]?.sourceAttachmentId, "attachment-1")
   assert.equal(entries[1]?.providerRunId, "run-1")
   assert.equal(entries[2]?.turnId, 4)
   assert.equal(entries[3]?.turnId, 3)
@@ -357,6 +371,8 @@ function assignmentEntry<TTurnId extends string | number>(
     readonly turnId?: TTurnId
     readonly turnTracking?: "none"
     readonly promptId?: string | null
+    readonly promptOrigin?: string | null
+    readonly sourceAttachmentId?: string | null
     readonly providerRunId?: string | null
     readonly outputIdentity?: string | null
     readonly createdAtMs?: number | null

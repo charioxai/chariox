@@ -20,6 +20,8 @@ export type TranscriptTurnAssignmentEntry<TTurnId extends TranscriptTurnAssignme
   turnId?: TTurnId | null
   readonly turnTracking?: "none"
   promptId?: string | null
+  promptOrigin?: string | null
+  sourceAttachmentId?: string | null
   providerRunId?: string | null
   readonly outputIdentity?: string | null
   readonly createdAtMs?: number | null
@@ -306,6 +308,8 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
     entry.turnId = options.turnId
     applyTranscriptTurnAssignmentMetadata(entry, {
       promptId,
+      promptOrigin: promptEntry.promptOrigin,
+      sourceAttachmentId: promptEntry.sourceAttachmentId,
       providerRunId,
     })
     options.onAssigned?.(options.turnId, entry, transcriptAssignmentTimestamp(entry, options.nowMs))
@@ -358,11 +362,19 @@ function applyTranscriptTurnAssignmentMetadata<TTurnId extends TranscriptTurnAss
   entry: TranscriptTurnAssignmentEntry<TTurnId>,
   metadata: {
     readonly promptId?: string | null | undefined
+    readonly promptOrigin?: string | null | undefined
+    readonly sourceAttachmentId?: string | null | undefined
     readonly providerRunId?: string | null | undefined
   },
 ): void {
   if (entry.promptId === undefined && metadata.promptId !== undefined) {
     entry.promptId = metadata.promptId
+  }
+  if (entry.promptOrigin === undefined && metadata.promptOrigin !== undefined) {
+    entry.promptOrigin = metadata.promptOrigin
+  }
+  if (entry.sourceAttachmentId === undefined && metadata.sourceAttachmentId !== undefined) {
+    entry.sourceAttachmentId = metadata.sourceAttachmentId
   }
   if (entry.providerRunId === undefined && metadata.providerRunId !== undefined) {
     entry.providerRunId = metadata.providerRunId
