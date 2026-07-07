@@ -253,7 +253,7 @@ export function mergeExternalProviderObservedHistoryFields<T extends ExternalPro
   target: T,
   incoming: ExternalProviderObservedKernelFields,
 ): T {
-  if (incoming.external_observation === undefined && incoming.source === undefined) {
+  if (!hasExternalProviderObservedHistoryMetadata(incoming)) {
     return target
   }
   if (incoming.source !== undefined) {
@@ -288,6 +288,15 @@ export function mergeExternalProviderObservedHistoryFields<T extends ExternalPro
     target.external_observation = externalObservation
   }
   return target
+}
+
+function hasExternalProviderObservedHistoryMetadata(incoming: ExternalProviderObservedKernelFields): boolean {
+  return incoming.source !== undefined
+    || incoming.external_provider !== undefined
+    || incoming.external_provider_session_id !== undefined
+    || incoming.external_provider_turn_id !== undefined
+    || incoming.observed_at_ms !== undefined
+    || incoming.external_observation !== undefined
 }
 
 export function mergeExternalProviderObservedTranscriptFields<T extends ExternalProviderObservedMutableTranscriptFields>(

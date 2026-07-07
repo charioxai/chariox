@@ -606,6 +606,26 @@ test("external provider observed history field merge canonicalizes observed sour
   assert.equal(target.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
 })
 
+test("external provider observed history field merge recovers split identity metadata", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+  })
+})
+
 test("external provider observed history field merge lets settlement override passive telemetry", () => {
   const target = {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,

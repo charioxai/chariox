@@ -24,9 +24,7 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
       if (entry.entry.attachments !== undefined) {
         previous.entry.attachments = mergeSessionHistoryPromptAttachments(previous.entry.attachments, entry.entry.attachments)
       }
-      if (previous.entry.prompt_origin === undefined && entry.entry.prompt_origin !== undefined) {
-        previous.entry.prompt_origin = entry.entry.prompt_origin
-      }
+      fillMissingSessionHistoryEntryMetadata(previous.entry, entry.entry)
       mergeExternalProviderObservedHistoryFields(previous.entry, entry.entry)
       continue
     }
@@ -41,6 +39,30 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
   }
 
   return merged
+}
+
+function fillMissingSessionHistoryEntryMetadata(
+  target: SessionHistoryEntry,
+  incoming: SessionHistoryEntry,
+): void {
+  if (target.agent_id === undefined && incoming.agent_id !== undefined) {
+    target.agent_id = incoming.agent_id
+  }
+  if (target.provider_run_id === undefined && incoming.provider_run_id !== undefined) {
+    target.provider_run_id = incoming.provider_run_id
+  }
+  if (target.prompt_origin === undefined && incoming.prompt_origin !== undefined) {
+    target.prompt_origin = incoming.prompt_origin
+  }
+  if (target.merge_key === undefined && incoming.merge_key !== undefined) {
+    target.merge_key = incoming.merge_key
+  }
+  if (target.source_attachment_id === undefined && incoming.source_attachment_id !== undefined) {
+    target.source_attachment_id = incoming.source_attachment_id
+  }
+  if (target.timestamp_ms === undefined && incoming.timestamp_ms !== undefined) {
+    target.timestamp_ms = incoming.timestamp_ms
+  }
 }
 
 export function cloneSessionHistoryEntry(entry: SessionHistoryEntry): SessionHistoryEntry {

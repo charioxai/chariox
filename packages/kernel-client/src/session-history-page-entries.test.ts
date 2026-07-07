@@ -73,7 +73,7 @@ test("adjacent session history page entries preserve identity fields and richer 
   })
 })
 
-test("adjacent session history page entries recover prompt ownership from later fragments", () => {
+test("adjacent session history page entries recover stable metadata from later fragments", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
     pageEntry(8, 0, 4, {
       kind: "user_prompt",
@@ -82,11 +82,25 @@ test("adjacent session history page entries recover prompt ownership from later 
     pageEntry(8, 4, 8, {
       kind: "user_prompt",
       text: " now",
+      agent_id: "agent-1",
+      provider_run_id: "run-1",
       prompt_origin: "external",
+      merge_key: "prompt-1",
+      source_attachment_id: "attachment-1",
+      timestamp_ms: 1_000,
     }),
   ])
 
-  assert.equal(merged[0]?.entry.prompt_origin, "external")
+  assert.deepEqual(merged[0]?.entry, {
+    kind: "user_prompt",
+    text: "look now",
+    agent_id: "agent-1",
+    provider_run_id: "run-1",
+    prompt_origin: "external",
+    merge_key: "prompt-1",
+    source_attachment_id: "attachment-1",
+    timestamp_ms: 1_000,
+  })
 })
 
 test("adjacent session history page entries upgrade matching attachments without dropping extra chips", () => {
@@ -168,6 +182,34 @@ test("adjacent session history page entries merge external observation settlemen
       settles_active_prompt: true,
       passive_telemetry: false,
     },
+  })
+})
+
+test("adjacent session history page entries recover external observation identity from later fragments", () => {
+  const merged = mergeAdjacentSessionHistoryPageEntries([
+    pageEntry(4, 0, 4, {
+      kind: "provider_output",
+      text: "work",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    }),
+    pageEntry(4, 4, 8, {
+      kind: "provider_output",
+      text: " done",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      observed_at_ms: 1_000,
+    }),
+  ])
+
+  assert.deepEqual(merged[0]?.entry, {
+    kind: "provider_output",
+    text: "work done",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 1_000,
   })
 })
 
