@@ -83,6 +83,16 @@ test("agent activity busy helper follows kernel projected activity semantics", (
   }), false)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
+    prompt_status: "canceled",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "failed",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
     prompt_status: "unknown",
     busy: false,
   }), false)
@@ -114,12 +124,26 @@ test("agent activity busy helper follows kernel projected activity semantics", (
     status: "idle",
     prompt_status: "none",
     busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "canceled" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "failed" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
     active_turn: { prompt_id: "prompt-1", status: "queued" },
   }), false)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1" }), true)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "queued" }), false)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "dispatching" }), true)
   assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "completed" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "canceled" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "failed" }), false)
   assert.equal(agentRuntimeActivityIsBusy({
     status: "idle",
     prompt_status: "none",
@@ -136,6 +160,8 @@ test("agent activity helpers normalize status vocabulary", () => {
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" completed "), "none")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" Dispatching "), "dispatching")
   assert.equal(normalizeAgentRuntimePromptProjectionStatus(" cancelled "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" canceled "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" failed "), "none")
   assert.equal(agentRuntimePromptStatusIsActive("queued"), true)
   assert.equal(agentRuntimePromptStatusIsActive("dispatching"), true)
   assert.equal(agentRuntimePromptStatusIsActive("completed"), false)

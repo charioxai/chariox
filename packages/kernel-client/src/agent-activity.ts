@@ -239,6 +239,8 @@ export function normalizeAgentRuntimePromptProjectionStatus(
     case "none":
     case "completed":
     case "cancelled":
+    case "canceled":
+    case "failed":
       return "none"
     default:
       return null
