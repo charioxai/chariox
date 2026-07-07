@@ -81,6 +81,8 @@ pub struct DaemonConfig {
     pub operational_history_read_delay_ms: u64,
     pub provider_catalog_read_delay_ms: u64,
     pub provider_process_list_delay_ms: u64,
+    pub provider_process_idle_ttl_ms: u64,
+    pub provider_process_orphan_ttl_ms: u64,
     pub provider_runtime_init_delay_ms: u64,
 }
 
@@ -145,6 +147,8 @@ impl DaemonConfig {
             operational_history_read_delay_ms: 0,
             provider_catalog_read_delay_ms: 0,
             provider_process_list_delay_ms: 0,
+            provider_process_idle_ttl_ms: 300_000,
+            provider_process_orphan_ttl_ms: 30_000,
             provider_runtime_init_delay_ms: 0,
             daemon_id,
             host_machine_id: host_machine_id.into(),

@@ -117,6 +117,14 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
+            provider_process_idle_ttl_ms: env::var("ARROBA_PROVIDER_PROCESS_IDLE_TTL_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(300_000),
+            provider_process_orphan_ttl_ms: env::var("ARROBA_PROVIDER_PROCESS_ORPHAN_TTL_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000),
             provider_runtime_init_delay_ms: env::var("ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())

@@ -1,6 +1,5 @@
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::provider::ProviderRunState;
 use crate::session::MetaagentTaskStatus;
 
 use super::KernelRuntimeState;
@@ -274,10 +273,15 @@ impl KernelRuntimeState {
         if completion.started_next.is_some() {
             return Ok(());
         }
-        let session = self.owned.session_store.get_session(session_id)?;
-        if self.metaagent_has_active_provider_run(&session, metaagent.id()) {
+        if self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, metaagent.id())
+            .is_some_and(|run| self.owned.active_turns.snapshot().contains_key(run.id()))
+        {
             return Ok(());
         }
+        let session = self.owned.session_store.get_session(session_id)?;
         let Some(task) = session.metaagent_task(metaagent.id()) else {
             return Ok(());
         };
@@ -333,45 +337,6 @@ impl KernelRuntimeState {
         );
         self.spawn_workflow_prompt_dispatches(dispatches);
         Ok(())
-    }
-
-    fn metaagent_has_active_provider_run(
-        &self,
-        session: &crate::session::RuntimeSession,
-        metaagent_id: &str,
-    ) -> bool {
-        let active_turns = self.owned.active_turns.snapshot();
-        if self
-            .owned
-            .provider_store
-            .get_run_for_agent(session.id(), metaagent_id)
-            .is_some_and(|run| {
-                matches!(
-                    run.state(),
-                    ProviderRunState::Starting | ProviderRunState::Running
-                ) || active_turns.contains_key(run.id())
-            })
-        {
-            return true;
-        }
-        let Some(active_provider_run_id) = session.active_provider_run_id() else {
-            return false;
-        };
-        let Ok(run) = self.owned.provider_store.get_run(active_provider_run_id) else {
-            return false;
-        };
-        if run.session_id() != session.id() {
-            return false;
-        }
-        if let Some(agent_id) = run.agent_instance_id() {
-            if agent_id != metaagent_id {
-                return false;
-            }
-        }
-        matches!(
-            run.state(),
-            ProviderRunState::Starting | ProviderRunState::Running
-        ) || active_turns.contains_key(run.id())
     }
 
     fn metaagent_has_active_owned_regular_agent_work(

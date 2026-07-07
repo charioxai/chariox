@@ -12,8 +12,9 @@ use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{
     append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    decode_codex_output_delta_chunk, sync_completed_text_item, sync_tool_item_with_manifest,
-    CodexTextTranscriptState, CodexToolTranscriptState,
+    codex_item_status_is_terminal, decode_codex_output_delta_chunk, is_codex_tool_item,
+    normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
+    text_from_content_value, CodexTextTranscriptState, CodexToolTranscriptState,
 };
 use super::turn::{
     note_assistant_item_completed, note_tool_item_completed, note_tool_item_started,
@@ -303,7 +304,14 @@ pub(super) fn backfill_external_completed_turn(
     if !matches!(status, "completed" | "failed" | "cancelled" | "canceled") {
         return Ok(());
     }
-    if let Some(items) = turn.get("items").and_then(Value::as_array) {
+    let items = turn.get("items").and_then(Value::as_array);
+    let error_message = codex_turn_error_message(turn);
+    if status == "completed"
+        && !codex_completed_turn_has_settlement_evidence(items, error_message.as_deref())
+    {
+        return Ok(());
+    }
+    if let Some(items) = items {
         for item in items {
             if let Some(chunk) =
                 sync_tool_item_with_manifest(&mut state.tool_items, item, remote_extension_manifest)
@@ -315,10 +323,13 @@ pub(super) fn backfill_external_completed_turn(
         }
     }
     if status == "failed" {
-        *terminal_failure =
-            Some(codex_turn_error_message(turn).unwrap_or_else(|| "Codex turn failed".to_string()));
+        *terminal_failure = Some(
+            error_message
+                .clone()
+                .unwrap_or_else(|| "Codex turn failed".to_string()),
+        );
     }
-    if let Some(message) = codex_turn_error_message(turn) {
+    if let Some(message) = error_message {
         notices.push(message);
     }
     completions.push(CodexAssistantCompletion {
@@ -328,6 +339,35 @@ pub(super) fn backfill_external_completed_turn(
     *prompt_completed = true;
     state.active_turn_id = None;
     Ok(())
+}
+
+pub(super) fn codex_completed_turn_has_settlement_evidence(
+    items: Option<&Vec<Value>>,
+    error_message: Option<&str>,
+) -> bool {
+    if error_message.is_some_and(|message| !message.is_empty()) {
+        return true;
+    }
+    items.is_some_and(|items| {
+        items.iter().any(|item| {
+            codex_completed_turn_item_has_assistant_text(item)
+                || (is_codex_tool_item(item) && codex_item_status_is_terminal(item))
+        })
+    })
+}
+
+fn codex_completed_turn_item_has_assistant_text(item: &Value) -> bool {
+    let Some("agentMessage") = item
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(normalize_codex_item_type)
+    else {
+        return false;
+    };
+    item.get("text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+        || text_from_content_value(item.get("content")).is_some()
 }
 
 fn codex_turn_completed_at_ms(turn: &Value) -> Option<u64> {

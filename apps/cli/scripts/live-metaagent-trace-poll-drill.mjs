@@ -727,7 +727,7 @@ async function main() {
   const shellBin = path.join(repoRoot, 'apps/shell/dist/shell.js')
   const env = {
     ...process.env,
-    HOME: process.env.HOME ?? home,
+    HOME: home,
     ARROBA_KERNEL_PORT: String(ports.kernelPort),
     ARROBA_MCP_PORT: String(ports.mcpPort),
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
@@ -737,6 +737,8 @@ async function main() {
     ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
+  delete env.ARROBA_RELAY_URL
+  delete env.ARROBA_RELAY_TOKEN
   let daemon = null
   let client = null
   let sessionId = null

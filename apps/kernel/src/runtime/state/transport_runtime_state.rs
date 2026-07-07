@@ -24,8 +24,17 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
-        self.sweep_stale_terminal_attachments(crate::session::unix_epoch_ms())
-            .await;
+        let now_ms = crate::session::unix_epoch_ms();
+        self.sweep_stale_terminal_attachments(now_ms).await;
+        if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
+            crate::logging::warn_with_fields(
+                "daemon.provider_process_gc",
+                "provider process gc failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
         let pumped_provider_run_ids = self
             .with_app_side_effect(|app| {
                 let pumped_provider_run_ids =
@@ -111,6 +120,31 @@ impl KernelRuntimeState {
             .terminal_stream
             .wait_for_session_change_after(session_id, sequence)
             .await;
+    }
+
+    pub(crate) async fn reap_idle_provider_processes(
+        &self,
+        now_ms: u64,
+    ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let idle_ttl_ms = config.provider_process_idle_ttl_ms;
+        let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
+        let summary = self
+            .with_app_side_effect(move |app| {
+                app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
+            })
+            .await?;
+        if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
+            crate::logging::warn_with_fields(
+                "daemon.provider_process_gc",
+                "provider process gc reaped idle processes",
+                serde_json::json!({
+                    "tracked_processes_reaped": summary.tracked_processes_reaped,
+                    "orphan_processes_reaped": summary.orphan_processes_reaped,
+                }),
+            );
+        }
+        Ok(summary)
     }
 
     pub(crate) async fn wait_for_terminal_attachment_change_after(

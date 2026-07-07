@@ -1,4 +1,7 @@
 import {
+  normalizePromptOrigin,
+} from "./prompt-origin.js"
+import {
   applyExternalProviderObservedTranscriptMetadata,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
@@ -66,7 +69,7 @@ export function terminalRecordTranscriptMetadata(
 ): TerminalRecordTranscriptMetadata {
   const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
   const promptId = nullableStringField(record, "prompt_id")
-  const promptOrigin = nullableStringField(record, "prompt_origin")
+  const promptOrigin = nullablePromptOriginField(record)
   const sourceAttachmentId = nullableStringField(record, "source_attachment_id")
   return {
     ...(promptId !== undefined ? { promptId } : {}),
@@ -74,6 +77,15 @@ export function terminalRecordTranscriptMetadata(
     ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
     ...(externalObservedMetadata ?? {}),
   }
+}
+
+function nullablePromptOriginField(
+  record: TerminalRecordTranscriptFields,
+): string | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, "prompt_origin")) {
+    return undefined
+  }
+  return normalizePromptOrigin(nullableStringField(record, "prompt_origin"))
 }
 
 function nullableStringField(

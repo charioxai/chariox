@@ -19,7 +19,7 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
   assert.deepEqual(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",
     prompt_id: "prompt-1",
-    prompt_origin: "external",
+    prompt_origin: " External ",
     source_attachment_id: "attachment-1",
   }), {
     promptId: "prompt-1",

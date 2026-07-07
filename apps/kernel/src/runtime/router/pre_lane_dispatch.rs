@@ -7,7 +7,6 @@ use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
-use crate::runtime::provider_process_control::projected_provider_processes_response;
 use crate::runtime::provider_run_control::projected_provider_run_response;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
@@ -186,16 +185,6 @@ impl CommandRouter {
                 request,
                 caller_user_id,
             )? {
-                return Ok(Some(response));
-            }
-        }
-        if let LocalDaemonRequest::ListProviderProcesses(request) = request {
-            if let Some(response) = projected_provider_processes_response(
-                &self.provider_process_projection,
-                &self.provider_run_projection,
-                request,
-                caller_user_id,
-            ) {
                 return Ok(Some(response));
             }
         }

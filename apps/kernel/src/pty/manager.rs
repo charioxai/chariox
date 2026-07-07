@@ -95,12 +95,23 @@ impl PtyManager {
             message: "provider run does not define a managed PTY program".to_string(),
         })?;
 
+        let mut env = run.pty_env().clone();
+        env.insert(
+            "ARROBA_MANAGED_PROVIDER_PROCESS".to_string(),
+            "1".to_string(),
+        );
+        env.insert("ARROBA_PROVIDER_RUN_ID".to_string(), run.id().to_string());
+        env.insert(
+            "ARROBA_PROVIDER_PROCESS_KEY".to_string(),
+            process_key.clone(),
+        );
+
         let request = PtySpawnRequest {
             process_key,
             provider_run_id: run.id().to_string(),
             program: program.to_string(),
             args: run.pty_args().to_vec(),
-            env: run.pty_env().clone(),
+            env,
             env_remove: run.pty_env_remove().to_vec(),
             working_directory: run.working_directory().cloned(),
             cols: 120,
@@ -337,26 +348,36 @@ impl PtyManager {
             return Ok(false);
         };
 
-        let Some(process) = self.processes.get_mut(&process_key) else {
+        self.remove_process_by_key(&process_key, Some(provider_run_id))
+    }
+
+    pub fn remove_process_by_key(
+        &mut self,
+        process_key: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let Some(process) = self.processes.get_mut(process_key) else {
             return Ok(false);
         };
-        if process.reference_count > 1 {
+        if process.reference_count > 1 && provider_run_id.is_some() {
             process.reference_count -= 1;
             return Ok(true);
         }
 
+        self.process_aliases
+            .retain(|_, alias_process_key| alias_process_key != process_key);
         let mut process =
             self.processes
-                .remove(&process_key)
+                .remove(process_key)
                 .ok_or_else(|| DaemonError::PtyProcessNotFound {
-                    provider_run_id: provider_run_id.to_string(),
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                 })?;
 
         let status = process
             .child
             .try_wait()
             .map_err(|error| DaemonError::PtyCleanup {
-                provider_run_id: provider_run_id.to_string(),
+                provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                 message: error.to_string(),
             })?;
 
@@ -365,14 +386,14 @@ impl PtyManager {
                 .child
                 .kill()
                 .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.to_string(),
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                     message: error.to_string(),
                 })?;
             process
                 .child
                 .wait()
                 .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.to_string(),
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                     message: error.to_string(),
                 })?;
         }

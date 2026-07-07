@@ -1,3 +1,4 @@
+use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
 use super::*;
 
@@ -919,4 +920,36 @@ fn error_notification_without_active_turn_records_terminal_failure() {
         Some("unsupported model gpt-5.2-codex")
     );
     assert_eq!(notices, vec!["unsupported model gpt-5.2-codex".to_string()]);
+}
+
+#[test]
+fn completed_turn_backfill_requires_items_or_error_evidence() {
+    let empty_items = Vec::new();
+    assert!(!codex_completed_turn_has_settlement_evidence(
+        Some(&empty_items),
+        None
+    ));
+    assert!(!codex_completed_turn_has_settlement_evidence(None, None));
+    assert!(!codex_completed_turn_has_settlement_evidence(
+        Some(&vec![json!({
+            "type": "task_started",
+            "turn_id": "turn-1"
+        })]),
+        None
+    ));
+    assert!(codex_completed_turn_has_settlement_evidence(
+        Some(&vec![json!({ "type": "agentMessage", "text": "done" })]),
+        None
+    ));
+    assert!(codex_completed_turn_has_settlement_evidence(
+        Some(&vec![json!({
+            "type": "commandExecution",
+            "status": "completed"
+        })]),
+        None
+    ));
+    assert!(codex_completed_turn_has_settlement_evidence(
+        Some(&empty_items),
+        Some("model rejected")
+    ));
 }

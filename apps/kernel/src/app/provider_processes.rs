@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::app::{DaemonApp, TrackedProviderProcess};
+use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
@@ -10,6 +11,12 @@ use super::provider_liveness::poll_provider_run_process_running;
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
     app: &'a mut DaemonApp,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProviderProcessReapSummary {
+    pub(crate) tracked_processes_reaped: usize,
+    pub(crate) orphan_processes_reaped: usize,
 }
 
 impl<'a> ProviderLaunchProcessRuntime<'a> {
@@ -169,6 +176,109 @@ impl<'a> ProviderProcessTracker<'a> {
         Ok(safe_processes)
     }
 
+    pub(crate) fn reap_idle_processes(
+        &mut self,
+        now_ms: u64,
+        idle_ttl_ms: u64,
+        orphan_ttl_ms: u64,
+    ) -> Result<ProviderProcessReapSummary, DaemonError> {
+        let mut summary = ProviderProcessReapSummary::default();
+        let safe_processes = Self::snapshot(self.app)
+            .into_iter()
+            .filter(|process| process.teardown_safe)
+            .filter(|process| now_ms.saturating_sub(process.last_activity_at_ms) >= idle_ttl_ms)
+            .collect::<Vec<_>>();
+
+        for process in safe_processes {
+            self.reap_tracked_process(&process)?;
+            summary.tracked_processes_reaped += 1;
+        }
+
+        let orphan_process_ids = owned_orphan_provider_process_ids(
+            self.app.config(),
+            &tracked_provider_pids(self.app),
+            orphan_ttl_ms,
+        );
+        for pid in orphan_process_ids {
+            if crate::runtime::process_health::terminate_process_tree(pid) {
+                summary.orphan_processes_reaped += 1;
+                crate::logging::warn_with_fields(
+                    "daemon.provider_process_gc",
+                    "reaped orphaned managed provider process",
+                    serde_json::json!({
+                        "pid": pid,
+                    }),
+                );
+            }
+        }
+
+        self.app
+            .update_provider_process_projection(Self::snapshot(self.app));
+        Ok(summary)
+    }
+
+    fn reap_tracked_process(&mut self, process: &ProviderProcessInfo) -> Result<(), DaemonError> {
+        let (process_key, run_ids, pid) = {
+            let tracking = self.app.provider_process_tracking.read();
+            let Some((process_key, tracked)) = tracking
+                .processes
+                .iter()
+                .find(|(_, tracked)| tracked.process_id == process.process_id)
+            else {
+                return Ok(());
+            };
+            (
+                process_key.clone(),
+                tracked.owner_provider_run_ids.clone(),
+                tracked.pid,
+            )
+        };
+
+        for run_id in &run_ids {
+            if let Ok(run) = self.app.providers.get_run(run_id) {
+                if run.state() != ProviderRunState::Ended {
+                    if let Ok(outcome) = self
+                        .app
+                        .providers
+                        .terminate_run_provider_only(run.session_id(), run.id())
+                    {
+                        clear_active_provider_run_session_pointer(
+                            self.app,
+                            run.session_id(),
+                            outcome.run().id(),
+                        )?;
+                        self.app.update_provider_run_projection(outcome.into_run());
+                    }
+                }
+            }
+            let _ = self.remove_run(run_id);
+        }
+
+        let removed_by_key = self.app.pty.remove_process_by_key(&process_key, None)?;
+        if !removed_by_key {
+            if let Some(pid) = pid {
+                let _ = crate::runtime::process_health::terminate_process_tree(pid);
+            }
+            self.app
+                .provider_process_tracking
+                .write()
+                .processes
+                .remove(&process_key);
+        }
+
+        crate::logging::warn_with_fields(
+            "daemon.provider_process_gc",
+            "reaped idle managed provider process",
+            serde_json::json!({
+                "process_id": process.process_id,
+                "pid": pid,
+                "owner_provider_run_ids": run_ids,
+            }),
+        );
+
+        Ok(())
+    }
+
     fn snapshot(app: &DaemonApp) -> Vec<ProviderProcessInfo> {
         let mut processes = Vec::new();
         let tracking = app.provider_process_tracking.read();
@@ -270,6 +380,56 @@ impl<'a> ProviderProcessTracker<'a> {
     }
 }
 
+fn tracked_provider_pids(app: &DaemonApp) -> BTreeSet<u32> {
+    app.provider_process_tracking
+        .read()
+        .processes
+        .values()
+        .filter_map(|process| process.pid)
+        .collect()
+}
+
+fn owned_orphan_provider_process_ids(
+    config: &DaemonConfig,
+    tracked_pids: &BTreeSet<u32>,
+    orphan_ttl_ms: u64,
+) -> Vec<u32> {
+    let output = match std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,etimes=,command="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Vec::new(),
+    };
+    let mcp_url = format!(
+        "http://{}:{}/mcp",
+        config.runtime_mcp_host, config.runtime_mcp_port
+    );
+    let min_age_secs = orphan_ttl_ms.div_ceil(1_000);
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse::<u32>().ok()?;
+            let _ppid = parts.next()?.parse::<u32>().ok()?;
+            let age_secs = parts.next()?.parse::<u64>().ok()?;
+            let command = parts.collect::<Vec<_>>().join(" ");
+            if pid == std::process::id()
+                || tracked_pids.contains(&pid)
+                || age_secs < min_age_secs
+                || !command.contains("codex app-server")
+                || !command.contains("mcp_servers.arroba.url")
+                || !command.contains(&mcp_url)
+            {
+                return None;
+            }
+            Some(pid)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn clear_active_provider_run_session_pointer(
     app: &mut DaemonApp,
     session_id: &str,
@@ -313,5 +473,14 @@ impl DaemonApp {
         force: bool,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
         ProviderProcessTracker::new(self).teardown_safe_processes(provider, force)
+    }
+
+    pub(crate) fn reap_idle_provider_processes(
+        &mut self,
+        now_ms: u64,
+        idle_ttl_ms: u64,
+        orphan_ttl_ms: u64,
+    ) -> Result<ProviderProcessReapSummary, DaemonError> {
+        ProviderProcessTracker::new(self).reap_idle_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
     }
 }

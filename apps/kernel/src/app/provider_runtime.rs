@@ -1111,6 +1111,101 @@ mod tests {
     }
 
     #[test]
+    fn provider_process_gc_reaps_idle_managed_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+        let pid = app
+            .pty
+            .process_id(run.id())
+            .expect("pty pid should resolve")
+            .expect("managed run should have pid");
+
+        let summary = app
+            .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0, u64::MAX)
+            .expect("provider process gc should succeed");
+
+        assert_eq!(summary.tracked_processes_reaped, 1);
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .processes
+            .is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .is_empty());
+        assert_eq!(
+            app.providers()
+                .get_run(run.id())
+                .expect("run should still be stored")
+                .state(),
+            ProviderRunState::Ended,
+        );
+        assert!(!crate::runtime::process_health::process_running(pid));
+    }
+
+    #[test]
+    fn provider_process_gc_keeps_attached_managed_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let _attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+        let pid = app
+            .pty
+            .process_id(run.id())
+            .expect("pty pid should resolve")
+            .expect("managed run should have pid");
+
+        let summary = app
+            .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0, u64::MAX)
+            .expect("provider process gc should succeed");
+
+        assert_eq!(summary.tracked_processes_reaped, 0);
+        assert_eq!(app.provider_process_tracking.snapshot().processes.len(), 1);
+        assert_eq!(
+            app.providers()
+                .get_run(run.id())
+                .expect("run should still be stored")
+                .state(),
+            ProviderRunState::Running,
+        );
+        assert!(crate::runtime::process_health::process_running(pid));
+
+        app.teardown_provider_processes(None, true)
+            .expect("cleanup should succeed");
+    }
+
+    #[test]
     fn provider_processes_do_not_teardown_with_per_agent_active_prompt() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
