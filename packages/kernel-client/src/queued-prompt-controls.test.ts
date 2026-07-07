@@ -633,6 +633,23 @@ test("project queued prompt normalizes prompt ownership", () => {
     steerDisabledReason: null,
     cancelDisabledReason: null,
   })
+
+  assert.equal(projectQueuedPrompt({
+    id: "external:codex:thread-1:turn-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "external queued",
+    status: "queued",
+  })?.promptOrigin, "external")
+
+  assert.equal(projectQueuedPrompt({
+    id: "external:codex:thread-1:turn-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "arroba-owned queued",
+    status: "queued",
+    prompt_origin: "arroba",
+  })?.promptOrigin, "arroba")
 })
 
 test("queued prompts for agent clear stale queues when projected activity is idle", () => {
