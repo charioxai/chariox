@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>111 allowlisted files remain after initial splits</td>
+              <td>110 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -275,6 +275,12 @@
               <td><code>e2d143064</code> <span class="muted">Split artifact coordinator tests</span></td>
               <td>Artifact edit coordinator production code now stays in the source module, while snapshot, stale-edit, and reservation behavior coverage lives in a sibling test module.</td>
               <td>Focused <code>io::coordinator</code> kernel tests, targeted <code>rustfmt --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>4d3970a8b</code> <span class="muted">Split runtime transport subscription tests</span></td>
+              <td>Runtime transport subscription production code now stays in the source module, while deadline and replay-compaction coverage lives in a sibling test module.</td>
+              <td>Focused <code>runtime_transport::subscriptions</code> kernel tests, <code>cargo fmt --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
