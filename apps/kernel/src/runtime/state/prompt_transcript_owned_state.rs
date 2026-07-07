@@ -569,7 +569,7 @@ impl KernelRuntimeOwnedState {
         workflow_run_id: Option<&str>,
         workflow_node_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let session = self.session_snapshot(session_id)?;
+        let session = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
