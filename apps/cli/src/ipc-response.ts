@@ -4,7 +4,3 @@ export function expectVariant<T>(response: Record<string, unknown>, variant: str
   }
   return response[variant] as T
 }
-
-export function firstVariantName(value: Record<string, unknown>): string {
-  return Object.keys(value)[0] ?? "unknown"
-}

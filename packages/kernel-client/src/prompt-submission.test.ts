@@ -6,6 +6,7 @@ import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
   detachedPromptSubmitDecision,
+  promptSubmittedPromptIdFromResponse,
   promptSubmittedPayloadFromResponse,
   promptSubmissionFailureRuntimeState,
   promptSubmissionFailureTransition,
@@ -159,6 +160,68 @@ test("prompt submitted response helpers parse acknowledgement shape", () => {
   assert.equal(promptSubmissionOutcomeName(payload), "Started")
   assert.equal(promptSubmissionOutcomeName({ outcome: {} }), "unknown")
   assert.equal(promptSubmissionOutcomeName({}), "unknown")
+})
+
+test("prompt submitted prompt id helper applies projected session activity", () => {
+  const stalePrompt = {
+    id: "prompt-stale",
+    source_attachment_id: "attachment-state",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+  }
+
+  assert.equal(promptSubmittedPromptIdFromResponse({
+    PromptSubmitted: {
+      outcome: {},
+      session: makeSession({
+        active_prompt: stalePrompt,
+        prompt_states: {
+          "agent-1": {
+            active_prompt: stalePrompt,
+            queued_prompts: [],
+          },
+        },
+      }),
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+        },
+      },
+      agent_activity_revision: 7,
+    },
+  }, "agent-1"), null)
+
+  assert.equal(promptSubmittedPromptIdFromResponse({
+    PromptSubmitted: {
+      outcome: {},
+      session: makeSession({
+        prompt_states: {
+          "agent-1": {
+            active_prompt: stalePrompt,
+            queued_prompts: [],
+          },
+        },
+      }),
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-stale",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+      agent_activity_revision: 8,
+    },
+  }, "agent-1"), "prompt-stale")
 })
 
 test("prompt submission target agent id reads outcome prompt identity", () => {

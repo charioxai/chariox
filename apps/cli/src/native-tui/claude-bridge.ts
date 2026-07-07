@@ -11,8 +11,7 @@ import {
   sessionActivePromptForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
 import {
-  promptSubmittedPayloadFromResponse,
-  promptSubmissionPrompt,
+  promptSubmittedPromptIdFromResponse,
 } from "@arroba/kernel-client/prompt-submission"
 import { LocalIpcClient } from "../ipc.js"
 import {
@@ -104,7 +103,7 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
               const response = await options.client.send<Record<string, unknown>>(
                 submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
               )
-              const submittedPrompt = extractSubmittedPromptId(response, options.agentId)
+              const submittedPrompt = promptSubmittedPromptIdFromResponse(response, options.agentId)
               if (submittedPrompt) {
                 activePromptId = submittedPrompt
                 nativeSubmittedPromptIds.add(submittedPrompt)
@@ -202,23 +201,6 @@ export function promptForAgent(session: RuntimeSession, agentId: string): Prompt
     session as Parameters<typeof sessionActivePromptForAgent>[0],
     agentId,
   ) as PromptQueueItem | null
-}
-
-export function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
-  const payload = promptSubmittedPayloadFromResponse(response)
-  if (!payload) return null
-  if (!payload.session) {
-    return promptSubmissionPrompt(payload, agentId)?.id ?? null
-  }
-  const session = normalizeRuntimeSessionWithAgentActivity({
-    session: payload.session,
-    agent_activity: payload.agent_activity ?? undefined,
-    agent_activity_revision: payload.agent_activity_revision ?? undefined,
-  })
-  return promptSubmissionPrompt({
-    ...payload,
-    session,
-  }, agentId)?.id ?? null
 }
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {

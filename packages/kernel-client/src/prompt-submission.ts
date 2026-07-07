@@ -4,6 +4,9 @@ import {
   promptOriginFromRecord,
 } from "./prompt-origin.js"
 import {
+  normalizeRuntimeSessionWithAgentActivity,
+} from "./runtime-session-normalization.js"
+import {
   sessionActivePromptIdForAgent,
   sessionPromptForAgent,
 } from "./session-prompt-identity.js"
@@ -139,6 +142,28 @@ export function expectPromptSubmittedPayload(response: Record<string, unknown>):
 
 export function promptSubmissionOutcomeName(payload: { readonly outcome?: Record<string, unknown> | null }): string {
   return Object.keys(payload.outcome ?? {})[0] ?? "unknown"
+}
+
+export function promptSubmittedPromptIdFromResponse(
+  response: Record<string, unknown>,
+  targetAgentId: string,
+): string | null {
+  const payload = promptSubmittedPayloadFromResponse(response)
+  if (!payload) {
+    return null
+  }
+  if (!payload.session) {
+    return promptSubmissionPrompt(payload, targetAgentId)?.id ?? null
+  }
+  const session = normalizeRuntimeSessionWithAgentActivity({
+    session: payload.session,
+    agent_activity: payload.agent_activity,
+    agent_activity_revision: payload.agent_activity_revision,
+  })
+  return promptSubmissionPrompt({
+    ...payload,
+    session,
+  }, targetAgentId)?.id ?? null
 }
 
 export function promptSubmissionTargetAgentId(payload: PromptSubmittedPayload): string | null {
