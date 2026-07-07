@@ -15,7 +15,6 @@ packages/kernel-client/src/kernel-types.ts
 apps/kernel/src/terminal/stream.rs
 apps/kernel/src/app/kernel_session.rs
 apps/cli/scripts/live-provider-thread-transfer-drill.mjs
-packages/kernel-client/src/session-runtime-projection.test.ts
 apps/kernel/src/transport/runtime_tools.rs
 apps/cli/scripts/lib/drill-validation-gate-aggregate.mjs
 apps/kernel/src/runtime/router/meta_runtime_command.rs
