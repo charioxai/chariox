@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>109 allowlisted files remain after initial splits</td>
+              <td>108 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -287,6 +287,12 @@
               <td><code>7ddf4ae67</code> <span class="muted">Extract unattached agents TUI drill runtime helpers</span></td>
               <td>The unattached-agents TUI parity drill now keeps provider/session scenario orchestration separate from port allocation, process execution, readiness polling, automation socket IO, cleanup, and screenshot rendering.</td>
               <td><code>node --check</code> for both drill modules, <code>node scripts/check-line-cap.mjs</code>. Full live drill was not run because it builds and launches local runtime processes.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>7ff0786d8</code> <span class="muted">Split runtime transport tests</span></td>
+              <td>Kernel websocket transport production code now stays in the source module, while event coalescer and ping-frame websocket coverage lives in a sibling test module.</td>
+              <td>Focused <code>runtime_transport::tests</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>. Crate-wide <code>cargo fmt --check</code> was blocked by unrelated dirty history files.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
