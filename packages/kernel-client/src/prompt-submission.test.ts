@@ -7,6 +7,7 @@ import {
   detachedPromptSubmitDecision,
   promptSubmissionFailureRuntimeState,
   promptSubmissionFailureTransition,
+  promptSubmissionPrompt,
   promptSubmissionTranscriptMetadata,
   promptSubmissionRuntimeState,
   promptSubmitPreparationDecision,
@@ -160,6 +161,67 @@ test("prompt submission target agent id reads outcome prompt identity", () => {
     agent_activity: {},
     agent_activity_revision: 1,
   }), null)
+})
+
+test("prompt submission prompt prefers outcome prompt then projected session prompt", () => {
+  const outcomePrompt = {
+    id: "prompt-started",
+    source_attachment_id: "attachment-started",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "Running",
+  }
+  const statePrompt = {
+    id: "prompt-state",
+    source_attachment_id: "attachment-state",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+  }
+
+  assert.deepEqual(promptSubmissionPrompt({
+    outcome: {
+      Started: { prompt: outcomePrompt },
+    },
+  }, "agent-1"), outcomePrompt)
+
+  assert.deepEqual(promptSubmissionPrompt({
+    outcome: {
+      Started: { prompt: outcomePrompt },
+    },
+    session: makeSession({
+      active_prompt: statePrompt,
+    }),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }, "agent-1"), outcomePrompt)
+
+  assert.deepEqual(promptSubmissionPrompt({
+    outcome: {},
+    session: makeSession({
+      prompt_states: {
+        "agent-1": {
+          active_prompt: statePrompt,
+          queued_prompts: [],
+        },
+      },
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-state",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }, "agent-1"), statePrompt)
 })
 
 test("prompt submission transcript metadata prefers outcome prompt identity", () => {

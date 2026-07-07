@@ -10,6 +10,9 @@ import {
 import {
   sessionActivePromptForAgent,
 } from "@arroba/kernel-client/session-prompt-identity"
+import {
+  promptSubmissionPrompt,
+} from "@arroba/kernel-client/prompt-submission"
 import { LocalIpcClient } from "../ipc.js"
 import {
   appendNativeProviderOutputRequest,
@@ -208,21 +211,18 @@ export function extractSubmittedPromptId(response: Record<string, unknown>, agen
     agent_activity_revision?: number | null
   } | undefined
   if (!payload) return null
-  for (const variant of Object.values(payload.outcome ?? {})) {
-    const prompt = variant && typeof variant === "object"
-      ? (variant as { prompt?: PromptQueueItem | null }).prompt
-      : null
-    if (prompt?.id) return prompt.id
-  }
   if (!payload.session) {
-    return null
+    return promptSubmissionPrompt(payload, agentId)?.id ?? null
   }
   const session = normalizeRuntimeSessionWithAgentActivity({
     session: payload.session,
     agent_activity: payload.agent_activity,
     agent_activity_revision: payload.agent_activity_revision,
   })
-  return session ? promptForAgent(session, agentId)?.id ?? null : null
+  return promptSubmissionPrompt({
+    ...payload,
+    session,
+  }, agentId)?.id ?? null
 }
 
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {

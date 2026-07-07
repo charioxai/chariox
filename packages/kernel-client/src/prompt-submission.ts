@@ -15,6 +15,11 @@ import {
 
 export type PromptSubmissionAttachmentInput = Pick<PromptAttachmentPart, "url" | "mime" | "filename">
 
+type SparsePromptSubmissionPromptPayload = {
+  readonly outcome?: Record<string, unknown> | null
+  readonly session?: RuntimeSession | null
+}
+
 export type PromptSubmitPreparationDecision =
   | { readonly action: "clear_empty" }
   | { readonly action: "workspace_shell" }
@@ -131,16 +136,18 @@ export function promptSubmissionTranscriptMetadata(
   }
 }
 
-function promptSubmissionPrompt(
-  payload: PromptSubmittedPayload,
+export function promptSubmissionPrompt(
+  payload: PromptSubmittedPayload | SparsePromptSubmissionPromptPayload,
   targetAgentId: string | null,
 ): PromptQueueItem | null {
   return promptSubmissionPromptFromOutcome(payload)
-    ?? (targetAgentId ? sessionPromptForAgent(payload.session, targetAgentId) : null)
+    ?? (payload.session && targetAgentId ? sessionPromptForAgent(payload.session, targetAgentId) : null)
 }
 
-function promptSubmissionPromptFromOutcome(payload: PromptSubmittedPayload): PromptQueueItem | null {
-  const outcome = payload.outcome as Record<string, unknown>
+function promptSubmissionPromptFromOutcome(payload: PromptSubmittedPayload | SparsePromptSubmissionPromptPayload): PromptQueueItem | null {
+  const outcome = payload.outcome && typeof payload.outcome === "object"
+    ? payload.outcome
+    : {}
   for (const variant of Object.values(outcome)) {
     if (!variant || typeof variant !== "object") {
       continue

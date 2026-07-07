@@ -1,6 +1,5 @@
 import type {
   AgentInstance,
-  PromptQueueItem,
   PromptSubmittedPayload,
   RuntimeSession,
   SessionHistoryPageEntry,
@@ -28,8 +27,9 @@ import {
   expectSessionState,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
-import { sessionHasPendingPrompt, sessionPromptForAgent } from "./session-prompt-identity.js"
+import { sessionHasPendingPrompt } from "./session-prompt-identity.js"
 import { normalizeRuntimeSessionWithAgentActivity } from "./runtime-session-normalization.js"
+import { promptSubmissionPrompt } from "./prompt-submission.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -77,7 +77,7 @@ export async function executePromptCommand(
   const payload = promptSubmittedPayloadWithActivity(
     expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted"),
   )
-  const prompt = extractSubmittedPrompt(payload, target.id)
+  const prompt = promptSubmissionPrompt(payload, target.id)
   const promptId = prompt?.id ?? "unknown-prompt"
   const waitForCompletion = promptArgs.options.wait || promptArgs.options.showReply || promptArgs.options.showSummary
   if (!waitForCompletion) {
@@ -163,17 +163,6 @@ async function parsePromptArgs(
 
 function normalizeShellFlag(value: string): string {
   return value.startsWith("—") ? `--${value.slice(1)}` : value
-}
-
-function extractSubmittedPrompt(payload: PromptSubmittedPayload, targetAgentId: string): PromptQueueItem | null {
-  const variants = Object.values(payload.outcome ?? {})
-  for (const variant of variants) {
-    if (variant && typeof variant === "object" && "prompt" in variant) {
-      const prompt = (variant as { prompt?: PromptQueueItem | null }).prompt
-      if (prompt) return prompt
-    }
-  }
-  return sessionPromptForAgent(payload.session, targetAgentId)
 }
 
 function promptSubmittedPayloadWithActivity(payload: PromptSubmittedPayload): PromptSubmittedPayload {
