@@ -444,6 +444,15 @@ test("agent activity projection exposes completed turn action metadata", () => {
       turn_id: "turn-1",
     },
   }), null)
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "",
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      agent_id: "agent-1",
+      completed_at_ms: 500,
+    },
+  }), null)
 })
 
 test("completed turn reconciliation preserves local already-undone state for the same turn", () => {

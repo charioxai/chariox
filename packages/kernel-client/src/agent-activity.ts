@@ -283,10 +283,10 @@ export function readAgentRuntimeCompletedTurn(
   if (!turn) {
     return null
   }
-  const turnId = readStringField(turn, "turn_id")
-  const promptId = readStringField(turn, "prompt_id")
-  const providerRunId = readStringField(turn, "provider_run_id")
-  const agentId = readStringField(turn, "agent_id")
+  const turnId = readNonBlankStringField(turn, "turn_id")
+  const promptId = readNonBlankStringField(turn, "prompt_id")
+  const providerRunId = readNonBlankStringField(turn, "provider_run_id")
+  const agentId = readNonBlankStringField(turn, "agent_id")
   const completedAtMs = readNumberField(turn, "completed_at_ms")
   if (!turnId || !promptId || !providerRunId || !agentId || completedAtMs === null) {
     return null
