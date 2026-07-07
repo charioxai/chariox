@@ -687,6 +687,33 @@ test("external provider observed transcript field merge preserves identity and s
   })
 })
 
+test("external provider observed transcript field merge recovers split source and identity metadata", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+  } = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+})
+
 test("external provider observed transcript field merge fills null identity fields", () => {
   const target: {
     externalProvider?: string | null

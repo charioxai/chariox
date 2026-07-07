@@ -224,6 +224,35 @@ test("stitchPrependedTranscriptHistory preserves external identity when newer fr
   assert.equal(stitched[0]?.observedAtMs, 1_000)
 })
 
+test("stitchPrependedTranscriptHistory recovers external identity split across fragments", () => {
+  const stitched = stitchPrependedTranscriptHistory(
+    [entry(1, "assistant", "native ", {
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 12,
+    })],
+    [entry(2, "assistant", "reply", {
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 12,
+      historyTotalChars: 12,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(stitched[0]?.externalProvider, "codex")
+  assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(stitched[0]?.observedAtMs, 1_000)
+})
+
 test("stitchPrependedTranscriptHistory ignores stray external metadata without observed source", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "ordinary ", {

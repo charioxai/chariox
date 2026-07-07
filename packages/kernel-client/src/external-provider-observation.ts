@@ -304,7 +304,12 @@ export function mergeExternalProviderObservedTranscriptFields<T extends External
   older: ExternalProviderObservedTranscriptFields,
   newer: ExternalProviderObservedTranscriptFields = target,
 ): T {
-  if (!sessionHistoryEntryIsExternalProviderObserved(older)) {
+  const targetSource = (target as { readonly source?: string | null | undefined }).source
+  if (
+    !sessionHistoryEntryIsExternalProviderObserved(older)
+    && !sessionHistoryEntryIsExternalProviderObserved(newer)
+    && !sessionHistoryEntryIsExternalProviderObserved({ source: targetSource })
+  ) {
     return target
   }
   if (fieldCanAcceptExternalProviderMetadata(target.externalProvider) && older.externalProvider != null) {
