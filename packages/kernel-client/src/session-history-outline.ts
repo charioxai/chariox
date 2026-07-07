@@ -33,6 +33,8 @@ export type SessionHistoryOutlineTurnItem<
   }
 
 export type SessionHistoryOutlineTurnLike = {
+  readonly turn_id?: string | null | undefined
+  readonly started_at_ms?: number | null | undefined
   readonly user_prompt: SessionHistoryPageEntry
 }
 
@@ -70,7 +72,7 @@ export function orderedSessionHistoryOutlineTurns<TTurn extends SessionHistoryOu
   turns: readonly TTurn[],
 ): TTurn[] {
   return [...turns].sort((left, right) =>
-    sessionHistoryPageEntryIndex(left.user_prompt) - sessionHistoryPageEntryIndex(right.user_prompt))
+    compareSessionHistoryOutlineTurns(left, right))
 }
 
 export function orderedSessionHistoryOutlineItems<
@@ -95,7 +97,7 @@ export function orderedSessionHistoryOutlineItems<
       sequence: sessionHistoryPageEntryIndex(turn.summary),
       entry: turn.summary,
     }] : []),
-  ].sort((left, right) => left.sequence - right.sequence)
+  ].sort(compareSessionHistoryOutlineTurnItems)
 }
 
 export function sessionHistoryPageEntryIndex(pageEntry: Pick<SessionHistoryPageEntry, "entry_index">): number {
@@ -104,6 +106,63 @@ export function sessionHistoryPageEntryIndex(pageEntry: Pick<SessionHistoryPageE
 
 export function sessionHistoryOutlineBlobSequenceStart(blob: Pick<SessionHistoryOutlineBlob, "sequence_start">): number {
   return Number.isFinite(blob.sequence_start) ? blob.sequence_start : Number.MAX_SAFE_INTEGER
+}
+
+function compareSessionHistoryOutlineTurns<TTurn extends SessionHistoryOutlineTurnLike>(
+  left: TTurn,
+  right: TTurn,
+): number {
+  const sequenceDelta = sessionHistoryPageEntryIndex(left.user_prompt) - sessionHistoryPageEntryIndex(right.user_prompt)
+  if (sequenceDelta !== 0) return sequenceDelta
+  const startedDelta = finiteSortNumber(left.started_at_ms) - finiteSortNumber(right.started_at_ms)
+  if (startedDelta !== 0) return startedDelta
+  return stringSortKey(left.turn_id).localeCompare(stringSortKey(right.turn_id))
+}
+
+function compareSessionHistoryOutlineTurnItems<
+  TEntry extends SessionHistoryPageEntry,
+  TBlob extends SessionHistoryOutlineBlob,
+>(
+  left: SessionHistoryOutlineTurnItem<TEntry, TBlob>,
+  right: SessionHistoryOutlineTurnItem<TEntry, TBlob>,
+): number {
+  const sequenceDelta = left.sequence - right.sequence
+  if (sequenceDelta !== 0) return sequenceDelta
+  const endDelta = sessionHistoryOutlineTurnItemEndSequence(left) - sessionHistoryOutlineTurnItemEndSequence(right)
+  if (endDelta !== 0) return endDelta
+  const kindDelta = sessionHistoryOutlineTurnItemKindRank(left) - sessionHistoryOutlineTurnItemKindRank(right)
+  if (kindDelta !== 0) return kindDelta
+  return sessionHistoryOutlineTurnItemStableKey(left)
+    .localeCompare(sessionHistoryOutlineTurnItemStableKey(right))
+}
+
+function sessionHistoryOutlineTurnItemEndSequence(
+  item: SessionHistoryOutlineTurnItem,
+): number {
+  if (item.kind === "blob") {
+    return Number.isFinite(item.blob.sequence_end) ? item.blob.sequence_end : Number.MAX_SAFE_INTEGER
+  }
+  return sessionHistoryPageEntryIndex(item.entry)
+}
+
+function sessionHistoryOutlineTurnItemKindRank(item: SessionHistoryOutlineTurnItem): number {
+  return item.kind === "entry" ? 0 : 1
+}
+
+function sessionHistoryOutlineTurnItemStableKey(item: SessionHistoryOutlineTurnItem): string {
+  if (item.kind === "blob") {
+    return item.blob.blob_id
+  }
+  const timestamp = finiteSortNumber(item.entry.entry.timestamp_ms)
+  return `${timestamp}:${item.entry.entry.kind}:${item.entry.entry.text}`
+}
+
+function finiteSortNumber(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER
+}
+
+function stringSortKey(value: string | null | undefined): string {
+  return value ?? ""
 }
 
 export function sessionHistoryOutlineTurnDisplayId(

@@ -29,6 +29,18 @@ test("session history outline turns are ordered by prompt history sequence", () 
   assert.deepEqual(orderedSessionHistoryOutlineTurns([late, early]), [early, late])
 })
 
+test("session history outline turns break equal sequence ties deterministically", () => {
+  const late = { ...turn(10), turn_id: "turn-b", started_at_ms: 20 }
+  const early = { ...turn(10), turn_id: "turn-a", started_at_ms: 10 }
+  const missingStart = { ...turn(10), turn_id: "turn-c", started_at_ms: Number.NaN }
+
+  assert.deepEqual(orderedSessionHistoryOutlineTurns([missingStart, late, early]), [
+    early,
+    late,
+    missingStart,
+  ])
+})
+
 test("session history outline items are ordered by entry and blob sequence", () => {
   const items = orderedSessionHistoryOutlineItems({
     entries: [
@@ -46,6 +58,28 @@ test("session history outline items are ordered by entry and blob sequence", () 
     "provider_tool",
     "provider_output",
     "provider_output",
+  ])
+})
+
+test("session history outline items break equal sequence ties deterministically", () => {
+  const items = orderedSessionHistoryOutlineItems({
+    entries: [
+      pageEntry(10, "provider_output", "reply-b", { timestamp_ms: 20 }),
+      pageEntry(10, "provider_reasoning", "thinking-a", { timestamp_ms: 10 }),
+    ],
+    blobs: [
+      { ...blob(10, "provider_tool"), blob_id: "blob-b", sequence_end: 12 },
+      { ...blob(10, "provider_tool"), blob_id: "blob-a", sequence_end: 11 },
+    ],
+    summary: pageEntry(10, "provider_output", "summary", { timestamp_ms: 30 }),
+  })
+
+  assert.deepEqual(items.map((item) => item.kind === "entry" ? item.entry.entry.text : item.blob.blob_id), [
+    "thinking-a",
+    "reply-b",
+    "summary",
+    "blob-a",
+    "blob-b",
   ])
 })
 
