@@ -325,24 +325,22 @@ pub(super) fn snapshot(
                     });
                 }
             }
-            if let Some(active_turn_external_observed_id) =
-                active_turn.external_observed_id.as_ref()
+            let active_turn_external_observed_id = active_turn.external_observed_id.as_ref();
+            let active_prompt_external_observed_id = active_prompt.external_observed_id();
+            if active_turn_external_observed_id != active_prompt_external_observed_id.as_ref()
+                && (active_turn_external_observed_id.is_some()
+                    || active_prompt_external_observed_id.is_some())
             {
-                let active_prompt_external_observed_id = active_prompt.external_observed_id();
-                if active_prompt_external_observed_id.as_ref()
-                    != Some(active_turn_external_observed_id)
-                {
-                    mismatches.push(ProjectionInvariantMismatch {
-                        kind: "active_turn_external_identity_mismatch".to_string(),
-                        session_id: active_turn.session_id.clone(),
-                        agent_id: Some(active_turn.agent_id.clone()),
-                        details: format!(
-                            "active turn external identity {} does not match active prompt external identity {}",
-                            describe_external_observed_id(Some(active_turn_external_observed_id)),
-                            describe_external_observed_id(active_prompt_external_observed_id.as_ref())
-                        ),
-                    });
-                }
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "active_turn_external_identity_mismatch".to_string(),
+                    session_id: active_turn.session_id.clone(),
+                    agent_id: Some(active_turn.agent_id.clone()),
+                    details: format!(
+                        "active turn external identity {} does not match active prompt external identity {}",
+                        describe_external_observed_id(active_turn_external_observed_id),
+                        describe_external_observed_id(active_prompt_external_observed_id.as_ref())
+                    ),
+                });
             }
         }
     }

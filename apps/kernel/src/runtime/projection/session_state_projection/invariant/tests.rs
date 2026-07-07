@@ -496,7 +496,7 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
             && mismatch.details.contains("external")
     }));
 
-    let mut wrong_external_identity = active_turn;
+    let mut wrong_external_identity = active_turn.clone();
     wrong_external_identity.external_observed_id =
         crate::history::parse_external_provider_observed_id("external:codex:thread-1:user-2");
     active_turns.insert(provider_run.id().to_string(), wrong_external_identity);
@@ -508,6 +508,19 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
             && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
             && mismatch.details.contains("user-1")
             && mismatch.details.contains("user-2")
+    }));
+
+    let mut missing_external_identity = active_turn.clone();
+    missing_external_identity.external_observed_id = None;
+    active_turns.insert(provider_run.id().to_string(), missing_external_identity);
+    let missing_identity_snapshot =
+        session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+    assert!(missing_identity_snapshot.mismatches.iter().any(|mismatch| {
+        mismatch.kind == "active_turn_external_identity_mismatch"
+            && mismatch.session_id == session_id
+            && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+            && mismatch.details.contains("none")
+            && mismatch.details.contains("user-1")
     }));
 }
 
