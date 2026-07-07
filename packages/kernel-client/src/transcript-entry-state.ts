@@ -178,7 +178,7 @@ export function transcriptHasTrailingUserPrompt<TEntry extends Pick<TranscriptEn
   if (lastEntry?.role !== "user") {
     return false
   }
-  if (lastEntry.promptId && promptId) {
+  if (hasTranscriptPromptIdentity(lastEntry.promptId) && hasTranscriptPromptIdentity(promptId)) {
     return lastEntry.promptId === promptId
   }
   return trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
@@ -280,7 +280,9 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
 ): number {
   const promptId = promptEntry.promptId ?? options.promptId
   const providerRunId = promptEntry.providerRunId ?? options.providerRunId
-  if (!promptId && !providerRunId) {
+  const hasPromptId = hasTranscriptPromptIdentity(promptId)
+  const hasProviderRunId = Boolean(providerRunId)
+  if (!hasPromptId && !hasProviderRunId) {
     return 0
   }
   let assigned = 0
@@ -293,11 +295,11 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
     ) {
       continue
     }
-    const matchesPrompt = Boolean(promptId && entry.promptId === promptId)
-    const matchesProviderRun = Boolean(providerRunId && (
+    const matchesPrompt = hasPromptId && entry.promptId === promptId
+    const matchesProviderRun = hasProviderRunId && (
       entry.providerRunId === providerRunId
       || entry.outputIdentity?.startsWith(`${providerRunId}:`) === true
-    ))
+    )
     if (!matchesPrompt && !matchesProviderRun) {
       continue
     }
@@ -310,6 +312,10 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
     assigned += 1
   }
   return assigned
+}
+
+function hasTranscriptPromptIdentity(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined
 }
 
 export function retargetEquivalentTranscriptTurnSiblings<

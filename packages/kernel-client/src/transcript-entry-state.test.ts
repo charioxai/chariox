@@ -76,6 +76,15 @@ test("transcriptHasTrailingUserPrompt dedupes prompt echoes by prompt id before 
   ], "hello"), false)
 })
 
+test("transcriptHasTrailingUserPrompt treats serialized empty prompt ids as identity", () => {
+  const entries = [
+    entry(1, "user", "hello", { promptId: "" }),
+  ]
+
+  assert.equal(transcriptHasTrailingUserPrompt(entries, "changed display text", ""), true)
+  assert.equal(transcriptHasTrailingUserPrompt(entries, "other", "prompt-1"), false)
+})
+
 test("createTranscriptUserPromptTurn projects prompt entry and turn identity", () => {
   assert.deepEqual(createTranscriptUserPromptTurn("hello\n", 9), {
     entry: {
@@ -221,6 +230,21 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to 
     [7, "assistant-by-prompt", 1_100],
     [7, "assistant-by-run", 1_200],
   ])
+})
+
+test("assignMatchingUntrackedTranscriptEntriesToTurn assigns serialized empty prompt ids", () => {
+  const entries: AssignmentEntry<number>[] = [
+    assignmentEntry("prompt", "user", { promptId: "", turnId: 7 }),
+    assignmentEntry("assistant", "assistant", { promptId: "", createdAtMs: 1_100 }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<number, AssignmentEntry<number>>(entries, entries[0]!, {
+    turnId: 7,
+  })
+
+  assert.equal(assigned, 1)
+  assert.equal(entries[1]?.turnId, 7)
+  assert.equal(entries[1]?.promptId, "")
 })
 
 test("assignMatchingUntrackedTranscriptEntriesToTurn accepts fallback prompt identity", () => {
