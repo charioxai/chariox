@@ -9,14 +9,19 @@ import {
   agentRuntimeActivityProjectionHasExternalActiveTurn,
   agentRuntimeActivityProjectionResolvedStatus,
   agentRuntimeActivityResolvedStatus,
+  agentRuntimeCompletedTurnAlreadyUndone,
+  agentRuntimeCompletedTurnCanRestoreUndoAvailability,
+  agentRuntimeCompletedTurnIsNewer,
   agentRuntimePromptStatusIsActive,
   agentRuntimePromptStatusIsActivePrompt,
+  type AgentRuntimeCompletedTurnActionProjection,
   normalizeAgentRuntimeActivityProjectionStatus,
   normalizeAgentRuntimeActivityStatus,
   normalizeAgentRuntimePromptProjectionStatus,
   normalizeAgentRuntimePromptStatus,
   projectAgentRuntimeActivity,
   readAgentRuntimeCompletedTurn,
+  reconcileAgentRuntimeLastCompletedTurn,
 } from "./agent-activity.js"
 
 test("legacy processing helper preserves old agent busy fallback semantics", () => {
@@ -422,6 +427,68 @@ test("agent activity projection exposes completed turn action metadata", () => {
   }), null)
 })
 
+test("completed turn reconciliation preserves local already-undone state for the same turn", () => {
+  const alreadyUndone = completedTurnAction({
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  const incoming = completedTurnAction({
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(agentRuntimeCompletedTurnAlreadyUndone(alreadyUndone), true)
+  assert.equal(agentRuntimeCompletedTurnAlreadyUndone(incoming), false)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(alreadyUndone, incoming), alreadyUndone)
+})
+
+test("completed turn reconciliation keeps incoming snapshots unless current is already undone", () => {
+  const current = completedTurnAction({
+    completedAtMs: 100,
+    undoAvailable: false,
+    undoUnavailableReason: "not latest turn",
+  })
+  const incoming = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(null, incoming), incoming)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, incoming), incoming)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, null), current)
+})
+
+test("completed turn helpers compare freshness and undo restoration eligibility", () => {
+  const current = completedTurnAction({
+    completedAtMs: 100,
+    undoAvailable: false,
+    undoUnavailableReason: "pending snapshot",
+  })
+  const newerSameTurn = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+  const newerDifferentTurn = completedTurnAction({
+    turnId: "turn-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+  const alreadyUndone = completedTurnAction({
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+
+  assert.equal(agentRuntimeCompletedTurnIsNewer(null, current), true)
+  assert.equal(agentRuntimeCompletedTurnIsNewer(newerSameTurn, current), false)
+  assert.equal(agentRuntimeCompletedTurnIsNewer(current, newerSameTurn), true)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(current, newerSameTurn), true)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(current, newerDifferentTurn), false)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(alreadyUndone, newerSameTurn), false)
+})
+
 test("agent activity projection exposes unread idle output", () => {
   assert.equal(projectAgentRuntimeActivity({
     activity: {
@@ -444,3 +511,20 @@ test("agent activity projection preserves previous error only when kernel omits 
   assert.equal(projectAgentRuntimeActivity({ status: "idle" }, { previousError: true }).error, false)
   assert.equal(projectAgentRuntimeActivity({ error: false }, { previousError: true }).error, false)
 })
+
+function completedTurnAction(
+  overrides: Partial<AgentRuntimeCompletedTurnActionProjection> = {},
+): AgentRuntimeCompletedTurnActionProjection {
+  return {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    completedAtMs: 100,
+    durationMs: 50,
+    changedPaths: [],
+    undoAvailable: false,
+    undoUnavailableReason: null,
+    ...overrides,
+  }
+}

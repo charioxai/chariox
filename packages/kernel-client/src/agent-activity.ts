@@ -62,6 +62,8 @@ export type AgentRuntimeCompletedTurnActionProjection = {
   readonly undoUnavailableReason: string | null
 }
 
+const TURN_ALREADY_UNDONE_REASON = "turn already undone"
+
 export function agentRuntimeActivityIsBusy(
   activity: AgentRuntimeActivityBusyInput | null | undefined,
 ): boolean {
@@ -300,6 +302,55 @@ export function readAgentRuntimeCompletedTurn(
     undoAvailable: readBooleanField(turn, "undo_available") === true,
     undoUnavailableReason: readStringField(turn, "undo_unavailable_reason"),
   }
+}
+
+export function agentRuntimeCompletedTurnAlreadyUndone(
+  turn: AgentRuntimeCompletedTurnActionProjection | null | undefined,
+): boolean {
+  return turn?.undoAvailable === false && turn.undoUnavailableReason === TURN_ALREADY_UNDONE_REASON
+}
+
+export function agentRuntimeCompletedTurnMatches(
+  current: AgentRuntimeCompletedTurnActionProjection,
+  incoming: AgentRuntimeCompletedTurnActionProjection,
+): boolean {
+  return current.turnId === incoming.turnId
+}
+
+export function reconcileAgentRuntimeLastCompletedTurn(
+  current: AgentRuntimeCompletedTurnActionProjection | null | undefined,
+  incoming: AgentRuntimeCompletedTurnActionProjection | null | undefined,
+): AgentRuntimeCompletedTurnActionProjection | null {
+  const existing = current ?? null
+  if (
+    existing
+    && incoming
+    && agentRuntimeCompletedTurnAlreadyUndone(existing)
+    && agentRuntimeCompletedTurnMatches(existing, incoming)
+  ) {
+    return existing
+  }
+  return incoming ?? existing
+}
+
+export function agentRuntimeCompletedTurnIsNewer(
+  current: AgentRuntimeCompletedTurnActionProjection | null | undefined,
+  incoming: AgentRuntimeCompletedTurnActionProjection,
+): boolean {
+  return !current || incoming.completedAtMs > current.completedAtMs
+}
+
+export function agentRuntimeCompletedTurnCanRestoreUndoAvailability(
+  current: AgentRuntimeCompletedTurnActionProjection,
+  incoming: AgentRuntimeCompletedTurnActionProjection,
+): boolean {
+  if (!agentRuntimeCompletedTurnMatches(current, incoming)) {
+    return false
+  }
+  if (agentRuntimeCompletedTurnAlreadyUndone(current)) {
+    return false
+  }
+  return incoming.undoAvailable === true && current.undoAvailable !== true
 }
 
 function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknown> | null) {
