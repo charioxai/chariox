@@ -364,7 +364,15 @@ test("session history outline hydration carries prompt identity into entries and
       external_provider_turn_id: " user-1 ",
       started_at_ms: 1,
       completed_at_ms: 2,
-      user_prompt: pageEntry(0, "user_prompt", "build\n"),
+      user_prompt: pageEntry(0, "user_prompt", "build\n", {
+        source_attachment_id: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
+      }),
       entries: [pageEntry(1, "provider_reasoning", "thinking\n")],
       summary: pageEntry(2, "provider_output", "done\n"),
       blobs: [blob("blob-1", "provider_tool", 3, "tool", "1 tool called")],
@@ -376,8 +384,12 @@ test("session history outline hydration carries prompt identity into entries and
   assert.equal(entries.find((entry) => entry.role === "user")?.promptOrigin, "external")
   assert.equal(entries.find((entry) => entry.role === "reasoning")?.promptId, "prompt-1")
   assert.equal(entries.find((entry) => entry.role === "reasoning")?.promptOrigin, "external")
+  assert.equal(entries.find((entry) => entry.role === "reasoning")?.sourceAttachmentId, "attachment-1")
+  assert.equal(entries.find((entry) => entry.role === "reasoning")?.attachments, undefined)
   assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptId, "prompt-1")
   assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.promptOrigin, "external")
+  assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.sourceAttachmentId, "attachment-1")
+  assert.equal(entries.find((entry) => entry.historyBlobId === "blob-1")?.attachments, undefined)
   const prompt = entries.find((entry) => entry.role === "user")
   assert.equal(prompt?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(prompt?.externalProvider, "codex")
@@ -661,7 +673,15 @@ test("session history blob replacement preserves prompt and external turn metada
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
       completed_at_ms: 2,
-      user_prompt: pageEntry(0, "user_prompt", "build\n"),
+      user_prompt: pageEntry(0, "user_prompt", "build\n", {
+        source_attachment_id: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
+      }),
       entries: [],
       summary: pageEntry(2, "provider_output", "done\n"),
       blobs: [blob("blob-1", "provider_tool", 1, "tool", "1 tool called")],
@@ -689,6 +709,8 @@ test("session history blob replacement preserves prompt and external turn metada
   const tool = replaced.find((entry) => entry.role === "tool")
   assert.equal(tool?.promptId, "prompt-1")
   assert.equal(tool?.promptOrigin, "external")
+  assert.equal(tool?.sourceAttachmentId, "attachment-1")
+  assert.equal(tool?.attachments, undefined)
   assert.equal(tool?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(tool?.externalProvider, "codex")
   assert.equal(tool?.externalProviderSessionId, "thread-1")

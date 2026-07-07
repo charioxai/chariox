@@ -306,9 +306,10 @@ export function replaceSessionHistoryBlobPlaceholder(
   }
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder)
-  const promptMetadata: OutlineTurnPromptMetadata = placeholder.promptOrigin !== undefined
-    ? { promptOrigin: placeholder.promptOrigin }
-    : {}
+  const promptMetadata: OutlineTurnPromptMetadata = {
+    ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
+    ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
+  }
   const activeTurnId = placeholder.historyTurnCompletedAtMs === null
     && typeof turnId === "number"
     ? turnId
@@ -441,6 +442,7 @@ function historyEntryTranscriptIdentityOptions(
 type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
 type OutlineTurnPromptMetadata = {
   readonly promptOrigin?: string | null
+  readonly sourceAttachmentId?: string | null
 }
 
 function outlineTurnExternalMetadata(
@@ -451,18 +453,28 @@ function outlineTurnExternalMetadata(
 
 function outlineTurnPromptMetadata(turn: SessionHistoryOutlineTurn): OutlineTurnPromptMetadata {
   const promptOrigin = promptOriginFromRecord(turn)
-  return promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
-    ? { promptOrigin }
-    : {}
+  return {
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
+    ...(turn.user_prompt.entry.source_attachment_id !== undefined
+      ? { sourceAttachmentId: turn.user_prompt.entry.source_attachment_id }
+      : {}),
+  }
 }
 
 function applyOutlineTurnPromptMetadata(
   entry: SessionHistoryTranscriptEntry,
   metadata: OutlineTurnPromptMetadata,
 ): SessionHistoryTranscriptEntry {
-  return metadata.promptOrigin !== undefined && entry.promptOrigin === undefined
-    ? { ...entry, promptOrigin: metadata.promptOrigin }
-    : entry
+  let next = entry
+  if (metadata.promptOrigin !== undefined && next.promptOrigin === undefined) {
+    next = { ...next, promptOrigin: metadata.promptOrigin }
+  }
+  if (metadata.sourceAttachmentId !== undefined && next.sourceAttachmentId === undefined) {
+    next = { ...next, sourceAttachmentId: metadata.sourceAttachmentId }
+  }
+  return next
 }
 
 function applyOutlineTurnMetadata(
