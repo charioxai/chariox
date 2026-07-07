@@ -19,8 +19,8 @@ export type TranscriptTurnAssignmentEntry<TTurnId extends TranscriptTurnAssignme
   readonly text?: string
   turnId?: TTurnId | null
   readonly turnTracking?: "none"
-  readonly promptId?: string | null
-  readonly providerRunId?: string | null
+  promptId?: string | null
+  providerRunId?: string | null
   readonly outputIdentity?: string | null
   readonly createdAtMs?: number | null
 }
@@ -337,6 +337,12 @@ export function retargetEquivalentTranscriptTurnSiblings<
       continue
     }
     sibling.turnId = canonicalEntry.turnId
+    if (sibling.promptId === undefined && canonicalEntry.promptId !== undefined) {
+      sibling.promptId = canonicalEntry.promptId
+    }
+    if (sibling.providerRunId === undefined && canonicalEntry.providerRunId !== undefined) {
+      sibling.providerRunId = canonicalEntry.providerRunId
+    }
     options.onRetargeted?.(canonicalEntry.turnId, sibling, transcriptAssignmentTimestamp(sibling, options.nowMs))
     retargeted += 1
   }

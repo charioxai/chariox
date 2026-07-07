@@ -248,7 +248,11 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   const retargeted = retargetEquivalentTranscriptTurnSiblings<number, AssignmentEntry<number>>(entries, {
     entry: entries[0]!,
     previousTurnId: 3,
-  }, assignmentEntry("canonical", "assistant", { turnId: 8 }), {
+  }, assignmentEntry("canonical", "assistant", {
+    turnId: 8,
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+  }), {
     onRetargeted: (turnId, retargetedEntry, retargetedAtMs) => {
       retargetedAt.push([turnId, retargetedEntry.text, retargetedAtMs])
     },
@@ -257,6 +261,8 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   assert.equal(retargeted, 1)
   assert.equal(entries[0]?.turnId, 3)
   assert.equal(entries[1]?.turnId, 8)
+  assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.equal(entries[1]?.providerRunId, "run-1")
   assert.equal(entries[2]?.turnId, 4)
   assert.equal(entries[3]?.turnId, 3)
   assert.deepEqual(retargetedAt, [[8, "tool", 1_200]])
