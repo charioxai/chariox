@@ -210,7 +210,11 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn assigns provider output to 
 
   assert.equal(assigned, 2)
   assert.equal(entries[1]?.turnId, 7)
+  assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.equal(entries[1]?.providerRunId, "run-1")
   assert.equal(entries[2]?.turnId, 7)
+  assert.equal(entries[2]?.promptId, "prompt-1")
+  assert.equal(entries[2]?.providerRunId, "run-1")
   assert.equal(entries[3]?.turnId, undefined)
   assert.equal(entries[4]?.turnId, 9)
   assert.deepEqual(assignedAt, [

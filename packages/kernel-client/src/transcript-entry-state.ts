@@ -302,6 +302,10 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
       continue
     }
     entry.turnId = options.turnId
+    applyTranscriptTurnAssignmentMetadata(entry, {
+      promptId,
+      providerRunId,
+    })
     options.onAssigned?.(options.turnId, entry, transcriptAssignmentTimestamp(entry, options.nowMs))
     assigned += 1
   }
@@ -337,16 +341,26 @@ export function retargetEquivalentTranscriptTurnSiblings<
       continue
     }
     sibling.turnId = canonicalEntry.turnId
-    if (sibling.promptId === undefined && canonicalEntry.promptId !== undefined) {
-      sibling.promptId = canonicalEntry.promptId
-    }
-    if (sibling.providerRunId === undefined && canonicalEntry.providerRunId !== undefined) {
-      sibling.providerRunId = canonicalEntry.providerRunId
-    }
+    applyTranscriptTurnAssignmentMetadata(sibling, canonicalEntry)
     options.onRetargeted?.(canonicalEntry.turnId, sibling, transcriptAssignmentTimestamp(sibling, options.nowMs))
     retargeted += 1
   }
   return retargeted
+}
+
+function applyTranscriptTurnAssignmentMetadata<TTurnId extends TranscriptTurnAssignmentId>(
+  entry: TranscriptTurnAssignmentEntry<TTurnId>,
+  metadata: {
+    readonly promptId?: string | null | undefined
+    readonly providerRunId?: string | null | undefined
+  },
+): void {
+  if (entry.promptId === undefined && metadata.promptId !== undefined) {
+    entry.promptId = metadata.promptId
+  }
+  if (entry.providerRunId === undefined && metadata.providerRunId !== undefined) {
+    entry.providerRunId = metadata.providerRunId
+  }
 }
 
 function transcriptAssignmentTimestamp<TTurnId extends TranscriptTurnAssignmentId>(
