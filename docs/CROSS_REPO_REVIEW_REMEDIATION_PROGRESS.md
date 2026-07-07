@@ -28,6 +28,14 @@ One line per landed task; keep this file short. Format: `date task — outcome (
 - 2026-07-06 D1 root Cargo workspace (kernel + relay + adapters, one lockfile); CI fmt/clippy/test now cover all crates (`f4509b45f` arroba). **Phase 3 complete.**
 - 2026-07-06 E3 (substantially done) `apps/api/src` restructure — 14 prefix families / 91 files moved into subdirectories (billing, device-login, pairing, account, publication, managed-history, relay, runtime, cloud-api, browser, shared-session, machine-runtime, local-browser, hosted-relay); top-level `.ts` down from 90 to 28 (rest are singletons). `architecture-boundaries.test.ts` updated for the new layout. Commits `d54e7192`→`5b61b3be` arroba-cloud; all green.
 
+## Live measurement findings (2026-07-07, own kernel on :45999, debug build)
+
+- **B1 validated end-to-end live** — daemon health `app_lock` populates with real per-site wait/hold under WS command load (`GetDaemonHealth` → `response.DaemonHealth.projection.app_lock`). Query recipe: WS `{"type":"request","request_id":"..","request":{"GetDaemonHealth":null}}` to the kernel port.
+- **The daemon is healthy at load**: under a 12-client × 60-command burst, daemon-side command latency stays ~1ms (`command_latency` ndjson `submit_to_complete_ms`). The two sanctioned app-lock sites are `kernel_runtime_state` (dominant, per-command) and `external_provider_session_control` (background poller).
+- **`app_lock` hold is wall-clock**, so under CPU saturation (12 clients on a debug build) it inflates with thread descheduling, not real lock-held work — treat high holds under synthetic saturation with caution; cross-check against `command_latency`.
+- **Implication for F3**: at current load the app lock is not a bottleneck (1ms commands), so projection-clone reduction is low priority. Re-measure under real provider streaming (many pump cycles) before investing; the `app_lock` metric is the right instrument once real provider load exists.
+- Reduced the external-provider poller's app-lock critical section (`44aab61c8`) as a plan-aligned footprint cut regardless.
+
 ## In progress / notes for the next agent
 
 - Phase 1 remaining (both need live end-to-end verification with the app running):
