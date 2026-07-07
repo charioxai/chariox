@@ -106,6 +106,18 @@ test("transcript entry lineage keys include durable history blob identity", () =
   ])
 })
 
+test("transcript entry lineage keys prefer prompt identity over display turn identity", () => {
+  assert.deepEqual(transcriptEntryLineageKeys({
+    role: "assistant",
+    text: "answer",
+    turnId: 3,
+    promptId: "prompt-1",
+  }), [
+    "turn::prompt:prompt-1:assistant",
+    "text::prompt:prompt-1:assistant:answer",
+  ])
+})
+
 test("transcript entry deduplication keys avoid broad turn-only identity", () => {
   assert.deepEqual(transcriptEntryDeduplicationKeys({
     role: "assistant",
@@ -128,6 +140,20 @@ test("transcript entry deduplication keys avoid broad turn-only identity", () =>
     "blob:agent-a:blob-1:3:tool",
     "text::3:tool:expanded blob",
   ])
+})
+
+test("transcript entry lineage distinguishes reused display turns by prompt identity", () => {
+  assert.equal(transcriptEntriesShareRenderableLineage([{
+    role: "assistant",
+    text: "same text",
+    turnId: 1,
+    promptId: "prompt-a",
+  }], [{
+    role: "assistant",
+    text: "same text",
+    turnId: 1,
+    promptId: "prompt-b",
+  }]), false)
 })
 
 test("transcript entry lineage containment ignores turn toggles", () => {

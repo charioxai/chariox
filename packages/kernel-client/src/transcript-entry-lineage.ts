@@ -19,6 +19,7 @@ type TranscriptLineageKernelFields = Pick<
 
 export type TranscriptLineageEntry = TranscriptLineageKernelFields & {
   readonly role: TranscriptEntryRole
+  readonly promptId?: string | null
   readonly historyBlobId?: string | null | undefined
   readonly historyBlobAgentId?: string | null | undefined
   readonly historyBlobSourceId?: string | null | undefined
@@ -119,11 +120,12 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
   }
 
   const text = entry.text.trim()
+  const turnIdentity = transcriptTurnLineageIdentity(entry)
   if (typeof entry.turnId === "number") {
     keys.push([
       "turn",
       source,
-      entry.turnId,
+      turnIdentity,
       entry.role,
     ].join(":"))
   }
@@ -131,7 +133,7 @@ export function transcriptEntryLineageKeys(entry: TranscriptLineageEntry): strin
     keys.push([
       "text",
       source,
-      entry.turnId ?? "",
+      turnIdentity,
       entry.role,
       text,
     ].join(":"))
@@ -155,11 +157,12 @@ export function transcriptEntryDeduplicationKeys(entry: TranscriptLineageEntry):
   }
 
   const text = entry.text.trim()
+  const turnIdentity = transcriptTurnLineageIdentity(entry)
   if (text) {
     keys.push([
       "text",
       source,
-      entry.turnId ?? "",
+      turnIdentity,
       entry.role,
       text,
     ].join(":"))
@@ -232,4 +235,12 @@ function transcriptLineageSource(entry: TranscriptLineageEntry): string {
     return EXTERNAL_PROVIDER_OBSERVED_SOURCE
   }
   return entry.source?.trim() ?? ""
+}
+
+function transcriptTurnLineageIdentity(entry: TranscriptLineageEntry): string {
+  const promptId = entry.promptId?.trim()
+  if (promptId) {
+    return `prompt:${promptId}`
+  }
+  return entry.turnId === undefined || entry.turnId === null ? "" : String(entry.turnId)
 }
