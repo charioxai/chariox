@@ -151,6 +151,7 @@ test("queuedPromptStripItemsForAgent preserves transcript rows when projection i
     id: 1,
     role: "user",
     text: "preserved queued",
+    promptOrigin: "external",
     queuedPrompt: {
       promptId: "prompt-preserved",
       agentId: "agent-1",
@@ -175,6 +176,7 @@ test("queuedPromptStripItemsForAgent preserves transcript rows when projection i
   } as unknown as RuntimeSession, entries, "agent-1")
 
   assert.deepEqual(items.map((item) => item.promptId), ["prompt-preserved"])
+  assert.equal(items[0]?.promptOrigin, "external")
 })
 
 test("queuedPromptStripItemsForAgent applies status overrides when preserving transcript rows", () => {
@@ -225,6 +227,7 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
 
   assert.equal(entry.role, "user")
   assert.equal(entry.text, "queued prompt")
+  assert.equal(entry.promptOrigin, null)
   assert.deepEqual(entry.queuedPrompt, {
     promptId: "prompt-1",
     agentId: "agent-1",
@@ -237,6 +240,29 @@ test("queuedPromptStripItemToTranscriptEntry adapts strip actions to transcript 
     steerDisabledReason: null,
     cancelDisabledReason: null,
   })
+})
+
+test("queuedPromptStripItemToTranscriptEntry mirrors prompt ownership at transcript level", () => {
+  const [item] = queuedPromptStripItemsForAgent(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-external",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "external queued prompt",
+          status: "queued",
+          prompt_origin: "external",
+        }],
+      },
+    },
+  }), [], "agent-1")
+
+  const entry = queuedPromptStripItemToTranscriptEntry(item!)
+
+  assert.equal(entry.promptOrigin, "external")
+  assert.equal(entry.queuedPrompt?.promptOrigin, "external")
 })
 
 test("syncQueuedPromptTranscriptEntriesForAgent removes stale queued rows when projection is authoritative", () => {

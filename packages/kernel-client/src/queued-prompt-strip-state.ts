@@ -56,6 +56,7 @@ export type QueuedPromptStripTranscriptEntry = {
   role: Extract<TranscriptEntry["role"], "user">
   text: TranscriptEntry["text"]
   sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
+  promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
   queuedPrompt?: QueuedPromptTranscriptMetadata
 }
 
@@ -64,6 +65,7 @@ export type QueuedPromptStripSourceEntry = {
   readonly role?: TranscriptEntry["role"] | string
   readonly text: TranscriptEntry["text"]
   readonly sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
+  readonly promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
   readonly queuedPrompt?: Readonly<QueuedPromptTranscriptMetadata>
 }
 
@@ -124,6 +126,7 @@ export function queuedPromptStripItemToTranscriptEntry(
     role: "user",
     text: item.prompt,
     sourceAttachmentId: item.sourceAttachmentId,
+    promptOrigin: item.promptOrigin,
     queuedPrompt: {
       promptId: item.promptId,
       agentId: item.agentId,
@@ -226,7 +229,7 @@ function queuedPromptItemsFromEntries(
       agentId: queuedPrompt.agentId,
       sourceAttachmentId: entry.sourceAttachmentId ?? null,
       prompt: trimSingleTrailingNewline(entry.text),
-      promptOrigin: queuedPrompt.promptOrigin ?? null,
+      promptOrigin: queuedPrompt.promptOrigin ?? entry.promptOrigin ?? null,
       status: queuedPrompt.status,
       attachmentCount: queuedPrompt.attachmentCount,
       steerDisabled: queuedPrompt.steerDisabled,
