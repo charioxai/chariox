@@ -77,6 +77,72 @@ test("reconcileMountedTranscriptPane preserves mounted prefix and repaints only 
   assert.equal(harness.scrollbox.requestRenderCount, 1)
 })
 
+test("reconcileMountedTranscriptPane sticks to the new bottom when already at bottom", () => {
+  const harness = createHarness([
+    [1, entry(1, "user", "prompt")],
+    [2, entry(2, "assistant", "partial")],
+  ], {
+    scrollTop: 60,
+    scrollHeight: 80,
+    height: 20,
+    scrollHeightDeltaPerMount: 30,
+  })
+
+  reconcileMountedTranscriptPane({
+    scrollbox: harness.scrollbox,
+    currentEntries: [
+      entry(1, "user", "prompt"),
+      entry(2, "assistant", "partial"),
+    ],
+    nextEntries: [
+      entry(1, "user", "prompt"),
+      entry(2, "assistant", "partial"),
+      entry(3, "tool", "new output"),
+    ],
+    renderables: harness.renderables,
+    clampScrollTop,
+    rebuild: harness.rebuild,
+    mountEntry: harness.mountEntry,
+  })
+
+  assert.deepEqual(harness.mounted, [3])
+  assert.equal(harness.scrollbox.scrollHeight, 110)
+  assert.equal(harness.scrollbox.scrollTop, 90)
+})
+
+test("reconcileMountedTranscriptPane preserves scroll position when not at bottom", () => {
+  const harness = createHarness([
+    [1, entry(1, "user", "prompt")],
+    [2, entry(2, "assistant", "partial")],
+  ], {
+    scrollTop: 20,
+    scrollHeight: 80,
+    height: 20,
+    scrollHeightDeltaPerMount: 30,
+  })
+
+  reconcileMountedTranscriptPane({
+    scrollbox: harness.scrollbox,
+    currentEntries: [
+      entry(1, "user", "prompt"),
+      entry(2, "assistant", "partial"),
+    ],
+    nextEntries: [
+      entry(1, "user", "prompt"),
+      entry(2, "assistant", "partial"),
+      entry(3, "tool", "new output"),
+    ],
+    renderables: harness.renderables,
+    clampScrollTop,
+    rebuild: harness.rebuild,
+    mountEntry: harness.mountEntry,
+  })
+
+  assert.deepEqual(harness.mounted, [3])
+  assert.equal(harness.scrollbox.scrollHeight, 110)
+  assert.equal(harness.scrollbox.scrollTop, 20)
+})
+
 test("reconcileMountedTranscriptPane repaints same-looking rows from a different turn", () => {
   const harness = createHarness([
     [1, entry(1, "assistant", "same rendered text", 1)],
@@ -184,7 +250,19 @@ test("reconcileMountedTranscriptPane rebuilds when scrollbox is absent or next e
   assert.equal(rebuilds, 2)
 })
 
-function createHarness(initialEntries: Array<[number, TranscriptPaneEntry]>) {
+function clampScrollTop(scrollTop: number, scrollHeight: number, viewportHeight: number): number {
+  return Math.max(0, Math.min(scrollTop, scrollHeight - viewportHeight))
+}
+
+function createHarness(
+  initialEntries: Array<[number, TranscriptPaneEntry]>,
+  options: {
+    readonly scrollTop?: number
+    readonly scrollHeight?: number
+    readonly height?: number
+    readonly scrollHeightDeltaPerMount?: number
+  } = {},
+) {
   const removed: string[] = []
   const destroyed: string[] = []
   const mounted: number[] = []
@@ -201,10 +279,10 @@ function createHarness(initialEntries: Array<[number, TranscriptPaneEntry]>) {
     ]),
   )
   const scrollbox = {
-    scrollTop: 12,
+    scrollTop: options.scrollTop ?? 12,
     scrollLeft: 0,
-    scrollHeight: 80,
-    height: 20,
+    scrollHeight: options.scrollHeight ?? 80,
+    height: options.height ?? 20,
     remove(id: string) {
       removed.push(id)
     },
@@ -227,6 +305,7 @@ function createHarness(initialEntries: Array<[number, TranscriptPaneEntry]>) {
     },
     mountEntry: (nextEntry: TranscriptPaneEntry) => {
       mounted.push(nextEntry.id)
+      scrollbox.scrollHeight += options.scrollHeightDeltaPerMount ?? 0
       renderables.set(nextEntry.id, {
         entry: nextEntry,
         wrapper: {

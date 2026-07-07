@@ -51,6 +51,8 @@ export type TranscriptPaneScrollbox = {
   requestRender: () => unknown
 }
 
+const TRANSCRIPT_PANE_BOTTOM_TOLERANCE_PX = 2
+
 export function transcriptEntriesEqual<TEntry extends TranscriptPaneEntry>(
   left: TEntry,
   right: TEntry,
@@ -115,6 +117,12 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
   removeEmptyRenderable?.()
 
   const previousScrollTop = scrollbox.scrollTop
+  const previousScrollHeight = scrollbox.scrollHeight
+  const wasScrolledToBottom = transcriptPaneIsScrolledToBottom(
+    previousScrollTop,
+    previousScrollHeight,
+    scrollbox.height,
+  )
   const previousVisibleEntries = currentEntries.filter(transcriptPaneEntryIsMounted)
   const nextVisibleEntries = nextEntries.filter(transcriptPaneEntryIsMounted)
 
@@ -156,7 +164,9 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
 
   scrollbox.scrollTo({
     x: scrollbox.scrollLeft,
-    y: clampScrollTop(previousScrollTop, scrollbox.scrollHeight, scrollbox.height),
+    y: wasScrolledToBottom
+      ? clampScrollTop(scrollbox.scrollHeight - scrollbox.height, scrollbox.scrollHeight, scrollbox.height)
+      : clampScrollTop(previousScrollTop, scrollbox.scrollHeight, scrollbox.height),
   })
   onScrollTop?.(scrollbox.scrollTop)
   scrollbox.requestRender()
@@ -166,4 +176,12 @@ function transcriptPaneEntryIsMounted<TEntry extends TranscriptPaneEntry>(
   entry: TEntry,
 ): boolean {
   return !entry.hidden && !entry.historyDeferred
+}
+
+function transcriptPaneIsScrolledToBottom(
+  scrollTop: number,
+  scrollHeight: number,
+  viewportHeight: number,
+): boolean {
+  return scrollTop + viewportHeight >= scrollHeight - TRANSCRIPT_PANE_BOTTOM_TOLERANCE_PX
 }
