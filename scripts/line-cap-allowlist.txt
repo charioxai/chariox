@@ -106,4 +106,3 @@ apps/kernel/src/runtime/event_log.rs
 apps/kernel/src/transport/mcp_server/tests.rs
 apps/kernel/src/scheduler/prompt_injection.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/Views/ArrobaRootView.swift
-apps/cli/scripts/lib/hosted-cloud-kernel-scenarios.mjs
