@@ -22,6 +22,10 @@ pub struct ExternalImportHistoryIndex {
 pub struct ExternalImportHistoryEntry {
     pub kind: SessionHistoryEntryKind,
     pub text: String,
+    pub external_provider: Option<String>,
+    pub external_provider_session_id: Option<String>,
+    pub external_provider_turn_id: Option<String>,
+    pub observed_at_ms: Option<u64>,
     pub external_observation: Option<super::SessionHistoryExternalObservation>,
 }
 
@@ -446,9 +450,12 @@ impl OperationalHistoryStore {
                         message: error.to_string(),
                     })?;
             let metadata_text = metadata_text.unwrap_or_default();
-            let external_observation = serde_json::from_str::<HistoryEvent>(&event_json)
+            let history_entry = serde_json::from_str::<HistoryEvent>(&event_json)
                 .ok()
-                .and_then(|event| event.session_history_external_observation());
+                .and_then(|event| event.to_session_history_entry());
+            let external_observation = history_entry
+                .as_ref()
+                .and_then(|entry| entry.external_observation.clone());
             let is_external_observed =
                 SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
                     &metadata_text,
@@ -476,6 +483,18 @@ impl OperationalHistoryStore {
                         ExternalImportHistoryEntry {
                             kind,
                             text: content.clone(),
+                            external_provider: history_entry
+                                .as_ref()
+                                .and_then(|entry| entry.external_provider.clone()),
+                            external_provider_session_id: history_entry
+                                .as_ref()
+                                .and_then(|entry| entry.external_provider_session_id.clone()),
+                            external_provider_turn_id: history_entry
+                                .as_ref()
+                                .and_then(|entry| entry.external_provider_turn_id.clone()),
+                            observed_at_ms: history_entry
+                                .as_ref()
+                                .and_then(|entry| entry.observed_at_ms),
                             external_observation: external_observation.clone(),
                         },
                     );

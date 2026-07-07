@@ -1101,6 +1101,10 @@ fn append_observed_external_turns_for_attached_target_with_options(
                 ExternalImportHistoryEntry {
                     kind: entry.kind,
                     text: entry.text.clone(),
+                    external_provider: entry.external_provider.clone(),
+                    external_provider_session_id: entry.external_provider_session_id.clone(),
+                    external_provider_turn_id: entry.external_provider_turn_id.clone(),
+                    observed_at_ms: entry.observed_at_ms,
                     external_observation: entry.external_observation.clone(),
                 },
             );
@@ -1284,6 +1288,10 @@ fn external_observed_history_entry_matches(
 ) -> bool {
     existing.kind == next.kind
         && existing.text == next.text
+        && existing.external_provider == next.external_provider
+        && existing.external_provider_session_id == next.external_provider_session_id
+        && existing.external_provider_turn_id == next.external_provider_turn_id
+        && existing.observed_at_ms == next.observed_at_ms
         && existing.external_observation == next.external_observation
 }
 
@@ -1803,6 +1811,35 @@ mod tests {
                 format!("thread-{agent_id}"),
             ),
         )
+    }
+
+    #[test]
+    fn external_observed_history_entry_match_includes_visible_metadata() {
+        let existing = ExternalImportHistoryEntry {
+            kind: SessionHistoryEntryKind::ProviderOutput,
+            text: "same output".to_string(),
+            external_provider: Some("codex".to_string()),
+            external_provider_session_id: Some("thread-1".to_string()),
+            external_provider_turn_id: Some("assistant-1".to_string()),
+            observed_at_ms: Some(2_000),
+            external_observation: None,
+        };
+        let next = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "same output",
+            "codex",
+            "thread-1",
+            Some("assistant-1".to_string()),
+            Some(2_100),
+        );
+
+        assert!(
+            !external_observed_history_entry_matches(&existing, &next),
+            "metadata-only updates must be persisted and fanned out"
+        );
     }
 
     fn test_codex_run(

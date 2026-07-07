@@ -1385,6 +1385,25 @@ mod tests {
                 .map(|entry| (entry.kind, entry.text.as_str())),
             Some((SessionHistoryEntryKind::UserPrompt, "external prompt"))
         );
+        let external_prompt_entry = index
+            .external_entries_by_merge_key
+            .get("external:codex:thread-1:turn-1:prompt")
+            .expect("external prompt should be indexed");
+        assert_eq!(
+            external_prompt_entry.external_provider.as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            external_prompt_entry
+                .external_provider_session_id
+                .as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            external_prompt_entry.external_provider_turn_id.as_deref(),
+            Some("turn-1")
+        );
+        assert_eq!(external_prompt_entry.observed_at_ms, Some(2_000));
         assert_eq!(
             index
                 .external_entries_by_merge_key
@@ -1517,6 +1536,16 @@ mod tests {
             .get(merge_key)
             .expect("duplicate merge key should be indexed");
         assert_eq!(latest.text, "new assistant snapshot");
+        assert_eq!(latest.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            latest.external_provider_session_id.as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            latest.external_provider_turn_id.as_deref(),
+            Some("assistant-1")
+        );
+        assert_eq!(latest.observed_at_ms, Some(3_000));
         assert_eq!(
             latest
                 .external_observation
