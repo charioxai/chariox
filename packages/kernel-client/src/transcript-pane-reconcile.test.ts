@@ -30,6 +30,16 @@ test("transcriptEntriesShareMountedPrefix compares toggles by state and content"
   assert.equal(transcriptEntriesShareMountedPrefix(entry(1, "assistant", "a"), entry(2, "assistant", "a")), false)
 })
 
+test("transcriptEntriesShareMountedPrefix treats ordinary rows with different turns as different mounted rows", () => {
+  assert.equal(
+    transcriptEntriesShareMountedPrefix(
+      entry(1, "assistant", "same rendered text", 1),
+      entry(1, "assistant", "same rendered text", 2),
+    ),
+    false,
+  )
+})
+
 test("reconcileMountedTranscriptPane preserves mounted prefix and repaints only changed suffix", () => {
   const harness = createHarness([
     [1, entry(1, "user", "prompt")],
@@ -65,6 +75,27 @@ test("reconcileMountedTranscriptPane preserves mounted prefix and repaints only 
   assert.equal(harness.renderables.has(3), false)
   assert.equal(harness.scrollbox.scrollTop, 12)
   assert.equal(harness.scrollbox.requestRenderCount, 1)
+})
+
+test("reconcileMountedTranscriptPane repaints same-looking rows from a different turn", () => {
+  const harness = createHarness([
+    [1, entry(1, "assistant", "same rendered text", 1)],
+  ])
+
+  reconcileMountedTranscriptPane({
+    scrollbox: harness.scrollbox,
+    currentEntries: [entry(1, "assistant", "same rendered text", 1)],
+    nextEntries: [entry(1, "assistant", "same rendered text", 2)],
+    renderables: harness.renderables,
+    clampScrollTop: (value) => value,
+    rebuild: harness.rebuild,
+    mountEntry: harness.mountEntry,
+  })
+
+  assert.deepEqual(harness.removed, ["w1"])
+  assert.deepEqual(harness.destroyed, ["w1"])
+  assert.deepEqual(harness.mounted, [1])
+  assert.equal(harness.renderables.get(1)?.entry.turnId, 2)
 })
 
 test("reconcileMountedTranscriptPane remounts turn toggles when mode changes with the same id", () => {

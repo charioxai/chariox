@@ -57,6 +57,7 @@ export function transcriptEntriesEqual<TEntry extends TranscriptPaneEntry>(
 ): boolean {
   return left.id === right.id
     && left.role === right.role
+    && left.turnId === right.turnId
     && left.text === right.text
     && left.sourceText === right.sourceText
     && left.emphasis === right.emphasis
