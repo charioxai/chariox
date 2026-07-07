@@ -11,6 +11,7 @@ import {
   queuedPromptActionLabel,
   queuedPromptActionState,
   queuedPromptControlForPrompt,
+  queuedPromptControlForPromptIds,
   queuedPromptMetaLabel,
   queuedPromptProjectionForAgent,
   queuedPromptStatusLabel,
@@ -198,6 +199,35 @@ test("queued prompt control lookup requires matching projected prompt identity",
   assert.equal(queuedPromptControlForPrompt(controls, null), null)
   assert.equal(queuedPromptControlForPrompt(controls, " "), null)
   assert.equal(queuedPromptControlForPrompt(null, "prompt-1"), null)
+})
+
+test("queued prompt control lookup accepts pending and materialized identities", () => {
+  assert.deepEqual(queuedPromptControlForPromptIds({
+    "materialized-1": {
+      prompt_id: "materialized-1",
+      status: "dispatching",
+    },
+  }, ["pending-1", "materialized-1"]), {
+    prompt_id: "materialized-1",
+    status: "dispatching",
+  })
+
+  assert.deepEqual(queuedPromptControlForPromptIds({
+    "pending-1": {
+      prompt_id: "materialized-1",
+      status: "dispatching",
+    },
+  }, ["pending-1", "materialized-1"]), {
+    prompt_id: "materialized-1",
+    status: "dispatching",
+  })
+
+  assert.equal(queuedPromptControlForPromptIds({
+    "pending-1": {
+      prompt_id: "other-prompt",
+      status: "dispatching",
+    },
+  }, ["pending-1", "materialized-1"]), null)
 })
 
 test("queued prompt actionability does not mark unavailable action disabled without reason", () => {
@@ -485,6 +515,63 @@ test("project queued prompt uses pending prompt id as action identity", () => {
     canCancel: true,
     steerDisabledReason: null,
     cancelDisabledReason: null,
+  })
+})
+
+test("queued prompt projection applies controls keyed by materialized id for pending prompts", () => {
+  const session = sessionWith({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "queued-materialized",
+          pending_prompt_id: "queued-pending",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued",
+          attachments: [],
+          status: "queued",
+        }],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "queued",
+        busy: true,
+        queued_prompt_count: 1,
+        unread_idle_output: false,
+        queued_prompt_controls: {
+          "queued-materialized": {
+            prompt_id: "queued-materialized",
+            status: "dispatching",
+            can_steer: false,
+            can_cancel: true,
+            steer_disabled_reason: "Kernel projected dispatch.",
+            cancel_disabled_reason: null,
+          },
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "replace",
+    prompts: [{
+      id: "queued-pending",
+      pendingPromptId: "queued-pending",
+      sourceAttachmentId: "attachment-1",
+      targetAgentId: "agent-1",
+      prompt: "queued",
+      promptOrigin: null,
+      attachmentCount: 0,
+      status: "dispatching",
+      steerDisabled: true,
+      canSteer: false,
+      canCancel: true,
+      steerDisabledReason: "Kernel projected dispatch.",
+      cancelDisabledReason: null,
+    }],
   })
 })
 

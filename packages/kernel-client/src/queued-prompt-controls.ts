@@ -127,19 +127,29 @@ export function queuedPromptControlForPrompt(
   controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
   promptId: string | null | undefined,
 ): QueuedPromptControlInput | null {
-  const lookupPromptId = nonBlankString(promptId)
-  if (!controls || !lookupPromptId) {
+  return queuedPromptControlForPromptIds(controls, [promptId])
+}
+
+export function queuedPromptControlForPromptIds(
+  controls: Record<string, QueuedPromptControlInput | null | undefined> | null | undefined,
+  promptIds: readonly (string | null | undefined)[],
+): QueuedPromptControlInput | null {
+  const lookupPromptIds = uniqueNonBlankStrings(promptIds)
+  if (!controls || lookupPromptIds.length === 0) {
     return null
   }
-  const control = controls[lookupPromptId] ?? null
-  if (!control) {
-    return null
+  for (const lookupPromptId of lookupPromptIds) {
+    const control = controls[lookupPromptId] ?? null
+    if (!control) {
+      continue
+    }
+    const projectedPromptId = nonBlankString(control.prompt_id)
+    if (projectedPromptId && !lookupPromptIds.includes(projectedPromptId)) {
+      continue
+    }
+    return control
   }
-  const projectedPromptId = nonBlankString(control.prompt_id)
-  if (projectedPromptId && projectedPromptId !== lookupPromptId) {
-    return null
-  }
-  return control
+  return null
 }
 
 export function queuedPromptsForAgent(
@@ -175,10 +185,12 @@ export function queuedPromptProjectionForAgent(
   return {
     action: "replace",
     prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
-      const promptId = nonBlankString(prompt.pending_prompt_id) ?? nonBlankString(prompt.id)
       const projected = projectQueuedPrompt(prompt, {
         fallbackTargetAgentId: agentId,
-        control: queuedPromptControlForPrompt(controls, promptId),
+        control: queuedPromptControlForPromptIds(controls, [
+          prompt.pending_prompt_id,
+          prompt.id,
+        ]),
       })
       return projected ? [projected] : []
     })),
@@ -279,6 +291,13 @@ function hasOwn<T extends object, K extends PropertyKey>(
 function nonBlankString(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
   return trimmed ? trimmed : null
+}
+
+function uniqueNonBlankStrings(values: readonly (string | null | undefined)[]): string[] {
+  return [...new Set(values.flatMap((value) => {
+    const normalized = nonBlankString(value)
+    return normalized ? [normalized] : []
+  }))]
 }
 
 function finiteNumber(value: number | null | undefined): number | null {
