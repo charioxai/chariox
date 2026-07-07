@@ -1,5 +1,6 @@
 import {
   applyExternalProviderObservedTranscriptMetadata,
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedProviderStatusShouldRender,
@@ -175,7 +176,7 @@ export function terminalRecordShouldRenderInAgentPane(
   if (kind === "provider_status") {
     return terminalRecordProviderStatusShouldRender({
       kind,
-      source: options.externalObserved === true ? "external_provider_observed" : null,
+      source: options.externalObserved === true ? EXTERNAL_PROVIDER_OBSERVED_SOURCE : null,
       external_observation: options.passiveExternalTelemetry === true
         ? { settles_active_prompt: false, passive_telemetry: true }
         : null,
