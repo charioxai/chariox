@@ -736,6 +736,22 @@ test("queued prompts for agent falls back to legacy top-level queues without pro
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
 })
 
+test("queued prompts for agent ignore targetless legacy top-level queues", () => {
+  const queuedForAgent = prompt("queued-agent")
+  const queuedTargetless = {
+    id: "queued-targetless",
+    source_attachment_id: "attachment-1",
+    prompt: "queued-targetless",
+    status: "Queued",
+  }
+  const session = sessionWith({
+    queued_prompts: [queuedTargetless, queuedForAgent],
+  })
+
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-2"), [])
+})
+
 test("queued prompts for agent ignore queues outside session agents", () => {
   const session = sessionWith({
     queued_prompts: [prompt("queued-ghost", "agent-ghost")],
