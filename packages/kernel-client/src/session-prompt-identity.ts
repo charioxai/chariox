@@ -83,7 +83,7 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   }
   if (projected?.activeTurnPromptId) {
     const prompt = legacyPromptForAgent(session, agentId)
-    return prompt?.id === projected.activeTurnPromptId ? prompt : null
+    return promptMatchesId(prompt, projected.activeTurnPromptId) ? prompt : null
   }
   return legacyPromptForAgent(session, agentId)
 }
@@ -95,7 +95,7 @@ export function sessionActivePromptForAgent(session: RuntimeSession, agentId: st
   }
   if (projected?.activeTurnPromptId) {
     const prompt = activePromptForAgent(session, agentId)
-    return prompt?.id === projected.activeTurnPromptId ? prompt : null
+    return promptMatchesId(prompt, projected.activeTurnPromptId) ? prompt : null
   }
   return activePromptForAgent(session, agentId)
 }

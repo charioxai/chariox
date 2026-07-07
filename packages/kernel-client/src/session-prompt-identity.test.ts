@@ -148,6 +148,45 @@ test("session pending prompt identity matches queued pending prompt ids", () => 
   assert.equal(sessionHasPendingPrompt(session, "agent-1", "queued-materialized"), true)
 })
 
+test("session active prompt identity matches active prompt pending ids", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "active-materialized",
+          pending_prompt_id: "active-pending",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "active-pending",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "active-pending"), true)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "active-materialized"), false)
+  assert.equal(sessionHasPendingPrompt(session, "agent-1", "active-pending"), true)
+  assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), "active-pending")
+  assert.equal(sessionActivePromptForAgent(session, "agent-1")?.id, "active-materialized")
+  assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "active-materialized")
+})
+
 test("session pending prompt identity keeps queued prompts visible behind projected active turn", () => {
   const session = makeSession({
     prompt_states: {
