@@ -63,15 +63,8 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut cache = ExternalProviderSessionDiscoveryCache::default();
-    if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
-        refresh_external_provider_session_index(
-            &app,
-            Some(&runtime_state),
-            Some(&mut cache),
-            false,
-        )
+    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false)
         .await;
-    }
     let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -82,22 +75,10 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                 }
             }
             _ = interval.tick() => {
-                if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
-                    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
-                }
+                refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
             }
         }
     }
-}
-
-async fn external_provider_session_discovery_has_demand(
-    app: &Arc<Mutex<DaemonApp>>,
-    runtime_state: Option<&KernelRuntimeState>,
-) -> bool {
-    let app =
-        crate::runtime::app_lock::lock_app_instrumented(app, "external_provider_session_control")
-            .await;
-    !attached_external_provider_session_refs(&app, runtime_state).is_empty()
 }
 
 #[derive(Debug, Clone)]
@@ -2048,7 +2029,7 @@ mod tests {
     }
 
     #[test]
-    fn external_provider_discovery_poller_is_demand_gated() {
+    fn external_provider_discovery_poller_is_not_demand_gated() {
         let source = fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("src/runtime/external_provider_session_control.rs"),
@@ -2064,12 +2045,12 @@ mod tests {
         let poller_source = &source[start..end];
 
         assert!(
-            poller_source.contains("external_provider_session_discovery_has_demand"),
-            "external provider discovery must be demand gated while idle"
+            !poller_source.contains("external_provider_session_discovery_has_demand"),
+            "external provider discovery must not be demand gated"
         );
         assert!(
-            poller_source.contains("attached_external_provider_session_refs"),
-            "external provider discovery demand must use the same live attachment/live run policy"
+            !poller_source.contains("attached_external_provider_session_refs"),
+            "external provider discovery must run without existing attached targets"
         );
         assert!(
             poller_source
