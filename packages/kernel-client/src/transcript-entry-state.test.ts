@@ -323,6 +323,28 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn accepts fallback prompt ide
   assert.equal(entries[1]?.turnId, "turn-1")
 })
 
+test("assignMatchingUntrackedTranscriptEntriesToTurn applies fallback prompt metadata", () => {
+  const turnId = "turn-1"
+  const prompt: AssignmentEntry<string> = assignmentEntry("prompt", "user", { turnId })
+  const entries: AssignmentEntry<string>[] = [
+    prompt,
+    assignmentEntry("assistant", "assistant", { promptId: "prompt-1" }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<string, AssignmentEntry<string>>(entries, prompt, {
+    turnId,
+    promptId: "prompt-1",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
+  })
+
+  assert.equal(assigned, 1)
+  assert.equal(entries[1]?.turnId, "turn-1")
+  assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.equal(entries[1]?.promptOrigin, "external")
+  assert.equal(entries[1]?.sourceAttachmentId, "attachment-1")
+})
+
 test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canonical turn", () => {
   const entries: AssignmentEntry<number>[] = [
     assignmentEntry("equivalent", "assistant", { turnId: 3, outputIdentity: "run-1:assistant", createdAtMs: 1_100 }),

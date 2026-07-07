@@ -33,6 +33,8 @@ export type TranscriptTurnAssignmentOptions<
 > = {
   readonly turnId: TTurnId
   readonly promptId?: string | null
+  readonly promptOrigin?: string | null
+  readonly sourceAttachmentId?: string | null
   readonly providerRunId?: string | null
   readonly nowMs?: () => number
   readonly onAssigned?: (turnId: TTurnId, entry: TEntry, assignedAtMs: number | null) => void
@@ -312,6 +314,8 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
   options: TranscriptTurnAssignmentOptions<TTurnId, TEntry>,
 ): number {
   const promptId = promptEntry.promptId ?? options.promptId
+  const promptOrigin = promptEntry.promptOrigin ?? options.promptOrigin
+  const sourceAttachmentId = promptEntry.sourceAttachmentId ?? options.sourceAttachmentId
   const providerRunId = promptEntry.providerRunId ?? options.providerRunId
   const hasPromptId = hasTranscriptPromptIdentity(promptId)
   const hasProviderRunId = Boolean(providerRunId)
@@ -339,8 +343,8 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
     entry.turnId = options.turnId
     applyTranscriptTurnAssignmentMetadata(entry, {
       promptId,
-      promptOrigin: promptEntry.promptOrigin,
-      sourceAttachmentId: promptEntry.sourceAttachmentId,
+      promptOrigin,
+      sourceAttachmentId,
       providerRunId,
     })
     options.onAssigned?.(options.turnId, entry, transcriptAssignmentTimestamp(entry, options.nowMs))
