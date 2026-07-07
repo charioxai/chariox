@@ -1,5 +1,7 @@
 use super::*;
 
+const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
+
 impl KernelRuntimeState {
     pub(crate) fn durable_snapshot_scheduler(
         &self,
@@ -22,6 +24,8 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        self.sweep_stale_terminal_attachments(crate::session::unix_epoch_ms())
+            .await;
         let pumped_provider_run_ids = self
             .with_app_side_effect(|app| {
                 let pumped_provider_run_ids =
@@ -36,6 +40,49 @@ impl KernelRuntimeState {
         for provider_run_id in pumped_provider_run_ids {
             self.observe_git_after_provider_activity_if_pending(&provider_run_id)
                 .await;
+        }
+    }
+
+    pub(crate) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .attachment_store
+            .record_heartbeat(session_id, attachment_id, now_ms)
+    }
+
+    pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
+        let stale_attachment_ids = self
+            .owned
+            .attachment_store
+            .stale_terminal_attachment_ids(now_ms, STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS);
+        for attachment_id in stale_attachment_ids {
+            match self.owned.detach(&attachment_id) {
+                Ok(attachment) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "detached stale terminal attachment",
+                        serde_json::json!({
+                            "session_id": attachment.session_id(),
+                            "attachment_id": attachment.id(),
+                            "stale_after_ms": STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "failed detaching stale terminal attachment",
+                        serde_json::json!({
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
         }
     }
 

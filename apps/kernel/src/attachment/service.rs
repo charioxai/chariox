@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::error::DaemonError;
 use crate::session::{PromptDetachEffect, SessionService};
 
-use super::{AttachRequest, AttachmentEvent, RuntimeAttachment};
+use super::{AttachRequest, AttachmentEvent, ClientCapabilityLevel, RuntimeAttachment};
 
 #[derive(Debug, Clone, Default)]
 pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
+    last_heartbeat_at_ms: BTreeMap<String, u64>,
     events: Vec<AttachmentEvent>,
     next_attachment_number: u64,
 }
@@ -98,6 +99,21 @@ impl AttachmentServiceStore {
     pub fn remove_session_attachments(&self, session_id: &str) -> Vec<RuntimeAttachment> {
         self.write().remove_session_attachments(session_id)
     }
+
+    pub fn record_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.write()
+            .record_heartbeat(session_id, attachment_id, now_ms)
+    }
+
+    pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
+        self.read()
+            .stale_terminal_attachment_ids(now_ms, stale_after_ms)
+    }
 }
 
 impl AttachmentService {
@@ -122,6 +138,8 @@ impl AttachmentService {
         sessions.add_attachment_to_session(&request.session_id, &attachment_id)?;
         self.attachments
             .insert(attachment_id.clone(), attachment.clone());
+        self.last_heartbeat_at_ms
+            .insert(attachment_id.clone(), crate::session::unix_epoch_ms());
         self.events.push(AttachmentEvent::Joined {
             session_id: request.session_id,
             attachment_id,
@@ -149,6 +167,7 @@ impl AttachmentService {
                 attachment_id: attachment_id.to_string(),
             }
         })?;
+        self.last_heartbeat_at_ms.remove(attachment_id);
 
         let (_, effect) =
             sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
@@ -226,7 +245,10 @@ impl AttachmentService {
 
         let removed_attachments: Vec<RuntimeAttachment> = attachment_ids
             .iter()
-            .filter_map(|attachment_id| self.attachments.remove(attachment_id))
+            .filter_map(|attachment_id| {
+                self.last_heartbeat_at_ms.remove(attachment_id);
+                self.attachments.remove(attachment_id)
+            })
             .collect();
 
         for attachment in &removed_attachments {
@@ -239,10 +261,50 @@ impl AttachmentService {
         removed_attachments
     }
 
+    pub fn record_heartbeat(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let attachment = self.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        self.last_heartbeat_at_ms
+            .insert(attachment_id.to_string(), now_ms);
+        Ok(())
+    }
+
+    pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
+        self.attachments
+            .values()
+            .filter(|attachment| terminal_attachment_requires_heartbeat(attachment))
+            .filter(|attachment| {
+                self.last_heartbeat_at_ms
+                    .get(attachment.id())
+                    .is_none_or(|last_heartbeat_at_ms| {
+                        now_ms.saturating_sub(*last_heartbeat_at_ms) >= stale_after_ms
+                    })
+            })
+            .map(|attachment| attachment.id().to_string())
+            .collect()
+    }
+
     fn next_attachment_id(&mut self) -> String {
         self.next_attachment_number += 1;
         format!("attachment-{}", self.next_attachment_number)
     }
+}
+
+fn terminal_attachment_requires_heartbeat(attachment: &RuntimeAttachment) -> bool {
+    matches!(
+        attachment.capability_level(),
+        ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
+    )
 }
 
 #[cfg(test)]
@@ -335,5 +397,78 @@ mod tests {
             event,
             AttachmentEvent::Left { attachment_id, .. } if attachment_id == first.id()
         )));
+    }
+
+    #[test]
+    fn terminal_heartbeat_staleness_excludes_fresh_and_automation_attachments() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+
+        let stale = attachments
+            .attach(
+                &mut sessions,
+                AttachRequest::new(&session_id, "client-a", ClientCapabilityLevel::FullTerminal),
+            )
+            .expect("stale terminal attachment should attach");
+        let fresh = attachments
+            .attach(
+                &mut sessions,
+                AttachRequest::new(
+                    &session_id,
+                    "client-b",
+                    ClientCapabilityLevel::InteractiveStructured,
+                ),
+            )
+            .expect("fresh terminal attachment should attach");
+        let automation = attachments
+            .attach(
+                &mut sessions,
+                AttachRequest::new(
+                    &session_id,
+                    "client-c",
+                    ClientCapabilityLevel::AutomationOnly,
+                ),
+            )
+            .expect("automation attachment should attach");
+
+        attachments
+            .record_heartbeat(&session_id, stale.id(), 1_000)
+            .expect("stale heartbeat should record");
+        attachments
+            .record_heartbeat(&session_id, fresh.id(), 25_000)
+            .expect("fresh heartbeat should record");
+        attachments
+            .record_heartbeat(&session_id, automation.id(), 1_000)
+            .expect("automation heartbeat should record");
+
+        assert_eq!(
+            attachments.stale_terminal_attachment_ids(31_000, 30_000),
+            vec![stale.id().to_string()]
+        );
+    }
+
+    #[test]
+    fn detaching_attachment_removes_heartbeat_state() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+        let attachment = attachments
+            .attach(
+                &mut sessions,
+                AttachRequest::new(&session_id, "client-a", ClientCapabilityLevel::FullTerminal),
+            )
+            .expect("attachment should attach");
+
+        attachments
+            .record_heartbeat(&session_id, attachment.id(), 1_000)
+            .expect("heartbeat should record");
+        attachments
+            .detach(&mut sessions, attachment.id())
+            .expect("attachment should detach");
+
+        assert!(attachments
+            .stale_terminal_attachment_ids(31_000, 30_000)
+            .is_empty());
     }
 }

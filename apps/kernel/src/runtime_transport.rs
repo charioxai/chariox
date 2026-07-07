@@ -581,7 +581,10 @@ async fn handle_kernel_connection(
                 let _ = pong_tx.send(payload.to_vec());
             }
             Message::Close(_) => break,
-            Message::Pong(_) | Message::Frame(_) => {}
+            Message::Pong(_) => {
+                record_connection_subscription_heartbeat(&router, &connection_state).await;
+            }
+            Message::Frame(_) => {}
         }
     }
 
@@ -601,6 +604,40 @@ async fn handle_kernel_connection(
     }
 
     Ok(())
+}
+
+async fn record_connection_subscription_heartbeat(
+    router: &Arc<CommandRouter>,
+    connection_state: &Arc<Mutex<ConnectionState>>,
+) {
+    let subscription = {
+        let state = connection_state.lock().await;
+        state.subscription.clone()
+    };
+    let Some(subscription) = subscription else {
+        return;
+    };
+    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+        return;
+    }
+    if let Err(error) = router
+        .record_terminal_attachment_heartbeat(
+            &subscription.session_id,
+            &subscription.attachment_id,
+            crate::session::unix_epoch_ms(),
+        )
+        .await
+    {
+        crate::logging::warn_with_fields(
+            "daemon.runtime_transport",
+            "failed recording terminal attachment heartbeat",
+            serde_json::json!({
+                "session_id": subscription.session_id,
+                "attachment_id": subscription.attachment_id,
+                "error": error.to_string(),
+            }),
+        );
+    }
 }
 
 async fn send_kernel_frame<S>(writer: &mut S, frame: KernelOutgoingFrame) -> bool
@@ -957,6 +994,7 @@ async fn handle_incoming_payload(
                     },
                 )));
             }
+            record_connection_subscription_heartbeat(router, connection_state).await;
         }
         KernelIncomingFrame::Unsubscribe { request_id } => {
             crate::logging::info_with_fields(

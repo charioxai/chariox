@@ -118,6 +118,10 @@ impl LocalRouterTestHarness {
         f(&mut app)
     }
 
+    pub(crate) fn pump_transport_runtime(&self) {
+        self.runtime.block_on(self.router.pump_transport_runtime());
+    }
+
     pub(crate) fn spawn_workflow_test_agent(&self, session_id: &str, alias: &str) -> AgentInstance {
         self.spawn_workflow_test_agent_with_worktree(session_id, alias, None)
     }

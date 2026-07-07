@@ -51,6 +51,17 @@ impl CommandRouter {
         self.runtime_state.pump_transport_runtime().await;
     }
 
+    pub(crate) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .record_terminal_attachment_heartbeat(session_id, attachment_id, now_ms)
+            .await
+    }
+
     pub(crate) fn terminal_session_change_sequence(&self, session_id: &str) -> u64 {
         self.runtime_state
             .terminal_session_change_sequence(session_id)
