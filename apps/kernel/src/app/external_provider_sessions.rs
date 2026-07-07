@@ -55,7 +55,7 @@ impl AttachedProviderTranscriptCursorStore {
     ) -> ExternalProviderObservedCursor {
         self.inner
             .read()
-            .expect("attached provider transcript cursor store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(key)
             .cloned()
             .unwrap_or_default()
@@ -68,7 +68,7 @@ impl AttachedProviderTranscriptCursorStore {
     ) {
         self.inner
             .write()
-            .expect("attached provider transcript cursor store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, cursor);
     }
 
@@ -76,7 +76,7 @@ impl AttachedProviderTranscriptCursorStore {
         let mut cursors = self
             .inner
             .write()
-            .expect("attached provider transcript cursor store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous_len = cursors.len();
         cursors.retain(|key, _| key.session_id != session_id);
         previous_len.saturating_sub(cursors.len())
@@ -86,7 +86,7 @@ impl AttachedProviderTranscriptCursorStore {
         let mut cursors = self
             .inner
             .write()
-            .expect("attached provider transcript cursor store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous_len = cursors.len();
         cursors.retain(|key, _| key.session_id != session_id || key.agent_id != agent_id);
         previous_len.saturating_sub(cursors.len())
@@ -155,7 +155,7 @@ impl ExternalProviderSessionIndexStore {
         let mut index = self
             .inner
             .write()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut replacement = BTreeMap::new();
         for mut session in sessions {
             if normalize_external_provider_filter(&session.provider).as_deref()
@@ -191,7 +191,7 @@ impl ExternalProviderSessionIndexStore {
         let mut index = self
             .inner
             .write()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut session = session;
         normalize_external_provider_session_record(&mut session);
         if let Some(attachment) = index.attached.get(&session.external_session_id) {
@@ -270,7 +270,7 @@ impl ExternalProviderSessionIndexStore {
         let mut index = self
             .inner
             .write()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let external_session_id = normalize_external_session_id_key(external_session_id);
         let attachment = {
             let attachment = index
@@ -291,7 +291,7 @@ impl ExternalProviderSessionIndexStore {
         let mut index = self
             .inner
             .write()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed_external_session_ids = Vec::new();
         index.attached.retain(|external_session_id, attachment| {
             if attachment.remove_session(session_id) {
@@ -315,7 +315,7 @@ impl ExternalProviderSessionIndexStore {
         let mut index = self
             .inner
             .write()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed_external_session_ids = Vec::new();
         index.attached.retain(|external_session_id, attachment| {
             if attachment.remove_agent(session_id, agent_id) {
@@ -339,7 +339,7 @@ impl ExternalProviderSessionIndexStore {
         let external_session_id = normalize_external_session_id_key(external_session_id);
         self.inner
             .read()
-            .expect("external provider session index poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .sessions
             .get(&external_session_id)
             .cloned()
@@ -361,7 +361,7 @@ impl ExternalProviderSessionIndexStore {
         let index = self
             .inner
             .read()
-            .expect("external provider session index poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut sessions = index
             .sessions
             .values()

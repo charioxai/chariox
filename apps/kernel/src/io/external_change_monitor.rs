@@ -79,7 +79,7 @@ impl ArtifactExternalChangeMonitor {
         let mut state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.tracked_artifacts.insert(
             key,
             TrackedExternalArtifact {
@@ -105,7 +105,7 @@ impl ArtifactExternalChangeMonitor {
         let mut state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.externally_changed_artifacts.remove(&key);
         state.tracked_artifacts.insert(
             key,
@@ -128,7 +128,7 @@ impl ArtifactExternalChangeMonitor {
         let mut state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.external_change_events += 1;
         state.externally_changed_artifacts.insert(key);
     }
@@ -153,7 +153,7 @@ impl ArtifactExternalChangeMonitor {
         let state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         paths
             .into_iter()
             .filter_map(|path| {
@@ -171,7 +171,7 @@ impl ArtifactExternalChangeMonitor {
             let mut state = self
                 .state
                 .lock()
-                .expect("artifact external change monitor lock should not be poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.live_watcher_started {
                 return;
             }
@@ -194,7 +194,7 @@ impl ArtifactExternalChangeMonitor {
             let state = self
                 .state
                 .lock()
-                .expect("artifact external change monitor lock should not be poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state
                 .tracked_artifacts
                 .iter()
@@ -205,7 +205,7 @@ impl ArtifactExternalChangeMonitor {
         let mut state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.live_watcher_scans += 1;
         for (key, artifact) in tracked {
             let full_path = artifact.workspace_root.join(&artifact.path);
@@ -232,7 +232,7 @@ impl ArtifactExternalChangeMonitor {
         let state = self
             .state
             .lock()
-            .expect("artifact external change monitor lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let issues = state
             .externally_changed_artifacts
             .iter()

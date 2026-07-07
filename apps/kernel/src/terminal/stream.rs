@@ -136,7 +136,7 @@ impl TerminalStreamHealthStore {
     pub fn snapshot(&self) -> TerminalStreamHealthSnapshot {
         self.snapshot
             .lock()
-            .expect("terminal stream health lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -144,7 +144,7 @@ impl TerminalStreamHealthStore {
         *self
             .snapshot
             .lock()
-            .expect("terminal stream health lock should not be poisoned") = snapshot;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
     }
 }
 
@@ -231,7 +231,7 @@ impl TerminalStreamStore {
     pub fn health_store(&self) -> TerminalStreamHealthStore {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .health_store()
     }
 
@@ -244,7 +244,7 @@ impl TerminalStreamStore {
     ) {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_input(session_id, provider_run_id, source_attachment_id, bytes);
     }
 
@@ -262,7 +262,7 @@ impl TerminalStreamStore {
         let record = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_output(
                 session_id,
                 provider_run_id,
@@ -283,7 +283,7 @@ impl TerminalStreamStore {
         let fanout = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_outputs(outputs);
         if !fanout.records.is_empty() {
             self.record_change_for_keys(fanout.changed_keys);
@@ -306,7 +306,7 @@ impl TerminalStreamStore {
         let record = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_external_observed_output(
                 session_id,
                 provider_run_id,
@@ -335,7 +335,7 @@ impl TerminalStreamStore {
         let record = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_prompt_output(
                 session_id,
                 provider_run_id,
@@ -360,7 +360,7 @@ impl TerminalStreamStore {
         let record = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_notice(
                 session_id,
                 provider_run_id,
@@ -375,7 +375,7 @@ impl TerminalStreamStore {
     pub fn input_records(&self) -> Vec<TerminalInputRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .input_records()
             .to_vec()
     }
@@ -383,14 +383,14 @@ impl TerminalStreamStore {
     pub fn output_records(&self) -> Vec<TerminalOutputRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .output_records()
     }
 
     pub fn notice_records(&self) -> Vec<RuntimeNoticeRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .notice_records()
     }
 
@@ -405,14 +405,14 @@ impl TerminalStreamStore {
     ) -> Vec<TerminalOutputRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_output_records(session_id, attachment_id)
     }
 
     pub fn has_pending_output_records(&self, session_id: &str, attachment_id: &str) -> bool {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_pending_output_records(session_id, attachment_id)
     }
 
@@ -428,7 +428,7 @@ impl TerminalStreamStore {
         let record = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_assistant_message_completion(
                 session_id,
                 provider_run_id,
@@ -448,7 +448,7 @@ impl TerminalStreamStore {
     ) -> Vec<AssistantMessageCompletionRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_completion_records(session_id, attachment_id)
     }
 
@@ -459,22 +459,22 @@ impl TerminalStreamStore {
     ) -> Vec<RuntimeNoticeRecord> {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_notice_records(session_id, attachment_id)
     }
 
     pub fn remove_session(&self, session_id: &str) {
         self.inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_session(session_id);
         self.attachment_changes
             .lock()
-            .expect("terminal attachment change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(signal_session_id, _), _| signal_session_id != session_id);
         self.session_changes
             .lock()
-            .expect("terminal session change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
         self.record_change();
     }
@@ -483,12 +483,12 @@ impl TerminalStreamStore {
         let changed = self
             .inner
             .lock()
-            .expect("terminal stream lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_attachment(session_id, attachment_id);
         if changed {
             self.attachment_changes
                 .lock()
-                .expect("terminal attachment change lock should not be poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&(session_id.to_string(), attachment_id.to_string()));
             self.record_change_for_session(session_id);
         }
@@ -565,7 +565,7 @@ impl TerminalStreamStore {
     fn session_signal(&self, session_id: &str) -> Arc<TerminalStreamChangeSignal> {
         self.session_changes
             .lock()
-            .expect("terminal session change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(session_id.to_string())
             .or_default()
             .clone()
@@ -578,7 +578,7 @@ impl TerminalStreamStore {
     ) -> Arc<TerminalStreamChangeSignal> {
         self.attachment_changes
             .lock()
-            .expect("terminal attachment change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry((session_id.to_string(), attachment_id.to_string()))
             .or_default()
             .clone()

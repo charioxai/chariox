@@ -23,7 +23,7 @@ impl ProviderRunProjectionStore {
     pub(crate) fn get(&self, provider_run_id: &str) -> Option<RuntimeProviderRun> {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(provider_run_id)
             .cloned()
     }
@@ -34,7 +34,7 @@ impl ProviderRunProjectionStore {
     ) -> Vec<RuntimeProviderRun> {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|run| {
                 run.runtime_mcp_auth_token() == Some(auth_token)
@@ -51,7 +51,7 @@ impl ProviderRunProjectionStore {
     ) -> Option<RuntimeProviderRun> {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|run| {
                 run.session_id() == session_id
@@ -65,7 +65,7 @@ impl ProviderRunProjectionStore {
     pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<RuntimeProviderRun> {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|run| run.session_id() == session_id)
             .cloned()
@@ -75,7 +75,7 @@ impl ProviderRunProjectionStore {
     pub(crate) fn list(&self) -> Vec<RuntimeProviderRun> {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -84,7 +84,7 @@ impl ProviderRunProjectionStore {
     pub(crate) fn update(&self, run: RuntimeProviderRun) {
         self.runs
             .lock()
-            .expect("provider run projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(run.id().to_string(), run);
     }
 
@@ -317,7 +317,7 @@ impl ProviderProcessProjectionStore {
         let processes = self
             .processes
             .lock()
-            .expect("provider process projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()?;
         Some(filter_provider_processes(processes, provider))
     }
@@ -326,14 +326,14 @@ impl ProviderProcessProjectionStore {
         *self
             .processes
             .lock()
-            .expect("provider process projection lock should not be poisoned") = Some(processes);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(processes);
     }
 
     pub(crate) fn invalidate(&self) {
         *self
             .processes
             .lock()
-            .expect("provider process projection lock should not be poisoned") = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 }
 
@@ -366,7 +366,7 @@ impl ProviderCatalogProjectionStore {
         let cached = self
             .catalog
             .lock()
-            .expect("provider catalog projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()?;
         if cached.cached_at.elapsed() < ttl {
             Some(cached.catalog)
@@ -379,7 +379,7 @@ impl ProviderCatalogProjectionStore {
         *self
             .catalog
             .lock()
-            .expect("provider catalog projection lock should not be poisoned") =
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(CachedProviderCatalogProjection {
                 cached_at: Instant::now(),
                 catalog,
@@ -390,14 +390,14 @@ impl ProviderCatalogProjectionStore {
         *self
             .catalog
             .lock()
-            .expect("provider catalog projection lock should not be poisoned") = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     pub(crate) fn health_snapshot(&self, ttl: Duration) -> ProviderCatalogHealthSnapshot {
         let cached = self
             .catalog
             .lock()
-            .expect("provider catalog projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let Some(cached) = cached else {
             return ProviderCatalogHealthSnapshot {

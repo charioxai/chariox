@@ -131,7 +131,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn record(&self, event: NewMetaagentEvent) -> MetaagentEventRecord {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.next_sequence += 1;
         let sequence = state.next_sequence;
         let event_id = format!("metaevt-{sequence}");
@@ -169,7 +172,10 @@ impl MetaagentEventStore {
         status: Option<&str>,
         limit: usize,
     ) -> Vec<MetaagentEventRecord> {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut records = state
             .records
             .values()
@@ -196,7 +202,10 @@ impl MetaagentEventStore {
         task_id: &str,
         task_revision: u64,
     ) -> bool {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.records.values().any(|record| {
             record.metaagent_id == metaagent_id
                 && record.kind == "metaagent.task.orphaned"
@@ -214,7 +223,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn read(&self, metaagent_id: &str, event_id: &str) -> Option<MetaagentEventRecord> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record = state.records.get_mut(event_id)?;
         if record.metaagent_id != metaagent_id {
             return None;
@@ -231,7 +243,10 @@ impl MetaagentEventStore {
         event_ids: &[String],
         up_to_sequence: Option<u64>,
     ) -> Vec<MetaagentEventRecord> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = crate::session::unix_epoch_ms();
         let mut acked = Vec::new();
         for record in state.records.values_mut() {
@@ -253,7 +268,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn counts(&self, metaagent_id: &str) -> serde_json::Value {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut total = 0_u64;
         let mut unacked = 0_u64;
         let mut unread = 0_u64;
@@ -290,7 +308,10 @@ impl MetaagentEventStore {
         status: MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) -> Option<MetaagentEventRecord> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record = state.records.get_mut(event_id)?;
         record.prompt_delivery_status = status;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
@@ -304,7 +325,10 @@ impl MetaagentEventStore {
         status: MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) -> Option<MetaagentEventRecord> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record = state
             .records
             .values_mut()
@@ -320,7 +344,10 @@ impl MetaagentEventStore {
         event_id: &str,
         prompt_id: String,
     ) -> Option<MetaagentEventRecord> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record = state.records.get_mut(event_id)?;
         record.injected_prompt_id = Some(prompt_id);
         record.prompt_delivery_status = MetaagentEventPromptDeliveryStatus::Recorded;
@@ -335,7 +362,10 @@ impl MetaagentEventStore {
         kind: String,
         filter: Option<serde_json::Value>,
     ) -> MetaagentEventSubscription {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(subscription) = state
             .subscriptions
             .values()
@@ -373,7 +403,10 @@ impl MetaagentEventStore {
         metaagent_id: &str,
         subscription_id: &str,
     ) -> Option<MetaagentEventSubscription> {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .subscriptions
             .get(subscription_id)
@@ -385,7 +418,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn list_subscriptions(&self, metaagent_id: &str) -> Vec<MetaagentEventSubscription> {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut subscriptions = state
             .subscriptions
             .values()
@@ -397,14 +433,20 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn has_optional_subscription(&self, metaagent_id: &str, kind: &str) -> bool {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.subscriptions.values().any(|subscription| {
             subscription.metaagent_id == metaagent_id && subscription.kind == kind
         })
     }
 
     pub(crate) fn snapshot(&self) -> MetaagentEventSnapshot {
-        let state = self.state.lock().expect("metaagent event store poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         MetaagentEventSnapshot {
             records: state.records.values().cloned().collect(),
             subscriptions: state.subscriptions.values().cloned().collect(),
@@ -412,7 +454,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn restore_snapshot(&self, snapshot: MetaagentEventSnapshot) {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.records = snapshot
             .records
             .into_iter()
@@ -432,7 +477,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn restore_record(&self, mut record: MetaagentEventRecord) {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         record.detail = compact_metaagent_event_detail(record.detail, self.limits.max_detail_bytes);
         let metaagent_id = record.metaagent_id.clone();
         state.records.insert(record.event_id.clone(), record);
@@ -441,7 +489,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn restore_subscription(&self, subscription: MetaagentEventSubscription) {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .subscriptions
             .insert(subscription.subscription_id.clone(), subscription);
@@ -449,7 +500,10 @@ impl MetaagentEventStore {
     }
 
     pub(crate) fn remove_restored_subscription(&self, metaagent_id: &str, subscription_id: &str) {
-        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .subscriptions
             .get(subscription_id)

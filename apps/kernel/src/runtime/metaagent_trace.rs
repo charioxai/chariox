@@ -70,7 +70,7 @@ impl MetaagentTraceSubscriptionStore {
         let mut state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(subscription) = state.subscriptions.values_mut().find(|subscription| {
             subscription.session_id == session_id
                 && subscription.metaagent_id == metaagent_id
@@ -108,7 +108,7 @@ impl MetaagentTraceSubscriptionStore {
         let mut state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state
             .subscriptions
             .get(subscription_id)
@@ -124,7 +124,7 @@ impl MetaagentTraceSubscriptionStore {
         let mut state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .emitted_compact_item_keys
             .entry(subscription_id.to_string())
@@ -140,7 +140,7 @@ impl MetaagentTraceSubscriptionStore {
         let state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .subscriptions
             .get(subscription_id)
@@ -157,7 +157,7 @@ impl MetaagentTraceSubscriptionStore {
         let state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .subscriptions
             .values()
@@ -177,7 +177,7 @@ impl MetaagentTraceSubscriptionStore {
         let state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .subscriptions
             .values()
@@ -197,7 +197,7 @@ impl MetaagentTraceSubscriptionStore {
         let mut state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let activity = state
             .target_activity
             .entry((session_id.to_string(), target_agent_id.to_string()))
@@ -209,7 +209,7 @@ impl MetaagentTraceSubscriptionStore {
         let state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .target_activity
             .get(&(session_id.to_string(), target_agent_id.to_string()))
@@ -221,7 +221,7 @@ impl MetaagentTraceSubscriptionStore {
         let mut state = self
             .state
             .lock()
-            .expect("metaagent trace subscription store poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.subscriptions.values().any(|subscription| {
             subscription.session_id == session_id && subscription.target_agent_id == target_agent_id
         }) {

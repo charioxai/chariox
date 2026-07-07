@@ -35,7 +35,7 @@ impl SessionStateProjectionStore {
     pub(crate) fn get(&self, session_id: &str) -> Option<RuntimeSession> {
         self.state
             .lock()
-            .expect("session projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_states
             .get(session_id)
             .cloned()
@@ -44,7 +44,7 @@ impl SessionStateProjectionStore {
     pub(crate) fn list(&self) -> Option<Vec<RuntimeSession>> {
         self.state
             .lock()
-            .expect("session projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_list
             .clone()
     }
@@ -52,7 +52,7 @@ impl SessionStateProjectionStore {
     pub(crate) fn has_warmed_list(&self) -> bool {
         self.state
             .lock()
-            .expect("session projection lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_list
             .is_some()
     }
@@ -63,7 +63,7 @@ impl SessionStateProjectionStore {
             let mut state = self
                 .state
                 .lock()
-                .expect("session projection lock should not be poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             upsert_session(&mut state.session_list, session.clone());
             state
                 .session_states
@@ -82,7 +82,7 @@ impl SessionStateProjectionStore {
             let mut state = self
                 .state
                 .lock()
-                .expect("session projection lock should not be poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for session in &sessions {
                 state
                     .session_states
@@ -106,7 +106,7 @@ impl SessionStateProjectionStore {
             let mut state = self
                 .state
                 .lock()
-                .expect("session projection lock should not be poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.session_states.remove(session_id);
             if let Some(session_list) = state.session_list.as_mut() {
                 session_list.retain(|session| session.id() != session_id);
@@ -116,7 +116,7 @@ impl SessionStateProjectionStore {
         self.session_change_signal(session_id).record_change();
         self.session_changes
             .lock()
-            .expect("session projection scoped change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
     }
 
@@ -142,7 +142,7 @@ impl SessionStateProjectionStore {
         let state = self
             .state
             .lock()
-            .expect("session projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         SessionProjectionHealthSnapshot {
             projected_sessions: state.session_states.len(),
             projected_session_list_entries: state.session_list.as_ref().map(Vec::len),
@@ -217,7 +217,7 @@ impl SessionStateProjectionStore {
         let state = self
             .state
             .lock()
-            .expect("session projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .session_list
             .as_ref()
@@ -228,7 +228,7 @@ impl SessionStateProjectionStore {
     fn session_change_signal(&self, session_id: &str) -> Arc<SessionProjectionChangeSignal> {
         self.session_changes
             .lock()
-            .expect("session projection scoped change lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(session_id.to_string())
             .or_default()
             .clone()

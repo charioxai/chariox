@@ -24,7 +24,7 @@ impl RemoteRelayInventoryProjectionStore {
         let state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.remote_machines.clone(), state.remote_kernels.clone())
     }
 
@@ -37,7 +37,7 @@ impl RemoteRelayInventoryProjectionStore {
         let mut state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let empty = state.remote_machines.is_empty() && state.remote_kernels.is_empty();
         let stale = state.refreshed_at_ms == 0
             || now_ms.saturating_sub(state.refreshed_at_ms) >= stale_after_ms;
@@ -58,7 +58,7 @@ impl RemoteRelayInventoryProjectionStore {
         let mut state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.remote_machines = remote_machines
             .into_iter()
             .map(filter_remote_machine_product_providers)
@@ -75,7 +75,7 @@ impl RemoteRelayInventoryProjectionStore {
         let mut state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = state
             .remote_machines
             .iter_mut()
@@ -96,7 +96,7 @@ impl RemoteRelayInventoryProjectionStore {
         let mut state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .remote_machines
             .retain(|machine| machine.machine_id != machine_id);
@@ -111,7 +111,7 @@ impl RemoteRelayInventoryProjectionStore {
         let mut state = self
             .state
             .lock()
-            .expect("remote relay inventory projection lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.remote_machines.clear();
         state.remote_kernels.clear();
         state.refreshed_at_ms = 0;
