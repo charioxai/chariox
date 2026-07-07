@@ -63,8 +63,15 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut cache = ExternalProviderSessionDiscoveryCache::default();
-    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false)
+    if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
+        refresh_external_provider_session_index(
+            &app,
+            Some(&runtime_state),
+            Some(&mut cache),
+            false,
+        )
         .await;
+    }
     let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -75,10 +82,22 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                 }
             }
             _ = interval.tick() => {
-                refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
+                if external_provider_session_discovery_has_demand(&app, Some(&runtime_state)).await {
+                    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
+                }
             }
         }
     }
+}
+
+async fn external_provider_session_discovery_has_demand(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+) -> bool {
+    let app =
+        crate::runtime::app_lock::lock_app_instrumented(app, "external_provider_session_control")
+            .await;
+    !attached_external_provider_session_refs(&app, runtime_state).is_empty()
 }
 
 #[derive(Debug, Clone)]
@@ -2029,39 +2048,6 @@ mod tests {
     }
 
     #[test]
-    fn external_provider_discovery_poller_is_not_demand_gated() {
-        let source = fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("src/runtime/external_provider_session_control.rs"),
-        )
-        .expect("source should be readable");
-        let start = source
-            .find("pub(crate) async fn run_external_provider_session_discovery_poller")
-            .expect("discovery poller should exist");
-        let end = source[start..]
-            .find("#[derive(Debug, Clone)]\nstruct AttachedExternalObserverTarget")
-            .map(|offset| start + offset)
-            .expect("poller block should end before observer target");
-        let poller_source = &source[start..end];
-
-        assert!(
-            !poller_source.contains("external_provider_session_discovery_has_demand"),
-            "external provider discovery must not be demand gated"
-        );
-        assert!(
-            !poller_source.contains("attached_external_provider_session_refs"),
-            "external provider discovery must run without existing attached targets"
-        );
-        assert!(
-            poller_source
-                .matches("refresh_external_provider_session_index")
-                .count()
-                >= 2,
-            "discovery poller should refresh before the loop and on interval ticks"
-        );
-    }
-
-    #[test]
     fn due_attached_external_observer_targets_prioritizes_overdue_targets() {
         let now = tokio::time::Instant::now();
         let mut schedule = BTreeMap::new();
@@ -2141,6 +2127,107 @@ mod tests {
         assert_eq!(indexed.first_attached_session_id(), None);
         assert_eq!(indexed.first_attached_agent_id(), None);
         assert_eq!(session.attachment_ids().len(), 0);
+    }
+
+    #[test]
+    fn external_provider_discovery_has_no_demand_for_idle_resume_state() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            {
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
+                let (_, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                app.agents()
+                    .set_agent_runtime_profile(
+                        agent.id(),
+                        "codex",
+                        Some("gpt-test".to_string()),
+                        None,
+                        ProviderResumeState::from_codex_thread_id("thread-idle-discovery"),
+                    )
+                    .expect("agent runtime profile should update");
+            }
+
+            assert!(
+                !external_provider_session_discovery_has_demand(&app, None).await,
+                "idle persisted resume state must not demand background discovery"
+            );
+        });
+    }
+
+    #[test]
+    fn external_provider_discovery_has_demand_for_attached_resume_state() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            {
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
+                let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                app.agents()
+                    .set_agent_runtime_profile(
+                        agent.id(),
+                        "codex",
+                        Some("gpt-test".to_string()),
+                        None,
+                        ProviderResumeState::from_codex_thread_id("thread-attached-discovery"),
+                    )
+                    .expect("agent runtime profile should update");
+                attach_test_session(&app, session.id());
+            }
+
+            assert!(
+                external_provider_session_discovery_has_demand(&app, None).await,
+                "attached resume state should demand fresh external-session discovery"
+            );
+        });
+    }
+
+    #[test]
+    fn external_provider_discovery_has_demand_for_live_provider_run() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            {
+                let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                    &app,
+                    "external_provider_session_control",
+                )
+                .await;
+                let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                let run = test_codex_run(
+                    session.id(),
+                    agent.id(),
+                    "run-discovery",
+                    "thread-discovery",
+                );
+                app.providers_mut().insert_run_for_test(run);
+            }
+
+            assert!(
+                external_provider_session_discovery_has_demand(&app, None).await,
+                "live provider run should demand fresh external-session discovery"
+            );
+        });
     }
 
     #[test]
