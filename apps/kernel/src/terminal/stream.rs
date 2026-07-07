@@ -1715,7 +1715,7 @@ mod tests {
             TerminalOutputKind::ProviderStatus,
             state_entry.merge_key.clone(),
             vec!["attachment-1".to_string()],
-            b"external_provider_history_updated",
+            crate::history::EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             metadata,
         );
 

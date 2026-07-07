@@ -14,6 +14,7 @@ use crate::error::DaemonError;
 use crate::history::{
     ExternalImportHistoryEntry, SessionHistoryEntry,
     EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
+    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -41,7 +42,6 @@ const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_mill
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
-const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS: &str = "external_provider_history_updated";
 
 #[derive(Debug, Default)]
 struct ExternalProviderSessionDiscoveryCache {
@@ -3010,7 +3010,10 @@ mod tests {
             1,
             "hidden settlement history signal should fan out to attached terminals"
         );
-        assert_eq!(records[0].bytes, b"external_provider_history_updated");
+        assert_eq!(
+            records[0].bytes,
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes()
+        );
         assert!(records[0]
             .merge_key
             .as_deref()
@@ -5133,7 +5136,10 @@ mod tests {
             records[0].kind,
             crate::terminal::TerminalOutputKind::ProviderStatus
         );
-        assert_eq!(records[0].bytes, b"external_provider_history_updated");
+        assert_eq!(
+            records[0].bytes,
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes()
+        );
         let metadata = records[0]
             .external_observation_metadata
             .as_ref()
@@ -5224,8 +5230,14 @@ mod tests {
             2,
             "completion must signal both the new history row and the settled state projection"
         );
-        assert_eq!(records[0].bytes, b"external_provider_history_updated");
-        assert_eq!(records[1].bytes, b"external_provider_history_updated");
+        assert_eq!(
+            records[0].bytes,
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes()
+        );
+        assert_eq!(
+            records[1].bytes,
+            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes()
+        );
         assert_eq!(
             records[0]
                 .external_observation_metadata

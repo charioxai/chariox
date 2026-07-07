@@ -63,6 +63,7 @@ pub struct SessionHistoryExternalObservation {
 
 pub const EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON: &str = "active_prompt_started";
 pub const EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON: &str = "active_prompt_settled";
+pub const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS: &str = "external_provider_history_updated";
 
 impl SessionHistoryExternalObservation {
     pub fn active_prompt_settled() -> Self {

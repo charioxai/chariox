@@ -26,7 +26,7 @@ pub use session_log::{
     ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
     SessionHistoryStore, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
