@@ -104,7 +104,9 @@ export function sessionHistoryOutlineTurnCompletedAtMs(
   if (!Object.prototype.hasOwnProperty.call(turn, "completed_at_ms")) {
     return undefined
   }
-  return turn.completed_at_ms ?? null
+  return typeof turn.completed_at_ms === "number" && Number.isFinite(turn.completed_at_ms)
+    ? turn.completed_at_ms
+    : null
 }
 
 export function sessionHistoryCursorForVisibleAgent(

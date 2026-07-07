@@ -61,6 +61,7 @@ test("session history outline completion distinguishes absent, open, and settled
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({}), undefined)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs(turn(1)), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: null }), null)
+  assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: Number.NaN }), null)
   assert.equal(sessionHistoryOutlineTurnCompletedAtMs({ ...turn(1), completed_at_ms: 123 }), 123)
 })
 
