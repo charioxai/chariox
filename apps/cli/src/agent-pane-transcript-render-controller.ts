@@ -178,6 +178,7 @@ export function createAgentPaneTranscriptRenderController<
     const activeAgentIds = new Set(deps.activeAgentIdsForSession(session))
     for (const agentId of deps.scrollboxes.keys()) {
       if (!activeAgentIds.has(agentId)) {
+        clearPane(agentId)
         deps.scrollboxes.delete(agentId)
       }
     }

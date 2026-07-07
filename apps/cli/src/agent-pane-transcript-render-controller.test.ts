@@ -48,19 +48,23 @@ test("agent pane transcript render controller updates mounted entries in place",
 })
 
 test("agent pane transcript render controller prunes inactive pane state", () => {
+  const inactiveEntry = child("inactive-entry")
+  const inactiveEmpty = child("inactive-empty")
+  const activeEntry = child("active-entry")
+  const activeEmpty = child("active-empty")
   const harness = renderHarness({
     activeIds: ["agent-2"],
     scrollboxes: new Map([
-      ["agent-1", scrollbox()],
-      ["agent-2", scrollbox()],
+      ["agent-1", scrollbox([inactiveEntry, inactiveEmpty])],
+      ["agent-2", scrollbox([activeEntry, activeEmpty])],
     ]),
     entryRenderables: new Map([
-      ["agent-1", new Map()],
+      ["agent-1", new Map([[1, transcriptRenderable(entry(1, "assistant", "stale"))]])],
       ["agent-2", new Map()],
     ]),
     emptyRenderables: new Map([
-      ["agent-1", child("empty-1")],
-      ["agent-2", child("empty-2")],
+      ["agent-1", inactiveEmpty],
+      ["agent-2", activeEmpty],
     ]),
     toolStates: new Map([
       ["agent-1", new Map([["tool", { id: "stale" }]])],
@@ -74,6 +78,10 @@ test("agent pane transcript render controller prunes inactive pane state", () =>
   assert.deepEqual([...harness.entryRenderables.keys()], ["agent-2"])
   assert.deepEqual([...harness.emptyRenderables.keys()], ["agent-2"])
   assert.deepEqual([...harness.toolStates.keys()], ["agent-2"])
+  assert.equal(inactiveEntry.destroyed, true)
+  assert.equal(inactiveEmpty.destroyed, true)
+  assert.equal(activeEntry.destroyed, false)
+  assert.equal(activeEmpty.destroyed, false)
 })
 
 function renderHarness(options: {
