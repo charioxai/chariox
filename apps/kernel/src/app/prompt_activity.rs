@@ -63,12 +63,16 @@ impl ActiveTurnState {
         provider_run_id: String,
     ) -> Self {
         let trace_id = prompt_id.clone();
+        let external_observed_id = crate::history::parse_external_provider_observed_id(&prompt_id);
+        let prompt_origin = external_observed_id
+            .as_ref()
+            .map(|_| PromptOrigin::External);
         Self {
             session_id,
             agent_id,
             prompt_id,
-            prompt_origin: None,
-            external_observed_id: None,
+            prompt_origin,
+            external_observed_id,
             provider_run_id,
             trace_id,
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -373,6 +377,24 @@ impl PromptWorkspaceClaimStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_turn_start_classifies_external_observed_prompt_ids() {
+        let turn = ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "external:codex:thread-1:user-1".to_string(),
+            "run-1".to_string(),
+        );
+
+        assert_eq!(turn.prompt_origin, Some(PromptOrigin::External));
+        let external = turn
+            .external_observed_id
+            .expect("external observed id should be parsed");
+        assert_eq!(external.provider, "codex");
+        assert_eq!(external.provider_session_id, "thread-1");
+        assert_eq!(external.provider_turn_id, "user-1");
+    }
 
     #[test]
     fn active_turn_restart_preserves_existing_command_trace() {

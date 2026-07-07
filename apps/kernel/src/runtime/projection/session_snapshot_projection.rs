@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn session_snapshot_projection_does_not_infer_external_origin_from_active_turn_prompt_id() {
+    fn session_snapshot_projection_classifies_external_origin_from_active_turn_prompt_id() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -568,10 +568,19 @@ mod tests {
             active_turn.prompt_id,
             "external:codex:session-1:user-1".to_string()
         );
-        assert_eq!(active_turn.prompt_origin, None);
-        assert_eq!(active_turn.external_provider, None);
-        assert_eq!(active_turn.external_provider_session_id, None);
-        assert_eq!(active_turn.external_provider_turn_id, None);
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            active_turn.external_provider_session_id.as_deref(),
+            Some("session-1")
+        );
+        assert_eq!(
+            active_turn.external_provider_turn_id.as_deref(),
+            Some("user-1")
+        );
     }
 
     #[test]
@@ -766,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn session_snapshot_projection_allows_steering_behind_sparse_active_turn() {
+    fn session_snapshot_projection_blocks_steering_behind_sparse_external_active_turn() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -813,11 +822,17 @@ mod tests {
 
         assert_eq!(activity.active_prompt_count, 1);
         assert_eq!(activity.queued_prompt_count, 1);
-        assert_eq!(active_turn.prompt_origin, None);
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
         assert_eq!(control.status, "queued");
-        assert!(control.can_steer);
+        assert!(!control.can_steer);
         assert!(control.can_cancel);
-        assert!(control.steer_disabled_reason.is_none());
+        assert_eq!(
+            control.steer_disabled_reason.as_deref(),
+            Some(QUEUED_PROMPT_STEER_EXTERNAL_REASON)
+        );
         assert!(control.cancel_disabled_reason.is_none());
     }
 
