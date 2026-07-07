@@ -1276,6 +1276,13 @@ mod tests {
             OperationalHistoryStore::open(path.clone()).expect("operational history should open");
         let arroba_prompt =
             SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        let external_origin_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "external origin",
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
         let external_prompt = SessionHistoryEntry::external_provider_observed(
             "session-1",
             None,
@@ -1287,7 +1294,11 @@ mod tests {
             Some("turn-1".to_string()),
             Some(2_000),
         );
-        for (sequence, entry) in [(1, arroba_prompt), (2, external_prompt)] {
+        for (sequence, entry) in [
+            (1, arroba_prompt),
+            (2, external_origin_prompt),
+            (3, external_prompt),
+        ] {
             store
                 .append(&HistoryEvent::transcript(
                     sequence,
@@ -1329,6 +1340,13 @@ mod tests {
             OperationalHistoryStore::open(path.clone()).expect("operational history should open");
         let arroba_prompt =
             SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        let external_origin_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "external origin",
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
         let external_prompt = SessionHistoryEntry::external_provider_observed_with_merge_key(
             "session-1",
             None,
@@ -1390,10 +1408,11 @@ mod tests {
 
         for (sequence, entry) in [
             (1, arroba_prompt),
-            (2, external_prompt),
-            (3, external_output),
-            (4, external_status),
-            (5, external_state_signal),
+            (2, external_origin_prompt),
+            (3, external_prompt),
+            (4, external_output),
+            (5, external_status),
+            (6, external_state_signal),
         ] {
             store
                 .append(&HistoryEvent::transcript(

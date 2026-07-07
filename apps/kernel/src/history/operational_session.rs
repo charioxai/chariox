@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rusqlite::params;
 
 use crate::error::DaemonError;
-use crate::session::prompt_id_number;
+use crate::session::{prompt_id_number, PromptOrigin};
 
 use super::session_log::external_provider_observed_merge_key_with_prefix_is_state_signal;
 use super::STEERING_PROMPT_MERGE_KEY_PREFIX;
@@ -300,7 +300,8 @@ impl OperationalHistoryStore {
             .prepare(
                 "SELECT kind,
                         CASE WHEN kind = 'user_prompt' THEN content ELSE NULL END,
-                        metadata_text
+                        metadata_text,
+                        event_json
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
@@ -350,9 +351,20 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }
             })?;
+            let event_json =
+                row.get::<_, String>(3)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode external import history index event json",
+                        message: error.to_string(),
+                    })?;
             let metadata_text = metadata_text.unwrap_or_default();
+            let history_entry = serde_json::from_str::<HistoryEvent>(&event_json)
+                .ok()
+                .and_then(|event| event.to_session_history_entry());
             if kind == "user_prompt"
-                && !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                && history_user_prompt_counts_as_arroba_owned(
+                    history_entry.as_ref(),
                     &metadata_text,
                 )
             {
@@ -456,11 +468,12 @@ impl OperationalHistoryStore {
             let external_observation = history_entry
                 .as_ref()
                 .and_then(|entry| entry.external_observation.clone());
-            let is_external_observed =
-                SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+            if kind == "user_prompt"
+                && history_user_prompt_counts_as_arroba_owned(
+                    history_entry.as_ref(),
                     &metadata_text,
-                );
-            if kind == "user_prompt" && !is_external_observed {
+                )
+            {
                 if let Some(content) = content.clone() {
                     arroba_owned_prompts.push(content);
                 }
@@ -523,7 +536,7 @@ impl OperationalHistoryStore {
                 })?;
         let mut statement = connection
             .prepare(
-                "SELECT content, metadata_text
+                "SELECT content, metadata_text, event_json
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
@@ -565,9 +578,18 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }
             })?;
-            if SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
-                &metadata_text.unwrap_or_default(),
-            ) {
+            let event_json =
+                row.get::<_, String>(2)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode arroba-owned prompt event json",
+                        message: error.to_string(),
+                    })?;
+            let metadata_text = metadata_text.unwrap_or_default();
+            let history_entry = serde_json::from_str::<HistoryEvent>(&event_json)
+                .ok()
+                .and_then(|event| event.to_session_history_entry());
+            if !history_user_prompt_counts_as_arroba_owned(history_entry.as_ref(), &metadata_text) {
                 continue;
             }
             if let Some(content) = content {
@@ -639,6 +661,19 @@ fn session_history_kind_from_key(kind: &str) -> Option<SessionHistoryEntryKind> 
         "provider_status" => Some(SessionHistoryEntryKind::ProviderStatus),
         "notice" => Some(SessionHistoryEntryKind::Notice),
         _ => None,
+    }
+}
+
+fn history_user_prompt_counts_as_arroba_owned(
+    entry: Option<&SessionHistoryEntry>,
+    metadata_text: &str,
+) -> bool {
+    match entry.and_then(|entry| entry.prompt_origin) {
+        Some(PromptOrigin::Arroba) => true,
+        Some(PromptOrigin::External) => false,
+        None => !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+            metadata_text,
+        ),
     }
 }
 
