@@ -412,6 +412,7 @@ impl DaemonApp {
                 serde_json::json!({
                     "session_id": session.id(),
                     "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
+                    "cleared_attachment_count": reconciliation.cleared_attachment_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
                 }),

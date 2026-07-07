@@ -163,6 +163,98 @@ async fn kernel_websocket_pongs_while_event_writer_is_delayed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-close-detach",
+            "worktree-close-detach",
+        )),
+    )
+    .await;
+    let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-close-detach-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-session",
+            "session_id": session_id.clone(),
+            "attachment_id": attachment_id.clone(),
+        }),
+    )
+    .await;
+    let subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+    assert_eq!(subscribe_response["response"]["ok"].as_bool(), Some(true));
+
+    socket
+        .close(None)
+        .await
+        .expect("kernel websocket should close");
+    sleep(Duration::from_millis(100)).await;
+
+    let mut probe = connect_with_retry(&config.kernel_websocket_url()).await;
+    let state_response = send_request(
+        &mut probe,
+        "session-state-after-close",
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
+    )
+    .await;
+    let attachment_ids =
+        &response_variant(&state_response, "SessionState")["session"]["attachment_ids"];
+    assert_eq!(
+        attachment_ids.as_array().map(Vec::len),
+        Some(0),
+        "closed websocket attachment should not remain in session state: {state_response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();

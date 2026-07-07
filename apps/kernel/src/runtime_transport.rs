@@ -593,8 +593,10 @@ async fn handle_kernel_connection(
         if let Some(task) = state.watch_task.take() {
             task.abort();
         }
-        if state.subscription.take().is_some() {
+        if let Some(subscription) = state.subscription.take() {
             runtime.transport_health.record_subscription_closed();
+            drop(state);
+            detach_connection_subscription(&router, subscription).await;
         }
     }
     writer_task.abort();
@@ -604,6 +606,42 @@ async fn handle_kernel_connection(
     }
 
     Ok(())
+}
+
+async fn detach_connection_subscription(
+    router: &Arc<CommandRouter>,
+    subscription: KernelSubscription,
+) {
+    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+        return;
+    }
+    match router
+        .detach_terminal_attachment(&subscription.attachment_id)
+        .await
+    {
+        Ok(attachment) => {
+            crate::logging::info_with_fields(
+                "daemon.runtime_transport",
+                "detached terminal attachment after websocket close",
+                serde_json::json!({
+                    "session_id": attachment.session_id(),
+                    "attachment_id": attachment.id(),
+                }),
+            );
+        }
+        Err(DaemonError::AttachmentNotFound { .. }) => {}
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.runtime_transport",
+                "failed detaching terminal attachment after websocket close",
+                serde_json::json!({
+                    "session_id": subscription.session_id,
+                    "attachment_id": subscription.attachment_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
 }
 
 async fn record_connection_subscription_heartbeat(

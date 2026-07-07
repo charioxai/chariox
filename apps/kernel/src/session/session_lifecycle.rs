@@ -27,6 +27,7 @@ pub enum SchedulerState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelRestartReconciliation {
     pub cleared_active_provider_run: bool,
+    pub cleared_attachment_count: usize,
     pub interrupted_prompt_count: usize,
     pub stopped_workflow_run_count: usize,
 }
@@ -34,6 +35,7 @@ pub struct KernelRestartReconciliation {
 impl KernelRestartReconciliation {
     pub fn changed(&self) -> bool {
         self.cleared_active_provider_run
+            || self.cleared_attachment_count > 0
             || self.interrupted_prompt_count > 0
             || self.stopped_workflow_run_count > 0
     }

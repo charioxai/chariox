@@ -844,6 +844,12 @@ impl RuntimeSession {
         self.attachment_ids.remove(attachment_id)
     }
 
+    pub fn clear_attachments(&mut self) -> usize {
+        let removed_count = self.attachment_ids.len();
+        self.attachment_ids.clear();
+        removed_count
+    }
+
     pub fn set_active_provider_run(&mut self, provider_run_id: Option<String>) {
         self.active_provider_run_id = provider_run_id;
     }
@@ -958,6 +964,7 @@ impl RuntimeSession {
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }
+        reconciliation.cleared_attachment_count = self.clear_attachments();
 
         reconciliation.interrupted_prompt_count = self
             .prompt_runtime

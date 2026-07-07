@@ -62,6 +62,13 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn detach_terminal_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        self.runtime_state.detach(attachment_id).await
+    }
+
     pub(crate) fn terminal_session_change_sequence(&self, session_id: &str) -> u64 {
         self.runtime_state
             .terminal_session_change_sequence(session_id)

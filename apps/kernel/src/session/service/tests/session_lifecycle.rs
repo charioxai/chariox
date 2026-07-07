@@ -415,6 +415,27 @@ fn delete_session_removes_it_from_registry() {
 }
 
 #[test]
+fn kernel_restart_reconciliation_clears_restored_attachments() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    session.add_attachment("attachment-1");
+    session.add_attachment("attachment-2");
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+    service.restore_session(session.clone());
+
+    assert_eq!(reconciliation.cleared_attachment_count, 2);
+    assert!(reconciliation.changed());
+    assert!(service
+        .get_session(session.id())
+        .expect("session should still exist")
+        .attachment_ids()
+        .is_empty());
+}
+
+#[test]
 fn prompt_queue_starts_then_queues_then_advances() {
     let mut service = SessionService::new(&test_config());
     let created = service

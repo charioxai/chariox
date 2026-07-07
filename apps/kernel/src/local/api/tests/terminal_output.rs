@@ -694,6 +694,26 @@ fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
         harness.with_app(|app| app.attachments().list_session_attachment_ids(session.id()));
     assert_eq!(attachment_ids, vec![fresh_attachment.id().to_string()]);
 
+    let projected_session = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        projected_session
+            .attachment_ids()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![fresh_attachment.id().to_string()]
+    );
+
     let records = match harness
         .dispatch(LocalDaemonRequest::AppendNativeProviderOutput(
             super::AppendNativeProviderOutputRequest {
