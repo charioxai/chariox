@@ -325,6 +325,10 @@ impl ScopedTokenVerifier {
                 signed.signing_input.as_bytes(),
                 &signed.signature,
             )?;
+            // The bespoke `arroba-scoped-v1` format is being retired in favor
+            // of the JWT form the cloud issuer emits. Count and warn on its use
+            // so the format can be dropped once the metric reaches zero.
+            note_legacy_scoped_token_verification();
             return Ok(claims);
         }
 
@@ -341,6 +345,34 @@ impl ScopedTokenVerifier {
         )?;
         Ok(claims)
     }
+}
+
+static LEGACY_SCOPED_TOKEN_VERIFICATIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_legacy_scoped_token_verification() {
+    let previous =
+        LEGACY_SCOPED_TOKEN_VERIFICATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if previous == 0 {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "component": "arroba-relay",
+                "level": "warn",
+                "event": "deprecated_scoped_token_format",
+                "fields": {
+                    "format": "arroba-scoped-v1",
+                    "message": "accepting a deprecated arroba-scoped-v1 relay token; migrate issuers to the JWT format",
+                },
+            })
+        );
+    }
+}
+
+/// Number of `arroba-scoped-v1` (pre-JWT) tokens verified this process. The
+/// format can be removed once this stays at zero across a release.
+pub fn legacy_scoped_token_verification_count() -> u64 {
+    LEGACY_SCOPED_TOKEN_VERIFICATIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn encode_scoped_hmac_token(
@@ -980,6 +1012,50 @@ mod tests {
             identity.public_key_thumbprint.as_deref(),
             Some("thumbprint")
         );
+    }
+
+    #[test]
+    fn legacy_scoped_token_verification_is_counted_for_deprecation() {
+        let before = legacy_scoped_token_verification_count();
+        let claims = RelayTokenClaims {
+            issuer: "arroba-cloud-legacy".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: RelaySubjectKind::Client,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![RelayAction::ClientConnect],
+            allowed_targets: None,
+            issued_at_ms: 10,
+            expires_at_ms: 20,
+            token_id: "token-1".to_string(),
+            account_id: None,
+            organization_id: None,
+            user_id: None,
+            device_id: None,
+            machine_id: None,
+            client_id: None,
+            session_id: None,
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        };
+        let token =
+            encode_scoped_hmac_token(&claims, "issuer-secret").expect("legacy token should encode");
+        let verifier = RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([(
+                "arroba-cloud-legacy".to_string(),
+                "issuer-secret".to_string(),
+            )]),
+            Some(15),
+        );
+
+        verifier
+            .verify(RelayAuthRequest {
+                token: &token,
+                action: RelayAction::ClientConnect,
+                target: None,
+            })
+            .expect("legacy arroba-scoped-v1 token should still verify");
+
+        assert!(legacy_scoped_token_verification_count() > before);
     }
 
     #[test]
