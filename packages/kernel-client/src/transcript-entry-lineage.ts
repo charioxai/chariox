@@ -1,4 +1,5 @@
 import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedIdentityKey,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
@@ -228,7 +229,7 @@ function renderableEntries<TEntry extends TranscriptLineageEntry>(
 
 function transcriptLineageSource(entry: TranscriptLineageEntry): string {
   if (sessionHistoryEntryIsExternalProviderObserved(entry)) {
-    return "external_provider_observed"
+    return EXTERNAL_PROVIDER_OBSERVED_SOURCE
   }
   return entry.source?.trim() ?? ""
 }
