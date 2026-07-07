@@ -9,7 +9,6 @@ apps/relay/src/server.rs
 apps/kernel/src/app/external_provider_session_discovery.rs
 apps/server/src/index.test.ts
 apps/cli/scripts/live-workflow-publication-drill.mjs
-packages/kernel-client/src/shell-executor.test.ts
 apps/cli/scripts/live-workspace-live-sync-drill.mjs
 apps/cli/scripts/workflow-code-artifact-drill.mjs
 apps/kernel/src/runtime/state/tool_dispatch/meta.rs
