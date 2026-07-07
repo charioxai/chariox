@@ -21,6 +21,8 @@ One line per landed task; keep this file short. Format: `date task — outcome (
 - 2026-07-06 C2 (enforcement) bounded revocation denylist in the relay scoped verifier — `RelayRevocationRegistry` rejects revoked `jti`/`account_id`, prunes on expiry (`d1aab6fb1` arroba).
 - 2026-07-06 C3 (partial) relay rejects tokens issued implausibly far in the future (60s skew tolerance) (`24c373a19` arroba).
 - 2026-07-06 C3 (drift) `session_id` added to Rust relay claims + cross-impl conformance test verifying a TS-issued JWT (`b463db17d` arroba, `02259302` arroba-cloud). Both repos verify one shared fixture; wire-shape drift fails a conformance test.
+- 2026-07-07 C3 (format) deprecation metric + one-time warning on `arroba-scoped-v1` token verifications (`c84c4db3f` arroba) — first step of retiring the bespoke format.
+- 2026-07-07 C4 (rollout) CSP violation report endpoint (`POST /csp-report`) + `report-uri` directive + csp-report content parsing (`f5aea2c1` arroba-cloud) — closes the report-only observation loop.
 - 2026-07-06 F1 repo hygiene — untracked scratch strays, gitignored worktree/drill dirs (`ffd345c0b`, `98e85cdb9` arroba).
 - 2026-07-06 F2 README slimmed; milestone prose moved to `docs/STATUS.md` (`98e85cdb9` arroba).
 - 2026-07-06 D1 root Cargo workspace (kernel + relay + adapters, one lockfile); CI fmt/clippy/test now cover all crates (`f4509b45f` arroba). **Phase 3 complete.**
