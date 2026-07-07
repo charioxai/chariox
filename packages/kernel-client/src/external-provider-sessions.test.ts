@@ -178,6 +178,57 @@ test("external provider session merge keeps first metadata when modification tim
   ])
 })
 
+test("external provider session merge preserves rich metadata from older records", () => {
+  const merged = mergeExternalProviderSessions(
+    [
+      externalSession("external-1", 100, {
+        title: "Original task",
+        title_source: "first_prompt",
+        first_prompt_preview: "Review the runtime state",
+        created_at_ms: 10,
+        worktree_path: "/worktree/old",
+        account_profile: "default",
+        capabilities: { can_read_history: true },
+      }),
+    ],
+    [
+      externalSession("external-1", 300, {
+        title: " ",
+        title_source: null,
+        first_prompt_preview: null,
+        created_at_ms: null,
+        worktree_path: "",
+        account_profile: null,
+        capabilities: {},
+      }),
+    ],
+  )
+
+  assert.deepEqual(merged.map((session) => ({
+    id: session.external_session_id,
+    title: session.title,
+    titleSource: session.title_source,
+    firstPromptPreview: session.first_prompt_preview,
+    createdAtMs: session.created_at_ms,
+    modifiedAtMs: session.last_modified_at_ms,
+    worktreePath: session.worktree_path,
+    accountProfile: session.account_profile,
+    canReadHistory: session.capabilities?.can_read_history,
+  })), [
+    {
+      id: "external-1",
+      title: "Original task",
+      titleSource: "first_prompt",
+      firstPromptPreview: "Review the runtime state",
+      createdAtMs: 10,
+      modifiedAtMs: 300,
+      worktreePath: "/worktree/old",
+      accountProfile: "default",
+      canReadHistory: true,
+    },
+  ])
+})
+
 test("external provider session sorted merge dedupes and projects final order", () => {
   const merged = mergeExternalProviderSessionsSorted(
     [

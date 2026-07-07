@@ -91,8 +91,10 @@ export function mergeExternalProviderSessions<T extends ExternalProviderSessionR
   for (const group of groups) {
     for (const session of group) {
       const existing = sessionsById.get(session.external_session_id)
-      if (!existing || externalProviderSessionModifiedMs(session) > externalProviderSessionModifiedMs(existing)) {
+      if (!existing) {
         sessionsById.set(session.external_session_id, session)
+      } else {
+        sessionsById.set(session.external_session_id, mergeExternalProviderSessionRecord(existing, session))
       }
     }
   }
@@ -174,6 +176,78 @@ function compareExternalProviderSessions(
     return provider
   }
   return left.provider_session_id.localeCompare(right.provider_session_id)
+}
+
+function mergeExternalProviderSessionRecord<T extends ExternalProviderSessionRecord>(
+  existing: T,
+  incoming: T,
+): T {
+  const existingModifiedMs = externalProviderSessionModifiedMs(existing)
+  const incomingModifiedMs = externalProviderSessionModifiedMs(incoming)
+  const primary = incomingModifiedMs > existingModifiedMs ? incoming : existing
+  const fallback = primary === incoming ? existing : incoming
+  return {
+    ...primary,
+    provider: nonBlankString(primary.provider) ?? nonBlankString(fallback.provider) ?? primary.provider,
+    provider_session_id: nonBlankString(primary.provider_session_id)
+      ?? nonBlankString(fallback.provider_session_id)
+      ?? primary.provider_session_id,
+    title: meaningfulOptionalString(primary.title) ?? meaningfulOptionalString(fallback.title) ?? primary.title ?? fallback.title,
+    title_source: meaningfulOptionalString(primary.title_source)
+      ?? meaningfulOptionalString(fallback.title_source)
+      ?? primary.title_source
+      ?? fallback.title_source,
+    first_prompt_preview: meaningfulOptionalString(primary.first_prompt_preview)
+      ?? meaningfulOptionalString(fallback.first_prompt_preview)
+      ?? primary.first_prompt_preview
+      ?? fallback.first_prompt_preview,
+    created_at_ms: finiteNumber(primary.created_at_ms) ?? finiteNumber(fallback.created_at_ms) ?? primary.created_at_ms ?? fallback.created_at_ms,
+    worktree_path: meaningfulOptionalString(primary.worktree_path)
+      ?? meaningfulOptionalString(fallback.worktree_path)
+      ?? primary.worktree_path
+      ?? fallback.worktree_path,
+    account_profile: meaningfulOptionalString(primary.account_profile)
+      ?? meaningfulOptionalString(fallback.account_profile)
+      ?? primary.account_profile
+      ?? fallback.account_profile,
+    capabilities: mergeExternalProviderSessionCapabilities(primary.capabilities, fallback.capabilities),
+  } as T
+}
+
+function mergeExternalProviderSessionCapabilities(
+  primary: ExternalProviderSessionCapabilities | undefined,
+  fallback: ExternalProviderSessionCapabilities | undefined,
+): ExternalProviderSessionCapabilities | undefined {
+  if (!primary) {
+    return fallback
+  }
+  if (!fallback) {
+    return primary
+  }
+  const canReadHistory = primary.can_read_history ?? fallback.can_read_history
+  if (canReadHistory === undefined) {
+    return {
+      ...fallback,
+      ...primary,
+    }
+  }
+  return {
+    ...fallback,
+    ...primary,
+    can_read_history: canReadHistory,
+  }
+}
+
+function meaningfulOptionalString(value: string | null | undefined): string | null | undefined {
+  return value?.trim() ? value : undefined
+}
+
+function nonBlankString(value: string): string | undefined {
+  return value.trim() ? value : undefined
+}
+
+function finiteNumber(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function clampExternalProviderSessionIndex(index: number, length: number): number {
