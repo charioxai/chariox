@@ -1,6 +1,11 @@
-import type { PromptAttachmentPart, RuntimeSession } from "./kernel-types.js"
+import type { PromptAttachmentPart, PromptQueueItem, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
+import type { TranscriptPromptMetadata } from "./transcript-entry-state.js"
+import {
+  promptOriginFromRecord,
+} from "./prompt-origin.js"
 import {
   sessionActivePromptIdForAgent,
+  sessionPromptForAgent,
 } from "./session-prompt-identity.js"
 import {
   sessionHasTurnWork,
@@ -101,6 +106,51 @@ export function resolvePromptSubmissionTargetAgentId(options: {
   return requestedTargetAgentId && options.hasAgent(requestedTargetAgentId)
     ? requestedTargetAgentId
     : null
+}
+
+export function promptSubmissionTargetAgentId(payload: PromptSubmittedPayload): string | null {
+  const prompt = promptSubmissionPromptFromOutcome(payload)
+  return typeof prompt?.target_agent_id === "string" ? prompt.target_agent_id : null
+}
+
+export function promptSubmissionTranscriptMetadata(
+  payload: PromptSubmittedPayload,
+  targetAgentId: string | null,
+): TranscriptPromptMetadata {
+  const prompt = promptSubmissionPrompt(payload, targetAgentId)
+  if (!prompt) {
+    return {}
+  }
+  const promptOrigin = promptOriginFromRecord(prompt)
+  return {
+    promptId: prompt.id,
+    sourceAttachmentId: prompt.source_attachment_id,
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(prompt, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
+  }
+}
+
+function promptSubmissionPrompt(
+  payload: PromptSubmittedPayload,
+  targetAgentId: string | null,
+): PromptQueueItem | null {
+  return promptSubmissionPromptFromOutcome(payload)
+    ?? (targetAgentId ? sessionPromptForAgent(payload.session, targetAgentId) : null)
+}
+
+function promptSubmissionPromptFromOutcome(payload: PromptSubmittedPayload): PromptQueueItem | null {
+  const outcome = payload.outcome as Record<string, unknown>
+  for (const variant of Object.values(outcome)) {
+    if (!variant || typeof variant !== "object") {
+      continue
+    }
+    const prompt = (variant as { prompt?: unknown }).prompt
+    if (prompt && typeof prompt === "object" && !Array.isArray(prompt)) {
+      return prompt as PromptQueueItem
+    }
+  }
+  return null
 }
 
 export function formatPromptSubmissionStatusLine(options: {
