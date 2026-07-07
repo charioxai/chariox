@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>5 allowlisted files remain after initial splits</td>
+              <td>4 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -335,6 +335,18 @@
               <td><code>830106df6</code> <span class="muted">Extract session lifecycle test support</span></td>
               <td>Session lifecycle behavior tests now stay focused on attach/no-session scenarios, while shared CLI options, waiting-room state, transition fixtures, and dependency spies live in a sibling test-support module.</td>
               <td><code>pnpm --filter @arroba/cli run build</code>, <code>node --test apps/cli/dist/session-lifecycle.test.js</code>. Local <code>node scripts/check-line-cap.mjs</code> was blocked by unrelated dirty kernel files.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>2d230635d</code> <span class="muted">Split external provider session tests</span></td>
+              <td>External provider session index production code now stays in the source module, while pagination, canonicalization, attachment, detach, and transcript-cursor coverage lives in a sibling test module.</td>
+              <td>Focused <code>app::external_provider_sessions</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>fbedc159</code> <span class="muted">Extract external provider web transcript harness</span></td>
+              <td>The local external-provider web terminal drill now keeps product orchestration and browser assertions in the entrypoint, while provider home seeding and provider-native transcript mutation for Codex, Claude, and OpenCode live in a dedicated harness module.</td>
+              <td><code>node --check</code> for the entrypoint and transcript harness, <code>node scripts/check-line-cap.mjs</code>. Full live drill was not run because it launches local runtime/browser processes.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
