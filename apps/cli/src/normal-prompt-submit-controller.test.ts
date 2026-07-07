@@ -46,6 +46,40 @@ test("normal prompt submit prepares attachments, submits, and records history", 
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello" }])
 })
 
+test("normal prompt submit appends prompt acknowledgement metadata", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => ({
+      payload: {
+        outcome: {
+          Started: {
+            prompt: {
+              id: "prompt-started",
+              source_attachment_id: "attachment-started",
+              target_agent_id: "agent-1",
+              prompt: "hello\n",
+              status: "running",
+              prompt_origin: " External ",
+            },
+          },
+        },
+        session: runtimeSession("session-submitted", "prompt-started"),
+      },
+      targetAgentId: "agent-1",
+      outcomeName: "PromptSubmitted",
+    }),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.appendedPrompts(), [{
+    text: "hello\n",
+    agentId: "agent-1",
+    promptId: "prompt-started",
+    sourceAttachmentId: "attachment-started",
+    promptOrigin: "external",
+  }])
+})
+
 test("normal prompt submit drops stale focused agent ids", async () => {
   const harness = createHarness({
     focusedAgentId: "old-agent",
@@ -252,7 +286,13 @@ function createHarness(options: {
     prompt: string
     attachments: PromptAttachmentPart[]
   }> = []
-  const appendedPrompts: Array<{ text: string; agentId: string | null | undefined }> = []
+  const appendedPrompts: Array<{
+    text: string
+    agentId: string | null | undefined
+    promptId?: string | null
+    sourceAttachmentId?: string | null
+    promptOrigin?: string | null
+  }> = []
   const appliedSessions: RuntimeSession[] = []
   const streamingAgentIds: Array<string | null> = []
   const statusLines: string[] = []
@@ -289,8 +329,14 @@ function createHarness(options: {
     },
     beginSubmittedPromptUi: (rawPrompt) => ({ rawPrompt, attachments: [], sessionId: "session-1" }),
     renderPromptTranscript: (prompt) => prompt,
-    appendUserPrompt: (text, agentId) => {
-      appendedPrompts.push({ text, agentId })
+    appendUserPrompt: (text, agentId, metadata) => {
+      appendedPrompts.push({
+        text,
+        agentId,
+        ...(metadata?.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+        ...(metadata?.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+        ...(metadata?.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
+      })
     },
     submitPrompt: async (attachmentId, targetAgentId, prompt, attachments) => {
       submissions.push({ attachmentId, targetAgentId, prompt, attachments })

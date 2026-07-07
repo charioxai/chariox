@@ -4,6 +4,7 @@ import {
   createTranscriptSteeredPromptEntry,
   createTranscriptUserPromptTurn,
   computeNextTranscriptTurnId as computeNextTurnId,
+  type TranscriptPromptMetadata,
 } from "@arroba/kernel-client/transcript-entry-state"
 
 export type TranscriptEventControllerDeps = {
@@ -42,7 +43,11 @@ export type TranscriptEventControllerDeps = {
 }
 
 export function createTranscriptEventController(deps: TranscriptEventControllerDeps) {
-  const appendUserPrompt = (text: string, agentId?: string | null) => {
+  const appendUserPrompt = (
+    text: string,
+    agentId?: string | null,
+    metadata: TranscriptPromptMetadata = {},
+  ) => {
     deps.recordTurnActivity("prompt_submit")
     deps.resetTurnCompletion()
 
@@ -57,14 +62,14 @@ export function createTranscriptEventController(deps: TranscriptEventControllerD
       && targetAgentId !== deps.responsePrimaryAgent()?.id
     ) {
       const paneEntries = deps.currentAgentPaneEntries(targetAgentId)
-      const promptTurn = createTranscriptUserPromptTurn(text, computeNextTurnId(paneEntries))
+      const promptTurn = createTranscriptUserPromptTurn(text, computeNextTurnId(paneEntries), metadata)
       const nextTurnIds = deps.collapseLatestTurnForAgent(targetAgentId, paneEntries)
       deps.appendTranscriptEntryToAgentPane(targetAgentId, promptTurn.entry, nextTurnIds)
       setTurnWorkActive(deps)
       return
     }
 
-    const promptTurn = createTranscriptUserPromptTurn(text, deps.nextTurnId())
+    const promptTurn = createTranscriptUserPromptTurn(text, deps.nextTurnId(), metadata)
     deps.setNextTurnId(promptTurn.nextTurnId)
     deps.setCurrentTurnId(promptTurn.currentTurnId)
     const nextTurnIds = deps.collapseLatestTurnForAgent(

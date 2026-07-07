@@ -62,6 +62,9 @@ export type TranscriptUserPromptTurn = {
     readonly role: "user"
     readonly text: string
     readonly turnId: number
+    readonly promptId?: string | null
+    readonly sourceAttachmentId?: string | null
+    readonly promptOrigin?: string | null
   }
   readonly currentTurnId: number
   readonly nextTurnId: number
@@ -189,12 +192,16 @@ export function transcriptHasTrailingUserPrompt<TEntry extends Pick<TranscriptEn
 export function createTranscriptUserPromptTurn(
   text: string,
   turnId: number,
+  metadata: TranscriptPromptMetadata = {},
 ): TranscriptUserPromptTurn {
   return {
     entry: {
       role: "user",
       text: trimSingleTrailingNewline(text),
       turnId,
+      ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+      ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+      ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
     },
     currentTurnId: turnId,
     nextTurnId: turnId + 1,

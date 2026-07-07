@@ -5,7 +5,10 @@ import type {
 } from "./cli-types.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
-import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
+import {
+  promptSubmissionTranscriptMetadata,
+  type PromptSubmissionResult,
+} from "./prompt-runtime-api.js"
 import {
   formatPromptSubmissionBody,
   promptSubmissionFailureTransition,
@@ -13,6 +16,7 @@ import {
   promptSubmissionAttachmentsToParts,
   resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
+import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 
 export type NormalPromptSubmitControllerDeps = {
@@ -34,7 +38,7 @@ export type NormalPromptSubmitControllerDeps = {
   ) => Promise<PromptAttachmentPart[]>
   beginSubmittedPromptUi: (rawPrompt: string) => SubmittedPromptUiSnapshot
   renderPromptTranscript: (prompt: string) => string
-  appendUserPrompt: (text: string, agentId?: string | null) => void
+  appendUserPrompt: (text: string, agentId?: string | null, metadata?: TranscriptPromptMetadata) => void
   submitPrompt: (
     attachmentId: string,
     targetAgentId: string | null,
@@ -108,7 +112,11 @@ export function createNormalPromptSubmitController(
           submittedTargetAgentId,
         })
         if (transition.shouldAppendUserPrompt) {
-          deps.appendUserPrompt(deps.renderPromptTranscript(prompt), submittedTargetAgentId)
+          deps.appendUserPrompt(
+            deps.renderPromptTranscript(prompt),
+            submittedTargetAgentId,
+            promptSubmissionTranscriptMetadata(payload, submittedTargetAgentId),
+          )
         }
         deps.setStreamingAgentId(transition.streamingAgentId)
         deps.setWorking(transition.working)

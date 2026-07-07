@@ -86,11 +86,18 @@ test("transcriptHasTrailingUserPrompt treats serialized empty prompt ids as iden
 })
 
 test("createTranscriptUserPromptTurn projects prompt entry and turn identity", () => {
-  assert.deepEqual(createTranscriptUserPromptTurn("hello\n", 9), {
+  assert.deepEqual(createTranscriptUserPromptTurn("hello\n", 9, {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+    promptOrigin: "external",
+  }), {
     entry: {
       role: "user",
       text: "hello",
       turnId: 9,
+      promptId: "prompt-1",
+      sourceAttachmentId: "attachment-1",
+      promptOrigin: "external",
     },
     currentTurnId: 9,
     nextTurnId: 10,

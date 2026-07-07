@@ -8,6 +8,7 @@ import {
   type QueuedPromptSteeredPayload,
   type RuntimeSession,
 } from "./cli-types.js"
+import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaLogger } from "./logging.js"
 import {
@@ -22,11 +23,31 @@ import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
 import { resolvePromptRecoveryProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
+import { sessionPromptForAgent } from "@arroba/kernel-client/session-prompt-identity"
+import { promptOriginFromRecord } from "@arroba/kernel-client/prompt-origin"
 
 export type PromptSubmissionResult = {
   payload: PromptSubmittedPayload
   targetAgentId: string | null
   outcomeName: string
+}
+
+export function promptSubmissionTranscriptMetadata(
+  payload: PromptSubmittedPayload,
+  targetAgentId: string | null,
+): TranscriptPromptMetadata {
+  const prompt = submittedPrompt(payload, targetAgentId)
+  if (!prompt) {
+    return {}
+  }
+  const promptOrigin = promptOriginFromRecord(prompt)
+  return {
+    promptId: prompt.id,
+    sourceAttachmentId: prompt.source_attachment_id,
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(prompt, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
+  }
 }
 
 export async function submitPromptWithRecovery(
@@ -83,13 +104,35 @@ export async function submitPromptWithRecovery(
 }
 
 function submittedPromptTargetAgentId(payload: PromptSubmittedPayload) {
-  const outcome = payload.outcome as Record<string, unknown>
-  const variant = Object.values(outcome)[0]
-  if (!variant || typeof variant !== "object") {
-    return null
-  }
-  const prompt = (variant as { prompt?: { target_agent_id?: unknown } }).prompt
+  const prompt = submittedPromptFromOutcome(payload)
   return typeof prompt?.target_agent_id === "string" ? prompt.target_agent_id : null
+}
+
+function submittedPrompt(
+  payload: PromptSubmittedPayload,
+  targetAgentId: string | null,
+) {
+  return submittedPromptFromOutcome(payload)
+    ?? (targetAgentId ? sessionPromptForAgent(payload.session, targetAgentId) : null)
+}
+
+function submittedPromptFromOutcome(payload: PromptSubmittedPayload) {
+  const outcome = payload.outcome as Record<string, unknown>
+  for (const variant of Object.values(outcome)) {
+    if (!variant || typeof variant !== "object") {
+      continue
+    }
+    const prompt = (variant as { prompt?: unknown }).prompt
+    if (prompt && typeof prompt === "object" && !Array.isArray(prompt)) {
+      return prompt as {
+        id: string
+        source_attachment_id: string
+        target_agent_id?: string | null
+        prompt_origin?: string | null
+      }
+    }
+  }
+  return null
 }
 
 async function submitPrompt(
