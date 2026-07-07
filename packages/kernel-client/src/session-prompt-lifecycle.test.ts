@@ -352,6 +352,54 @@ test("session prompt lifecycle fills sparse active turn attachment identity from
   }])
 })
 
+test("session prompt lifecycle fills sparse active turn ownership from matching prompt state", () => {
+  const session = makeSession({
+    agents: [makeAgent({ id: "agent-1" })],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:turn-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "inspect image",
+          status: "running",
+          prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "turn-1",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "external:codex:thread-1:turn-1",
+          provider_run_id: "run-1",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
+    id: "external:codex:thread-1:turn-1",
+    status: "running",
+    promptOrigin: "external",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    providerRunId: "run-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  }])
+})
+
 test("session prompt lifecycle does not borrow attachment identity from a different prompt state", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" })],

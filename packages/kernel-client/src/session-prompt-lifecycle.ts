@@ -153,15 +153,30 @@ function activePromptLifecycleRecordWithPromptState(
   record: ActivePromptLifecycleRecord,
   stateActivePrompt: PromptQueueItem | null | undefined,
 ): ActivePromptLifecycleRecord {
-  if (record.source_attachment_id !== undefined || !stateActivePrompt) {
+  if (!stateActivePrompt) {
     return record
   }
   if (!activePromptLifecycleRecordMatchesPromptState(record, stateActivePrompt)) {
     return record
   }
+  const stateRecord = activePromptLifecycleRecordFromPrompt(stateActivePrompt)
   return {
     ...record,
-    source_attachment_id: stateActivePrompt.source_attachment_id,
+    ...(record.promptOrigin === undefined || record.promptOrigin === null
+      ? { promptOrigin: stateRecord.promptOrigin }
+      : {}),
+    ...(record.source_attachment_id === undefined && stateRecord.source_attachment_id !== undefined
+      ? { source_attachment_id: stateRecord.source_attachment_id }
+      : {}),
+    ...(record.externalProvider === undefined && stateRecord.externalProvider !== undefined
+      ? { externalProvider: stateRecord.externalProvider }
+      : {}),
+    ...(record.externalProviderSessionId === undefined && stateRecord.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: stateRecord.externalProviderSessionId }
+      : {}),
+    ...(record.externalProviderTurnId === undefined && stateRecord.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: stateRecord.externalProviderTurnId }
+      : {}),
   }
 }
 
