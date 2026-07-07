@@ -156,7 +156,9 @@ export function externalProviderSessionModifiedLabel(
 }
 
 export function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {
-  return typeof session.last_modified_at_ms === "number" ? session.last_modified_at_ms : 0
+  return typeof session.last_modified_at_ms === "number" && Number.isFinite(session.last_modified_at_ms)
+    ? session.last_modified_at_ms
+    : 0
 }
 
 function compareExternalProviderSessions(

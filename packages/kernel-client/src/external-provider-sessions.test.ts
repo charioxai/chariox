@@ -51,6 +51,30 @@ test("external provider sessions are projected newest first with deterministic f
   assert.equal(externalProviderSessionTitle(sessions[2]!), "Review checkout")
 })
 
+test("external provider sessions treat invalid modification times as missing for deterministic order", () => {
+  const sessions = externalProviderSessionsSorted([
+    {
+      ...externalSession("opencode:zeta", 100, {
+        provider: "opencode",
+        provider_session_id: "zeta",
+      }),
+      last_modified_at_ms: Number.NaN,
+    },
+    externalSession("codex:alpha", 0, {
+      provider_session_id: "alpha",
+    }),
+    externalSession("codex:recent", 20, {
+      provider_session_id: "recent",
+    }),
+  ])
+
+  assert.deepEqual(sessions.map((session) => session.external_session_id), [
+    "codex:recent",
+    "codex:alpha",
+    "opencode:zeta",
+  ])
+})
+
 test("external provider session title falls back through prompt, provider id, and external id", () => {
   assert.equal(externalProviderSessionTitle(externalSession("codex:title", 100, {
     title: "  Title  ",
