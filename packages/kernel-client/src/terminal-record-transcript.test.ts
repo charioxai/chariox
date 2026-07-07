@@ -178,22 +178,23 @@ test("terminalRecordTranscriptProjection suppresses passive external telemetry",
   assert.equal(projection.append, false)
   assert.equal(projection.replace, false)
 
-  const legacyProjection = terminalRecordTranscriptProjection({
+  const unmarkedProjection = terminalRecordTranscriptProjection({
     kind: "provider_status",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_provider: "codex",
     external_provider_session_id: "thread-1",
-    external_provider_turn_id: "token-count-legacy",
+    external_provider_turn_id: "token-count-unmarked",
   }, "codex token_count {\"total\":43}", {
     isProviderIdleStatus: () => false,
     shouldRenderProviderStatus: () => true,
   })
-  assert.equal(legacyProjection.passiveExternalTelemetry, true)
-  assert.equal(legacyProjection.startsStreaming, false)
-  assert.equal(legacyProjection.appendsLiveTranscript, false)
+  assert.equal(unmarkedProjection.passiveExternalTelemetry, false)
+  assert.equal(unmarkedProjection.startsStreaming, true)
+  assert.equal(unmarkedProjection.appendsLiveTranscript, true)
+  assert.equal(unmarkedProjection.renderProviderStatus, true)
 })
 
-test("terminalRecordTranscriptProjection does not apply external passive policy to ordinary status", () => {
+test("terminalRecordTranscriptProjection does not treat ordinary status as external telemetry", () => {
   const projection = terminalRecordTranscriptProjection({
     kind: "provider_status",
     external_provider: "codex",

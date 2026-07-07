@@ -188,7 +188,7 @@ test("session history transcript hydration hides only metadata-marked passive ex
       source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       external_provider: "codex",
       external_provider_session_id: "thread-1",
-      external_provider_turn_id: "legacy-token-count",
+      external_provider_turn_id: "token-count-unmarked",
     }),
   ])
 
