@@ -770,6 +770,7 @@ export type AgentQueuedPromptControl = {
 export type AgentActiveTurn = {
   prompt_id: string
   provider_run_id?: string | null
+  source_attachment_id?: string | null
   prompt_origin?: "arroba" | "external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null

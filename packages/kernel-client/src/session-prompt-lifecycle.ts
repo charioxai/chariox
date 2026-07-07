@@ -28,6 +28,7 @@ export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIden
   readonly id: string
   readonly status?: string
   readonly promptOrigin?: string | null
+  readonly source_attachment_id?: string | null
   readonly target_agent_id?: string | null
   readonly providerRunId?: string | null
 }
@@ -42,15 +43,15 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
   if (sessionHasAgentActivityProjection(session)) {
     const records: ActivePromptLifecycleRecord[] = []
     for (const [agentId, projection] of sessionProjectedPromptActivityEntriesForSessionAgents(session)) {
+      const stateActivePrompt = sessionPromptStateRecordForAgent(session, agentId)?.active_prompt
       const activeTurnRecord = activePromptLifecycleRecordFromProjectedTurn(agentId, projection)
       if (activeTurnRecord) {
-        records.push(activeTurnRecord)
+        records.push(activePromptLifecycleRecordWithPromptState(activeTurnRecord, stateActivePrompt))
         continue
       }
       if (!projection.busy) {
         continue
       }
-      const stateActivePrompt = sessionPromptStateRecordForAgent(session, agentId)?.active_prompt
       if (stateActivePrompt) {
         records.push(activePromptLifecycleRecordFromPrompt(stateActivePrompt))
       }
@@ -129,6 +130,9 @@ function activePromptLifecycleRecordFromProjectedTurn(
     promptOrigin: projection.activeTurnPromptOrigin ?? null,
     target_agent_id: agentId,
     ...(projection.activeTurnProviderRunId ? { providerRunId: projection.activeTurnProviderRunId } : {}),
+    ...(projection.activeTurnSourceAttachmentId !== undefined
+      ? { source_attachment_id: projection.activeTurnSourceAttachmentId }
+      : {}),
     ...(projection.activeTurnExternalProvider ? { externalProvider: projection.activeTurnExternalProvider } : {}),
     ...(projection.activeTurnExternalProviderSessionId
       ? { externalProviderSessionId: projection.activeTurnExternalProviderSessionId }
@@ -137,6 +141,41 @@ function activePromptLifecycleRecordFromProjectedTurn(
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
       : {}),
   }
+}
+
+function activePromptLifecycleRecordWithPromptState(
+  record: ActivePromptLifecycleRecord,
+  stateActivePrompt: PromptQueueItem | null | undefined,
+): ActivePromptLifecycleRecord {
+  if (record.source_attachment_id !== undefined || !stateActivePrompt) {
+    return record
+  }
+  if (!activePromptLifecycleRecordMatchesPromptState(record, stateActivePrompt)) {
+    return record
+  }
+  return {
+    ...record,
+    source_attachment_id: stateActivePrompt.source_attachment_id,
+  }
+}
+
+function activePromptLifecycleRecordMatchesPromptState(
+  record: ActivePromptLifecycleRecord,
+  stateActivePrompt: PromptQueueItem,
+): boolean {
+  if (stateActivePrompt.target_agent_id && stateActivePrompt.target_agent_id !== record.target_agent_id) {
+    return false
+  }
+  if (stateActivePrompt.id === record.id) {
+    return true
+  }
+  const stateExternalId = parseExternalProviderObservedId(stateActivePrompt.id)
+  if (!stateExternalId) {
+    return false
+  }
+  return stateExternalId.provider === normalizeExternalProviderLifecycleProvider(record.externalProvider)
+    && stateExternalId.providerSessionId === (record.externalProviderSessionId ?? "")
+    && stateExternalId.providerTurnId === (record.externalProviderTurnId ?? "")
 }
 
 function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {

@@ -328,6 +328,7 @@ test("agent activity projection exposes live active turn identity", () => {
     active_turn: {
       prompt_id: "prompt-1",
       provider_run_id: "run-1",
+      source_attachment_id: "attachment-1",
       prompt_origin: " external ",
       external_provider: "codex",
       external_provider_session_id: "thread-1",
@@ -344,6 +345,7 @@ test("agent activity projection exposes live active turn identity", () => {
     activeTurn: {
       prompt_id: "prompt-1",
       provider_run_id: "run-1",
+      source_attachment_id: "attachment-1",
       prompt_origin: " external ",
       external_provider: "codex",
       external_provider_session_id: "thread-1",
@@ -354,6 +356,7 @@ test("agent activity projection exposes live active turn identity", () => {
     },
     activeTurnPromptId: "prompt-1",
     activeTurnProviderRunId: "run-1",
+    activeTurnSourceAttachmentId: "attachment-1",
     activeTurnPromptOrigin: "external",
     activeTurnExternalProvider: "codex",
     activeTurnExternalProviderSessionId: "thread-1",
@@ -376,6 +379,14 @@ test("agent activity projection exposes live active turn identity", () => {
       status: "completed",
     },
   }).activeTurnPromptId, undefined)
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-null-attachment",
+      source_attachment_id: null,
+      status: "running",
+    },
+  }).activeTurnSourceAttachmentId, null)
 
   assert.equal(projectAgentRuntimeActivity({
     active_turn: {

@@ -34,6 +34,7 @@ export type AgentRuntimeActivityProjection = {
   readonly activeTurn: Record<string, unknown> | null
   readonly activeTurnPromptId?: string
   readonly activeTurnProviderRunId?: string
+  readonly activeTurnSourceAttachmentId?: string | null
   readonly activeTurnPromptOrigin?: string
   readonly activeTurnExternalProvider?: string
   readonly activeTurnExternalProviderSessionId?: string
@@ -355,6 +356,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   }
   const activeTurnPromptId = readStringField(activeTurn, "prompt_id") ?? undefined
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
+  const activeTurnSourceAttachmentId = readNullableStringField(activeTurn, "source_attachment_id")
   const activeTurnPromptOrigin = promptOriginFromRecord({
     prompt_origin: readStringField(activeTurn, "prompt_origin"),
   }) ?? undefined
@@ -367,6 +369,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   return {
     ...(activeTurnPromptId ? { activeTurnPromptId } : {}),
     ...(activeTurnProviderRunId ? { activeTurnProviderRunId } : {}),
+    ...(activeTurnSourceAttachmentId !== undefined ? { activeTurnSourceAttachmentId } : {}),
     ...(activeTurnPromptOrigin ? { activeTurnPromptOrigin } : {}),
     ...(activeTurnExternalProvider ? { activeTurnExternalProvider } : {}),
     ...(activeTurnExternalProviderSessionId ? { activeTurnExternalProviderSessionId } : {}),
@@ -391,6 +394,15 @@ function readRecordField(value: unknown, field: string): Record<string, unknown>
 function readStringField(value: unknown, field: string): string | null {
   const record = readRecord(value)
   const candidate = record?.[field]
+  return typeof candidate === "string" ? candidate : null
+}
+
+function readNullableStringField(value: unknown, field: string): string | null | undefined {
+  const record = readRecord(value)
+  if (!record || !Object.prototype.hasOwnProperty.call(record, field)) {
+    return undefined
+  }
+  const candidate = record[field]
   return typeof candidate === "string" ? candidate : null
 }
 
