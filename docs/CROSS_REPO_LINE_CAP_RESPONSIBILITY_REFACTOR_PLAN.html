@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>7 allowlisted files remain after initial splits</td>
+              <td>6 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -347,6 +347,12 @@
               <td><code>802eef86</code> <span class="muted">Extract cloud drill artifact summaries</span></td>
               <td>Cloud drill artifact IO and validation now stay in the compatibility facade, while aggregate constants, summary projection, diagnostic metadata, and summary formatting live in dedicated modules.</td>
               <td>42 focused cloud drill artifact tests, syntax checks for the split modules, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>89a853f1</code> <span class="muted">Split Prisma schema models</span></td>
+              <td>Prisma generator, datasource, and enum declarations now stay in <code>schema.prisma</code>, while database model declarations live in <code>models.prisma</code> under the same schema folder.</td>
+              <td><code>pnpm --filter @arroba-cloud/db run prisma:validate</code>, <code>pnpm --filter @arroba-cloud/db run build</code>, concatenated-schema diff check, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
           </tbody>
         </table>
