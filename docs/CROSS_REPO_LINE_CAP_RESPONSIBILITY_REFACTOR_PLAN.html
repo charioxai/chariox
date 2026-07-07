@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>105 allowlisted files remain after initial splits</td>
+              <td>104 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -311,6 +311,12 @@
               <td><code>9d037c6c8</code> <span class="muted">Split workflow prompt injection tests</span></td>
               <td>Workflow prompt injection production assembly now stays in the scheduler module, while registry fixture setup and workflow prompt behavior assertions live in a sibling test module.</td>
               <td>Focused <code>scheduler::prompt_injection</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>c1bae5af2</code> <span class="muted">Split MCP server slice tool tests</span></td>
+              <td>MCP server protocol and runtime-tool coverage now stays in the parent test module, while slice-provider token tool listing and slice screen status dispatch coverage lives in a dedicated slice-tool test module.</td>
+              <td>Focused <code>transport::mcp_server</code> kernel tests, targeted <code>rustfmt --edition 2024 --check</code>, <code>node scripts/check-line-cap.mjs</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
