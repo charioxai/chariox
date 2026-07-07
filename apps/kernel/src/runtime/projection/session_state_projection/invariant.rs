@@ -291,6 +291,39 @@ pub(super) fn snapshot(
                     ),
                 });
             }
+            if let Some(active_turn_prompt_origin) = active_turn.prompt_origin {
+                if active_turn_prompt_origin != active_prompt.prompt_origin() {
+                    mismatches.push(ProjectionInvariantMismatch {
+                        kind: "active_turn_prompt_origin_mismatch".to_string(),
+                        session_id: active_turn.session_id.clone(),
+                        agent_id: Some(active_turn.agent_id.clone()),
+                        details: format!(
+                            "active turn prompt origin {} does not match active prompt origin {}",
+                            prompt_origin_label(active_turn_prompt_origin),
+                            prompt_origin_label(active_prompt.prompt_origin())
+                        ),
+                    });
+                }
+            }
+            if let Some(active_turn_external_observed_id) =
+                active_turn.external_observed_id.as_ref()
+            {
+                let active_prompt_external_observed_id = active_prompt.external_observed_id();
+                if active_prompt_external_observed_id.as_ref()
+                    != Some(active_turn_external_observed_id)
+                {
+                    mismatches.push(ProjectionInvariantMismatch {
+                        kind: "active_turn_external_identity_mismatch".to_string(),
+                        session_id: active_turn.session_id.clone(),
+                        agent_id: Some(active_turn.agent_id.clone()),
+                        details: format!(
+                            "active turn external identity {} does not match active prompt external identity {}",
+                            describe_external_observed_id(Some(active_turn_external_observed_id)),
+                            describe_external_observed_id(active_prompt_external_observed_id.as_ref())
+                        ),
+                    });
+                }
+            }
         }
     }
 
@@ -347,6 +380,26 @@ fn describe_prompt_with_pending_id(prompt: &PromptQueueItem) -> String {
     }
 }
 
+fn prompt_origin_label(prompt_origin: crate::session::PromptOrigin) -> &'static str {
+    match prompt_origin {
+        crate::session::PromptOrigin::Arroba => "arroba",
+        crate::session::PromptOrigin::External => "external",
+    }
+}
+
+fn describe_external_observed_id(
+    observed_id: Option<&crate::history::ExternalProviderObservedId>,
+) -> String {
+    observed_id
+        .map(|observed_id| {
+            format!(
+                "{}:{}:{}",
+                observed_id.provider, observed_id.provider_session_id, observed_id.provider_turn_id
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -355,7 +408,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::runtime::projection::test_support::{launch_dev_stub_provider, submit_prompt};
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::session::{CreateSessionRequest, PromptQueueItem};
+    use crate::session::{CreateSessionRequest, PromptOrigin, PromptQueueItem};
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -724,6 +777,81 @@ mod tests {
         assert!(prompt_matches_active_turn(&prompt, "prompt-real-1"));
         assert!(prompt_matches_active_turn(&prompt, "pending-prompt-1"));
         assert!(!prompt_matches_active_turn(&prompt, "other-prompt"));
+    }
+
+    #[test]
+    fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let provider_run = launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "external:codex:thread-1:user-1",
+            "codex",
+            &agent_id,
+            "external prompt",
+        );
+        app.prompt_owner_sync_external_active_prompt(
+            &session_id,
+            &agent_id,
+            Some(external_prompt.clone()),
+        )
+        .expect("external active prompt should sync");
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(session.clone());
+        agent_store.update_session(&session);
+        let provider_runs = vec![provider_run.clone()];
+        let active_turn = crate::app::ActiveTurnState::new(
+            session_id.clone(),
+            agent_id.clone(),
+            external_prompt.id().to_string(),
+            provider_run.id().to_string(),
+        )
+        .with_prompt_metadata(&external_prompt);
+        let mut active_turns = BTreeMap::new();
+        active_turns.insert(provider_run.id().to_string(), active_turn.clone());
+
+        let clean_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+        assert!(
+            clean_snapshot.mismatches.is_empty(),
+            "{:?}",
+            clean_snapshot.mismatches
+        );
+
+        let mut wrong_origin = active_turn.clone();
+        wrong_origin.prompt_origin = Some(PromptOrigin::Arroba);
+        active_turns.insert(provider_run.id().to_string(), wrong_origin);
+        let origin_drift_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+        assert!(origin_drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_prompt_origin_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("arroba")
+                && mismatch.details.contains("external")
+        }));
+
+        let mut wrong_external_identity = active_turn;
+        wrong_external_identity.external_observed_id =
+            crate::history::parse_external_provider_observed_id("external:codex:thread-1:user-2");
+        active_turns.insert(provider_run.id().to_string(), wrong_external_identity);
+        let identity_drift_snapshot =
+            session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+        assert!(identity_drift_snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "active_turn_external_identity_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("user-1")
+                && mismatch.details.contains("user-2")
+        }));
     }
 
     #[test]
