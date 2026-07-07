@@ -102,5 +102,4 @@ apps/kernel/src/provider/registry/dev_stub_adapter.rs
 packages/kernel-client/src/shell-executor-workflow.test.ts
 apps/cli/src/session-lifecycle.test.ts
 apps/kernel/src/runtime/projection/session_snapshot_projection.rs
-apps/kernel/src/runtime/event_log.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/Views/ArrobaRootView.swift
