@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::agent::AgentServiceStore;
+use crate::app::ActiveTurnStore;
 use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
 use crate::history::{
@@ -29,6 +30,7 @@ const PROVIDER_TOOL_METADATA_HASH_STRING_BYTES: usize = 4096;
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
     prompt_state_owner: PromptStateOwner,
+    active_turns: ActiveTurnStore,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     session_store: SessionStateStore,
@@ -44,6 +46,7 @@ impl ProviderOutputFanout {
         Self {
             provider_store: app.providers.clone(),
             prompt_state_owner: app.prompt_state_owner(),
+            active_turns: app.active_turn_store(),
             agent_store: app.agents.clone(),
             attachment_store: app.attachments.clone(),
             session_store: app.sessions.clone(),
@@ -427,10 +430,21 @@ impl ProviderOutputFanout {
                 .active_prompt_for_agent(&session, agent_id)
         });
         let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+        let active_turn = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
+        let prompt_id = active_turn
+            .as_ref()
+            .map(|turn| turn.prompt_id.clone())
+            .or(prompt_id);
         let external_turn_id = entry
             .external_provider_observed_turn_id()
             .map(str::to_string);
-        let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
+        let turn_id = external_turn_id
+            .clone()
+            .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
+            .or_else(|| prompt_id.clone());
         let context = HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
             agent_id,

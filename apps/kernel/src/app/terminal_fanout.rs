@@ -341,10 +341,21 @@ impl DaemonApp {
             })
         });
         let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+        let active_turn = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
+        let prompt_id = active_turn
+            .as_ref()
+            .map(|turn| turn.prompt_id.clone())
+            .or(prompt_id);
         let external_turn_id = entry
             .external_provider_observed_turn_id()
             .map(str::to_string);
-        let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
+        let turn_id = external_turn_id
+            .clone()
+            .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
+            .or_else(|| prompt_id.clone());
         HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
             agent_id,
@@ -546,7 +557,8 @@ mod tests {
 
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::HistoryArchiveMode;
-    use crate::session::CreateSessionRequest;
+    use crate::session::{CreateSessionRequest, PromptStatus};
+    use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -616,5 +628,162 @@ mod tests {
         assert_eq!(entries[0].text.trim_end(), "reload me");
 
         let _ = fs::remove_file(&legacy_history_root);
+    }
+
+    #[test]
+    fn provider_output_fanout_history_uses_active_turn_trace_id() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-app-fanout-turn",
+                "worktree-app-fanout-turn",
+            ))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-app-fanout-turn",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.prompt_owner_activate_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "prompt-app-fanout-turn",
+                attachment.id(),
+                agent.id(),
+                "prompt",
+                PromptStatus::Queued,
+            ),
+        )
+        .expect("prompt should activate");
+        app.active_turns.start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "prompt-app-fanout-turn".to_string(),
+                run.id().to_string(),
+            )
+            .with_trace_id("trace-app-fanout-turn"),
+        );
+
+        app.fan_out_output(
+            session.id(),
+            run.id(),
+            TerminalOutputKind::ProviderOutput,
+            Some("app-fanout-turn-output".to_string()),
+            vec![attachment.id().to_string()],
+            b"output",
+        );
+
+        let events = app
+            .operational_history_store()
+            .load_session_events(session.id(), Some(agent.id()))
+            .expect("operational history should load");
+        let event = events
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .get("merge_key")
+                    .and_then(|value| value.as_str())
+                    == Some("app-fanout-turn-output")
+            })
+            .expect("provider output event should exist");
+        assert_eq!(event.turn_id.as_deref(), Some("trace-app-fanout-turn"));
+        assert_eq!(event.prompt_id.as_deref(), Some("prompt-app-fanout-turn"));
+    }
+
+    #[test]
+    fn direct_history_append_uses_active_turn_trace_id() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-direct-history-turn",
+                "worktree-direct-history-turn",
+            ))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-direct-history-turn",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.prompt_owner_activate_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "prompt-direct-history-turn",
+                attachment.id(),
+                agent.id(),
+                "prompt",
+                PromptStatus::Queued,
+            ),
+        )
+        .expect("prompt should activate");
+        app.active_turns.start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "prompt-direct-history-turn".to_string(),
+                run.id().to_string(),
+            )
+            .with_trace_id("trace-direct-history-turn"),
+        );
+
+        let mut entry = crate::history::SessionHistoryEntry::provider_output(
+            session.id(),
+            run.id(),
+            Some(agent.id()),
+            TerminalOutputKind::ProviderOutput,
+            Some("direct-history-turn-output".to_string()),
+            "output",
+        );
+        entry.prompt_origin = Some(crate::session::PromptOrigin::Arroba);
+        app.append_history_entry(session.id(), entry);
+
+        let events = app
+            .operational_history_store()
+            .load_session_events(session.id(), Some(agent.id()))
+            .expect("operational history should load");
+        let event = events
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .get("merge_key")
+                    .and_then(|value| value.as_str())
+                    == Some("direct-history-turn-output")
+            })
+            .expect("provider output event should exist");
+        assert_eq!(event.turn_id.as_deref(), Some("trace-direct-history-turn"));
+        assert_eq!(
+            event.prompt_id.as_deref(),
+            Some("prompt-direct-history-turn")
+        );
     }
 }
