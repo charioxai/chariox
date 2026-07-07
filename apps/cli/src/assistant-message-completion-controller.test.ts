@@ -12,16 +12,21 @@ test("assistant completion controller finalizes the visible transcript turn", ()
 
   harness.controller.markCompleted("agent-1")
 
-  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-1"], [3])
-  assert.deepEqual(harness.setEntryBatches.at(-1)?.map((entry) => [entry.role, entry.text]), [
+  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-1"], [1, 3])
+  assert.deepEqual(harness.setEntryBatches.at(-1)?.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]), [
     ["user", "Investigate"],
-    ["turn_toggle", "click to collapse"],
-    ["tool", "tool output"],
+    ["turn_toggle", "click to expand"],
     ["assistant", "done"],
+  ])
+  assert.deepEqual(harness.setEntryBatches.at(-1)?.map((entry) => [entry.role, entry.text, entry.hidden ?? false]), [
+    ["user", "Investigate", false],
+    ["turn_toggle", "click to expand", false],
+    ["tool", "tool output", true],
+    ["assistant", "done", false],
   ])
   assert.equal(harness.entryCounter, 4)
   assert.equal(harness.persistedEntries.at(-1)?.length, 4)
-  assert.deepEqual(harness.reconciled, [{ current: ["Investigate", "tool output", "done"], next: ["Investigate", "click to collapse", "tool output", "done"] }])
+  assert.deepEqual(harness.reconciled, [{ current: ["Investigate", "tool output", "done"], next: ["Investigate", "click to expand", "tool output", "done"] }])
   assert.deepEqual(harness.calls.slice(-3), ["busy:agent-1", "turn:confirm", "turn:schedule"])
 })
 
@@ -38,11 +43,11 @@ test("assistant completion controller finalizes an off-focus split pane", () => 
 
   harness.controller.markCompleted("agent-2")
 
-  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-2"], [])
+  assert.deepEqual(harness.collapsedTurnIdsByAgent["agent-2"], [1])
   assert.deepEqual(harness.agentTranscriptEntries, [{
     agentId: "agent-2",
-    entries: ["auxiliary", "click to collapse", "tool output", "done"],
-    turnIds: [],
+    entries: ["auxiliary", "click to expand", "tool output", "done"],
+    turnIds: [1],
   }])
   assert.deepEqual(harness.setEntryBatches, [])
   assert.deepEqual(harness.calls.slice(-3), ["busy:agent-2", "turn:confirm", "turn:schedule"])

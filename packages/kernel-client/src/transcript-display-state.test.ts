@@ -112,18 +112,16 @@ test("cloneCompactTranscriptDisplayEntries snapshots compact entries", () => {
   assert.notEqual(snapshot[0], source[0])
 })
 
-test("projectSettledTranscriptTurnDisplayState clears stale collapsed state for the active turn", () => {
+test("projectSettledTranscriptTurnDisplayState collapses a settled collapsible turn", () => {
   const projection = projectSettledTranscriptTurnDisplayState(baseTurnEntries(), [1, 7])
 
   assert.equal(projection.settledTurnId, 1)
-  assert.deepEqual(projection.collapsedTurnIds, [7])
+  assert.deepEqual(projection.collapsedTurnIds, [1, 7])
   assert.deepEqual(
     projection.entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
     [
       ["user", "Investigate the transcript UI"],
-      ["turn_toggle", "click to collapse"],
-      ["reasoning", "Thinking through the render model"],
-      ["tool", "tool output"],
+      ["turn_toggle", "click to expand"],
       ["assistant", "I changed the transcript layout."],
     ],
   )

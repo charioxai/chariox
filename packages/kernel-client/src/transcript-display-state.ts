@@ -310,7 +310,16 @@ export function projectSettledTranscriptTurnDisplayState<TEntry extends Transcri
   const settledTurnId = computeCurrentTranscriptTurnId(normalized)
   const nextCollapsedTurnIds = new Set(collapsedTurnIds)
   if (settledTurnId !== null) {
-    nextCollapsedTurnIds.delete(settledTurnId)
+    const activeHistoryTurnIds = inferredActiveHistoryTurnIds(normalized)
+    const turnEntries = normalized.filter((entry) => entry.turnId === settledTurnId)
+    if (
+      !activeHistoryTurnIds.has(settledTurnId)
+      && transcriptTurnIsCollapsible(turnEntries)
+    ) {
+      nextCollapsedTurnIds.add(settledTurnId)
+    } else {
+      nextCollapsedTurnIds.delete(settledTurnId)
+    }
   }
   const projection = projectTranscriptDisplayState(
     normalized,
