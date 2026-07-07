@@ -180,11 +180,49 @@ test("session active prompt identity matches active prompt pending ids", () => {
   })
 
   assert.equal(sessionHasActivePrompt(session, "agent-1", "active-pending"), true)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "active-materialized"), true)
   assert.equal(sessionHasPendingPrompt(session, "agent-1", "active-materialized"), false)
   assert.equal(sessionHasPendingPrompt(session, "agent-1", "active-pending"), true)
   assert.equal(sessionActivePromptIdForAgent(session, "agent-1"), "active-pending")
   assert.equal(sessionActivePromptForAgent(session, "agent-1")?.id, "active-materialized")
   assert.equal(sessionPromptForAgent(session, "agent-1")?.id, "active-materialized")
+})
+
+test("session active prompt identity rejects materialized prompt ids that do not match projected active turn", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "active-materialized",
+          pending_prompt_id: "other-pending",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-1",
+          prompt: "running",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "projected-pending",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "projected-pending"), true)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "active-materialized"), false)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "other-pending"), false)
+  assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
 })
 
 test("session pending prompt identity keeps queued prompts visible behind projected active turn", () => {

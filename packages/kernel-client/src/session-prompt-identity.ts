@@ -44,7 +44,12 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
     return false
   }
   if (projected?.activeTurnPromptId) {
-    return projected.activeTurnPromptId === promptId
+    if (projected.activeTurnPromptId === promptId) {
+      return true
+    }
+    const prompt = activePromptForAgent(session, agentId)
+    return promptMatchesId(prompt, projected.activeTurnPromptId)
+      && promptMatchesId(prompt, promptId)
   }
   return legacySessionHasPrompt(session, agentId, promptId)
 }
