@@ -1,4 +1,7 @@
-import { externalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
+import {
+  externalProviderSessionSelectionIndex,
+  externalProviderSessionsSorted,
+} from "@arroba/kernel-client/external-provider-sessions"
 import { queuedPromptActionState } from "@arroba/kernel-client/queued-prompt-controls"
 import type {
   CliOptions,
@@ -177,7 +180,11 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         const requestedIndex = typeof request.externalSessionIndex === "number" ? request.externalSessionIndex : null
         const candidateIndex = externalSessionId
           ? sessions.findIndex((session) => session.external_session_id === externalSessionId)
-          : requestedIndex
+          : requestedIndex === null
+            ? null
+            : externalProviderSessionSelectionIndex(sessions, {
+                selectedExternalProviderSessionIndex: requestedIndex,
+              })
         if (
           typeof candidateIndex !== "number"
           || !Number.isInteger(candidateIndex)

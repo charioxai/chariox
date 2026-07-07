@@ -302,6 +302,41 @@ test("automation action handler indexes unattached agents in shared projected or
   })
 })
 
+test("automation action handler clamps stale unattached agent indexes", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let activated = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    externalProviderSessionsState: () => [
+      externalSession("codex:old", { last_modified_at_ms: 100 }),
+      externalSession("claude:recent", { last_modified_at_ms: 200 }),
+    ],
+    activateWaitingRoom: async () => {
+      activated = true
+    },
+    snapshot: () => ({
+      waitingRoomState,
+      activated,
+    }),
+  })
+
+  const result = await handler({ action: "activate_unattached_agent", externalSessionIndex: 99 })
+
+  assert.equal(activated, true)
+  assert.deepEqual(result, {
+    waitingRoomState: {
+      ...waitingRoomState,
+      focus: "external-session",
+      externalSessionIndex: 1,
+    },
+    activated: true,
+  })
+})
+
 test("automation action handler sets waiting room launch placement", async () => {
   let waitingRoomState: WaitingRoomState = waitingRoomFixture()
   const handler = createCliAutomationActionHandler({
