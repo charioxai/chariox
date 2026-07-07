@@ -5,6 +5,9 @@ import {
   stitchPrependedTranscriptHistory,
   type TranscriptHistoryStitchEntry,
 } from "./transcript-history-stitching.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("stitchPrependedTranscriptHistory merges adjacent assistant fragments", () => {
   const stitched = stitchPrependedTranscriptHistory(
@@ -65,7 +68,7 @@ test("stitchPrependedTranscriptHistory preserves prompt attachment metadata", ()
 test("stitchPrependedTranscriptHistory merges external observed metadata", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -79,7 +82,7 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
       historyTotalChars: 12,
     })],
     [entry(2, "assistant", "reply", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -95,7 +98,7 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
   )
 
   assert.equal(stitched.length, 1)
-  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.deepEqual(stitched[0]?.externalObservation, {
     settles_active_prompt: true,
     passive_telemetry: false,
@@ -105,7 +108,7 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
 test("stitchPrependedTranscriptHistory keeps external source authoritative across stale fragments", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -125,7 +128,7 @@ test("stitchPrependedTranscriptHistory keeps external source authoritative acros
   )
 
   assert.equal(stitched.length, 1)
-  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
@@ -135,7 +138,7 @@ test("stitchPrependedTranscriptHistory keeps external source authoritative acros
 test("stitchPrependedTranscriptHistory preserves external identity when newer fragment is null", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: "codex",
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
@@ -146,7 +149,7 @@ test("stitchPrependedTranscriptHistory preserves external identity when newer fr
       historyTotalChars: 12,
     })],
     [entry(2, "assistant", "reply", {
-      source: "external_provider_observed",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
       externalProvider: null,
       externalProviderSessionId: null,
       externalProviderTurnId: null,
@@ -159,7 +162,7 @@ test("stitchPrependedTranscriptHistory preserves external identity when newer fr
   )
 
   assert.equal(stitched.length, 1)
-  assert.equal(stitched[0]?.source, "external_provider_observed")
+  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")

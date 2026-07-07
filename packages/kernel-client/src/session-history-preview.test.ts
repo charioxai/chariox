@@ -11,6 +11,9 @@ import {
   sessionHistoryEntryPreviewLabel,
   transcriptEntryPreviewLabel,
 } from "./session-history-preview.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("session history preview labels all history entry kinds", () => {
   assert.equal(sessionHistoryEntryPreviewLabel("user_prompt"), "You")
@@ -34,7 +37,7 @@ test("session history preview suppresses empty and passive provider status entri
   assert.equal(previewLineForSessionHistoryEntry({
     kind: "provider_status",
     text: "codex token_count {\"total\":42}",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: false,
       passive_telemetry: true,
@@ -50,7 +53,7 @@ test("session history preview renders visible first line", () => {
   assert.equal(previewLineForSessionHistoryEntry({
     kind: "provider_status",
     text: "codex event turn_aborted {\"reason\":\"user\"}",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     external_observation: {
       settles_active_prompt: true,
       passive_telemetry: true,

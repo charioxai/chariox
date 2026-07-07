@@ -15,6 +15,9 @@ import {
   transcriptTurnHasCollapsibleBody,
   transcriptTurnIsCollapsible,
 } from "./transcript-entry-lineage.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("transcript display-only helpers classify turn toggles as non-renderable lineage", () => {
   const assistant = { role: "assistant", text: "answer" }
@@ -54,7 +57,7 @@ test("transcript entry lineage keys prefer durable external observed identity", 
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",
     text: "hello",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
@@ -82,7 +85,7 @@ test("transcript entry lineage keys ignore provider-only external observed ident
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",
     text: "hello",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
   }), [
     "text:external_provider_observed::assistant:hello",
@@ -107,7 +110,7 @@ test("transcript entry deduplication keys avoid broad turn-only identity", () =>
   assert.deepEqual(transcriptEntryDeduplicationKeys({
     role: "assistant",
     text: "hello",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
@@ -131,7 +134,7 @@ test("transcript entry lineage containment ignores turn toggles", () => {
   assert.equal(transcriptEntriesContainRenderableLineage([{
     role: "assistant",
     text: "answer",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
@@ -145,14 +148,14 @@ test("transcript entry lineage detects shared refreshed/current entries", () => 
   assert.equal(transcriptEntriesShareRenderableLineage([{
     role: "assistant",
     text: "live answer",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   }], [{
     role: "assistant",
     text: "shorter answer from history",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
@@ -161,14 +164,14 @@ test("transcript entry lineage detects shared refreshed/current entries", () => 
   assert.equal(transcriptEntriesShareRenderableLineage([{
     role: "assistant",
     text: "agent a answer",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-a",
     externalProviderTurnId: "turn-a",
   }], [{
     role: "assistant",
     text: "agent b answer",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-b",
     externalProviderTurnId: "turn-b",
@@ -186,7 +189,7 @@ test("transcript entry lineage matches refreshed external entries with normalize
   }], [{
     role: "assistant",
     text: "history answer",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
@@ -223,21 +226,21 @@ test("transcript entry lineage prepending preserves distinct external blobs in t
   const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
     role: "assistant",
     text: "first assistant blob",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   }, {
     role: "assistant",
     text: "second assistant blob",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   }], [{
     role: "assistant",
     text: "second assistant blob",
-    source: "external_provider_observed",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
