@@ -867,7 +867,9 @@ impl TerminalStreamService {
             .iter()
             .map(|attachment_id| (record.session_id.clone(), attachment_id.clone()))
             .collect::<BTreeSet<_>>();
-        self.push_output_record(record.clone());
+        if !self.try_replace_external_observed_output_record(&record) {
+            self.push_output_record(record.clone());
+        }
         self.enforce_pending_output_record_limits_for_keys(changed_keys);
         self.refresh_health();
         record
@@ -933,6 +935,65 @@ impl TerminalStreamService {
         );
         self.last_output_record_id = Some(record_id);
         record_id
+    }
+
+    fn try_replace_external_observed_output_record(
+        &mut self,
+        record: &TerminalOutputRecord,
+    ) -> bool {
+        let Some(merge_key) = record.merge_key.as_deref() else {
+            return false;
+        };
+        let Some(record_id) = self
+            .output_records
+            .iter()
+            .rev()
+            .find_map(|(record_id, stored)| {
+                (stored.record.session_id == record.session_id
+                    && stored.record.agent_id == record.agent_id
+                    && stored.record.kind == record.kind
+                    && stored.record.merge_key.as_deref() == Some(merge_key)
+                    && stored.record.prompt_origin == Some(PromptOrigin::External)
+                    && stored.record.external_observation_metadata.is_some())
+                .then_some(*record_id)
+            })
+        else {
+            return false;
+        };
+        let Some(existing) = self.output_records.get(&record_id) else {
+            return false;
+        };
+        let pending_recipients = existing
+            .record
+            .pending_recipient_attachment_ids
+            .iter()
+            .cloned()
+            .chain(record.recipient_attachment_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let recipient_attachment_ids = existing
+            .record
+            .recipient_attachment_ids
+            .iter()
+            .cloned()
+            .chain(record.recipient_attachment_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        for attachment_id in &pending_recipients {
+            let key = (record.session_id.clone(), attachment_id.clone());
+            let queue = self.pending_output_by_attachment.entry(key).or_default();
+            if !queue.iter().any(|pending_id| *pending_id == record_id) {
+                queue.push_back(record_id);
+            }
+        }
+        let mut replacement = record.clone();
+        replacement.recipient_attachment_ids = recipient_attachment_ids.into_iter().collect();
+        replacement.pending_recipient_attachment_ids = pending_recipients.iter().cloned().collect();
+        let Some(stored) = self.output_records.get_mut(&record_id) else {
+            return false;
+        };
+        stored.record = replacement;
+        stored.pending_recipient_count = pending_recipients.len();
+        self.last_output_record_id = Some(record_id);
+        true
     }
 
     fn try_coalesce_output_record(&mut self, record: &TerminalOutputRecord) -> bool {
@@ -1673,7 +1734,33 @@ mod tests {
         TerminalOutputExternalObservationMetadata, TerminalOutputKind, TerminalOutputRecord,
         TerminalStreamService, TerminalStreamStore,
     };
-    use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
+    use crate::history::{
+        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
+    };
+
+    fn external_observed_metadata(
+        provider_turn_id: &str,
+    ) -> (String, TerminalOutputExternalObservationMetadata) {
+        let entry = crate::history::SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("provider-run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "external output",
+            "codex",
+            "thread-1",
+            Some(provider_turn_id.to_string()),
+            Some(1_234),
+        );
+        (
+            entry
+                .merge_key
+                .clone()
+                .expect("external observed entry should have merge key"),
+            TerminalOutputExternalObservationMetadata::from_session_history_entry(&entry)
+                .expect("external observed entry should produce terminal metadata"),
+        )
+    }
 
     #[test]
     fn records_terminal_input_and_fans_out_output() {
@@ -1802,6 +1889,80 @@ mod tests {
             metadata.external_observation,
             Some(SessionHistoryExternalObservation::active_prompt_settled())
         );
+    }
+
+    #[test]
+    fn external_observed_output_replaces_pending_record_with_same_merge_key() {
+        let mut terminal = TerminalStreamService::new();
+        let (merge_key, metadata) = external_observed_metadata("assistant-1");
+
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key.clone()),
+            vec!["attachment-1".to_string()],
+            b"first version",
+            metadata.clone(),
+        );
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key),
+            vec!["attachment-1".to_string()],
+            b"updated version",
+            metadata,
+        );
+
+        assert_eq!(terminal.output_records().len(), 1);
+        let drained = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].bytes, b"updated version");
+        assert_eq!(drained[0].record_id, Some(0));
+    }
+
+    #[test]
+    fn external_observed_output_requeues_replacement_for_drained_recipient() {
+        let mut terminal = TerminalStreamService::new();
+        let (merge_key, metadata) = external_observed_metadata("assistant-1");
+
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key.clone()),
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"first version",
+            metadata.clone(),
+        );
+        let first = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].bytes, b"first version");
+
+        terminal.fan_out_external_observed_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key),
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"updated version",
+            metadata,
+        );
+
+        let first_after_update = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(first_after_update.len(), 1);
+        assert_eq!(first_after_update[0].record_id, Some(0));
+        assert_eq!(first_after_update[0].bytes, b"updated version");
+        let second = terminal.drain_output_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].record_id, Some(0));
+        assert_eq!(second[0].bytes, b"updated version");
+        assert!(terminal.output_records().is_empty());
     }
 
     #[test]
