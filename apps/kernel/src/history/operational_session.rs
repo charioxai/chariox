@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use rusqlite::params;
 
@@ -279,112 +279,6 @@ impl OperationalHistoryStore {
             .filter_map(|event| event.to_session_history_entry())
             .filter(|entry| !entry.is_external_provider_observed_state_signal())
             .collect())
-    }
-
-    pub fn load_external_import_index(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        external_merge_key_prefix: &str,
-    ) -> Result<(Vec<String>, BTreeSet<String>), DaemonError> {
-        self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
-        let like_pattern = format!("%{external_merge_key_prefix}%");
-        let mut statement = connection
-            .prepare(
-                "SELECT kind,
-                        CASE WHEN kind = 'user_prompt' THEN content ELSE NULL END,
-                        metadata_text,
-                        event_json
-                 FROM history_events
-                 WHERE session_id = ?1
-                   AND agent_id = ?2
-                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)
-                 ORDER BY sequence ASC",
-            )
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session_id.to_string()),
-                operation: "prepare external import history index load",
-                message: error.to_string(),
-            })?;
-        let mut rows = statement
-            .query(params![session_id, agent_id, like_pattern])
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session_id.to_string()),
-                operation: "load external import history index",
-                message: error.to_string(),
-            })?;
-        let mut arroba_owned_prompts = Vec::new();
-        let mut external_merge_keys = BTreeSet::new();
-        while let Some(row) = rows
-            .next()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session_id.to_string()),
-                operation: "read external import history index",
-                message: error.to_string(),
-            })?
-        {
-            let kind =
-                row.get::<_, String>(0)
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: Some(session_id.to_string()),
-                        operation: "decode external import history index kind",
-                        message: error.to_string(),
-                    })?;
-            let content = row.get::<_, Option<String>>(1).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "decode external import history index content",
-                    message: error.to_string(),
-                }
-            })?;
-            let metadata_text = row.get::<_, Option<String>>(2).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "decode external import history index metadata",
-                    message: error.to_string(),
-                }
-            })?;
-            let event_json =
-                row.get::<_, String>(3)
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: Some(session_id.to_string()),
-                        operation: "decode external import history index event json",
-                        message: error.to_string(),
-                    })?;
-            let metadata_text = metadata_text.unwrap_or_default();
-            let history_entry = serde_json::from_str::<HistoryEvent>(&event_json)
-                .ok()
-                .and_then(|event| event.to_session_history_entry());
-            if kind == "user_prompt"
-                && history_user_prompt_counts_as_arroba_owned(
-                    history_entry.as_ref(),
-                    &metadata_text,
-                )
-            {
-                if let Some(content) = content {
-                    arroba_owned_prompts.push(content);
-                }
-            }
-            for line in metadata_text.lines() {
-                if line.starts_with(external_merge_key_prefix)
-                    && !external_provider_observed_merge_key_with_prefix_is_state_signal(
-                        external_merge_key_prefix,
-                        line,
-                    )
-                {
-                    external_merge_keys.insert(line.to_string());
-                }
-            }
-        }
-        Ok((arroba_owned_prompts, external_merge_keys))
     }
 
     pub fn load_external_import_history_index(
