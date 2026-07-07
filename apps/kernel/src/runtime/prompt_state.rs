@@ -59,7 +59,7 @@ impl PromptStateOwner {
     ) -> Option<PromptQueueItem> {
         self.state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .active_prompt
             .clone()
@@ -73,7 +73,7 @@ impl PromptStateOwner {
         let key = PromptStateKey::new(session.id(), agent_id);
         self.state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .states
             .get(&key)
             .map(|state| state.active_prompt.clone())
@@ -89,7 +89,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(focused_agent_id) = session.focused_agent_id() {
             if owner
                 .ensure_agent_state(session, focused_agent_id)
@@ -134,7 +134,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if session.agents().iter().any(|agent| {
             owner
                 .ensure_agent_state(session, agent.id())
@@ -158,7 +158,7 @@ impl PromptStateOwner {
     ) -> usize {
         self.state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .queued_prompts
             .len()
@@ -174,7 +174,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
             !force_queue && state.active_prompt.is_none()
@@ -220,7 +220,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let mut completed = state.active_prompt.take()?;
         completed.set_status(PromptStatus::Completed);
@@ -235,7 +235,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let mut cancelled = state.active_prompt.take()?;
         cancelled.set_status(PromptStatus::Cancelled);
@@ -250,7 +250,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -267,7 +267,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active = owner
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -284,7 +284,7 @@ impl PromptStateOwner {
         let mut owner = self
             .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active_status = state.active_prompt.as_ref()?.status();
         if active_status != PromptStatus::Cancelling {
@@ -302,7 +302,7 @@ impl PromptStateOwner {
     ) -> Option<PromptQueueItem> {
         self.state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ensure_agent_state(session, agent_id)
             .queued_prompts
             .front()

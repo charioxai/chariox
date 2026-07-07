@@ -94,7 +94,10 @@ pub(crate) struct ActiveTurnStore {
 impl ActiveTurnStore {
     pub(crate) fn start(&self, turn: ActiveTurnState) {
         let (turn, replaced) = {
-            let mut guard = self.inner.lock().expect("active turn mutex poisoned");
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let turn = if let Some(existing) = guard.get(&turn.provider_run_id) {
                 merge_active_turn_start(existing, turn)
             } else {
@@ -154,7 +157,7 @@ impl ActiveTurnStore {
         if let Some(turn) = self
             .inner
             .lock()
-            .expect("active turn mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(provider_run_id)
         {
             if turn.phase.rank() < ActiveTurnPhase::Settling.rank() {
@@ -181,7 +184,7 @@ impl ActiveTurnStore {
         if let Some(turn) = self
             .inner
             .lock()
-            .expect("active turn mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(provider_run_id)
         {
             if turn.phase.rank() < phase.rank() {
@@ -207,7 +210,7 @@ impl ActiveTurnStore {
         let removed = self
             .inner
             .lock()
-            .expect("active turn mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(provider_run_id);
         if let Some(turn) = removed {
             record_active_turn_clear(turn);
@@ -217,7 +220,7 @@ impl ActiveTurnStore {
     pub(crate) fn get(&self, provider_run_id: &str) -> Option<ActiveTurnState> {
         self.inner
             .lock()
-            .expect("active turn mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(provider_run_id)
             .cloned()
     }
@@ -232,7 +235,10 @@ impl ActiveTurnStore {
 
     fn clear_matching(&self, mut predicate: impl FnMut(&ActiveTurnState) -> bool) -> usize {
         let removed = {
-            let mut guard = self.inner.lock().expect("active turn mutex poisoned");
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let provider_run_ids = guard
                 .iter()
                 .filter_map(|(provider_run_id, turn)| {
@@ -254,7 +260,7 @@ impl ActiveTurnStore {
     pub(crate) fn snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
         self.inner
             .lock()
-            .expect("active turn mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -303,11 +309,15 @@ pub(crate) struct PromptActivityStore {
 
 impl PromptActivityStore {
     pub(crate) fn read(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
-        self.inner.lock().expect("prompt activity mutex poisoned")
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn write(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
-        self.inner.lock().expect("prompt activity mutex poisoned")
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -320,21 +330,21 @@ impl PromptWorkspaceClaimStore {
     pub(crate) fn contains(&self, provider_run_id: &str) -> bool {
         self.inner
             .lock()
-            .expect("prompt workspace claim mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(provider_run_id)
     }
 
     pub(crate) fn insert(&self, provider_run_id: String, claim: WorkspaceClaimGuard) {
         self.inner
             .lock()
-            .expect("prompt workspace claim mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider_run_id, claim);
     }
 
     pub(crate) fn remove(&self, provider_run_id: &str) -> bool {
         self.inner
             .lock()
-            .expect("prompt workspace claim mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(provider_run_id)
             .is_some()
     }
@@ -346,7 +356,7 @@ impl PromptWorkspaceClaimStore {
         let mut guard = self
             .inner
             .lock()
-            .expect("prompt workspace claim mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let provider_run_ids = guard
             .iter()
             .filter_map(|(provider_run_id, claim)| {
