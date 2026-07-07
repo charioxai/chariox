@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>9 allowlisted files remain after initial splits</td>
+              <td>8 allowlisted files remain after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -287,6 +287,12 @@
               <td><code>534273fd</code> <span class="muted">Split cloud drill artifact tests</span></td>
               <td>Cloud drill artifact coverage is now split into validation/report tests, aggregate diagnostics tests, index/path/sanitization tests, and shared fixture builders.</td>
               <td>42 focused cloud drill artifact tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>a2e467fc</code> <span class="muted">Extract staging browser smoke helpers</span></td>
+              <td>The staging browser relay/kernel smoke now keeps scenario orchestration separate from reusable cookie, browser-picker, process, port, shell/path, SSH, and env helper utilities.</td>
+              <td><code>node --check</code> for both smoke modules, <code>node scripts/check-line-cap.mjs</code>. Full staging smoke was not run because it requires staging secrets and live hosted services.</td>
             </tr>
           </tbody>
         </table>
