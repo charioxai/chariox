@@ -305,6 +305,25 @@ impl SessionHistoryEntry {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
     }
 
+    pub fn is_external_provider_observed_state_signal(&self) -> bool {
+        if !self.is_external_provider_observed() {
+            return false;
+        }
+        let Some(provider) = self.external_provider.as_deref() else {
+            return false;
+        };
+        let Some(provider_session_id) = self.external_provider_session_id.as_deref() else {
+            return false;
+        };
+        let Some(merge_key) = self.merge_key.as_deref() else {
+            return false;
+        };
+        external_provider_observed_merge_key_with_prefix_is_state_signal(
+            &external_provider_observed_merge_key_prefix(provider, provider_session_id),
+            merge_key,
+        )
+    }
+
     pub fn external_provider_observed_turn_id(&self) -> Option<&str> {
         self.is_external_provider_observed()
             .then_some(self.external_provider_turn_id.as_deref())
@@ -578,7 +597,9 @@ impl SessionHistoryStore {
                     }
                 })?;
             entry.rehydrate_attachment_preview_urls();
-            entries.push(entry);
+            if !entry.is_external_provider_observed_state_signal() {
+                entries.push(entry);
+            }
         }
         Ok(entries)
     }
@@ -912,6 +933,19 @@ mod tests {
             "thread-1",
             "external:codex:thread-1:item-1"
         ));
+        let state_signal = SessionHistoryEntry::external_provider_observed_state_signal(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:item-1",
+            "item-1".to_string(),
+            Some(2_000),
+        );
+        assert!(state_signal.is_external_provider_observed_state_signal());
+        assert!(!observed.is_external_provider_observed_state_signal());
     }
 
     #[test]

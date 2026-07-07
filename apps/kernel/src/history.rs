@@ -1107,6 +1107,38 @@ mod tests {
     }
 
     #[test]
+    fn session_history_load_hides_external_observer_state_signals() {
+        let config = DaemonConfig::for_tests();
+        let mut sessions = SessionService::new(&config);
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let store = SessionHistoryStore::new(config.session_history_root.clone())
+            .expect("history store should initialize");
+        let signal = SessionHistoryEntry::external_provider_observed_state_signal(
+            session.id(),
+            Some("run-1"),
+            "agent-1",
+            "codex",
+            "thread-1",
+            crate::history::EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+            "external:codex:thread-1:item-1",
+            "item-1".to_string(),
+            Some(2_000),
+        );
+
+        store
+            .append(&session, &signal)
+            .expect("state signal should persist");
+
+        let entries = store.load(&session).expect("history should load");
+        assert!(
+            entries.is_empty(),
+            "internal external-observer state signals must not render as transcript entries"
+        );
+    }
+
+    #[test]
     fn session_history_load_rehydrates_file_image_attachment_previews() {
         let config = DaemonConfig::for_tests();
         let mut sessions = SessionService::new(&config);
@@ -1554,6 +1586,24 @@ mod tests {
                 .external_entries_by_merge_key
                 .contains_key(&state_signal_merge_key),
             "internal external-observer state signals must not pollute the provider transcript index"
+        );
+        let visible_entries = store
+            .load_session_history_entries("session-1", Some("agent-1"))
+            .expect("session history entries should load");
+        assert!(
+            visible_entries
+                .iter()
+                .all(|entry| entry.merge_key.as_ref() != Some(&state_signal_merge_key)),
+            "internal external-observer state signals must not render as transcript entries"
+        );
+        assert!(
+            store
+                .load_session_events("session-1", Some("agent-1"))
+                .expect("raw operational events should load")
+                .iter()
+                .filter_map(|event| event.to_session_history_entry())
+                .any(|entry| entry.merge_key.as_ref() == Some(&state_signal_merge_key)),
+            "raw operational events must retain state signals for lifecycle projection"
         );
 
         drop(store);

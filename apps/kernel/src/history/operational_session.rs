@@ -277,6 +277,7 @@ impl OperationalHistoryStore {
         Ok(events
             .into_iter()
             .filter_map(|event| event.to_session_history_entry())
+            .filter(|entry| !entry.is_external_provider_observed_state_signal())
             .collect())
     }
 
