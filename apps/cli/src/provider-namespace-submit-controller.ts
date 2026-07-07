@@ -16,7 +16,11 @@ import {
   promptSubmissionSuccessTransition,
   resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
-import type { PromptSubmissionResult } from "./prompt-runtime-api.js"
+import {
+  promptSubmissionTranscriptMetadata,
+  type PromptSubmissionResult,
+} from "./prompt-runtime-api.js"
+import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 
 export type ProviderNamespaceSubmitControllerDeps = {
@@ -35,7 +39,7 @@ export type ProviderNamespaceSubmitControllerDeps = {
   clearPromptText: () => void
   beginSubmittedPromptUi: (rawPrompt: string) => SubmittedPromptUiSnapshot
   renderPromptTranscript: (prompt: string) => string
-  appendUserPrompt: (text: string, agentId?: string | null) => void
+  appendUserPrompt: (text: string, agentId?: string | null, metadata?: TranscriptPromptMetadata) => void
   submitProviderNamespacePrompt: (
     attachmentId: string,
     targetAgentId: string | null,
@@ -118,7 +122,11 @@ export function createProviderNamespaceSubmitController(
           submittedTargetAgentId,
         })
         if (transition.shouldAppendUserPrompt) {
-          deps.appendUserPrompt(deps.renderPromptTranscript(command.raw), submittedTargetAgentId)
+          deps.appendUserPrompt(
+            deps.renderPromptTranscript(command.raw),
+            submittedTargetAgentId,
+            promptSubmissionTranscriptMetadata(submission.payload, submittedTargetAgentId),
+          )
         }
         deps.setStreamingAgentId(transition.streamingAgentId)
         deps.setWorking(transition.working)

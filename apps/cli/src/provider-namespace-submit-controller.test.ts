@@ -36,7 +36,27 @@ test("provider namespace submit requires an attachment", async () => {
 })
 
 test("provider namespace submit forwards commands and applies submission state", async () => {
-  const harness = createHarness()
+  const harness = createHarness({
+    submitProviderNamespacePrompt: async () => ({
+      payload: {
+        outcome: {
+          Started: {
+            prompt: {
+              id: "prompt-started",
+              source_attachment_id: "attachment-started",
+              target_agent_id: "agent-submitted",
+              prompt: "/session list\n",
+              status: "running",
+              prompt_origin: " External ",
+            },
+          },
+        },
+        session: runtimeSession("session-submitted"),
+      },
+      targetAgentId: "agent-submitted",
+      outcomeName: "PromptSubmitted",
+    }),
+  })
 
   assert.equal(await harness.controller.submit("/opencode session list"), true)
 
@@ -45,7 +65,13 @@ test("provider namespace submit forwards commands and applies submission state",
     targetAgentId: "agent-1",
     prompt: "/session list\n",
   }])
-  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: "agent-submitted" }])
+  assert.deepEqual(harness.appendedPrompts(), [{
+    text: "/opencode session list\n",
+    agentId: "agent-submitted",
+    promptId: "prompt-started",
+    sourceAttachmentId: "attachment-started",
+    promptOrigin: "external",
+  }])
   assert.equal(harness.appliedSessions().at(-1)?.id, "session-submitted")
   assert.deepEqual(harness.streamingAgentIds(), ["agent-submitted"])
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "/opencode session list" }])
@@ -157,7 +183,13 @@ function createHarness(options: {
   submitProviderNamespacePrompt?: ProviderNamespaceSubmitControllerDeps["submitProviderNamespacePrompt"]
 } = {}) {
   const submissions: Array<{ attachmentId: string; targetAgentId: string | null; prompt: string }> = []
-  const appendedPrompts: Array<{ text: string; agentId: string | null | undefined }> = []
+  const appendedPrompts: Array<{
+    text: string
+    agentId: string | null | undefined
+    promptId?: string | null
+    sourceAttachmentId?: string | null
+    promptOrigin?: string | null
+  }> = []
   const appliedSessions: RuntimeSession[] = []
   const streamingAgentIds: Array<string | null> = []
   const recordedHistory: Array<{ sessionId: string; rawPrompt: string }> = []
@@ -191,8 +223,14 @@ function createHarness(options: {
     },
     beginSubmittedPromptUi: (rawPrompt) => ({ rawPrompt, attachments: [], sessionId: "session-1" }),
     renderPromptTranscript: (prompt) => `${prompt}\n`,
-    appendUserPrompt: (text, agentId) => {
-      appendedPrompts.push({ text, agentId })
+    appendUserPrompt: (text, agentId, metadata) => {
+      appendedPrompts.push({
+        text,
+        agentId,
+        ...(metadata?.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+        ...(metadata?.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+        ...(metadata?.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
+      })
     },
     submitProviderNamespacePrompt: async (attachmentId, targetAgentId, prompt) => {
       submissions.push({ attachmentId, targetAgentId, prompt })
