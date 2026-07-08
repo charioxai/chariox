@@ -1,6 +1,5 @@
 # Current hand-authored files over 1000 lines.
 # This file is shrink-only: split files and remove entries during the migration.
-apps/kernel/src/runtime/router/tests/m23_metaagent_runtime_tools.rs
 apps/kernel/src/workflow_code.rs
 apps/kernel/src/runtime/external_provider_session_control.rs
 apps/relay/src/server.rs
