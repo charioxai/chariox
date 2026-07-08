@@ -67,7 +67,7 @@ export function queuedPromptActionability(
     : queuedPromptCancelDisabledReason(status)
   return {
     status,
-    steerDisabled: !canSteer && Boolean(steerDisabledReason),
+    steerDisabled: !canSteer,
     canSteer,
     canCancel,
     steerDisabledReason,

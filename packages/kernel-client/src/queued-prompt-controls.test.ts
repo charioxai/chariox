@@ -230,13 +230,13 @@ test("queued prompt control lookup accepts pending and materialized identities",
   }, ["pending-1", "materialized-1"]), null)
 })
 
-test("queued prompt actionability does not mark unavailable action disabled without reason", () => {
+test("queued prompt actionability marks unavailable steering disabled without reason", () => {
   assert.deepEqual(queuedPromptActionability("queued", {
     can_steer: false,
     can_cancel: false,
   }), {
     status: "queued",
-    steerDisabled: false,
+    steerDisabled: true,
     canSteer: false,
     canCancel: false,
     steerDisabledReason: null,
