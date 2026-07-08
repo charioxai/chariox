@@ -9,7 +9,6 @@ apps/cli/scripts/workflow-code-artifact-drill.mjs
 apps/kernel/src/runtime/state/tool_dispatch/meta.rs
 apps/kernel/src/terminal/stream.rs
 apps/kernel/src/app/kernel_session.rs
-apps/cli/scripts/live-provider-thread-transfer-drill.mjs
 apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
