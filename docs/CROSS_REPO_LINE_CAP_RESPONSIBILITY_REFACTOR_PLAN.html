@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>6 allowlisted files remain after initial splits</td>
+              <td>5 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>f4b83a981</code> <span class="muted">Split relay connection routing support</span></td>
+              <td><code>connection.rs</code> now keeps the WebSocket handshake, connection loop, daemon/client metadata/display/event arm orchestration, and disconnect notification path. Client request/subscribe/unsubscribe routing, target resolution, sender lookup, token/error helpers, backpressure handling, peer cleanup, logging helpers, and connection unit tests live in focused modules under <code>apps/relay/src/server/connection/</code>.</td>
+              <td><code>rustfmt --edition 2024</code> for the relay connection parent and child modules; <code>cargo test --manifest-path apps/relay/Cargo.toml server -- --nocapture</code> (43 passed); <code>node scripts/check-line-cap.mjs</code> (5 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>ff1adcf86</code> <span class="muted">Split live workflow publication drill modules</span></td>
