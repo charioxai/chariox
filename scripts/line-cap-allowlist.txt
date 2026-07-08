@@ -26,6 +26,5 @@ apps/kernel/src/git_observer.rs
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
 apps/kernel/src/session/service/core.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
-apps/kernel/src/skill/mod.rs
 apps/cli/scripts/lib/drill-matrix-report.mjs
 apps/kernel/src/local/api/types.rs
