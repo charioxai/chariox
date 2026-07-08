@@ -63,16 +63,18 @@ fn runtime_command_paths_do_not_lock_daemon_app() {
 }
 
 fn scan_runtime_command_path(relative: &Path) -> bool {
-    if relative
-        .components()
-        .any(|component| component.as_os_str() == std::ffi::OsStr::new("tests"))
-    {
+    if relative.components().any(|component| {
+        let Some(component) = component.as_os_str().to_str() else {
+            return false;
+        };
+        component == "tests" || component.ends_with("_tests")
+    }) {
         return false;
     }
     if relative
         .file_name()
         .and_then(|file_name| file_name.to_str())
-        .is_some_and(|file_name| file_name.ends_with("_tests.rs"))
+        .is_some_and(|file_name| file_name == "tests.rs" || file_name.ends_with("_tests.rs"))
     {
         return false;
     }

@@ -1,6 +1,26 @@
 use super::*;
 use crate::local::GetSessionHistoryOutlineRequest;
 
+fn run_async_with_large_test_stack<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap_or_else(|error| panic!("{name} tokio runtime should build: {error}"))
+                .block_on(test());
+        })
+        .unwrap_or_else(|error| panic!("{name} test thread should spawn: {error}"))
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
 #[tokio::test]
 async fn pending_provider_launch_cleanup_does_not_wait_for_app_lock_when_projection_is_cold() {
     let app = Arc::new(Mutex::new(
@@ -506,8 +526,15 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
         .expect("history should eventually resolve");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog() {
+#[test]
+fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog() {
+    run_async_with_large_test_stack(
+        "focus-resize-cancel-slow-provider-catalog",
+        focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner,
+    );
+}
+
+async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner() {
     let mut config = DaemonConfig::for_tests();
     config.provider_catalog_read_delay_ms = 120;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");

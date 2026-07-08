@@ -1,20 +1,15 @@
 use super::*;
 
 pub(super) async fn poll_attached_external_provider_transcripts(
-    app: &Arc<Mutex<DaemonApp>>,
+    _app: &Arc<Mutex<DaemonApp>>,
     runtime_state: &crate::runtime::state::KernelRuntimeState,
     schedule: &mut BTreeMap<String, AttachedExternalObserverSchedule>,
 ) -> AttachedExternalObserverPollOutcome {
     let tick_started = Instant::now();
     let now = tokio::time::Instant::now();
-    let targets = {
-        let app = crate::runtime::app_lock::lock_app_instrumented(
-            &app,
-            "external_provider_session_control",
-        )
+    let targets = runtime_state
+        .with_app_side_effect(|app| attached_external_observer_targets(app))
         .await;
-        attached_external_observer_targets(&app)
-    };
     let target_count = targets.len();
     if target_count == 0 {
         schedule.clear();
@@ -70,21 +65,18 @@ pub(super) async fn poll_attached_external_provider_transcripts(
         match read {
             Ok(read) => {
                 let append_started = Instant::now();
-                let outcome = {
-                    let mut app = crate::runtime::app_lock::lock_app_instrumented(
-                        &app,
-                        "external_provider_session_control",
-                    )
+                let outcome = runtime_state
+                    .with_app_side_effect(|app| {
+                        append_observed_external_turns_for_attached_target_with_options(
+                            app,
+                            read,
+                            AttachedExternalObserverAppendOptions {
+                                allow_external_active_prompt_settlement,
+                            },
+                        )
+                        .unwrap_or_default()
+                    })
                     .await;
-                    append_observed_external_turns_for_attached_target_with_options(
-                        &mut app,
-                        read,
-                        AttachedExternalObserverAppendOptions {
-                            allow_external_active_prompt_settlement,
-                        },
-                    )
-                    .unwrap_or_default()
-                };
                 append_ms_total += append_started.elapsed().as_millis();
                 changed_count += outcome.changed_count;
                 active_relevant_changed_count += outcome.active_relevant_changed_count;
@@ -298,14 +290,7 @@ pub(super) async fn refresh_external_provider_session_index(
         cache.candidate_paths = Some(signature_read.candidate_paths);
         cache.cached_signature_checks = 0;
     }
-    let store = {
-        let app = crate::runtime::app_lock::lock_app_instrumented(
-            &app,
-            "external_provider_session_control",
-        )
-        .await;
-        app.external_provider_session_index_store()
-    };
+    let store = external_provider_session_index_store(app, runtime_state).await;
     for provider in external_provider_session_providers() {
         let provider_sessions = discovered
             .iter()
@@ -318,14 +303,8 @@ pub(super) async fn refresh_external_provider_session_index(
     // the index store (which has its own lock) without holding the app lock,
     // so this background poller does not block foreground commands for the
     // duration of the store writes.
-    let attached_refs = {
-        let app = crate::runtime::app_lock::lock_app_instrumented(
-            &app,
-            "external_provider_session_control",
-        )
-        .await;
-        attached_external_provider_session_refs(&app, runtime_state)
-    };
+    let attached_refs =
+        attached_external_provider_session_refs_for_runtime(app, runtime_state).await;
     for attachment in attached_refs {
         store.mark_attached(
             &attachment.external_session_id,
@@ -403,25 +382,11 @@ pub(crate) async fn execute_external_provider_session_request(
     request: LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let store = {
-        let app = crate::runtime::app_lock::lock_app_instrumented(
-            &app,
-            "external_provider_session_control",
-        )
-        .await;
-        app.external_provider_session_index_store()
-    };
+    let store = external_provider_session_index_store(app, runtime_state).await;
     match request {
         LocalDaemonRequest::ListExternalProviderSessions(request) => {
             refresh_external_provider_session_index(app, runtime_state, None, true).await;
-            {
-                let app = crate::runtime::app_lock::lock_app_instrumented(
-                    &app,
-                    "external_provider_session_control",
-                )
-                .await;
-                mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            }
+            mark_attached_external_provider_sessions_for_runtime(app, runtime_state, &store).await;
             Ok(LocalDaemonResponse::ExternalProviderSessionsListed {
                 page: store.list(&request),
             })
@@ -441,14 +406,7 @@ pub(crate) async fn execute_external_provider_session_request(
                     store.replace_provider_sessions(provider, provider_sessions);
                 }
             }
-            {
-                let app = crate::runtime::app_lock::lock_app_instrumented(
-                    &app,
-                    "external_provider_session_control",
-                )
-                .await;
-                mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            }
+            mark_attached_external_provider_sessions_for_runtime(app, runtime_state, &store).await;
             refresh_attached_external_provider_histories(
                 app,
                 runtime_state,
@@ -465,28 +423,24 @@ pub(crate) async fn execute_external_provider_session_request(
             })
         }
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
-            let mut app = crate::runtime::app_lock::lock_app_instrumented(
-                &app,
-                "external_provider_session_control",
-            )
-            .await;
-            mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            import_external_provider_session(
-                &mut app,
+            import_external_provider_session_for_runtime(
+                app,
                 runtime_state,
                 &store,
                 request,
                 caller_user_id,
             )
+            .await
         }
         LocalDaemonRequest::ImportExternalProviderAgent(request) => {
-            let mut app = crate::runtime::app_lock::lock_app_instrumented(
-                &app,
-                "external_provider_session_control",
+            import_external_provider_agent_for_runtime(
+                app,
+                runtime_state,
+                &store,
+                request,
+                caller_user_id,
             )
-            .await;
-            mark_attached_external_provider_sessions(&app, runtime_state, &store);
-            import_external_provider_agent(&mut app, runtime_state, &store, request, caller_user_id)
+            .await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "external provider session request",
@@ -529,23 +483,17 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
     provider_filter: Option<&str>,
     session_filter: Option<&str>,
 ) {
-    let targets = {
-        let app = crate::runtime::app_lock::lock_app_instrumented(
-            &app,
-            "external_provider_session_control",
-        )
-        .await;
-        attached_external_observer_targets(&app)
-            .into_iter()
-            .filter(|target| {
-                attached_external_observer_target_matches_refresh_filters(
-                    target,
-                    provider_filter,
-                    session_filter,
-                )
-            })
-            .collect::<Vec<_>>()
-    };
+    let targets = attached_external_observer_targets_for_runtime(app, runtime_state)
+        .await
+        .into_iter()
+        .filter(|target| {
+            attached_external_observer_target_matches_refresh_filters(
+                target,
+                provider_filter,
+                session_filter,
+            )
+        })
+        .collect::<Vec<_>>();
     for target in targets {
         let provider = target.provider.clone();
         let provider_session_id = target.provider_session_id.clone();
@@ -564,14 +512,12 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
                 continue;
             }
         };
-        let outcome = {
-            let mut app = crate::runtime::app_lock::lock_app_instrumented(
-                &app,
-                "external_provider_session_control",
-            )
-            .await;
-            append_observed_external_turns_for_attached_target(&mut app, read).unwrap_or_default()
-        };
+        let outcome = append_observed_external_turns_for_attached_target_for_runtime(
+            app,
+            runtime_state,
+            read,
+        )
+        .await;
         dispatch_next_queued_prompt_after_external_settlement(
             runtime_state,
             &outcome,
@@ -602,6 +548,146 @@ pub(super) fn attached_external_observer_provider_matches_filter(
     let provider_filter = provider_filter.trim().to_ascii_lowercase();
     external_provider_session_providers().contains(&provider_filter.as_str())
         && target_provider == provider_filter
+}
+
+async fn external_provider_session_index_store(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+) -> crate::app::ExternalProviderSessionIndexStore {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| app.external_provider_session_index_store())
+            .await;
+    }
+    let app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    app.external_provider_session_index_store()
+}
+
+async fn attached_external_observer_targets_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+) -> Vec<AttachedExternalObserverTarget> {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| attached_external_observer_targets(app))
+            .await;
+    }
+    let app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    attached_external_observer_targets(&app)
+}
+
+async fn attached_external_provider_session_refs_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+) -> BTreeSet<AttachedExternalProviderSessionRef> {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| {
+                attached_external_provider_session_refs(app, Some(runtime_state))
+            })
+            .await;
+    }
+    let app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    attached_external_provider_session_refs(&app, None)
+}
+
+async fn mark_attached_external_provider_sessions_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+) {
+    if let Some(runtime_state) = runtime_state {
+        runtime_state
+            .with_app_side_effect(|app| {
+                mark_attached_external_provider_sessions(app, Some(runtime_state), store);
+            })
+            .await;
+        return;
+    }
+    let app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    mark_attached_external_provider_sessions(&app, None, store);
+}
+
+async fn append_observed_external_turns_for_attached_target_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    read: AttachedExternalObserverRead,
+) -> AttachedExternalObserverAppendOutcome {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| {
+                append_observed_external_turns_for_attached_target(app, read).unwrap_or_default()
+            })
+            .await;
+    }
+    let mut app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    append_observed_external_turns_for_attached_target(&mut app, read).unwrap_or_default()
+}
+
+async fn import_external_provider_session_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    request: ImportExternalProviderSessionRequest,
+    caller_user_id: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| {
+                mark_attached_external_provider_sessions(app, Some(runtime_state), store);
+                import_external_provider_session(
+                    app,
+                    Some(runtime_state),
+                    store,
+                    request,
+                    caller_user_id,
+                )
+            })
+            .await;
+    }
+    let mut app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    mark_attached_external_provider_sessions(&app, None, store);
+    import_external_provider_session(&mut app, None, store, request, caller_user_id)
+}
+
+async fn import_external_provider_agent_for_runtime(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    request: ImportExternalProviderAgentRequest,
+    caller_user_id: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if let Some(runtime_state) = runtime_state {
+        return runtime_state
+            .with_app_side_effect(|app| {
+                mark_attached_external_provider_sessions(app, Some(runtime_state), store);
+                import_external_provider_agent(
+                    app,
+                    Some(runtime_state),
+                    store,
+                    request,
+                    caller_user_id,
+                )
+            })
+            .await;
+    }
+    let mut app = app
+        .try_lock()
+        .expect("legacy external-provider tests should not hold the daemon app lock");
+    mark_attached_external_provider_sessions(&app, None, store);
+    import_external_provider_agent(&mut app, None, store, request, caller_user_id)
 }
 
 pub(super) async fn dispatch_next_queued_prompt_after_external_settlement(

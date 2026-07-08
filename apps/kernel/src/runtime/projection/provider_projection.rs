@@ -313,7 +313,6 @@ pub(crate) struct ProviderProcessProjectionStore {
 }
 
 impl ProviderProcessProjectionStore {
-    #[cfg(test)]
     pub(crate) fn list(&self, provider: Option<&str>) -> Option<Vec<ProviderProcessInfo>> {
         let processes = self
             .processes
@@ -338,7 +337,6 @@ impl ProviderProcessProjectionStore {
     }
 }
 
-#[cfg(test)]
 fn filter_provider_processes(
     processes: Vec<ProviderProcessInfo>,
     provider: Option<&str>,

@@ -290,33 +290,40 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                let node = workflow.node_mut(&node_id).ok_or_else(|| {
-                    DaemonError::WorkflowNodeNotFound {
-                        session_id: session_id.to_string(),
-                        workflow_id: workflow_id.clone(),
-                        node_id: node_id.clone(),
+                let mut clear_exit_position = false;
+                {
+                    let node = workflow.node_mut(&node_id).ok_or_else(|| {
+                        DaemonError::WorkflowNodeNotFound {
+                            session_id: session_id.to_string(),
+                            workflow_id: workflow_id.clone(),
+                            node_id: node_id.clone(),
+                        }
+                    })?;
+                    if let Some(label) = patch.label {
+                        node.set_public_label(label);
                     }
-                })?;
-                if let Some(label) = patch.label {
-                    node.set_public_label(label);
+                    if let Some(value) = patch.instructions {
+                        node.set_instructions(value);
+                    }
+                    if let Some(value) = patch.can_complete_workflow_run {
+                        node.set_can_complete_workflow_run(value);
+                        clear_exit_position |= !value;
+                    }
+                    if let Some(value) = patch.can_emit_intermediate_run_output {
+                        node.set_can_emit_intermediate_run_output(value);
+                    }
+                    if let Some(value) = patch.wait_for_all_inputs {
+                        node.set_wait_for_all_inputs(value);
+                    }
+                    if let Some(value) = patch.intermediate_output_schema_ref {
+                        node.set_intermediate_output_schema_ref(value);
+                    }
+                    if let Some(value) = patch.max_turns {
+                        node.set_max_turns(value);
+                    }
                 }
-                if let Some(value) = patch.instructions {
-                    node.set_instructions(value);
-                }
-                if let Some(value) = patch.can_complete_workflow_run {
-                    node.set_can_complete_workflow_run(value);
-                }
-                if let Some(value) = patch.can_emit_intermediate_run_output {
-                    node.set_can_emit_intermediate_run_output(value);
-                }
-                if let Some(value) = patch.wait_for_all_inputs {
-                    node.set_wait_for_all_inputs(value);
-                }
-                if let Some(value) = patch.intermediate_output_schema_ref {
-                    node.set_intermediate_output_schema_ref(value);
-                }
-                if let Some(value) = patch.max_turns {
-                    node.set_max_turns(value);
+                if clear_exit_position {
+                    workflow.clear_exit_position(&node_id);
                 }
                 workflow.bump_revision();
                 Ok(workflow.clone())

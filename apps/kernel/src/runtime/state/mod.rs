@@ -422,7 +422,10 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn with_app_side_effect<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
+    pub(crate) async fn with_app_side_effect<R>(
+        &self,
+        operation: impl FnOnce(&mut DaemonApp) -> R,
+    ) -> R {
         let mut app =
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;

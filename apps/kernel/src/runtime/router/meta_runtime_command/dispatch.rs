@@ -180,14 +180,9 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let (session, metaagent) = {
-            let app =
-                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
-                    .await;
-            let session = app.sessions().get_session(&context.home_session_id)?;
-            let agent = app.agents().get_agent(&context.home_agent_id)?;
-            (session, agent)
-        };
+        let (session, metaagent) = self
+            .runtime_state
+            .session_agent_snapshot(&context.home_session_id, &context.home_agent_id)?;
         let Some(remote) = metaagent.remote_execution() else {
             return Err(meta_command_error(format!(
                 "home agent `{}` is not remote-backed",
@@ -379,15 +374,8 @@ impl CommandRouter {
         let causation_id = provider_run_id.unwrap_or_else(|| metaagent.id());
         let correlation_id = format!("metaagent:{}:command:{timestamp_ms}", metaagent.id());
         let display_command = redacted_meta_command_for_payload(command);
-        let durable_state = {
-            let app =
-                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
-                    .await;
-            app.durable_state_store()
-        };
-        if let Err(error) = durable_state.append_event(
-            "metaagent.command.executed",
-            Some(metaagent.id().to_string()),
+        if let Err(error) = self.runtime_state.append_metaagent_command_audit_event(
+            metaagent.id(),
             serde_json::json!({
                 "session_id": session.id(),
                 "user_id": metaagent.owner_user_id(),
@@ -618,36 +606,15 @@ impl CommandRouter {
         };
         match command {
             "agent" => {
-                let agents = {
-                    let app = crate::runtime::app_lock::lock_app_instrumented(
-                        &self.app,
-                        "meta_runtime_command",
-                    )
-                    .await;
-                    app.agents().get_session_agents(session.id())
-                };
+                let agents = self.runtime_state.session_agents(session.id());
                 meta_agent_request(session, metaagent, &tokens[1..], &agents)
             }
             "workflow" => {
-                let agents = {
-                    let app = crate::runtime::app_lock::lock_app_instrumented(
-                        &self.app,
-                        "meta_runtime_command",
-                    )
-                    .await;
-                    app.agents().get_session_agents(session.id())
-                };
+                let agents = self.runtime_state.session_agents(session.id());
                 meta_workflow_request(session, metaagent, &tokens[1..], &agents)
             }
             "mcp" => {
-                let agents = {
-                    let app = crate::runtime::app_lock::lock_app_instrumented(
-                        &self.app,
-                        "meta_runtime_command",
-                    )
-                    .await;
-                    app.agents().get_session_agents(session.id())
-                };
+                let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(
                     session,
                     metaagent,
@@ -658,14 +625,7 @@ impl CommandRouter {
                 )
             }
             "skill" | "skills" => {
-                let agents = {
-                    let app = crate::runtime::app_lock::lock_app_instrumented(
-                        &self.app,
-                        "meta_runtime_command",
-                    )
-                    .await;
-                    app.agents().get_session_agents(session.id())
-                };
+                let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(
                     session,
                     metaagent,
@@ -691,18 +651,11 @@ impl CommandRouter {
         metaagent: &crate::agent::AgentInstance,
     ) -> Result<String, DaemonError> {
         let client_id = metaagent_command_client_id(metaagent.id());
+        if let Some(attachment) = self
+            .runtime_state
+            .client_attachment_for_session(&client_id, session_id)
         {
-            let app =
-                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
-                    .await;
-            if let Some(attachment) = app
-                .attachments()
-                .list_client_attachments(&client_id)
-                .into_iter()
-                .find(|attachment| attachment.session_id() == session_id)
-            {
-                return Ok(attachment.id().to_string());
-            }
+            return Ok(attachment.id().to_string());
         }
         let request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
             session_id: session_id.to_string(),
@@ -725,12 +678,7 @@ impl CommandRouter {
         metaagent: &crate::agent::AgentInstance,
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agents = {
-            let app =
-                crate::runtime::app_lock::lock_app_instrumented(&self.app, "meta_runtime_command")
-                    .await;
-            app.agents().get_session_agents(session_id)
-        };
+        let agents = self.runtime_state.session_agents(session_id);
         let owned_agents = agents
             .into_iter()
             .filter(|agent| {

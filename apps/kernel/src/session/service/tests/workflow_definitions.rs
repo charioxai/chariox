@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::WorkflowHandoffValidationPolicy;
+use crate::session::{WorkflowCanvasLayoutPatch, WorkflowHandoffValidationPolicy};
 
 #[test]
 fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
@@ -345,7 +345,28 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
         .expect("node completion setting should update");
     assert!(updated_node.can_complete_workflow_run());
-    assert!(!updated_node.can_emit_intermediate_run_output());
+    let layout_with_exit = service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 10,
+                y: 20,
+            }],
+        )
+        .expect("exit position should update");
+    assert!(layout_with_exit.exits.get(node.id()).is_some());
+    let updated_node = service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), false)
+        .expect("node completion setting should update");
+    assert!(!updated_node.can_complete_workflow_run());
+    let updated_workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should exist");
+    assert!(updated_workflow
+        .canvas_layout()
+        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
     let updated_node = service
         .set_workflow_node_can_emit_intermediate_output(
             session.id(),
@@ -360,7 +381,7 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
         .expect("node completion setting should update");
     assert!(updated_node.can_complete_workflow_run());
-    assert!(!updated_node.can_emit_intermediate_run_output());
+    assert!(updated_node.can_emit_intermediate_run_output());
     let updated_node = service
         .set_workflow_node_intermediate_output_schema_ref(
             session.id(),

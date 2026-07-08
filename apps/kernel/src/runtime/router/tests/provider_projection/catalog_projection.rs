@@ -38,17 +38,13 @@ async fn get_provider_catalog_uses_warmed_projection_without_app_lock_inner() {
             .await
     });
 
-    tokio::task::yield_now().await;
-    assert!(
-        catalog_task.is_finished(),
-        "warmed GetProviderCatalog should be served from projection without app lock access"
-    );
-    drop(app_guard);
-
-    let catalog_response = catalog_task
+    let catalog_response = tokio::time::timeout(Duration::from_millis(100), catalog_task)
         .await
+        .expect("warmed GetProviderCatalog should not wait for the app lock")
         .expect("catalog task should join")
         .expect("catalog should resolve");
+    drop(app_guard);
+
     match catalog_response {
         LocalDaemonResponse::ProviderCatalog { catalog } => {
             assert_eq!(catalog.connected, vec!["codex"]);

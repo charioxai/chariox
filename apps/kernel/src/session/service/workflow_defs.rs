@@ -135,6 +135,9 @@ impl SessionService {
             })?;
         node.set_can_complete_workflow_run(value);
         let node = node.clone();
+        if !value {
+            workflow.clear_exit_position(node_id);
+        }
         workflow.bump_revision();
         Ok(node)
     }

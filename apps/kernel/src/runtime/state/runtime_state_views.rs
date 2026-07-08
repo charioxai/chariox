@@ -132,6 +132,47 @@ impl KernelRuntimeState {
         self.owned.agent_store.list_agents()
     }
 
+    pub(crate) fn session_agent_snapshot(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(crate::session::RuntimeSession, crate::agent::AgentInstance), DaemonError> {
+        let session = self
+            .owned
+            .session_snapshot_without_projection_update(session_id)?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        Ok((session, agent))
+    }
+
+    pub(crate) fn session_agents(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {
+        self.owned.agent_store.get_session_agents(session_id)
+    }
+
+    pub(crate) fn client_attachment_for_session(
+        &self,
+        client_id: &str,
+        session_id: &str,
+    ) -> Option<crate::attachment::RuntimeAttachment> {
+        self.owned
+            .attachment_store
+            .list_client_attachments(client_id)
+            .into_iter()
+            .find(|attachment| attachment.session_id() == session_id)
+    }
+
+    pub(crate) fn append_metaagent_command_audit_event(
+        &self,
+        metaagent_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), DaemonError> {
+        self.owned.durable_state_store.append_event(
+            "metaagent.command.executed",
+            Some(metaagent_id.to_string()),
+            payload,
+        )?;
+        Ok(())
+    }
+
     pub(crate) async fn workspace_live_sync_health_snapshot(
         &self,
     ) -> crate::runtime::projection::WorkspaceLiveSyncHealthSnapshot {

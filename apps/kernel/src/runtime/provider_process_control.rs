@@ -28,6 +28,8 @@ pub(crate) async fn execute_provider_process_request(
             execute_list_provider_processes_request(
                 runtime_state,
                 provider_process_projection,
+                provider_run_projection,
+                caller_user_id,
                 request,
             )
             .await
@@ -132,8 +134,19 @@ pub(crate) fn provider_processes_teardownable_by_user(
 pub(crate) async fn execute_list_provider_processes_request(
     runtime_state: &KernelRuntimeState,
     provider_process_projection: &ProviderProcessProjectionStore,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
     request: ListProviderProcessesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if let Some(processes) = provider_process_projection.list(request.provider.as_deref()) {
+        let processes = provider_processes_visible_to_user_from_projection(
+            processes,
+            provider_run_projection,
+            caller_user_id,
+        );
+        return Ok(LocalDaemonResponse::ProviderProcessesListed { processes });
+    }
+
     runtime_state
         .reap_idle_provider_processes(crate::session::unix_epoch_ms())
         .await?;
@@ -143,7 +156,11 @@ pub(crate) async fn execute_list_provider_processes_request(
         sleep(Duration::from_millis(list.delay_ms)).await;
     }
     Ok(LocalDaemonResponse::ProviderProcessesListed {
-        processes: list.filtered_processes,
+        processes: provider_processes_visible_to_user_from_projection(
+            list.filtered_processes,
+            provider_run_projection,
+            caller_user_id,
+        ),
     })
 }
 

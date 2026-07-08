@@ -167,9 +167,6 @@ impl WorkflowNodeDefinition {
 
     pub fn set_can_complete_workflow_run(&mut self, value: bool) {
         self.can_complete_workflow_run = value;
-        if value {
-            self.can_emit_intermediate_run_output = false;
-        }
     }
 
     pub fn can_emit_intermediate_run_output(&self) -> bool {
@@ -178,9 +175,6 @@ impl WorkflowNodeDefinition {
 
     pub fn set_can_emit_intermediate_run_output(&mut self, value: bool) {
         self.can_emit_intermediate_run_output = value;
-        if value {
-            self.can_complete_workflow_run = false;
-        }
     }
 
     pub fn wait_for_all_inputs(&self) -> bool {

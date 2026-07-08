@@ -7,6 +7,7 @@ use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
+use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::projected_provider_run_response;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
@@ -41,6 +42,21 @@ impl CommandRouter {
         match request {
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 return terminal_command_catalog_response().map(Some);
+            }
+            LocalDaemonRequest::ListProviderProcesses(request) => {
+                if let Some(processes) = self
+                    .provider_process_projection
+                    .list(request.provider.as_deref())
+                {
+                    let processes = provider_processes_visible_to_user_from_projection(
+                        processes,
+                        &self.provider_run_projection,
+                        caller_user_id,
+                    );
+                    return Ok(Some(LocalDaemonResponse::ProviderProcessesListed {
+                        processes,
+                    }));
+                }
             }
             request @ LocalDaemonRequest::RelayStatus(_) => {
                 return execute_relay_config_request(

@@ -328,14 +328,13 @@ async fn provider_process_projection_stores_canonical_unfiltered_snapshot_inner(
     let list_task =
         tokio::spawn(async move { list_router.dispatch(list_command, list_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(list_task.is_finished());
-    drop(app_guard);
-
-    let list_response = list_task
+    let list_response = tokio::time::timeout(Duration::from_millis(100), list_task)
         .await
+        .expect("projected provider process list should not wait for the app lock")
         .expect("list task should join")
         .expect("list should resolve");
+    drop(app_guard);
+
     match list_response {
         LocalDaemonResponse::ProviderProcessesListed { processes } => {
             assert_eq!(processes.len(), 2);
@@ -387,14 +386,13 @@ async fn provider_process_projection_updates_after_teardown_inner() {
     let list_task =
         tokio::spawn(async move { list_router.dispatch(list_command, list_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(list_task.is_finished());
-    drop(app_guard);
-
-    let list_response = list_task
+    let list_response = tokio::time::timeout(Duration::from_millis(100), list_task)
         .await
+        .expect("post-teardown provider process list should not wait for the app lock")
         .expect("list task should join")
         .expect("list should resolve");
+    drop(app_guard);
+
     match list_response {
         LocalDaemonResponse::ProviderProcessesListed { processes } => {
             assert!(processes.is_empty());

@@ -330,6 +330,17 @@ impl WorkflowDefinition {
         self.bump_revision();
     }
 
+    pub fn clear_exit_position(&mut self, node_id: &str) {
+        let Some(layout) = self.canvas_layout.as_mut() else {
+            return;
+        };
+        if layout.exits.remove(node_id).is_none() {
+            return;
+        }
+        layout.bump_revision();
+        self.bump_revision();
+    }
+
     pub fn add_edge(&mut self, edge: WorkflowEdgeDefinition) -> WorkflowEdgeDefinition {
         self.edges.push(edge.clone());
         self.bump_revision();
