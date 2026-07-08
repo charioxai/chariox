@@ -40,7 +40,6 @@ apps/cli/scripts/live-provider-context-injection-drill.mjs
 docs/KERNEL_WEB_TERMINAL_PERFORMANCE_PLAN.html
 apps/kernel/src/session/runtime_session.rs
 apps/kernel/src/runtime/router/tests/provider_projection.rs
-apps/kernel/src/app/provider_output_fanout.rs
 apps/cli/scripts/lib/drill-artifacts.mjs
 apps/cli/scripts/live-workflow-runtime-drill.mjs
 apps/kernel/src/transport/relay_client/connector.rs
