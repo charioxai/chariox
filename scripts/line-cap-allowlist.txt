@@ -31,7 +31,6 @@ apps/kernel/src/session/service/core.rs
 apps/kernel/src/runtime/history_requests/session_outline.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
 apps/kernel/src/history.rs
-apps/cli/scripts/lib/drill-validation-gate.test.mjs
 apps/kernel/src/runtime/agent_actor/tests/prompt_command_execution.rs
 apps/kernel/src/skill/mod.rs
 apps/kernel/src/config.rs
