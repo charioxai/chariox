@@ -224,17 +224,17 @@ function mergeLoadedHistoryBlobEntryMetadata<TEntry extends AgentPaneHistoryBlob
     ...(loadedEntry.attachments !== undefined || placeholder.attachments !== undefined
       ? { attachments: mergeSessionHistoryPromptAttachments(loadedEntry.attachments, placeholder.attachments) }
       : {}),
-    ...(loadedEntry.source === undefined && placeholder.source !== undefined ? { source: placeholder.source } : {}),
-    ...(loadedEntry.externalProvider === undefined && placeholder.externalProvider !== undefined
+    ...(loadedEntry.source == null && placeholder.source !== undefined ? { source: placeholder.source } : {}),
+    ...(loadedEntry.externalProvider == null && placeholder.externalProvider !== undefined
       ? { externalProvider: placeholder.externalProvider }
       : {}),
-    ...(loadedEntry.externalProviderSessionId === undefined && placeholder.externalProviderSessionId !== undefined
+    ...(loadedEntry.externalProviderSessionId == null && placeholder.externalProviderSessionId !== undefined
       ? { externalProviderSessionId: placeholder.externalProviderSessionId }
       : {}),
-    ...(loadedEntry.externalProviderTurnId === undefined && placeholder.externalProviderTurnId !== undefined
+    ...(loadedEntry.externalProviderTurnId == null && placeholder.externalProviderTurnId !== undefined
       ? { externalProviderTurnId: placeholder.externalProviderTurnId }
       : {}),
-    ...(loadedEntry.observedAtMs === undefined && placeholder.observedAtMs !== undefined
+    ...(loadedEntry.observedAtMs == null && placeholder.observedAtMs !== undefined
       ? { observedAtMs: placeholder.observedAtMs }
       : {}),
     ...(externalObservation !== undefined ? { externalObservation } : {}),

@@ -281,6 +281,45 @@ test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritati
   assert.equal(result[0]?.promptOrigin, "arroba")
 })
 
+test("preserveLoadedHistoryBlobs fills sparse loaded external metadata from refreshed placeholder", () => {
+  const result = preserveLoadedHistoryBlobs({
+    currentEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "loaded tool output",
+      source: null,
+      externalProvider: null,
+      externalProviderSessionId: null,
+      externalProviderTurnId: null,
+      observedAtMs: null,
+      historyBlobSourceId: "blob-1",
+      historyBlobSourceAgentId: "agent-a",
+      historyBlobLoaded: true,
+    }],
+    refreshedEntries: [{
+      role: "tool",
+      turnId: 1,
+      text: "",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      historyBlobId: "blob-1",
+      historyBlobAgentId: "agent-a",
+    }],
+    collapsedTurnIds: [],
+    applyCollapsedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+  })
+
+  assert.equal(result[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(result[0]?.externalProvider, "codex")
+  assert.equal(result[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(result[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(result[0]?.observedAtMs, 1_000)
+})
+
 test("preserveLoadedHistoryBlobs uses refreshed lifecycle metadata for loaded content", () => {
   type BlobEntry = {
     id?: number
