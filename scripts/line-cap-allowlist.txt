@@ -25,7 +25,6 @@ apps/cli/src/cli-app-root.tsx
 apps/kernel/src/git_observer.rs
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
 apps/kernel/src/session/service/core.rs
-apps/kernel/src/runtime/history_requests/session_outline.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
 apps/kernel/src/history.rs
 apps/kernel/src/skill/mod.rs
