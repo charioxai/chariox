@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>73 allowlisted files remain after initial splits</td>
+              <td>72 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>683919cfc</code> <span class="muted">Split provider prompt runtime tests</span></td>
+              <td>Provider prompt runtime API coverage now keeps shared native-TUI assertion, large-stack, and git helpers in the parent module, while prompt routing/config validation, turn action/undo/fork behavior, and queue/config/notice behavior live in bounded Rust child modules.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml local::api::tests::provider_prompt_runtime -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>1da07ee1d</code> <span class="muted">Split prompt command execution tests</span></td>
