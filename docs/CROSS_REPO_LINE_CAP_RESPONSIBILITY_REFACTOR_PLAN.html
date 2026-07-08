@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>12 allowlisted files remain after initial splits</td>
+              <td>11 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>e8e1422b3</code> <span class="muted">Split terminal stream responsibilities</span></td>
+              <td><code>terminal/stream.rs</code> is now a facade for terminal stream records, synchronized store notification wiring, core stream service state mutation, scoped JSON sizing helpers, and service/store tests. Runtime APIs stay re-exported from the original module path.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched terminal stream modules; <code>cargo test -p arroba-kernel terminal::stream --lib</code> (34 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (11 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>a8a1a83d0</code> <span class="muted">Split iOS app model responsibilities</span></td>
