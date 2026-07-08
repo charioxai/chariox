@@ -65,6 +65,31 @@ fn external_provider_discovery_poller_is_not_demand_gated() {
 }
 
 #[test]
+fn daemon_run_starts_external_provider_background_tasks() {
+    let source = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/app/daemon_lifecycle.rs"),
+    )
+    .expect("source should be readable");
+    let run_start = source
+        .find("pub async fn run(self) -> Result<(), DaemonError>")
+        .expect("daemon run should exist");
+    let run_source = &source[run_start..];
+
+    assert!(
+        run_source.contains("run_external_provider_session_discovery_poller"),
+        "daemon run should start external provider session discovery"
+    );
+    assert!(
+        run_source.contains("run_attached_provider_transcript_observer"),
+        "daemon run should start attached provider transcript observation"
+    );
+    assert!(
+        !run_source.contains("Temporarily disabled"),
+        "external provider background tasks must not be disabled in daemon run"
+    );
+}
+
+#[test]
 fn due_attached_external_observer_targets_prioritizes_overdue_targets() {
     let now = tokio::time::Instant::now();
     let mut schedule = BTreeMap::new();
