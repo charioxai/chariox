@@ -345,6 +345,65 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn applies fallback prompt met
   assert.equal(entries[1]?.sourceAttachmentId, "attachment-1")
 })
 
+test("assignMatchingUntrackedTranscriptEntriesToTurn assigns exact external provider turn identity", () => {
+  const turnId = "turn-1"
+  const prompt: AssignmentEntry<string> = assignmentEntry("prompt", "user", {
+    turnId,
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+  const entries: AssignmentEntry<string>[] = [
+    prompt,
+    assignmentEntry("assistant", "assistant", {
+      externalProvider: " CODEX ",
+      externalProviderSessionId: " thread-1 ",
+      externalProviderTurnId: " user-1 ",
+    }),
+    assignmentEntry("sparse", "assistant", {
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+    }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<string, AssignmentEntry<string>>(entries, prompt, {
+    turnId,
+  })
+
+  assert.equal(assigned, 1)
+  assert.equal(entries[1]?.turnId, "turn-1")
+  assert.equal(entries[1]?.promptOrigin, "external")
+  assert.equal(entries[1]?.externalProvider, " CODEX ")
+  assert.equal(entries[1]?.externalProviderSessionId, " thread-1 ")
+  assert.equal(entries[1]?.externalProviderTurnId, " user-1 ")
+  assert.equal(entries[2]?.turnId, undefined)
+})
+
+test("assignMatchingUntrackedTranscriptEntriesToTurn rejects sparse external provider turn identity", () => {
+  const turnId = "turn-1"
+  const prompt: AssignmentEntry<string> = assignmentEntry("prompt", "user", {
+    turnId,
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  })
+  const entries: AssignmentEntry<string>[] = [
+    prompt,
+    assignmentEntry("assistant", "assistant", {
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+    }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<string, AssignmentEntry<string>>(entries, prompt, {
+    turnId,
+  })
+
+  assert.equal(assigned, 0)
+  assert.equal(entries[1]?.turnId, undefined)
+})
+
 test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canonical turn", () => {
   const entries: AssignmentEntry<number>[] = [
     assignmentEntry("equivalent", "assistant", { turnId: 3, outputIdentity: "run-1:assistant", createdAtMs: 1_100 }),
@@ -445,6 +504,9 @@ function assignmentEntry<TTurnId extends string | number>(
     readonly promptOrigin?: string | null
     readonly sourceAttachmentId?: string | null
     readonly providerRunId?: string | null
+    readonly externalProvider?: string | null
+    readonly externalProviderSessionId?: string | null
+    readonly externalProviderTurnId?: string | null
     readonly outputIdentity?: string | null
     readonly createdAtMs?: number | null
   } = {},

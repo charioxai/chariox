@@ -1,4 +1,8 @@
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+import {
+  externalProviderObservedExactIdentityMatches,
+  type ExternalProviderObservedIdentityFields,
+} from "./external-provider-observation.js"
 
 type TranscriptEntryStateKernelFields = Pick<KernelTranscriptEntry, "id" | "text"> & {
   readonly turnId?: KernelTranscriptEntry["turnId"] | null
@@ -23,6 +27,9 @@ export type TranscriptTurnAssignmentEntry<TTurnId extends TranscriptTurnAssignme
   promptOrigin?: string | null
   sourceAttachmentId?: string | null
   providerRunId?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
   readonly outputIdentity?: string | null
   readonly createdAtMs?: number | null
 }
@@ -36,6 +43,9 @@ export type TranscriptTurnAssignmentOptions<
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
   readonly providerRunId?: string | null
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
   readonly nowMs?: () => number
   readonly onAssigned?: (turnId: TTurnId, entry: TEntry, assignedAtMs: number | null) => void
 }
@@ -317,9 +327,11 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
   const promptOrigin = promptEntry.promptOrigin ?? options.promptOrigin
   const sourceAttachmentId = promptEntry.sourceAttachmentId ?? options.sourceAttachmentId
   const providerRunId = promptEntry.providerRunId ?? options.providerRunId
+  const externalIdentity = transcriptTurnAssignmentExternalIdentity(promptEntry, options)
   const hasPromptId = hasTranscriptPromptIdentity(promptId)
   const hasProviderRunId = Boolean(providerRunId)
-  if (!hasPromptId && !hasProviderRunId) {
+  const hasExternalIdentity = transcriptTurnAssignmentHasExactExternalIdentity(externalIdentity)
+  if (!hasPromptId && !hasProviderRunId && !hasExternalIdentity) {
     return 0
   }
   let assigned = 0
@@ -337,7 +349,9 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
       entry.providerRunId === providerRunId
       || entry.outputIdentity?.startsWith(`${providerRunId}:`) === true
     )
-    if (!matchesPrompt && !matchesProviderRun) {
+    const matchesExternalIdentity = hasExternalIdentity
+      && externalProviderObservedExactIdentityMatches(entry, externalIdentity)
+    if (!matchesPrompt && !matchesProviderRun && !matchesExternalIdentity) {
       continue
     }
     entry.turnId = options.turnId
@@ -346,6 +360,9 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
       promptOrigin,
       sourceAttachmentId,
       providerRunId,
+      externalProvider: externalIdentity.externalProvider,
+      externalProviderSessionId: externalIdentity.externalProviderSessionId,
+      externalProviderTurnId: externalIdentity.externalProviderTurnId,
     })
     options.onAssigned?.(options.turnId, entry, transcriptAssignmentTimestamp(entry, options.nowMs))
     assigned += 1
@@ -400,6 +417,9 @@ function applyTranscriptTurnAssignmentMetadata<TTurnId extends TranscriptTurnAss
     readonly promptOrigin?: string | null | undefined
     readonly sourceAttachmentId?: string | null | undefined
     readonly providerRunId?: string | null | undefined
+    readonly externalProvider?: string | null | undefined
+    readonly externalProviderSessionId?: string | null | undefined
+    readonly externalProviderTurnId?: string | null | undefined
   },
 ): void {
   if (entry.promptId === undefined && metadata.promptId !== undefined) {
@@ -414,6 +434,38 @@ function applyTranscriptTurnAssignmentMetadata<TTurnId extends TranscriptTurnAss
   if (entry.providerRunId === undefined && metadata.providerRunId !== undefined) {
     entry.providerRunId = metadata.providerRunId
   }
+  if (entry.externalProvider === undefined && metadata.externalProvider !== undefined) {
+    entry.externalProvider = metadata.externalProvider
+  }
+  if (entry.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== undefined) {
+    entry.externalProviderSessionId = metadata.externalProviderSessionId
+  }
+  if (entry.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== undefined) {
+    entry.externalProviderTurnId = metadata.externalProviderTurnId
+  }
+}
+
+function transcriptTurnAssignmentExternalIdentity<
+  TTurnId extends TranscriptTurnAssignmentId,
+  TEntry extends TranscriptTurnAssignmentEntry<TTurnId>,
+>(
+  promptEntry: TEntry,
+  options: TranscriptTurnAssignmentOptions<TTurnId, TEntry>,
+): ExternalProviderObservedIdentityFields {
+  const externalProvider = promptEntry.externalProvider ?? options.externalProvider
+  const externalProviderSessionId = promptEntry.externalProviderSessionId ?? options.externalProviderSessionId
+  const externalProviderTurnId = promptEntry.externalProviderTurnId ?? options.externalProviderTurnId
+  return {
+    ...(externalProvider !== undefined ? { externalProvider } : {}),
+    ...(externalProviderSessionId !== undefined ? { externalProviderSessionId } : {}),
+    ...(externalProviderTurnId !== undefined ? { externalProviderTurnId } : {}),
+  }
+}
+
+function transcriptTurnAssignmentHasExactExternalIdentity(
+  identity: ExternalProviderObservedIdentityFields,
+): boolean {
+  return externalProviderObservedExactIdentityMatches(identity, identity)
 }
 
 function transcriptAssignmentTimestamp<TTurnId extends TranscriptTurnAssignmentId>(
