@@ -27,7 +27,6 @@ apps/cli/src/cli-app-root.tsx
 apps/kernel/src/git_observer.rs
 apps/kernel/src/local/api/tests/provider_prompt_runtime.rs
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
-apps/cli/scripts/lib/drill-artifacts.test.mjs
 apps/kernel/src/session/service/core.rs
 apps/kernel/src/runtime/history_requests/session_outline.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
