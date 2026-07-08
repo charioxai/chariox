@@ -209,8 +209,8 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>18 allowlisted files remain after initial splits</td>
-              <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
+              <td>17 allowlisted files remain after initial splits</td>
+              <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>ebb1b5595</code> <span class="muted">Split kernel client protocol types</span></td>
+              <td>The public <code>kernel-types.ts</code> path is now a 10-line facade that preserves imports and the protocol version export, while extension/config, session/waiting-room/workspace sync, daemon health, runtime/session control, cloud/remote/workspace records, provider/prompt payloads, history/recall/transcript, and workflow DTOs live in focused protocol type modules.</td>
+              <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (798 passed); <code>cargo test -p arroba-kernel client_protocol_conformance</code> (4 focused tests passed); <code>node scripts/check-line-cap.mjs</code> (17 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>117d2bfec</code> <span class="muted">Split validation gate aggregate helpers</span></td>
