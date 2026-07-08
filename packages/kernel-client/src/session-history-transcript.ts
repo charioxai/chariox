@@ -6,12 +6,12 @@ import {
 } from "@arroba/tool-display"
 import {
   applyExternalProviderObservedTranscriptMetadata,
-  applyExternalProviderObservedTurnMetadata,
+  externalProviderObservedIdentityFields,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   promptOriginExternalProviderObservedMetadata,
   transcriptExternalProviderObservedTurnMetadata,
-  type ExternalProviderObservedTurnMetadata,
+  type ExternalProviderObservedTranscriptFields,
 } from "./external-provider-observation.js"
 import { previewLineForSessionHistoryEntry } from "./session-history-preview.js"
 import {
@@ -324,7 +324,7 @@ export function replaceSessionHistoryBlobPlaceholder(
     return entries
   }
   const turnId = placeholder.turnId
-  const externalMetadata = transcriptEntryExternalMetadata(placeholder)
+  const externalMetadata = transcriptEntryExternalMetadata(placeholder) ?? {}
   const promptMetadata: SessionHistoryOutlineTurnPromptMetadata = {
     ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
@@ -450,19 +450,28 @@ function historyEntryTranscriptIdentityOptions(
   turnPromptId?: string | null,
 ): Partial<SessionHistoryTranscriptEntry> {
   const hasPromptOrigin = Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
+  const externalIdentity = externalProviderObservedIdentityFields(entry)
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
     ...(hasPromptOrigin ? { promptOrigin: promptOriginFromRecord(entry) } : {}),
+    ...(externalIdentity.externalProvider !== undefined ? { externalProvider: externalIdentity.externalProvider } : {}),
+    ...(externalIdentity.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+      : {}),
+    ...(externalIdentity.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
+      : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
 }
 
-type OutlineTurnExternalMetadata = ExternalProviderObservedTurnMetadata
+type OutlineTurnExternalMetadata = ExternalProviderObservedTranscriptFields
 function outlineTurnExternalMetadata(
   turn: SessionHistoryOutlineTurn,
-): OutlineTurnExternalMetadata | null {
+): OutlineTurnExternalMetadata {
   return promptOriginExternalProviderObservedMetadata(turn)
+    ?? externalProviderObservedIdentityFields(turn)
 }
 
 function applyOutlineTurnPromptMetadata(
@@ -474,7 +483,7 @@ function applyOutlineTurnPromptMetadata(
 
 function applyOutlineTurnMetadata(
   entry: SessionHistoryTranscriptEntry,
-  externalMetadata: OutlineTurnExternalMetadata | null,
+  externalMetadata: OutlineTurnExternalMetadata,
   promptMetadata: SessionHistoryOutlineTurnPromptMetadata,
 ): SessionHistoryTranscriptEntry {
   return applyOutlineTurnPromptMetadata(
@@ -485,9 +494,9 @@ function applyOutlineTurnMetadata(
 
 function applyOutlineTurnExternalMetadata(
   entry: SessionHistoryTranscriptEntry,
-  metadata: OutlineTurnExternalMetadata | null,
+  metadata: OutlineTurnExternalMetadata,
 ): SessionHistoryTranscriptEntry {
-  return applyExternalProviderObservedTurnMetadata({ ...entry }, metadata)
+  return applyExternalProviderObservedTranscriptMetadata({ ...entry }, metadata)
 }
 
 function transcriptEntryExternalMetadata(

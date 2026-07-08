@@ -252,6 +252,30 @@ export function promptOriginExternalProviderObservedMetadata(
   }
 }
 
+export function externalProviderObservedIdentityFields(
+  record: ExternalProviderObservedPromptOriginFields,
+): ExternalProviderObservedTranscriptIdentityFields {
+  const explicitFields: ExternalProviderObservedTranscriptIdentityFields = {
+    ...(hasOwn(record, "external_provider")
+      ? { externalProvider: normalizeExternalProviderId(record.external_provider) }
+      : {}),
+    ...(hasOwn(record, "external_provider_session_id")
+      ? { externalProviderSessionId: nonBlankString(record.external_provider_session_id) }
+      : {}),
+    ...(hasOwn(record, "external_provider_turn_id")
+      ? { externalProviderTurnId: nonBlankString(record.external_provider_turn_id) }
+      : {}),
+  }
+  if (
+    explicitFields.externalProvider !== undefined
+    || explicitFields.externalProviderSessionId !== undefined
+    || explicitFields.externalProviderTurnId !== undefined
+  ) {
+    return explicitFields
+  }
+  return externalProviderObservedIdFields(record.prompt_id ?? record.id) ?? {}
+}
+
 export function mergeExternalProviderObservation(
   existing: SessionHistoryExternalObservation | null | undefined,
   incoming: SessionHistoryExternalObservation | null | undefined,
@@ -615,8 +639,38 @@ function normalizeExternalProviderId(value: string | null | undefined): string |
   return nonBlankString(value)?.toLowerCase() ?? null
 }
 
+function externalProviderObservedIdFields(
+  value: string | null | undefined,
+): ExternalProviderObservedTranscriptIdentityFields | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const parts = value?.split(":") ?? []
+  if (parts.length < 4 || parts[0] !== "external") {
+    return null
+  }
+  const externalProvider = normalizeExternalProviderId(parts[1])
+  const externalProviderSessionId = nonBlankString(parts[2])
+  const externalProviderTurnId = nonBlankString(parts.slice(3).join(":"))
+  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+    return null
+  }
+  return {
+    externalProvider,
+    externalProviderSessionId,
+    externalProviderTurnId,
+  }
+}
+
 function fieldCanAcceptExternalProviderMetadata(value: unknown): boolean {
   return value === undefined || value === null
+}
+
+function hasOwn<T extends object, K extends PropertyKey>(
+  value: T,
+  key: K,
+): value is T & Record<K, unknown> {
+  return Object.prototype.hasOwnProperty.call(value, key)
 }
 
 function finiteNumber(value: number | null | undefined): number | null {

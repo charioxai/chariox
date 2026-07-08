@@ -11,6 +11,7 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedEntryIsPassiveTelemetry,
+  externalProviderObservedIdentityFields,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
@@ -80,6 +81,7 @@ export function terminalRecordTranscriptMetadata(
     ...(promptId !== undefined ? { promptId } : {}),
     ...(promptOrigin !== null || hasOwn(record, "prompt_origin") ? { promptOrigin } : {}),
     ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
+    ...externalProviderObservedIdentityFields(record),
     ...(externalObservedMetadata ?? {}),
   }
 }

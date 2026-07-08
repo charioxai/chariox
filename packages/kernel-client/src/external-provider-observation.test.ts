@@ -13,6 +13,7 @@ import {
   externalProviderObservedExactIdentityMatches,
   externalProviderObservedHistoryExactIdentityConflicts,
   externalProviderObservedHistoryRefreshSignal,
+  externalProviderObservedIdentityFields,
   externalProviderObservedIdentityIsPresent,
   externalProviderObservedIdentityKey,
   externalProviderObservedIdentityMatches,
@@ -309,6 +310,36 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     external_provider: "codex",
     external_provider_session_id: "thread-1",
   }), null)
+})
+
+test("external provider observed metadata derives identity from durable external prompt ids", () => {
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external: CODEX : thread-1 : turn:1 ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn:1",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    id: "external:claude:thread-2:user-1",
+  }), {
+    externalProvider: "claude",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "user-1",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external:codex:thread-1:from-id",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "explicit",
+  }), {
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "explicit",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external:codex",
+  }), {})
 })
 
 test("external provider observed metadata projects transcript turn fields", () => {
