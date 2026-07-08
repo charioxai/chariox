@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>84 allowlisted files remain after initial splits</td>
+              <td>83 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>d0812d179</code> <span class="muted">Split terminal output API tests</span></td>
+              <td>Terminal output API coverage now keeps the slow structured-provider launcher in the parent module, while basic terminal pumping, attachment-owner scoping, native provider output append, native output batch append, and parallel prompt drain scenarios live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/local/api/tests/terminal_output.rs apps/kernel/src/local/api/tests/terminal_output/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml local::api::tests::terminal_output -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>986b6e9b0</code> <span class="muted">Split session actor projection router tests</span></td>
