@@ -413,6 +413,50 @@ test("sessionActivePromptLifecycleRecords does not merge sparse external prompt 
   }])
 })
 
+test("sessionActivePromptLifecycleRecords does not merge conflicting exact external prompt ownership", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "same-prompt-id",
+          status: "running",
+          phase: "streaming",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-2",
+        },
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "same-prompt-id",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+        },
+        queued_prompts: [],
+      },
+    },
+  })), [{
+    id: "same-prompt-id",
+    status: "running",
+    promptOrigin: null,
+    target_agent_id: "agent-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }])
+})
+
 test("sessionActivePromptLifecycleRecords merges prompt state when exact external turn identity matches", () => {
   assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
     agent_activity: {

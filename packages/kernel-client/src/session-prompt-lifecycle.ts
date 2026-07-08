@@ -8,6 +8,7 @@ import {
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
 import {
+  externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
   externalProviderObservedIdentityKey,
   type ExternalProviderObservedIdentityFields,
@@ -195,12 +196,19 @@ function activePromptLifecycleRecordMatchesPromptState(
   if (stateActivePrompt.target_agent_id && stateActivePrompt.target_agent_id !== record.target_agent_id) {
     return false
   }
+  const stateIdentity = activePromptLifecycleRecordExternalIdentityFields(
+    activePromptLifecycleRecordFromPrompt(stateActivePrompt),
+  )
+  const recordIdentity = activePromptLifecycleRecordExternalIdentityFields(record)
+  if (externalProviderObservedExactIdentityConflicts(stateIdentity, recordIdentity)) {
+    return false
+  }
   if (stateActivePrompt.id === record.id) {
     return true
   }
   return externalProviderObservedExactIdentityMatches(
-    activePromptLifecycleRecordExternalIdentityFields(activePromptLifecycleRecordFromPrompt(stateActivePrompt)),
-    activePromptLifecycleRecordExternalIdentityFields(record),
+    stateIdentity,
+    recordIdentity,
   )
 }
 
