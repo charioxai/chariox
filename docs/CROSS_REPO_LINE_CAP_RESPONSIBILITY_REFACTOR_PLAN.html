@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>27 allowlisted files remain after initial splits</td>
+              <td>26 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>d9412f4a1</code> <span class="muted">Split MCP provider import modules</span></td>
+              <td>The MCP registry now keeps server config types, registry roots, install/update/uninstall/list/get, validation, atomic config writes, managed root hashing, and defaults in the parent module, while provider import/discovery workflows live in a provider-import module, Codex/OpenCode/Claude config parsing and JSONC cleanup live in a provider-config module, and MCP unit coverage lives in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, provider-import, provider-config, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml mcp -- --nocapture</code> (58 passed); <code>node scripts/check-line-cap.mjs</code> (26 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>e641e3d06</code> <span class="muted">Split metaagent command catalog</span></td>
