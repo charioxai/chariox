@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>58 allowlisted files remain after initial splits</td>
+              <td>57 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6da1ae3aa</code> <span class="muted">Extract workflow publication package helpers</span></td>
+              <td>Workflow publication runtime mutations now stay in <code>workflow_publication_owned_state.rs</code>, while package file generation, gateway config, browser assets, digesting, and archive assembly live in <code>workflow_publication_owned_state/package.rs</code>.</td>
+              <td><code>rustfmt --edition 2024 --config skip_children=true apps/kernel/src/runtime/state/workflow_publication_owned_state.rs apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml workflow_publication -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>f843735b8</code> <span class="muted">Extract dev stub script builders</span></td>
