@@ -20,7 +20,6 @@ apps/kernel/src/runtime/terminal_command_catalog/catalog.json
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/cli/src/cli-app-root.tsx
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
-apps/kernel/src/session/service/core.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
 apps/cli/scripts/lib/drill-matrix-report.mjs
 apps/kernel/src/local/api/types.rs
