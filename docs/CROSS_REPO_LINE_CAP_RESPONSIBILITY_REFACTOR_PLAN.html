@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>67 allowlisted files remain after initial splits</td>
+              <td>66 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>696d93cbb</code> <span class="muted">Split local IPC tests</span></td>
+              <td>Local IPC transport code now stays below the cap, with session, terminal, cloud-user, shell-admission, malformed-request, and workflow routing round-trip tests moved to a bounded sibling Rust test module.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml local::ipc::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>643a4a4cb</code> <span class="muted">Split secret service tests</span></td>
