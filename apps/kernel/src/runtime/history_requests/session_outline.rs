@@ -5,20 +5,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::DaemonError;
 use crate::history::{
     HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
-    STEERING_PROMPT_MERGE_KEY_PREFIX, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryEntry, SessionHistoryEntryKind,
 };
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
-    SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
-    SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
+    SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
+    SessionHistoryOutlineTurnLifecycle,
 };
 use crate::provider::ExternalProviderImportMetadata;
+use crate::provider::normalized_observed_prompt_text;
 use crate::session::PromptOrigin;
-use crate::session_history_page::SessionHistoryPageEntry;
+
+mod projection;
+
+#[cfg(test)]
+use projection::{MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS, blob_id};
+use projection::{
+    event_needs_outline_blob, event_projects_as_outline_entry, has_content,
+    outline_blobs_from_events, outline_page_entry_from_event, page_entry_from_event, parse_blob_id,
+};
 
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
 const MAX_LATEST_PROMPT_COUNT: usize = 20;
-const BLOB_ID_PREFIX: &str = "history";
+const PROMPTLESS_TEXT: &str = "(no recorded prompt; showing recent agent activity)";
+const EXTERNAL_OPEN_OBSERVATION_GRACE_MS: u64 = 5 * 60 * 1_000;
 
 pub(crate) async fn execute_session_history_outline_request(
     operational_history: OperationalHistoryStore,
@@ -145,12 +155,22 @@ fn load_scoped_agent_outline(
         session_id,
         agent_id,
         before_sequence,
-        latest_prompt_count.saturating_add(1),
+        outline_prompt_candidate_limit(latest_prompt_count, agent_import),
         agent_import,
     )?;
+    prompts.retain(|prompt| !external_observed_tool_call_prompt(prompt));
+    if agent_import.is_none() {
+        suppress_arroba_owned_external_prompt_echoes(
+            &mut prompts,
+            operational_history,
+            session_id,
+            agent_id,
+        )?;
+    }
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
-        prompts.remove(0);
+        let remove_count = prompts.len().saturating_sub(latest_prompt_count);
+        prompts.drain(0..remove_count);
     }
     if prompts.is_empty() {
         return load_promptless_agent_outline(
@@ -178,6 +198,13 @@ fn load_scoped_agent_outline(
             sequence_end,
         )?;
         let events = scoped_history_events(events, agent_import);
+        let events = if agent_import.is_none()
+            && outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba
+        {
+            suppress_external_observed_events_from_arroba_turn(events)
+        } else {
+            events
+        };
         if let Some(mut turn) = outline_turn_from_events(prompt, events, has_newer_prompt) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
@@ -195,6 +222,85 @@ fn load_scoped_agent_outline(
         turns,
         next_cursor,
     })
+}
+
+fn outline_prompt_candidate_limit(
+    latest_prompt_count: usize,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> usize {
+    let minimum = latest_prompt_count.saturating_add(1);
+    if agent_import.is_some() {
+        return minimum;
+    }
+    minimum.saturating_mul(8).clamp(32, 128)
+}
+
+fn suppress_external_observed_events_from_arroba_turn(
+    events: Vec<HistoryEvent>,
+) -> Vec<HistoryEvent> {
+    events
+        .into_iter()
+        .filter(|event| !event_is_external_provider_observed(event))
+        .collect()
+}
+
+fn event_is_external_provider_observed(event: &HistoryEvent) -> bool {
+    event
+        .to_session_history_entry()
+        .is_some_and(|entry| entry.is_external_provider_observed())
+}
+
+fn suppress_arroba_owned_external_prompt_echoes(
+    prompts: &mut Vec<HistoryEvent>,
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<(), DaemonError> {
+    let arroba_owned_prompt_texts = operational_history
+        .load_arroba_owned_prompt_texts(session_id, agent_id)?
+        .into_iter()
+        .filter_map(|text| normalized_observed_prompt_text(&text))
+        .collect::<BTreeSet<_>>();
+    if arroba_owned_prompt_texts.is_empty() {
+        return Ok(());
+    }
+    prompts.retain(|prompt| {
+        !external_prompt_matches_arroba_owned_text(prompt, &arroba_owned_prompt_texts)
+    });
+    Ok(())
+}
+
+fn external_prompt_matches_arroba_owned_text(
+    prompt: &HistoryEvent,
+    arroba_owned_prompt_texts: &BTreeSet<String>,
+) -> bool {
+    if prompt.kind != HistoryEventKind::UserPrompt {
+        return false;
+    }
+    let Some(entry) = prompt.to_session_history_entry() else {
+        return false;
+    };
+    if !entry.is_external_provider_observed() {
+        return false;
+    }
+    let Some(text) = normalized_observed_prompt_text(&entry.text) else {
+        return false;
+    };
+    arroba_owned_prompt_texts.contains(&text)
+}
+
+fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
+    if prompt.kind != HistoryEventKind::UserPrompt {
+        return false;
+    }
+    let Some(entry) = prompt.to_session_history_entry() else {
+        return false;
+    };
+    if !entry.is_external_provider_observed() {
+        return false;
+    }
+    let text = entry.text.trim_start();
+    text.starts_with("Called the ") && text.contains(" tool with the following input:")
 }
 
 fn load_promptless_agent_outline(
@@ -398,7 +504,6 @@ fn promptless_synthetic_prompt_entry(
     agent_id: &str,
     events: &[HistoryEvent],
 ) -> SessionHistoryEntry {
-    const PROMPTLESS_TEXT: &str = "(no recorded prompt; showing recent agent activity)";
     if let Some(identity) = outline_turn_external_identity(events) {
         return SessionHistoryEntry::external_provider_observed(
             session_id,
@@ -460,7 +565,7 @@ fn outline_turn_from_events(
     events: Vec<HistoryEvent>,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
-    let user_prompt = page_entry_from_event(prompt.clone())?;
+    let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let completed_at_ms =
@@ -476,7 +581,7 @@ fn outline_turn_from_events(
             .iter()
             .find(|event| event.sequence == sequence)
             .cloned()
-            .and_then(page_entry_from_event)
+            .and_then(outline_page_entry_from_event)
     });
     let entries = events
         .iter()
@@ -484,16 +589,11 @@ fn outline_turn_from_events(
         .filter(|event| Some(event.sequence) != summary_sequence)
         .filter(|event| has_content(event))
         .filter(|event| event_projects_as_outline_entry(event))
+        .filter(|event| !event_needs_outline_blob(event))
         .cloned()
-        .filter_map(page_entry_from_event)
+        .filter_map(outline_page_entry_from_event)
         .collect::<Vec<_>>();
-    let blobs = events
-        .into_iter()
-        .filter(|event| event.sequence != prompt.sequence)
-        .filter(|event| Some(event.sequence) != summary_sequence)
-        .filter(|event| event_projects_as_outline_blob(event))
-        .filter_map(outline_blob_from_event)
-        .collect::<Vec<_>>();
+    let blobs = outline_blobs_from_events(&events, prompt.sequence, summary_sequence);
     Some(SessionHistoryOutlineTurn {
         turn_id: prompt
             .turn_id
@@ -536,7 +636,11 @@ fn outline_turn_completed_at_ms(
     if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
         return Some(settled_at_ms);
     }
-    if prompt_origin == PromptOrigin::External && !has_newer_prompt {
+    if prompt_origin == PromptOrigin::External
+        && !has_newer_prompt
+        && !is_promptless_synthetic_prompt(prompt)
+        && !external_turn_observation_is_stale(prompt, events)
+    {
         return None;
     }
     Some(
@@ -547,6 +651,25 @@ fn outline_turn_completed_at_ms(
             .max()
             .unwrap_or(prompt.timestamp_ms),
     )
+}
+
+fn external_turn_observation_is_stale(prompt: &HistoryEvent, events: &[HistoryEvent]) -> bool {
+    let latest_observed_at_ms = events
+        .iter()
+        .filter_map(external_observed_at_ms)
+        .max()
+        .or_else(|| external_observed_at_ms(prompt));
+    latest_observed_at_ms.is_some_and(|observed_at_ms| {
+        crate::session::unix_epoch_ms().saturating_sub(observed_at_ms)
+            >= EXTERNAL_OPEN_OBSERVATION_GRACE_MS
+    })
+}
+
+fn external_observed_at_ms(event: &HistoryEvent) -> Option<u64> {
+    let entry = event.to_session_history_entry()?;
+    entry
+        .is_external_provider_observed()
+        .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
 }
 
 fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64> {
@@ -560,6 +683,13 @@ fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64
                 .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
         })
         .max()
+}
+
+fn is_promptless_synthetic_prompt(prompt: &HistoryEvent) -> bool {
+    prompt.kind == HistoryEventKind::UserPrompt
+        && prompt
+            .to_session_history_entry()
+            .is_some_and(|entry| entry.text == PROMPTLESS_TEXT)
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
@@ -600,211 +730,6 @@ fn outline_turn_external_identity(events: &[HistoryEvent]) -> Option<OutlineExte
                     && !identity.provider_turn_id.is_empty()
             })
         })
-}
-
-fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
-    match event.kind {
-        HistoryEventKind::ProviderOutput => true,
-        HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
-        HistoryEventKind::UserPrompt => is_steering_prompt_event(event),
-        _ => false,
-    }
-}
-
-fn event_provider_status_projects_as_outline_entry(event: &HistoryEvent) -> bool {
-    let Some(entry) = event.to_session_history_entry() else {
-        return false;
-    };
-    if !entry.is_external_provider_observed() {
-        return false;
-    }
-    if entry
-        .external_observation
-        .as_ref()
-        .is_some_and(|observation| observation.passive_telemetry)
-    {
-        return false;
-    }
-    true
-}
-
-fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
-    if is_steering_prompt_event(event) {
-        return false;
-    }
-    match event.kind {
-        HistoryEventKind::ProviderOutput | HistoryEventKind::ProviderStatus => false,
-        _ => true,
-    }
-}
-
-fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
-    event.kind == HistoryEventKind::UserPrompt
-        && event
-            .metadata
-            .get("merge_key")
-            .and_then(|value| value.as_str())
-            .is_some_and(|merge_key| merge_key.starts_with(STEERING_PROMPT_MERGE_KEY_PREFIX))
-}
-
-fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
-    let entry = event.to_session_history_entry()?;
-    if entry.is_external_provider_observed_state_signal() {
-        return None;
-    }
-    let total_chars = entry.text.chars().count();
-    Some(SessionHistoryOutlineBlob {
-        blob_id: blob_id(event.sequence, event.sequence),
-        kind: entry.kind,
-        title: blob_title(entry.kind, &entry.text),
-        summary: blob_summary(entry.kind, &entry.text),
-        sequence_start: event.sequence,
-        sequence_end: event.sequence,
-        entry_count: 1,
-        total_chars,
-        timestamp_ms: event.timestamp_ms,
-    })
-}
-
-fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
-    let mut entry = event.to_session_history_entry()?;
-    if entry.is_external_provider_observed_state_signal() {
-        return None;
-    }
-    for attachment in &mut entry.attachments {
-        attachment.rehydrate_preview_url();
-    }
-    let total_chars = entry.text.chars().count();
-    Some(SessionHistoryPageEntry {
-        entry_index: event.sequence as usize,
-        fragment_start: 0,
-        fragment_end: total_chars,
-        total_chars,
-        entry,
-    })
-}
-
-fn has_content(event: &HistoryEvent) -> bool {
-    event
-        .content
-        .as_deref()
-        .is_some_and(|content| !content.trim().is_empty())
-}
-
-fn blob_id(sequence_start: u64, sequence_end: u64) -> String {
-    format!("{BLOB_ID_PREFIX}:{sequence_start}:{sequence_end}")
-}
-
-fn parse_blob_id(blob_id: &str) -> Result<(u64, u64), DaemonError> {
-    let mut parts = blob_id.split(':');
-    let prefix = parts.next();
-    let sequence_start = parts.next().and_then(|value| value.parse::<u64>().ok());
-    let sequence_end = parts.next().and_then(|value| value.parse::<u64>().ok());
-    if prefix == Some(BLOB_ID_PREFIX) && parts.next().is_none() {
-        if let (Some(sequence_start), Some(sequence_end)) = (sequence_start, sequence_end) {
-            return Ok((sequence_start, sequence_end));
-        }
-    }
-    Err(DaemonError::LocalTransport {
-        operation: "parse history blob id",
-        message: format!("invalid history blob id `{blob_id}`"),
-    })
-}
-
-fn blob_title(kind: SessionHistoryEntryKind, text: &str) -> String {
-    match kind {
-        SessionHistoryEntryKind::ProviderTool => tool_title(text),
-        SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
-        SessionHistoryEntryKind::ProviderError => "error".to_string(),
-        SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
-        SessionHistoryEntryKind::Notice => "note".to_string(),
-        SessionHistoryEntryKind::ProviderOutput => "assistant".to_string(),
-        SessionHistoryEntryKind::UserPrompt => "prompt".to_string(),
-    }
-}
-
-fn blob_summary(kind: SessionHistoryEntryKind, text: &str) -> String {
-    if kind == SessionHistoryEntryKind::ProviderTool {
-        if let Some(summary) = tool_summary(text) {
-            return summary;
-        }
-    }
-    if kind == SessionHistoryEntryKind::ProviderStatus {
-        return compact_blob_summary(text);
-    }
-    first_line(text)
-}
-
-fn compact_blob_summary(text: &str) -> String {
-    const MAX_SUMMARY_CHARS: usize = 240;
-    let mut summary = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if summary.chars().count() <= MAX_SUMMARY_CHARS {
-        return summary;
-    }
-    summary = summary
-        .chars()
-        .take(MAX_SUMMARY_CHARS.saturating_sub(3))
-        .collect();
-    summary.push_str("...");
-    summary
-}
-
-fn tool_title(text: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return "tool".to_string();
-    };
-    let tool = value
-        .get("tool")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("tool");
-    let status = value
-        .get("status")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty());
-    match status {
-        Some(status) => format!("{tool} · {}", status.to_uppercase()),
-        None => tool.to_string(),
-    }
-}
-
-fn tool_summary(text: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    let command = value
-        .pointer("/input/command")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty());
-    if let Some(command) = command {
-        return Some(truncate_single_line(&format!("$ {command}")));
-    }
-    value
-        .get("description")
-        .or_else(|| value.get("title"))
-        .or_else(|| value.get("output"))
-        .and_then(|value| value.as_str())
-        .map(first_line)
-        .filter(|value| !value.is_empty())
-}
-
-fn first_line(text: &str) -> String {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let line = normalized
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("");
-    truncate_single_line(line)
-}
-
-fn truncate_single_line(line: &str) -> String {
-    const MAX_CHARS: usize = 120;
-    let mut chars = line.chars();
-    let truncated = chars.by_ref().take(MAX_CHARS).collect::<String>();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
 }
 
 #[cfg(test)]
