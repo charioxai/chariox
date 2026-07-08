@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>8 allowlisted files remain after initial splits</td>
+              <td>7 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>e35592eb2</code> <span class="muted">Split workflow code artifact drill modules</span></td>
+              <td><code>workflow-code-artifact-drill.mjs</code> is now the orchestration entrypoint. Argument/runtime helpers, topology validation, second-kernel/Hetzner distribution checks, embedded remote-runner source, wait helpers, and artifact-specific apply checks live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
+              <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/workflow-code-artifact-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (7 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>dc80da97d</code> <span class="muted">Split live workspace sync drill modules</span></td>
