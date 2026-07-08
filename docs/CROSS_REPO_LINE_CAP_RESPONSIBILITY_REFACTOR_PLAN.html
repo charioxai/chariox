@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>89 allowlisted files remain after initial splits</td>
+              <td>88 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>875b1c760</code> <span class="muted">Split workflow command action tests</span></td>
+              <td>Workflow command-action coverage now keeps workflow command/test fixture imports in a support re-export, while root shortcut/add-all behavior and the workflow-management command walkthrough live in bounded TypeScript modules behind the existing test entrypoint.</td>
+              <td><code>pnpm --filter @arroba/cli run build</code>, <code>node --test apps/cli/dist/command-actions-workflow.test.js</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>6389ec8e7</code> <span class="muted">Split agent command action tests</span></td>
