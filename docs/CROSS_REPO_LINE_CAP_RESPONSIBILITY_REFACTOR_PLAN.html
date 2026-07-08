@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>36 allowlisted files remain after initial splits</td>
+              <td>35 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>ccf29c9c1</code> <span class="muted">Extract workflow turn completion handling</span></td>
+              <td>Session turn state now keeps cancellation, node start/prepare/ack, workspace-claim blocking, output submission intake, console operations, resume, stop, and fail transitions, while workflow node completion, routed handoff emission, pending output commit, terminal-output fallback, schema validation, and completion-driven run status decisions live in a sibling completion module.</td>
+              <td><code>rustfmt --edition 2024</code> for the service module, turn state module, and completion module; <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service -- --nocapture</code> (78 passed); <code>node scripts/check-line-cap.mjs</code>; path-scoped <code>git diff --check</code>; line-count checks for both Rust modules.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>452e5c8b4</code> <span class="muted">Split iOS kernel protocol decoding tests</span></td>
