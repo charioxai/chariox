@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>17 allowlisted files remain after initial splits</td>
+              <td>16 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>0f053be01</code> <span class="muted">Split workflow request runtime state</span></td>
+              <td><code>workflow_request_runtime_state.rs</code> now keeps the workflow request dispatcher and session extraction facade, while workflow-code apply/run requests, workflow registry requests, artifact/package import/export requests, and shared workflow-code registry/preflight helpers live in dedicated runtime-state modules.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched runtime-state modules; <code>cargo test -p arroba-kernel workflow_code_artifact --lib</code> (7 passed); <code>cargo test -p arroba-kernel workflow_registry --lib</code> (6 passed); <code>node scripts/check-line-cap.mjs</code> (16 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>ebb1b5595</code> <span class="muted">Split kernel client protocol types</span></td>
