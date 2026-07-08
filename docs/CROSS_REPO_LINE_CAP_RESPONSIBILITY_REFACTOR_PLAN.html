@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>78 allowlisted files remain after initial splits</td>
+              <td>77 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>797a08f53</code> <span class="muted">Split workspace capability API tests</span></td>
+              <td>Workspace capability API coverage now keeps shared git fixtures and the large-stack test runner in the parent module, while live-sync policy, workspace links, shell/file/git operations, worktree management, and claim/screenshot/transfer behavior live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/local/api/tests/workspace_capabilities.rs apps/kernel/src/local/api/tests/workspace_capabilities/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml local::api::tests::workspace_capabilities -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>02bfaf819</code> <span class="muted">Split agent lifecycle session actor tests</span></td>
