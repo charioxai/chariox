@@ -4,6 +4,7 @@ import {
 } from "./prompt-origin.js"
 import {
   externalProviderObservedExactIdentityConflicts,
+  externalProviderObservedIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 
@@ -70,6 +71,11 @@ export type AgentRuntimeCompletedTurnActionProjection = {
   readonly undoAvailable: boolean
   readonly undoUnavailableReason: string | null
 }
+
+type AgentRuntimeExternalIdentityProjection = Pick<
+  AgentRuntimeCompletedTurnActionProjection,
+  "externalProvider" | "externalProviderSessionId" | "externalProviderTurnId"
+>
 
 const TURN_ALREADY_UNDONE_REASON = "turn already undone"
 
@@ -326,16 +332,10 @@ function projectAgentRuntimeCompletedTurnOwnership(
   | "externalProviderTurnId"
 > {
   const promptOrigin = promptOriginFromRecord(turn) ?? undefined
-  const externalProvider = normalizeAgentRuntimeProviderId(
-    readNonBlankStringField(turn, "external_provider"),
-  ) ?? undefined
-  const externalProviderSessionId = readNonBlankStringField(turn, "external_provider_session_id") ?? undefined
-  const externalProviderTurnId = readNonBlankStringField(turn, "external_provider_turn_id") ?? undefined
+  const externalIdentity = projectExternalProviderObservedIdentity(turn)
   return {
     ...(promptOrigin ? { promptOrigin } : {}),
-    ...(externalProvider ? { externalProvider } : {}),
-    ...(externalProviderSessionId ? { externalProviderSessionId } : {}),
-    ...(externalProviderTurnId ? { externalProviderTurnId } : {}),
+    ...externalIdentity,
   }
 }
 
@@ -442,11 +442,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnPromptOrigin = promptOriginFromRecord({
     prompt_origin: readStringField(activeTurn, "prompt_origin"),
   }) ?? undefined
-  const activeTurnExternalProvider = normalizeAgentRuntimeProviderId(
-    readNonBlankStringField(activeTurn, "external_provider"),
-  ) ?? undefined
-  const activeTurnExternalProviderSessionId = readNonBlankStringField(activeTurn, "external_provider_session_id") ?? undefined
-  const activeTurnExternalProviderTurnId = readNonBlankStringField(activeTurn, "external_provider_turn_id") ?? undefined
+  const activeTurnExternalIdentity = projectExternalProviderObservedIdentity(activeTurn)
   const activeTurnStatus = normalizeAgentRuntimePromptProjectionStatus(readStringField(activeTurn, "status")) ?? undefined
   const activeTurnPhase = readStringField(activeTurn, "phase") ?? undefined
   const activeTurnStartedAtMs = readNumberField(activeTurn, "started_at_ms") ?? undefined
@@ -455,12 +451,42 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
     ...(activeTurnProviderRunId ? { activeTurnProviderRunId } : {}),
     ...(activeTurnSourceAttachmentId !== undefined ? { activeTurnSourceAttachmentId } : {}),
     ...(activeTurnPromptOrigin ? { activeTurnPromptOrigin } : {}),
-    ...(activeTurnExternalProvider ? { activeTurnExternalProvider } : {}),
-    ...(activeTurnExternalProviderSessionId ? { activeTurnExternalProviderSessionId } : {}),
-    ...(activeTurnExternalProviderTurnId ? { activeTurnExternalProviderTurnId } : {}),
+    ...(activeTurnExternalIdentity.externalProvider
+      ? { activeTurnExternalProvider: activeTurnExternalIdentity.externalProvider }
+      : {}),
+    ...(activeTurnExternalIdentity.externalProviderSessionId
+      ? { activeTurnExternalProviderSessionId: activeTurnExternalIdentity.externalProviderSessionId }
+      : {}),
+    ...(activeTurnExternalIdentity.externalProviderTurnId
+      ? { activeTurnExternalProviderTurnId: activeTurnExternalIdentity.externalProviderTurnId }
+      : {}),
     ...(activeTurnStatus ? { activeTurnStatus } : {}),
     ...(activeTurnPhase ? { activeTurnPhase } : {}),
     ...(activeTurnStartedAtMs !== undefined ? { activeTurnStartedAtMs } : {}),
+  }
+}
+
+function projectExternalProviderObservedIdentity(
+  record: Record<string, unknown>,
+): AgentRuntimeExternalIdentityProjection {
+  const id = readStringField(record, "id")
+  const promptId = readStringField(record, "prompt_id")
+  const externalProvider = readStringField(record, "external_provider")
+  const externalProviderSessionId = readStringField(record, "external_provider_session_id")
+  const externalProviderTurnId = readStringField(record, "external_provider_turn_id")
+  const externalIdentity = externalProviderObservedIdentityFields({
+    ...(id !== null ? { id } : {}),
+    ...(promptId !== null ? { prompt_id: promptId } : {}),
+    ...(externalProvider !== null ? { external_provider: externalProvider } : {}),
+    ...(externalProviderSessionId !== null ? { external_provider_session_id: externalProviderSessionId } : {}),
+    ...(externalProviderTurnId !== null ? { external_provider_turn_id: externalProviderTurnId } : {}),
+  })
+  return {
+    ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
+    ...(externalIdentity.externalProviderSessionId
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+      : {}),
+    ...(externalIdentity.externalProviderTurnId ? { externalProviderTurnId: externalIdentity.externalProviderTurnId } : {}),
   }
 }
 

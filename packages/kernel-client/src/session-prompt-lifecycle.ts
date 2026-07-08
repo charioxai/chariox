@@ -10,6 +10,7 @@ import {
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
+  externalProviderObservedIdentityFields,
   externalProviderObservedIdentityKey,
   type ExternalProviderObservedIdentityFields,
   type ExternalProviderObservedTranscriptIdentityFields,
@@ -100,15 +101,12 @@ export function sessionPromptLifecycleTransition(
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   const promptOrigin = promptOriginFromRecord(prompt)
   const status = normalizeActivePromptLifecycleStatus(prompt.status)
+  const externalIdentity = activePromptLifecycleExternalIdentity(prompt)
   return {
     ...prompt,
     ...(status !== undefined ? { status } : {}),
     promptOrigin,
-    ...(prompt.external_provider != null ? { externalProvider: prompt.external_provider } : {}),
-    ...(prompt.external_provider_session_id != null
-      ? { externalProviderSessionId: prompt.external_provider_session_id }
-      : {}),
-    ...(prompt.external_provider_turn_id != null ? { externalProviderTurnId: prompt.external_provider_turn_id } : {}),
+    ...externalIdentity,
   }
 }
 
@@ -137,6 +135,21 @@ function activePromptLifecycleRecordFromProjectedTurn(
       : {}),
     ...(projection.activeTurnExternalProviderTurnId
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
+      : {}),
+  }
+}
+
+function activePromptLifecycleExternalIdentity(
+  prompt: PromptQueueItem,
+): ExternalProviderObservedTranscriptIdentityFields {
+  const externalIdentity = externalProviderObservedIdentityFields(prompt)
+  return {
+    ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
+    ...(externalIdentity.externalProviderSessionId
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+      : {}),
+    ...(externalIdentity.externalProviderTurnId
+      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
       : {}),
   }
 }

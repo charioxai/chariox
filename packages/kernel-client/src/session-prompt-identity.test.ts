@@ -789,6 +789,42 @@ test("sessionActivePromptForAgent returns only the active prompt under projected
   assert.equal(sessionHasActivePrompt(conflictingExternalSession, "agent-1", "pending-stale"), false)
 })
 
+test("sessionActivePromptForAgent detects projected conflicts from external prompt ids", () => {
+  const session = makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:user-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "stale external prompt",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "external:codex:thread-1:user-1",
+          status: "running",
+          phase: "streaming",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-2",
+        },
+      },
+    },
+  })
+
+  assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "external:codex:thread-1:user-1"), true)
+})
+
 test("sessionActivePromptIdForAgent falls back to prompt state for sparse busy activity", () => {
   const session = makeSession({
     agent_activity: {

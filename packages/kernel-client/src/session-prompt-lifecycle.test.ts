@@ -343,6 +343,33 @@ test("sessionActivePromptLifecycleRecords preserves provider identity without in
   }])
 })
 
+test("sessionActivePromptLifecycleRecords derives provider identity from external prompt ids", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:user-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  })), [{
+    id: "external:codex:thread-1:user-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    promptOrigin: null,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }])
+})
+
 test("sessionActivePromptLifecycleRecords preserves projected provider identity without inferring prompt ownership", () => {
   assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
     agent_activity: {

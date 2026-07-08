@@ -402,6 +402,35 @@ test("agent activity projection exposes live active turn identity", () => {
   })
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(externalProjection), true)
 
+  assert.deepEqual(projectAgentRuntimeActivity({
+    status: "working",
+    prompt_status: "running",
+    busy: true,
+    active_turn: {
+      prompt_id: "external:codex:thread-1:turn-1",
+      status: "running",
+    },
+  }), {
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: {
+      prompt_id: "external:codex:thread-1:turn-1",
+      status: "running",
+    },
+    activeTurnPromptId: "external:codex:thread-1:turn-1",
+    activeTurnExternalProvider: "codex",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activeTurnExternalProviderTurnId: "turn-1",
+    activeTurnStatus: "running",
+    activePromptCount: 1,
+    activePromptCountExplicit: false,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
+    error: false,
+    unreadIdleOutput: false,
+  })
+
   assert.equal(projectAgentRuntimeActivity({
     active_turn: {
       prompt_id: "prompt-completed",
@@ -538,6 +567,28 @@ test("agent activity projection exposes completed turn action metadata", () => {
     changedPaths: ["src/a.ts", "src/b.ts"],
     undoAvailable: false,
     undoUnavailableReason: "turn already undone",
+  })
+  assert.deepEqual(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "turn-2",
+      prompt_id: "external:codex:thread-2:user-2",
+      provider_run_id: "run-2",
+      agent_id: "agent-1",
+      completed_at_ms: 600,
+    },
+  }), {
+    turnId: "turn-2",
+    promptId: "external:codex:thread-2:user-2",
+    providerRunId: "run-2",
+    agentId: "agent-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "user-2",
+    completedAtMs: 600,
+    durationMs: null,
+    changedPaths: [],
+    undoAvailable: false,
+    undoUnavailableReason: null,
   })
   assert.equal(readAgentRuntimeCompletedTurn({
     last_completed_turn: {

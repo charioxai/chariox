@@ -8,6 +8,7 @@ import type {
 } from "./agent-activity.js"
 import {
   externalProviderObservedExactIdentityConflicts,
+  externalProviderObservedIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 import {
@@ -159,13 +160,19 @@ function promptMatchesProjectedActiveTurn(
 function promptExternalIdentityFields(
   prompt: PromptQueueItem | null | undefined,
 ): ExternalProviderObservedIdentityFields {
+  if (!prompt) {
+    return {}
+  }
+  const externalIdentity = externalProviderObservedIdentityFields(prompt)
   return {
-    ...(prompt?.external_provider !== undefined ? { externalProvider: prompt.external_provider } : {}),
-    ...(prompt?.external_provider_session_id !== undefined
-      ? { externalProviderSessionId: prompt.external_provider_session_id }
+    ...(externalIdentity.externalProvider !== undefined
+      ? { externalProvider: externalIdentity.externalProvider }
       : {}),
-    ...(prompt?.external_provider_turn_id !== undefined
-      ? { externalProviderTurnId: prompt.external_provider_turn_id }
+    ...(externalIdentity.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+      : {}),
+    ...(externalIdentity.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
       : {}),
   }
 }
