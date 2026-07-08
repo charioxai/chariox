@@ -1,6 +1,12 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWaitingRoomInventoryRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWaitingRoomPublicSnapshotRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomLaunchTarget {
     pub workspace_id: String,
     pub worktree_id: String,
