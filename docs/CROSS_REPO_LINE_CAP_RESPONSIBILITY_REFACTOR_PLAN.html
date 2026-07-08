@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>62 allowlisted files remain after initial splits</td>
+              <td>61 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>eae7c6485</code> <span class="muted">Split agent service facade</span></td>
+              <td>Agent service mutation logic now stays in <code>agent/service.rs</code>, while the cloneable <code>Arc&lt;Mutex&lt;AgentService&gt;&gt;</code> facade and delegation surface live in <code>agent/service_store.rs</code> behind the unchanged <code>crate::agent::AgentServiceStore</code> re-export.</td>
+              <td><code>rustfmt --edition 2024 --config skip_children=true apps/kernel/src/agent/service_store.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml agent:: -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>c09127ddf</code> <span class="muted">Split provider output fanout helpers</span></td>
