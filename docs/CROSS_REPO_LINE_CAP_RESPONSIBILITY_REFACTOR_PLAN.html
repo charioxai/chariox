@@ -209,8 +209,8 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>1 allowlisted file remains after initial splits</td>
-              <td>Kernel external-provider session control remains the active oversized target; relay, workflow-code, meta tool-dispatch, external-provider discovery, drill, and CLI-root splits have already removed their current allowlist entries</td>
+              <td>0 allowlisted files remain; OSS is below the 1000-line cap</td>
+              <td>No current oversized targets; keep kernel runtime/control modules, relay paths, CLI roots and drills, iOS code, tests, and generated-adjacent helpers under the cap as they evolve</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>a2ab92586</code> <span class="muted">Split external-provider session control</span></td>
+              <td><code>external_provider_session_control.rs</code> is now below the 1000-line cap and keeps the public poller entrypoints, shared DTOs, constants, and module facade. Discovery polling and request dispatch moved to <code>external_provider_session_control/poller.rs</code>, import/session launch logic to <code>import.rs</code>, observed-history reconciliation to <code>history.rs</code>, attached-target discovery and pruning to <code>targets.rs</code>, alias generation to <code>alias.rs</code>, and the focused tests to provider/control submodules under <code>external_provider_session_control/tests/</code>.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, child modules, and split tests; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::external_provider_session_control --lib -- --nocapture</code> (59 passed; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (0 allowlisted files, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>a3b153b1a</code> <span class="muted">Split external-provider session discovery</span></td>
