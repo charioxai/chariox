@@ -128,14 +128,25 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
         .active_prompt_for_agent(agent.id())
         .expect("active prompt should exist")
         .clone();
-    runtime.owned.active_turns.start(
-        crate::app::ActiveTurnState::new(
-            session.id().to_string(),
-            agent.id().to_string(),
-            active_prompt.id().to_string(),
-            run.id().to_string(),
-        )
-        .with_trace_id("trace-structured-history-turn"),
+    runtime.start_active_turn_with_trace_id(
+        session.id(),
+        agent.id(),
+        active_prompt.id(),
+        run.id(),
+        "trace-structured-history-turn",
+    );
+    let active_turn = runtime
+        .owned
+        .active_turns
+        .get(run.id())
+        .expect("active turn should be tracked");
+    assert_eq!(
+        active_turn.source_attachment_id.as_deref(),
+        Some(active_prompt.source_attachment_id())
+    );
+    assert_eq!(
+        active_turn.prompt_origin,
+        Some(active_prompt.prompt_origin())
     );
 
     let records = runtime

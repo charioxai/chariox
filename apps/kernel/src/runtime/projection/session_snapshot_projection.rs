@@ -211,20 +211,12 @@ pub(crate) fn agent_activity_for_session_projection(
             .map(|turn| {
                 let active_prompt_for_turn = active_prompt
                     .filter(|prompt| prompt_matches_active_turn(prompt, &turn.prompt_id));
-                let inferred_external_observed_id =
-                    crate::history::parse_external_provider_observed_id(&turn.prompt_id);
                 let prompt_origin = active_prompt_for_turn
                     .map(PromptQueueItem::prompt_origin)
-                    .or(turn.prompt_origin)
-                    .or_else(|| {
-                        inferred_external_observed_id
-                            .as_ref()
-                            .map(|_| PromptOrigin::External)
-                    });
+                    .or(turn.prompt_origin);
                 let external_observed_id = active_prompt_for_turn
                     .and_then(PromptQueueItem::external_observed_id)
-                    .or_else(|| turn.external_observed_id.clone())
-                    .or(inferred_external_observed_id);
+                    .or_else(|| turn.external_observed_id.clone());
                 active_turn_projection(
                     turn.prompt_id.clone(),
                     Some(turn.provider_run_id.clone()),

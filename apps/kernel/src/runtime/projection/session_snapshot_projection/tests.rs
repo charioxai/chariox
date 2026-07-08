@@ -276,7 +276,7 @@ fn session_snapshot_projection_keeps_active_turn_working_without_active_prompt_a
 }
 
 #[test]
-fn session_snapshot_projection_classifies_external_origin_from_active_turn_prompt_id() {
+fn session_snapshot_projection_does_not_infer_external_origin_from_active_turn_prompt_id() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -304,19 +304,10 @@ fn session_snapshot_projection_classifies_external_origin_from_active_turn_promp
         active_turn.prompt_id,
         "external:codex:session-1:user-1".to_string()
     );
-    assert_eq!(
-        active_turn.prompt_origin,
-        Some(crate::session::PromptOrigin::External)
-    );
-    assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
-    assert_eq!(
-        active_turn.external_provider_session_id.as_deref(),
-        Some("session-1")
-    );
-    assert_eq!(
-        active_turn.external_provider_turn_id.as_deref(),
-        Some("user-1")
-    );
+    assert_eq!(active_turn.prompt_origin, None);
+    assert_eq!(active_turn.external_provider, None);
+    assert_eq!(active_turn.external_provider_session_id, None);
+    assert_eq!(active_turn.external_provider_turn_id, None);
 }
 
 #[test]
@@ -573,19 +564,27 @@ fn session_snapshot_projection_projects_queued_prompt_controls() {
 }
 
 #[test]
-fn session_snapshot_projection_blocks_steering_behind_sparse_external_active_turn() {
+fn session_snapshot_projection_blocks_steering_behind_explicit_external_active_turn() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should be created");
     let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "session-1",
+        "user-1",
+        agent.id(),
+        "external prompt",
+    );
     app.active_turn_store().start(
         crate::app::ActiveTurnState::new(
             session.id().to_string(),
             agent.id().to_string(),
-            "external:codex:session-1:user-1".to_string(),
+            external_prompt.id().to_string(),
             provider_run.id().to_string(),
         )
+        .with_prompt_metadata(&external_prompt)
         .with_phase(crate::app::ActiveTurnPhase::Streaming),
     );
     let attachment_id = attach_cli(&mut app, session.id(), "cli-sparse-external-queue");

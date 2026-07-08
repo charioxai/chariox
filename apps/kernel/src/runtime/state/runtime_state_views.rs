@@ -13,15 +13,28 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         trace_id: &str,
     ) {
-        self.owned.active_turns.start(
-            ActiveTurnState::new(
-                session_id.to_string(),
-                agent_id.to_string(),
-                prompt_id.to_string(),
-                provider_run_id.to_string(),
-            )
-            .with_trace_id(trace_id),
-        );
+        let active_prompt = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                session
+                    .active_prompt_for_agent(agent_id)
+                    .filter(|prompt| prompt_matches_active_turn_id(prompt, prompt_id))
+                    .cloned()
+            });
+        let mut active_turn = ActiveTurnState::new(
+            session_id.to_string(),
+            agent_id.to_string(),
+            prompt_id.to_string(),
+            provider_run_id.to_string(),
+        )
+        .with_trace_id(trace_id);
+        if let Some(prompt) = active_prompt.as_ref() {
+            active_turn = active_turn.with_prompt_metadata(prompt);
+        }
+        self.owned.active_turns.start(active_turn);
         if self
             .owned
             .git_turn_snapshots
@@ -40,8 +53,8 @@ impl KernelRuntimeState {
             .working_directory()
             .cloned()
             .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
-        let active_prompt = session.active_prompt_for_agent(agent_id);
         let prompt_summary = active_prompt
+            .as_ref()
             .map(|prompt| {
                 crate::prompt_transcript::render_prompt_transcript(
                     prompt.prompt(),
@@ -59,13 +72,17 @@ impl KernelRuntimeState {
             prompt_id: prompt_id.to_string(),
             turn_id: prompt_id.to_string(),
             source_attachment_id: active_prompt
+                .as_ref()
                 .map(|prompt| prompt.source_attachment_id().to_string()),
-            prompt_origin: active_prompt.map(|prompt| prompt.prompt_origin()),
+            prompt_origin: active_prompt.as_ref().map(|prompt| prompt.prompt_origin()),
             external_provider: active_prompt
+                .as_ref()
                 .and_then(|prompt| prompt.external_provider().map(str::to_string)),
             external_provider_session_id: active_prompt
+                .as_ref()
                 .and_then(|prompt| prompt.external_provider_session_id().map(str::to_string)),
             external_provider_turn_id: active_prompt
+                .as_ref()
                 .and_then(|prompt| prompt.external_provider_turn_id().map(str::to_string)),
             started_at_ms: self
                 .owned
@@ -199,4 +216,11 @@ impl KernelRuntimeState {
                 .health_snapshot(),
         }
     }
+}
+
+fn prompt_matches_active_turn_id(
+    prompt: &crate::session::PromptQueueItem,
+    prompt_id: &str,
+) -> bool {
+    prompt.id() == prompt_id || prompt.pending_prompt_id() == Some(prompt_id)
 }

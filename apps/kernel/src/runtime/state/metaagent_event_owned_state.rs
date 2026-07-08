@@ -660,6 +660,7 @@ impl KernelRuntimeOwnedState {
                     prompt.id().to_string(),
                     dispatch.provider_run_id.clone(),
                 )
+                .with_prompt_metadata(prompt)
                 .with_trace_id("metaagent-event"),
             );
         }
