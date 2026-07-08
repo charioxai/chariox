@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -427,6 +427,14 @@ impl KernelRuntimeState {
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;
         operation(&mut app)
+    }
+
+    fn try_with_app_side_effect<R>(
+        &self,
+        operation: impl FnOnce(&mut DaemonApp) -> R,
+    ) -> Option<R> {
+        let mut app = self.app.try_lock().ok()?;
+        Some(operation(&mut app))
     }
 
     async fn append_agent_durable_event(

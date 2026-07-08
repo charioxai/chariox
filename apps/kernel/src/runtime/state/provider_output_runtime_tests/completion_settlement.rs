@@ -47,15 +47,13 @@ async fn provider_completed_signal_settles_matching_active_prompt() {
         .expect("provider completion signal should be accepted");
     assert!(first_settlement.had_active_prompt);
     assert!(!first_settlement.started_next_prompt);
-    assert!(
-        runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .expect("session should exist")
-            .active_prompt_for_agent(agent.id())
-            .is_none()
-    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_none());
 }
 
 #[tokio::test]

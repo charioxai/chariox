@@ -8,15 +8,15 @@ use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
 use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::history::SessionHistoryEntry;
-use crate::provider::{AgentEndpointMode, ProviderRunState, adapter_key_for_provider};
+use crate::provider::{adapter_key_for_provider, AgentEndpointMode, ProviderRunState};
 use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
 use crate::workflow_code::{
-    WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult,
-    WorkflowCodeCompileResult, WorkflowCodeDefinition, WorkflowCodeLanguage,
-    WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
-    compile_workflow_code_source_with_schema_import_root,
+    compile_workflow_code_source_with_schema_import_root, WorkflowCodeAgentBinding,
+    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult,
+    WorkflowCodeDefinition, WorkflowCodeLanguage, WorkflowCodeValidationDiagnostic,
+    WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
 };
 
 pub(crate) struct KernelSessionService<'a> {

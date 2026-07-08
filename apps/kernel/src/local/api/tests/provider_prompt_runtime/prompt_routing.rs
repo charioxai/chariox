@@ -89,16 +89,14 @@ fn app_submit_prompt_rejects_agent_from_another_session() {
             agent_id,
         } if session_id == second_session.id() && agent_id == first_agent.id()
     ));
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(first_session.id(), first_agent.id())
-            .is_none()
-    );
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(second_session.id(), first_agent.id())
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(first_session.id(), first_agent.id())
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(second_session.id(), first_agent.id())
+        .is_none());
 }
 
 #[test]
@@ -513,11 +511,9 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
             .clone()
     });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
-    assert!(
-        session_state
-            .active_prompt_for_agent(prompt_agent.id())
-            .is_none()
-    );
+    assert!(session_state
+        .active_prompt_for_agent(prompt_agent.id())
+        .is_none());
 }
 
 #[test]

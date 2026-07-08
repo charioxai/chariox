@@ -106,13 +106,11 @@ async fn home_extension_invocation_duplicate_rejection_is_audited() {
             .and_then(serde_json::Value::as_str),
         Some("denied")
     );
-    assert!(
-        event
-            .payload
-            .pointer("/error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|error| error.contains("duplicate non-idempotent"))
-    );
+    assert!(event
+        .payload
+        .pointer("/error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("duplicate non-idempotent")));
 
     let _ = std::fs::remove_dir_all(&workspace);
 }

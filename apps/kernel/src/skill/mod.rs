@@ -15,11 +15,11 @@ mod tests;
 
 use package::package_skill_directory;
 pub(crate) use package::remote_skill_materialization_base;
-pub use package::{ArrobaSkillPackage, ArrobaSkillPackageFile, materialize_skill_package};
+pub use package::{materialize_skill_package, ArrobaSkillPackage, ArrobaSkillPackageFile};
 pub use provider_import::{
-    ProviderSkillImportCandidate, ProviderSkillImportDiscovery, SkillImportOutcome,
-    SkillImportSkip, discover_provider_skill_import_candidates, import_claude_skills,
-    import_codex_skills, import_opencode_skills,
+    discover_provider_skill_import_candidates, import_claude_skills, import_codex_skills,
+    import_opencode_skills, ProviderSkillImportCandidate, ProviderSkillImportDiscovery,
+    SkillImportOutcome, SkillImportSkip,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

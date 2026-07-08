@@ -10,7 +10,7 @@ use super::provider_config::{
     codex_mcp_to_arroba, opencode_config_paths, opencode_mcp_to_arroba,
     remove_json_trailing_commas, strip_jsonc_comments,
 };
-use super::{ArrobaMcpRegistry, ArrobaMcpServerConfig, validate_registry_name};
+use super::{validate_registry_name, ArrobaMcpRegistry, ArrobaMcpServerConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpImportSkip {

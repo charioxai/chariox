@@ -7,7 +7,7 @@ use futures_util::SinkExt;
 use super::*;
 
 mod writer;
-use writer::{RELAY_EVENT_WRITE_COALESCE_MS, RelayEventWriteCoalescer, send_relay_envelope_frame};
+use writer::{send_relay_envelope_frame, RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 
 pub async fn run_daemon_relay_connector(
     app: Arc<Mutex<DaemonApp>>,

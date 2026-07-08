@@ -192,11 +192,9 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
 
     assert_eq!(response.status, 200);
     assert_eq!(response.body_json, Some(serde_json::json!({ "ok": true })));
-    assert!(
-        !serde_json::to_string(&response)
-            .unwrap()
-            .contains("test-secret")
-    );
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains("test-secret"));
 }
 
 #[test]
@@ -232,11 +230,9 @@ fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
         .expect_err("wrong host should be rejected");
 
     assert!(error.to_string().contains("not allowed for host"));
-    assert!(
-        !error
-            .to_string()
-            .contains("ARROBA_TEST_SECRET_MISSING_TOKEN")
-    );
+    assert!(!error
+        .to_string()
+        .contains("ARROBA_TEST_SECRET_MISSING_TOKEN"));
 }
 
 #[test]
@@ -260,11 +256,9 @@ fn browser_secret_input_rejects_wrong_host_before_secret_read() {
         .expect_err("wrong browser host should be rejected before env secret read");
 
     assert!(error.to_string().contains("not allowed for host"));
-    assert!(
-        !error
-            .to_string()
-            .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN")
-    );
+    assert!(!error
+        .to_string()
+        .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN"));
 }
 
 #[test]
@@ -339,11 +333,9 @@ fn browser_secret_input_requires_browser_injection() {
     let error = service
         .browser_secret_input("browser_password")
         .expect_err("browser input should require browser injection");
-    assert!(
-        error
-            .to_string()
-            .contains("not configured for browser input")
-    );
+    assert!(error
+        .to_string()
+        .contains("not configured for browser input"));
     std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
 }
 
@@ -387,12 +379,10 @@ fn upsert_vault_backed_credential_stores_secret_and_metadata() {
         Some(credential)
     );
     let resolving_service = RuntimeSecretService::with_vault_store(
-        vec![
-            registry
-                .get("generated-browser-password")
-                .expect("credential should read")
-                .expect("credential should exist"),
-        ],
+        vec![registry
+            .get("generated-browser-password")
+            .expect("credential should read")
+            .expect("credential should exist")],
         "arroba-test",
         service.vault_store.clone(),
     );
@@ -735,9 +725,7 @@ fn process_memory_backend_requires_explicit_volatile_context() {
     let error = RuntimeSecretService::with_vault_config(Vec::new(), &config)
         .expect_err("home kernels should not use volatile process memory by accident");
 
-    assert!(
-        error
-            .to_string()
-            .contains("only allowed inside Arroba slices")
-    );
+    assert!(error
+        .to_string()
+        .contains("only allowed inside Arroba slices"));
 }

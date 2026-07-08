@@ -152,11 +152,9 @@ fn applies_workflow_code_definition_to_session_primitives() {
         .expect("canvas layout should exist");
     assert!(layout.nodes.contains_key(planner_id));
     assert!(layout.endpoints.contains_key(endpoint_id));
-    assert!(
-        layout
-            .edges
-            .contains_key(report.edge_ids.get("planner_to_worker").expect("edge id"))
-    );
+    assert!(layout
+        .edges
+        .contains_key(report.edge_ids.get("planner_to_worker").expect("edge id")));
 }
 
 #[test]

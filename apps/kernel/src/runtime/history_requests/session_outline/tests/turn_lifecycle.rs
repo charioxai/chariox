@@ -161,6 +161,54 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
 
 #[test]
 fn outline_external_turn_without_settlement_stays_incomplete() {
+    let observed_at_ms = crate::session::unix_epoch_ms();
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let external_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "external prompt",
+        "codex",
+        "thread-1",
+        Some("turn-1".to_string()),
+        Some(observed_at_ms),
+    );
+    let external_assistant = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderOutput,
+        "partial output",
+        "codex",
+        "thread-1",
+        Some("turn-1".to_string()),
+        Some(observed_at_ms),
+    );
+    let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+    let assistant = HistoryEvent::transcript(11, &external_assistant, context);
+
+    let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], false)
+        .expect("external active turn should be outlined");
+
+    assert_eq!(turn.prompt_origin, PromptOrigin::External);
+    assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
+    assert_eq!(turn.completed_at_ms, None);
+    assert_eq!(
+        turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+        Some("partial output")
+    );
+}
+
+#[test]
+fn outline_stale_external_turn_without_settlement_completes_at_latest_content() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
@@ -185,7 +233,7 @@ fn outline_external_turn_without_settlement_stays_incomplete() {
         Some("run-1"),
         "agent-1",
         SessionHistoryEntryKind::ProviderOutput,
-        "partial output",
+        "final output",
         "codex",
         "thread-1",
         Some("turn-1".to_string()),
@@ -195,19 +243,19 @@ fn outline_external_turn_without_settlement_stays_incomplete() {
     let assistant = HistoryEvent::transcript(11, &external_assistant, context);
 
     let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], false)
-        .expect("external active turn should be outlined");
+        .expect("stale external turn should be outlined");
 
     assert_eq!(turn.prompt_origin, PromptOrigin::External);
-    assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
-    assert_eq!(turn.completed_at_ms, None);
     assert_eq!(
-        turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
-        Some("partial output")
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Completed
     );
+    assert_eq!(turn.completed_at_ms, Some(2_100));
 }
 
 #[test]
 fn outline_turn_uses_persisted_prompt_origin_without_observed_source() {
+    let observed_at_ms = crate::session::unix_epoch_ms();
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
@@ -233,7 +281,10 @@ fn outline_turn_uses_persisted_prompt_origin_without_observed_source() {
     )
     .with_prompt_origin(PromptOrigin::External);
     let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
-    let assistant = HistoryEvent::transcript(11, &external_assistant, context);
+    let mut prompt = prompt;
+    prompt.timestamp_ms = observed_at_ms;
+    let mut assistant = HistoryEvent::transcript(11, &external_assistant, context);
+    assistant.timestamp_ms = observed_at_ms;
 
     let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), assistant], false)
         .expect("external-origin turn should be outlined");
@@ -298,6 +349,7 @@ fn outline_external_turn_without_settlement_completes_when_newer_prompt_exists()
 
 #[test]
 fn agent_outline_completes_bounded_external_turns_without_client_repair() {
+    let observed_now_ms = crate::session::unix_epoch_ms();
     let path = std::env::temp_dir().join(format!(
         "arroba-external-bounded-outline-{}-{}.db",
         std::process::id(),
@@ -326,7 +378,11 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
             "codex",
             "thread-1",
             Some(format!("turn-{index}")),
-            Some(index * 1_000),
+            Some(if index == 2 {
+                observed_now_ms
+            } else {
+                index * 1_000
+            }),
         );
         let assistant = SessionHistoryEntry::external_provider_observed(
             "session-1",
@@ -337,7 +393,11 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
             "codex",
             "thread-1",
             Some(format!("turn-{index}")),
-            Some(index * 1_000 + 100),
+            Some(if index == 2 {
+                observed_now_ms
+            } else {
+                index * 1_000 + 100
+            }),
         );
         store
             .append(&HistoryEvent::transcript(
@@ -368,6 +428,125 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
         .expect("older outline page should load");
     assert_eq!(older.turns.len(), 1);
     assert_eq!(older.turns[0].completed_at_ms, Some(1_100));
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-owned-external-echo-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("arroba-turn".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "  same   prompt\nfrom Arroba ",
+            ),
+            context.clone(),
+        ))
+        .expect("Arroba prompt should append");
+    let external_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "same prompt from Arroba",
+        "codex",
+        "thread-1",
+        Some("user-echo".to_string()),
+        Some(2_000),
+    );
+    let external_prompt_with_attachment_markup = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "same prompt from Arroba <image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>",
+        "codex",
+        "thread-1",
+        Some("user-echo-2".to_string()),
+        Some(2_001),
+    );
+    let external_tool_call_echo = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "Called the Read tool with the following input: {\"filePath\":\"/tmp/screenshot.png\"}",
+        "opencode",
+        "opencode-session-1",
+        Some("tool-call-echo".to_string()),
+        Some(2_002),
+    );
+    let external_assistant = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderOutput,
+        "duplicated provider reply",
+        "codex",
+        "thread-1",
+        Some("assistant-echo".to_string()),
+        Some(2_100),
+    );
+    store
+        .append(&HistoryEvent::transcript(
+            11,
+            &external_prompt,
+            context.clone(),
+        ))
+        .expect("external prompt should append");
+    store
+        .append(&HistoryEvent::transcript(
+            12,
+            &external_prompt_with_attachment_markup,
+            context.clone(),
+        ))
+        .expect("external prompt should append");
+    store
+        .append(&HistoryEvent::transcript(
+            13,
+            &external_tool_call_echo,
+            context.clone(),
+        ))
+        .expect("external tool call echo should append");
+    store
+        .append(&HistoryEvent::transcript(14, &external_assistant, context))
+        .expect("external assistant should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 4, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(
+        outline.turns[0].user_prompt.entry.text,
+        "  same   prompt\nfrom Arroba "
+    );
+    assert!(outline.turns[0].external_provider.is_none());
+    assert!(outline.turns[0].entries.is_empty());
 
     drop(store);
     let _ = std::fs::remove_file(&path);

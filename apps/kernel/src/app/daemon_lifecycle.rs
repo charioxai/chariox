@@ -122,7 +122,6 @@ impl DaemonApp {
                 crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
             ),
         );
-        let runtime_state = router.runtime_state();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let relay_state = {
             let app = app.lock().await;
@@ -133,20 +132,9 @@ impl DaemonApp {
             relay_state,
             shutdown_rx,
         ));
-        let external_provider_discovery_task = tokio::spawn(
-            crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
-                Arc::clone(&app),
-                runtime_state.clone(),
-                shutdown_tx.subscribe(),
-            ),
-        );
-        let imported_external_provider_observer_task = tokio::spawn(
-            crate::runtime::external_provider_session_control::run_attached_provider_transcript_observer(
-                Arc::clone(&app),
-                runtime_state,
-                shutdown_tx.subscribe(),
-            ),
-        );
+        // Temporarily disabled: with large provider histories, external-session background
+        // scanning and attached transcript observation can monopolize the kernel even when no
+        // Arroba session is running. Revisit with bounded, incremental indexes before relaunching.
 
         let result =
             crate::runtime_transport::run_kernel_websocket_server_with_router(router, async {
@@ -157,8 +145,6 @@ impl DaemonApp {
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
-        let _ = external_provider_discovery_task.await;
-        let _ = imported_external_provider_observer_task.await;
         result
     }
 }

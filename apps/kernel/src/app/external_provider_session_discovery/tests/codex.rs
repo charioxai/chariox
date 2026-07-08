@@ -50,12 +50,10 @@ fn reads_codex_event_user_message_as_prompt_anchor() {
         ]
     );
     assert_eq!(turns[0].text, "Plan the importer tests.");
-    assert!(
-        turns[0]
-            .provider_turn_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("user-message-"))
-    );
+    assert!(turns[0]
+        .provider_turn_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("user-message-")));
 }
 
 #[test]
@@ -259,11 +257,9 @@ fn reads_codex_observed_turns_from_unchanged_index_without_jsonl_reads() {
     assert_eq!(jsonl_prefix_read_count(), 0);
     assert_eq!(jsonl_recent_read_count(), 0);
     assert_eq!(jsonl_incremental_read_count(), 1);
-    assert!(
-        appended
-            .iter()
-            .any(|turn| turn.text == "Indexed assistant after append.")
-    );
+    assert!(appended
+        .iter()
+        .any(|turn| turn.text == "Indexed assistant after append."));
 }
 
 #[test]
@@ -330,11 +326,9 @@ fn reads_codex_observed_turns_preserves_latest_user_before_recent_tail() {
     assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
     assert_eq!(turns[0].text, "Long running external prompt.");
     assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-active"));
-    assert!(
-        turns[1..]
-            .iter()
-            .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status)
-    );
+    assert!(turns[1..]
+        .iter()
+        .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status));
 }
 
 #[test]
@@ -363,11 +357,9 @@ fn reads_codex_observed_turns_preserves_latest_user_before_recent_jsonl_window()
     assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
     assert_eq!(turns[0].text, "Very long external prompt turn.");
     assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-window"));
-    assert!(
-        turns[1..]
-            .iter()
-            .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status)
-    );
+    assert!(turns[1..]
+        .iter()
+        .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status));
 }
 
 #[test]

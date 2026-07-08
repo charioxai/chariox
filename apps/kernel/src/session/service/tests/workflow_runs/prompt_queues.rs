@@ -56,12 +56,10 @@ fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
         )
         .expect("prompt should queue while a run is active");
     assert_eq!(queued.prompt(), Some("later"));
-    assert!(
-        service
-            .dequeue_next_workflow_prompt(session.id())
-            .expect("queue should be readable")
-            .is_none()
-    );
+    assert!(service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queue should be readable")
+        .is_none());
 }
 
 #[test]
@@ -198,21 +196,15 @@ fn workflow_prompt_queues_are_scoped_per_workflow_and_arbitrate_across_workflows
     let second_queues = service
         .list_workflow_prompt_queues(session.id(), Some(second.workflow.id()))
         .expect("second queues should list");
-    assert!(
-        first_queues
-            .iter()
-            .any(|queue| queue.id() == first_fast.id())
-    );
-    assert!(
-        !first_queues
-            .iter()
-            .any(|queue| queue.id() == second_fast.id())
-    );
-    assert!(
-        second_queues
-            .iter()
-            .any(|queue| queue.id() == second_fast.id())
-    );
+    assert!(first_queues
+        .iter()
+        .any(|queue| queue.id() == first_fast.id()));
+    assert!(!first_queues
+        .iter()
+        .any(|queue| queue.id() == second_fast.id()));
+    assert!(second_queues
+        .iter()
+        .any(|queue| queue.id() == second_fast.id()));
 
     let dequeued = service
         .dequeue_next_workflow_prompt(session.id())

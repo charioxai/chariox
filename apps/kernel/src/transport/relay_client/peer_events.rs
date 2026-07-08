@@ -6,8 +6,9 @@ pub(super) async fn pump_leased_projection_events(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,
 ) {
-    let events = match router.relay_pump_leased_runtime_projections().await {
-        Ok(events) => events,
+    let events = match router.relay_try_pump_leased_runtime_projections().await {
+        Ok(Some(events)) => events,
+        Ok(None) => return,
         Err(error) => {
             crate::logging::warn_with_fields(
                 "daemon.relay",

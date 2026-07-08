@@ -159,13 +159,11 @@ async fn session_snapshot_refresh_tracks_agent_runtime_projection_inner() {
         .dispatch(prompt_command, prompt_request)
         .await
         .expect("prompt submit should warm agent runtime projection");
-    assert!(
-        router
-            .agent_runtime_projection
-            .get(&agent_id)
-            .and_then(|projection| projection.active_prompt)
-            .is_some()
-    );
+    assert!(router
+        .agent_runtime_projection
+        .get(&agent_id)
+        .and_then(|projection| projection.active_prompt)
+        .is_some());
 
     {
         let app = app.lock().await;
@@ -337,13 +335,11 @@ async fn get_session_state_projection_tracks_prompt_cancellation_without_app_loc
         .dispatch(prompt_command, prompt_request)
         .await
         .expect("prompt submit should warm active prompt projection");
-    assert!(
-        router
-            .agent_runtime_projection
-            .get(&agent_id)
-            .and_then(|projection| projection.active_prompt)
-            .is_some()
-    );
+    assert!(router
+        .agent_runtime_projection
+        .get(&agent_id)
+        .and_then(|projection| projection.active_prompt)
+        .is_some());
 
     let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
         session_id: session_id.clone(),

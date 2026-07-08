@@ -4,14 +4,14 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use crate::config::{DEFAULT_LINUX_SLICE_DOCKER_IMAGE, DaemonConfig, SliceImageBuildPolicy};
+use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
 
 use super::model::{
     LocalDockerSliceAction, SliceBackendKind, SliceDisplayMode, SliceLogEntry,
     SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
 };
-use super::ports::{LocalDockerSlicePorts, busy_published_ports_for_slice};
+use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod state;
 #[cfg(test)]

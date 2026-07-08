@@ -432,6 +432,26 @@ fn workflow_design_edge_update_applies_handoff_schema_patch() {
         updated_edge.validation_policy(),
         Some(WorkflowHandoffValidationPolicy::Warn)
     );
+
+    let clear_op: crate::local::WorkflowDesignOp = serde_json::from_value(serde_json::json!({
+        "kind": "edge_update",
+        "workflow_id": workflow.id(),
+        "edge_id": edge.id(),
+        "patch": {
+            "handoff_schema_ref": null,
+            "validation_policy": null
+        }
+    }))
+    .expect("explicit null edge patch should deserialize");
+    let cleared = service
+        .apply_workflow_design_op(session.id(), clear_op, DEFAULT_LOCAL_USER_ID.to_string())
+        .expect("edge clear design op should apply");
+
+    let cleared_edge = cleared
+        .edge(edge.id())
+        .expect("cleared workflow should keep the edge");
+    assert_eq!(cleared_edge.handoff_schema_ref(), None);
+    assert_eq!(cleared_edge.validation_policy(), None);
 }
 
 #[test]

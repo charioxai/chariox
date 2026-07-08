@@ -71,12 +71,10 @@ fn import_external_provider_session_creates_session_agent_and_run() {
                 .external_provider,
             "dev-stub"
         );
-        assert!(
-            store
-                .get("dev-stub:external-1")
-                .expect("record should remain indexed")
-                .is_attached_to_arroba()
-        );
+        assert!(store
+            .get("dev-stub:external-1")
+            .expect("record should remain indexed")
+            .is_attached_to_arroba());
     });
 }
 
@@ -307,12 +305,10 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
         assert!(message.contains(&format!(
             "already attached to Arroba session `{session_id}` agent `{agent_id}`"
         )));
-        assert!(
-            store
-                .get("codex:thread-owned-by-resume")
-                .expect("record should remain indexed")
-                .is_attached_to_arroba()
-        );
+        assert!(store
+            .get("codex:thread-owned-by-resume")
+            .expect("record should remain indexed")
+            .is_attached_to_arroba());
     });
 }
 
@@ -387,12 +383,10 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
         assert!(message.contains(&format!(
             "already attached to Arroba session `{session_id}` agent `{agent_id}`"
         )));
-        assert!(
-            store
-                .get("codex:thread-owned-discovered")
-                .expect("discovered record should remain indexed")
-                .is_attached_to_arroba()
-        );
+        assert!(store
+            .get("codex:thread-owned-discovered")
+            .expect("discovered record should remain indexed")
+            .is_attached_to_arroba());
     });
 
     restore_env_var("CODEX_HOME", previous_codex_home);
@@ -545,12 +539,10 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
         assert!(message.contains(&format!(
             "already attached to Arroba session `{owner_session_id}` agent `{owner_agent_id}`"
         )));
-        assert!(
-            store
-                .get("codex:thread-owned-by-run")
-                .expect("record should remain indexed")
-                .is_attached_to_arroba()
-        );
+        assert!(store
+            .get("codex:thread-owned-by-run")
+            .expect("record should remain indexed")
+            .is_attached_to_arroba());
     });
 }
 
@@ -615,12 +607,10 @@ fn changed_attached_resume_state_returns_previous_provider_session_to_attachable
 
     mark_attached_external_provider_sessions(&app, None, &store);
 
-    assert!(
-        store
-            .get("codex:thread-old")
-            .expect("old provider session should be indexed")
-            .is_attached_to_arroba()
-    );
+    assert!(store
+        .get("codex:thread-old")
+        .expect("old provider session should be indexed")
+        .is_attached_to_arroba());
 
     app.agents()
         .set_agent_runtime_profile(
@@ -709,13 +699,12 @@ fn arroba_owned_provider_run_provider_session_id_becomes_observer_target() {
         target.cursor_source,
         AttachedExternalObserverCursorSource::ArrobaOwned(_)
     ));
-    assert!(
-        app.agents()
-            .get_agent(agent.id())
-            .expect("agent should load")
-            .external_provider_import()
-            .is_none()
-    );
+    assert!(app
+        .agents()
+        .get_agent(agent.id())
+        .expect("agent should load")
+        .external_provider_import()
+        .is_none());
 }
 
 #[test]

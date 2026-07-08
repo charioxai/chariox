@@ -15,13 +15,13 @@ use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
 use super::session_identity::{
-    CollaborationLevel, SessionAgentDefaults, SessionInvite, SessionMember,
-    default_session_members, default_session_owner_user_id,
+    default_session_members, default_session_owner_user_id, CollaborationLevel,
+    SessionAgentDefaults, SessionInvite, SessionMember,
 };
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{DEFAULT_SESSION_MAX_AGENTS, unix_epoch_ms};
+use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_publication::WorkflowPublicationDefinition;

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::sync::{Mutex as TokioMutex, oneshot};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 use crate::attachment::ClientCapabilityLevel;
 use crate::config::PersistedCloudRelayProfile;
@@ -22,8 +22,8 @@ use crate::session::{CreateSessionRequest, WorkflowNodeRunStatus, WorkflowRun, W
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 
 use super::{
-    LocalDaemonRequest, LocalDaemonResponse, LocalIpcClient, StdUnixStream, read_sync_frame,
-    run_local_ipc_server,
+    read_sync_frame, run_local_ipc_server, LocalDaemonRequest, LocalDaemonResponse, LocalIpcClient,
+    StdUnixStream,
 };
 
 static LOCAL_IPC_TEST_LOCK: Mutex<()> = Mutex::new(());

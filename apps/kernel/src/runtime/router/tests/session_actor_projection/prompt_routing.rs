@@ -49,16 +49,14 @@ async fn prompt_submit_rejects_cross_session_agent_before_admission() {
         } if session_id == second_session_id && agent_id == first_agent_id
     ));
     let app = app.lock().await;
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&first_session_id, &first_agent_id)
-            .is_none()
-    );
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&second_session_id, &first_agent_id)
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&first_session_id, &first_agent_id)
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&second_session_id, &first_agent_id)
+        .is_none());
 }
 
 #[tokio::test]
@@ -99,14 +97,12 @@ async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         .dispatch(prompt_command, prompt_request)
         .await
         .expect("prompt should create an agent lane");
-    assert!(
-        router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id)
-    );
+    assert!(router
+        .daemon_health_projection(0)
+        .await
+        .agent_command_lanes
+        .iter()
+        .any(|lane| lane.lane_id == agent_id));
     let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
         session_id: session_id.clone(),
         alias: Some("cleanup-workflow".to_string()),
@@ -133,14 +129,12 @@ async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         .await
         .expect("ending session should clean up agent lane");
 
-    assert!(
-        !router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id)
-    );
+    assert!(!router
+        .daemon_health_projection(0)
+        .await
+        .agent_command_lanes
+        .iter()
+        .any(|lane| lane.lane_id == agent_id));
     assert!(!router.workflow_runtime.has_lane(&session_id).await);
 }
 
@@ -186,14 +180,12 @@ async fn agent_lane_is_removed_when_agent_is_destroyed() {
         .dispatch(prompt_command, prompt_request)
         .await
         .expect("prompt should create an agent lane");
-    assert!(
-        router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id)
-    );
+    assert!(router
+        .daemon_health_projection(0)
+        .await
+        .agent_command_lanes
+        .iter()
+        .any(|lane| lane.lane_id == agent_id));
 
     let destroy_request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
         session_id,
@@ -210,14 +202,12 @@ async fn agent_lane_is_removed_when_agent_is_destroyed() {
         .await
         .expect("destroying agent should clean up agent lane");
 
-    assert!(
-        !router
-            .daemon_health_projection(0)
-            .await
-            .agent_command_lanes
-            .iter()
-            .any(|lane| lane.lane_id == agent_id)
-    );
+    assert!(!router
+        .daemon_health_projection(0)
+        .await
+        .agent_command_lanes
+        .iter()
+        .any(|lane| lane.lane_id == agent_id));
 }
 
 #[tokio::test]

@@ -55,11 +55,9 @@ fn reads_changed_opencode_jsonl_turns_incrementally_after_warmup() {
     assert_eq!(jsonl_prefix_read_count(), 0);
     assert_eq!(jsonl_recent_read_count(), 0);
     assert_eq!(jsonl_incremental_read_count(), 1);
-    assert!(
-        appended
-            .iter()
-            .any(|turn| turn.text == "OPENCODE_INCREMENTAL_REPLY")
-    );
+    assert!(appended
+        .iter()
+        .any(|turn| turn.text == "OPENCODE_INCREMENTAL_REPLY"));
 }
 
 #[test]

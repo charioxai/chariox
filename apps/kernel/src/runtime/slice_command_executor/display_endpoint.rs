@@ -189,11 +189,9 @@ mod tests {
         .expect("connected wss relay should produce tunnel endpoint");
 
         assert_eq!(endpoint.access, SliceDisplayEndpointAccess::Tunnel);
-        assert!(
-            endpoint
-                .url
-                .starts_with("https://relay.example.test/display/display-")
-        );
+        assert!(endpoint
+            .url
+            .starts_with("https://relay.example.test/display/display-"));
         assert!(endpoint.url.contains("/vnc.html?"));
         assert!(endpoint.url.contains("path=display%2Fdisplay-"));
         assert_eq!(endpoint.expires_at_ms.is_some(), true);
@@ -219,15 +217,13 @@ mod tests {
         state.test_set_connected_sender(outgoing_tx, "ws://127.0.0.1:43130");
         let relay_state = Arc::new(RwLock::new(state));
 
-        assert!(
-            tunneled_display_endpoint(
-                local_novnc_endpoint(),
-                Some("ws://127.0.0.1:43130".to_string()),
-                relay_state,
-            )
-            .await
-            .is_none()
-        );
+        assert!(tunneled_display_endpoint(
+            local_novnc_endpoint(),
+            Some("ws://127.0.0.1:43130".to_string()),
+            relay_state,
+        )
+        .await
+        .is_none());
     }
 
     #[tokio::test]
@@ -256,13 +252,11 @@ mod tests {
         }
         revoked.sort();
         assert_eq!(revoked, vec!["display-a", "display-b"]);
-        assert!(
-            relay_state
-                .read()
-                .await
-                .display_tunnel("display-c", crate::session::unix_epoch_ms())
-                .is_some()
-        );
+        assert!(relay_state
+            .read()
+            .await
+            .display_tunnel("display-c", crate::session::unix_epoch_ms())
+            .is_some());
     }
 
     fn local_novnc_endpoint() -> SliceDisplayEndpoint {

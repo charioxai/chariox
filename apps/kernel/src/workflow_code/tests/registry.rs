@@ -19,16 +19,12 @@ fn source_export_keeps_component_variable_namespaces_separate() {
         WorkflowCodeSourceExportFormat::Directory,
     )
     .expect("source directory export should serialize");
-    assert!(
-        directory
-            .source
-            .contains("const schema_entry = workflow.schemaFromFile")
-    );
-    assert!(
-        directory
-            .source
-            .contains("const endpoint_entry = workflow.endpoint")
-    );
+    assert!(directory
+        .source
+        .contains("const schema_entry = workflow.schemaFromFile"));
+    assert!(directory
+        .source
+        .contains("const endpoint_entry = workflow.endpoint"));
     assert!(directory.source.contains("runOutputSchema: schema_entry"));
 }
 
@@ -138,13 +134,11 @@ fn workflow_registry_enriches_builtin_summary_and_keeps_invalid_entry_metadata()
     assert_eq!(invalid.name, "broken");
     assert!(!invalid.validation.ok);
     assert!(invalid.summary.is_none());
-    assert!(
-        invalid
-            .validation
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.starts_with("summary_unavailable:"))
-    );
+    assert!(invalid
+        .validation
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.starts_with("summary_unavailable:")));
 }
 
 #[test]
@@ -409,14 +403,12 @@ fn registry_persists_validation_report_for_invalid_artifact() {
         .expect("invalid workflow-code artifact should still save diagnostics");
 
     assert!(!artifact.metadata.validation.ok);
-    assert!(
-        artifact
-            .metadata
-            .validation
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "missing_endpoint")
-    );
+    assert!(artifact
+        .metadata
+        .validation
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "missing_endpoint"));
     assert_eq!(artifact.metadata.history[0].validation_ok, Some(false));
 
     let _ = fs::remove_dir_all(root);

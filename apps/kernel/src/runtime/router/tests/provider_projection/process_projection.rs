@@ -95,8 +95,8 @@ fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_a
     );
 }
 
-async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock_inner()
- {
+async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_without_app_lock_inner(
+) {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -181,11 +181,9 @@ async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_wit
         "{:?}",
         process_list.filtered_processes[0]
     );
-    assert!(
-        process_list.filtered_processes[0]
-            .attached_session_ids
-            .is_empty()
-    );
+    assert!(process_list.filtered_processes[0]
+        .attached_session_ids
+        .is_empty());
     assert_eq!(
         process_list.filtered_processes[0].teardown_blockers,
         vec!["active prompt"]
@@ -274,12 +272,10 @@ async fn provider_process_projection_invalidates_when_prompt_state_changes_inner
         LocalDaemonResponse::ProviderProcessesListed { processes } => {
             assert_eq!(processes.len(), 1);
             assert!(!processes[0].teardown_safe);
-            assert!(
-                processes[0]
-                    .teardown_blockers
-                    .iter()
-                    .any(|blocker| blocker == "active prompt")
-            );
+            assert!(processes[0]
+                .teardown_blockers
+                .iter()
+                .any(|blocker| blocker == "active prompt"));
         }
         _ => panic!("unexpected provider process list response"),
     }

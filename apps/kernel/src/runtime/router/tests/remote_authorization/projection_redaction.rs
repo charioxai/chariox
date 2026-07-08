@@ -195,11 +195,9 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
                     && agent.model().is_none()
                     && !agent.visible_in_freeform()
             }));
-            assert!(
-                agents.iter().any(|agent| {
-                    agent.id() == user_two_agent.id() && agent.visible_in_freeform()
-                })
-            );
+            assert!(agents
+                .iter()
+                .any(|agent| { agent.id() == user_two_agent.id() && agent.visible_in_freeform() }));
         }
         other => panic!("unexpected agents response: {other:?}"),
     }

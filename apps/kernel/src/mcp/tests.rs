@@ -308,12 +308,10 @@ fn imports_claude_mcp_servers_from_config() {
         .collect::<Vec<_>>();
     skipped_names.sort_unstable();
     assert_eq!(skipped_names, vec!["inline_auth", "oauth"]);
-    assert!(
-        outcome
-            .skipped
-            .iter()
-            .any(|skip| skip.reason.contains("Authorization"))
-    );
+    assert!(outcome
+        .skipped
+        .iter()
+        .any(|skip| skip.reason.contains("Authorization")));
 
     let docs = registry.get("docs").unwrap().expect("docs import");
     assert_eq!(docs.startup_timeout_sec, Some(3));

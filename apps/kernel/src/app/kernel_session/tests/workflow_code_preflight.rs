@@ -106,29 +106,23 @@ fn workflow_code_apply_spawns_generated_agents_and_creates_workflow() {
     assert_eq!(app.agents().get_session_agents(session.id()).len(), 3);
     assert_eq!(report.agent_ids.len(), 2);
     assert!(report.queue_ids.contains_key("default"));
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "default_queue_created")
-    );
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "canvas_auto_layout_applied")
-    );
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"));
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "canvas_auto_layout_applied"));
 
     let events = app
         .durable_state_store()
         .load_events_after(0)
         .expect("durable events should load");
-    assert!(
-        events
-            .iter()
-            .any(|event| event.kind == "workflow_code.applied"
-                && event.subject_id.as_deref() == Some(report.workflow_id.as_str()))
-    );
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "workflow_code.applied"
+            && event.subject_id.as_deref() == Some(report.workflow_id.as_str())));
 }
 
 #[test]
@@ -404,12 +398,10 @@ fn workflow_code_apply_rejects_runtime_queue_limit_before_spawning_agents() {
         .sessions()
         .get_session(session.id())
         .expect("session should exist");
-    assert!(
-        !session_after
-            .workflows()
-            .iter()
-            .any(|workflow| workflow.alias() == Some("generated_agents"))
-    );
+    assert!(!session_after
+        .workflows()
+        .iter()
+        .any(|workflow| workflow.alias() == Some("generated_agents")));
 }
 
 #[test]

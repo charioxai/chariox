@@ -423,13 +423,11 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
             .external_change_events,
         5
     );
-    assert!(
-        projection
-            .workspace_live_sync
-            .external_changes
-            .issues
-            .is_empty()
-    );
+    assert!(projection
+        .workspace_live_sync
+        .external_changes
+        .issues
+        .is_empty());
     assert!(
         projection
             .workspace_live_sync
@@ -733,16 +731,12 @@ fn remote_execution_health_reports_active_agent_without_worker_run() {
     assert!(snapshot.issues[0].is_processing);
     assert_eq!(snapshot.issues[0].state, "working");
     assert_eq!(snapshot.issues[0].worktree_id.as_deref(), Some("/repo"));
-    assert!(
-        snapshot.issues[1]
-            .details
-            .contains("active_worker_provider_run_id")
-    );
-    assert!(
-        snapshot.issues[3]
-            .details
-            .contains("worker_kernel_id, execution_lease_id")
-    );
+    assert!(snapshot.issues[1]
+        .details
+        .contains("active_worker_provider_run_id"));
+    assert!(snapshot.issues[3]
+        .details
+        .contains("worker_kernel_id, execution_lease_id"));
 }
 
 fn local_agent(id: &str) -> AgentInstance {

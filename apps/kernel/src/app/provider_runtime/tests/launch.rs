@@ -76,18 +76,16 @@ fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
         .get_latest_run_for_agent(session.id(), agent.id())
         .expect("failed launch should still leave an ended run record");
     assert_eq!(run.state(), ProviderRunState::Ended);
-    assert!(
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_provider_run_id()
-            .is_none()
-    );
-    assert!(
-        app.list_provider_processes(None)
-            .expect("provider processes should list")
-            .is_empty()
-    );
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve")
+        .active_provider_run_id()
+        .is_none());
+    assert!(app
+        .list_provider_processes(None)
+        .expect("provider processes should list")
+        .is_empty());
 }
 
 #[test]
@@ -121,16 +119,14 @@ fn provider_launch_rejects_agent_from_another_session() {
             agent_id,
         } if session_id == second_session.id() && agent_id == first_agent.id()
     ));
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(first_session.id(), first_agent.id())
-            .is_none()
-    );
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(second_session.id(), first_agent.id())
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(first_session.id(), first_agent.id())
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(second_session.id(), first_agent.id())
+        .is_none());
 }
 
 #[test]

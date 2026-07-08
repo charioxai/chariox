@@ -157,6 +157,13 @@ pub(super) async fn handle_relay_subscribe(
             )?;
             return Ok(());
         }
+        record_relay_subscription_attachment_heartbeat(
+            router,
+            &session_id,
+            &attachment_id,
+            "subscribe",
+        )
+        .await;
     }
     let task_key =
         relay_subscription_task_key(&session_id, &attachment_id, subscription_scope.as_deref());
@@ -336,6 +343,15 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
+        if Instant::now() >= next_heartbeat_at {
+            record_relay_subscription_attachment_heartbeat(
+                &router,
+                &session_id,
+                &attachment_id,
+                "heartbeat_deadline",
+            )
+            .await;
+        }
         let terminal_attachment_change_sequence =
             router.terminal_attachment_change_sequence(&session_id, &attachment_id);
         let terminal_session_change_sequence = router.terminal_session_change_sequence(&session_id);
@@ -602,6 +618,33 @@ pub(super) async fn run_relay_subscription_loop(
             },
         )
         .await;
+    }
+}
+
+async fn record_relay_subscription_attachment_heartbeat(
+    router: &Arc<CommandRouter>,
+    session_id: &str,
+    attachment_id: &str,
+    phase: &str,
+) {
+    if let Err(error) = router
+        .record_terminal_attachment_heartbeat(
+            session_id,
+            attachment_id,
+            crate::session::unix_epoch_ms(),
+        )
+        .await
+    {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "failed recording relay subscription attachment heartbeat",
+            serde_json::json!({
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "phase": phase,
+                "error": error.to_string(),
+            }),
+        );
     }
 }
 

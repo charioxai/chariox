@@ -294,10 +294,12 @@ pub(crate) fn relay_provider_run_terminal_diagnostic(
         .filter(|message| !message.trim().is_empty())
 }
 
-pub(crate) async fn pump_relay_leased_runtime_projections(
+pub(crate) async fn try_pump_relay_leased_runtime_projections(
     runtime_state: &KernelRuntimeState,
-) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
-    runtime_state.pump_relay_leased_runtime_projections().await
+) -> Result<Option<Vec<(String, RelayPeerEvent)>>, DaemonError> {
+    runtime_state
+        .try_pump_relay_leased_runtime_projections()
+        .await
 }
 
 pub(crate) async fn drain_relay_leased_runtime_projection(

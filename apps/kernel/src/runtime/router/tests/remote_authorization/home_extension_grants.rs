@@ -156,9 +156,7 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inne
         .expect("home owner should grant home-owned remote extension")
     {
         LocalDaemonResponse::AgentExtensionGranted { agent } => {
-            assert!(
-                agent.has_extension_grant(crate::extension::ExtensionKind::Script, "home-only")
-            );
+            assert!(agent.has_extension_grant(crate::extension::ExtensionKind::Script, "home-only"));
         }
         other => panic!("unexpected grant response: {other:?}"),
     }

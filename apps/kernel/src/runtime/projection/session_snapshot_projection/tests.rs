@@ -5,8 +5,8 @@ use super::{
 };
 use crate::agent::CreateAgentRequest;
 use crate::runtime::projection::{
-    QUEUED_PROMPT_STEER_EXTERNAL_REASON,
     test_support::{attach_cli, launch_dev_stub_provider, submit_prompt},
+    QUEUED_PROMPT_STEER_EXTERNAL_REASON,
 };
 use crate::session::CreateSessionRequest;
 use crate::{DaemonApp, DaemonConfig};

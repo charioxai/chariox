@@ -35,18 +35,14 @@ fn workflow_code_apply_auto_layouts_missing_canvas_coordinates() {
         .expect("workflow-code should apply");
 
     assert!(report.canvas_layout_applied);
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "canvas_auto_layout_applied")
-    );
-    assert!(
-        !report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "default_queue_created")
-    );
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "canvas_auto_layout_applied"));
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"));
 
     let session = service
         .get_session(session.id())
@@ -99,13 +95,11 @@ fn workflow_code_apply_maps_omitted_queues_to_kernel_default_queue() {
         )
         .expect("workflow-code should apply with the default prompt queue");
 
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "default_queue_created"
-                && warning.handle.as_deref() == Some("default"))
-    );
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"
+            && warning.handle.as_deref() == Some("default")));
 
     let session = service
         .get_session(session.id())
@@ -230,10 +224,8 @@ fn workflow_code_apply_maps_watchdogs_to_implicit_default_queue_when_other_queue
     );
     assert_ne!(default_queue.id(), urgent_queue.id());
     assert_eq!(watchdog.queue_id(), Some(default_queue.id()));
-    assert!(
-        !report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "default_queue_created")
-    );
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"));
 }

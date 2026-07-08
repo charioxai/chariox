@@ -21,24 +21,25 @@ mod user_config_schema;
 mod validation;
 
 pub use credentials::{
-    CredentialVaultAgentManagementPolicy, CredentialVaultBackend, CredentialVaultUnlockPolicy,
-    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
-    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig, validate_credentials,
+    validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
+    CredentialVaultUnlockPolicy, UserCredentialConfig, UserCredentialInjectionConfig,
+    UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
+    UserCredentialVaultConfig,
 };
 #[cfg(test)]
-use identity::{RuntimeIdentity, generate_identity_suffix};
+use identity::{generate_identity_suffix, RuntimeIdentity};
+#[cfg(test)]
+use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
 use persisted_daemon::HOSTED_STAGING_RELAY_URL;
 #[cfg(test)]
-use persisted_daemon::PersistedDaemonConfig;
+use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
-#[cfg(test)]
-use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use slices::{
-    DEFAULT_LINUX_SLICE_DOCKER_IMAGE, SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig,
+    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
 };
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,

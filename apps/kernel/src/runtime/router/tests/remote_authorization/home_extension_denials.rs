@@ -91,13 +91,11 @@ async fn denied_home_extension_invocation_is_audited() {
             .and_then(serde_json::Value::as_str),
         Some("denied")
     );
-    assert!(
-        denied_event
-            .payload
-            .pointer("/error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|error| error.contains("worker kernel does not match home agent binding"))
-    );
+    assert!(denied_event
+        .payload
+        .pointer("/error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("worker kernel does not match home agent binding")));
     assert_eq!(
         denied_event
             .payload
@@ -236,11 +234,9 @@ async fn forwarded_home_mcp_rejects_forged_dispatch_name() {
         .runtime_state
         .list_home_extension_audit_events(agent.id(), DEFAULT_LOCAL_USER_ID, 10)
         .expect("audit events should load");
-    assert!(
-        events
-            .iter()
-            .any(|event| event.kind == "home_extension.invoke.denied")
-    );
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "home_extension.invoke.denied"));
 
     let _ = std::fs::remove_dir_all(&workspace);
 }
@@ -349,13 +345,11 @@ async fn forwarded_home_extension_runtime_rejects_mcp_tools() {
             .and_then(serde_json::Value::as_str),
         Some("mcp")
     );
-    assert!(
-        denied_event
-            .payload
-            .pointer("/error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|error| error.contains("dedicated dispatch path"))
-    );
+    assert!(denied_event
+        .payload
+        .pointer("/error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("dedicated dispatch path")));
     assert!(
         !events
             .iter()

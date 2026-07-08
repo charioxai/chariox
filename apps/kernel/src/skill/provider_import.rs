@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
 use super::package::package_skill_directory;
-use super::{ArrobaSkillMetadata, ArrobaSkillRegistry, parse_skill_metadata};
+use super::{parse_skill_metadata, ArrobaSkillMetadata, ArrobaSkillRegistry};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillImportSkip {
     pub name: String,

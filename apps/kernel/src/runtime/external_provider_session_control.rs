@@ -3,17 +3,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderSessionAttachmentRef,
-    external_session_id_for_provider_session,
+    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey, DaemonApp,
+    ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
+    ExternalImportHistoryEntry, SessionHistoryEntry,
     EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
-    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, ExternalImportHistoryEntry, SessionHistoryEntry,
+    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -21,11 +22,11 @@ use crate::local::{
     LocalDaemonResponse,
 };
 use crate::provider::{
-    ExternalProviderImportMetadata, ExternalProviderObservationPolicy,
-    ExternalProviderObservedCursor, LaunchProviderRequest, ObservedExternalProviderTurn,
-    ObservedExternalProviderTurnRole, ProviderResumeState, ProviderRunState, RuntimeProviderRun,
     external_provider_import_model, external_provider_session_providers,
-    normalized_observed_prompt_text,
+    normalized_observed_prompt_text, ExternalProviderImportMetadata,
+    ExternalProviderObservationPolicy, ExternalProviderObservedCursor, LaunchProviderRequest,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole, ProviderResumeState,
+    ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};

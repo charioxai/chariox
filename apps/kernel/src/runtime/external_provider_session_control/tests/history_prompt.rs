@@ -42,13 +42,12 @@ fn append_observed_external_user_turn_for_arroba_owned_run_adds_history_and_acti
     assert_eq!(entries.len(), 1);
     assert!(entries[0].is_external_provider_observed());
     assert_eq!(entries[0].text, "native prompt outside Arroba");
-    assert!(
-        app.agents()
-            .get_agent(agent.id())
-            .expect("agent should load")
-            .external_provider_import()
-            .is_none()
-    );
+    assert!(app
+        .agents()
+        .get_agent(agent.id())
+        .expect("agent should load")
+        .external_provider_import()
+        .is_none());
 }
 
 #[test]
@@ -104,23 +103,21 @@ fn append_observed_arroba_owned_prompt_echoes_are_skipped_without_import_metadat
         .expect("observed Arroba-owned prompt echo should be skipped");
 
     assert_eq!(outcome.changed_count, 0);
-    assert!(
-        app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
-            .expect("active prompt should load")
-            .is_none()
-    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_none());
     let entries = app
         .load_session_history_entries(&session, Some(agent.id()))
         .expect("history should load");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].text, "arroba owned prompt");
-    assert!(
-        app.agents()
-            .get_agent(agent.id())
-            .expect("agent should load")
-            .external_provider_import()
-            .is_none()
-    );
+    assert!(app
+        .agents()
+        .get_agent(agent.id())
+        .expect("agent should load")
+        .external_provider_import()
+        .is_none());
     let cursor = app
         .attached_provider_transcript_cursor_store()
         .get(&cursor_key);
@@ -128,11 +125,9 @@ fn append_observed_arroba_owned_prompt_echoes_are_skipped_without_import_metadat
         cursor.last_observed_turn_id.as_deref(),
         Some("assistant-owned")
     );
-    assert!(
-        cursor
-            .arroba_owned_observed_prompt_turn_ids
-            .contains("user-owned")
-    );
+    assert!(cursor
+        .arroba_owned_observed_prompt_turn_ids
+        .contains("user-owned"));
 }
 
 #[test]
@@ -184,16 +179,14 @@ fn append_observed_arroba_owned_prompt_cursor_prevents_reimport_after_reload() {
     .expect("cursor-classified Arroba-owned prompt should stay skipped");
 
     assert_eq!(outcome.changed_count, 0);
-    assert!(
-        app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
-            .expect("active prompt should load")
-            .is_none()
-    );
-    assert!(
-        app.load_session_history_entries(&session, Some(agent.id()))
-            .expect("history should load")
-            .is_empty()
-    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_none());
+    assert!(app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -297,12 +290,10 @@ async fn append_observed_arroba_owned_completion_settles_and_advances_queued_pro
     assert!(active_prompt.id().starts_with("prompt-"));
     assert_eq!(active_prompt.pending_prompt_id(), None);
     assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
-    assert!(
-        session
-            .queued_prompts_for_agent(agent.id())
-            .map(|queued| queued.is_empty())
-            .unwrap_or(true)
-    );
+    assert!(session
+        .queued_prompts_for_agent(agent.id())
+        .map(|queued| queued.is_empty())
+        .unwrap_or(true));
 }
 
 #[tokio::test]
@@ -526,12 +517,10 @@ fn stable_external_settlement_with_lost_mirror_signals_hidden_history_refresh() 
         records[0].bytes,
         EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes()
     );
-    assert!(
-        records[0]
-            .merge_key
-            .as_deref()
-            .is_some_and(|merge_key| merge_key.contains(":state:active_prompt_settled:"))
-    );
+    assert!(records[0]
+        .merge_key
+        .as_deref()
+        .is_some_and(|merge_key| merge_key.contains(":state:active_prompt_settled:")));
     assert_eq!(
         records[0]
             .external_observation_metadata

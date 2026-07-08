@@ -5,8 +5,8 @@ use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
 use crate::provider::{
-    ExternalProviderImportMetadata, ExternalProviderObservedCursor, ProviderResumeState,
     canonical_external_provider_session_id, external_provider_session_providers,
+    ExternalProviderImportMetadata, ExternalProviderObservedCursor, ProviderResumeState,
 };
 use crate::session::unix_epoch_ms;
 

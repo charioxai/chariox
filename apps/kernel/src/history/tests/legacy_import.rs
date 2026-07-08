@@ -1,4 +1,4 @@
-use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
+use crate::history::{HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry};
 use crate::terminal::TerminalOutputKind;
 
 #[test]
@@ -14,6 +14,24 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
 
     let store =
         OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let external_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        None,
+        "agent-1",
+        crate::history::SessionHistoryEntryKind::UserPrompt,
+        "legacy prompt",
+        "codex",
+        "thread-1",
+        Some("external-1".to_string()),
+        Some(1),
+    );
+    store
+        .append_transcripts(vec![(&external_prompt, HistoryEventTurnContext::default())])
+        .expect("external prompt should append");
+    assert!(!store
+        .has_arroba_owned_user_prompts("session-1")
+        .expect("arroba-owned prompt presence should be checked"));
+
     let mut legacy_prompt =
         SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "legacy prompt")
             .with_prompt_origin(crate::session::PromptOrigin::Arroba);
@@ -37,6 +55,9 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
             .expect("arroba owned prompt should load"),
         vec!["legacy prompt".to_string()]
     );
+    assert!(store
+        .has_arroba_owned_user_prompts("session-1")
+        .expect("arroba-owned prompt presence should be checked"));
 
     let imported_again = store
         .append_missing_legacy_transcripts(&[legacy_prompt, legacy_output])
@@ -47,7 +68,7 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
             .load_session_events("session-1", Some("agent-1"))
             .expect("session events should load")
             .len(),
-        2
+        3
     );
 
     drop(store);

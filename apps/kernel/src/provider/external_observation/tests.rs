@@ -329,11 +329,9 @@ fn active_external_prompt_turn_uses_latest_user_until_explicit_settlement() {
         }],
     ]
     .concat();
-    assert!(
-        policy
-            .active_external_prompt_turn(&settled, false, &BTreeSet::new())
-            .is_none()
-    );
+    assert!(policy
+        .active_external_prompt_turn(&settled, false, &BTreeSet::new())
+        .is_none());
 }
 
 #[test]
@@ -342,20 +340,18 @@ fn active_external_prompt_turn_filters_arroba_owned_provider_turn_ids() {
     let mut arroba_owned = BTreeSet::new();
     arroba_owned.insert("user-1".to_string());
 
-    assert!(
-        policy
-            .active_external_prompt_turn(
-                &[ObservedExternalProviderTurn {
-                    role: ObservedExternalProviderTurnRole::User,
-                    text: "same   prompt".to_string(),
-                    provider_turn_id: Some("user-1".to_string()),
-                    observed_at_ms: None,
-                }],
-                true,
-                &arroba_owned,
-            )
-            .is_none()
-    );
+    assert!(policy
+        .active_external_prompt_turn(
+            &[ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "same   prompt".to_string(),
+                provider_turn_id: Some("user-1".to_string()),
+                observed_at_ms: None,
+            }],
+            true,
+            &arroba_owned,
+        )
+        .is_none());
 }
 
 #[test]

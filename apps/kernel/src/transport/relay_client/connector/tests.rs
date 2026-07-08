@@ -1,4 +1,4 @@
-use super::writer::{RELAY_EVENT_WRITE_COALESCE_MS, RelayEventWriteCoalescer};
+use super::writer::{RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 use super::*;
 use tokio::time::Instant as TokioInstant;
 
@@ -12,11 +12,9 @@ fn relay_event_writer_coalesces_event_lane_with_stable_deadline() {
         coalescer.ready_at(),
         Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
     );
-    assert!(
-        coalescer
-            .push_event("event-2", now + Duration::from_millis(10))
-            .is_none()
-    );
+    assert!(coalescer
+        .push_event("event-2", now + Duration::from_millis(10))
+        .is_none());
     assert_eq!(
         coalescer.ready_at(),
         Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
@@ -193,15 +191,9 @@ async fn cloud_presence_schedule_does_not_retry_every_heartbeat_while_task_runs(
         let _ = rx.await;
     });
 
-    assert!(
-        !schedule.claim_publish_if_due(start + Duration::from_millis(100), Some(&running_task))
-    );
-    assert!(
-        !schedule.claim_publish_if_due(start + Duration::from_millis(101), Some(&running_task))
-    );
-    assert!(
-        !schedule.claim_publish_if_due(start + Duration::from_millis(199), Some(&running_task))
-    );
+    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(100), Some(&running_task)));
+    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(101), Some(&running_task)));
+    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(199), Some(&running_task)));
 
     running_task.abort();
 }
@@ -246,12 +238,10 @@ async fn reconnect_delay_exits_on_shutdown() {
 
     shutdown_tx.send(true).expect("shutdown should send");
 
-    assert!(
-        timeout(Duration::from_secs(1), wait)
-            .await
-            .expect("wait should observe shutdown")
-            .expect("wait task should finish")
-    );
+    assert!(timeout(Duration::from_secs(1), wait)
+        .await
+        .expect("wait should observe shutdown")
+        .expect("wait task should finish"));
 }
 
 #[test]

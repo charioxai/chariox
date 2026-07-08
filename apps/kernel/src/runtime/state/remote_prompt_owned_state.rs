@@ -60,42 +60,43 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
-        let remote_dispatch =
-            if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
-                let _ = self.record_started_user_prompt(
-                    &session_id,
-                    prompt.source_attachment_id(),
-                    prompt,
-                )?;
-                Some(crate::app::KernelRemotePromptDispatch {
-                    session_id: session_id.clone(),
-                    agent_id: target_agent_id,
-                    prompt_id: prompt.id().to_string(),
-                    worker_kernel_id: remote_execution.worker_kernel_id,
-                    leased_agent_id: remote_execution.leased_agent_id,
-                    relay_url: remote_execution.relay_url,
-                    relay_token: remote_execution.relay_token,
-                    source_attachment_id: prompt.source_attachment_id().to_string(),
-                    prompt: prompt.prompt().to_string(),
-                    attachments: prompt.attachments().to_vec(),
-                    workspace_live_sync_mode: Some(
-                        crate::provider::provider_workspace_live_sync_mode_for_session(
-                            target_agent.provider(),
-                            &self.config_projection.snapshot(),
-                            Some(&session),
-                        ),
+        let remote_dispatch = if let crate::session::PromptSubmissionOutcome::Started { prompt } =
+            &outcome
+        {
+            let _ = self.record_started_user_prompt(
+                &session_id,
+                prompt.source_attachment_id(),
+                prompt,
+            )?;
+            Some(crate::app::KernelRemotePromptDispatch {
+                session_id: session_id.clone(),
+                agent_id: target_agent_id,
+                prompt_id: prompt.id().to_string(),
+                worker_kernel_id: remote_execution.worker_kernel_id,
+                leased_agent_id: remote_execution.leased_agent_id,
+                relay_url: remote_execution.relay_url,
+                relay_token: remote_execution.relay_token,
+                source_attachment_id: prompt.source_attachment_id().to_string(),
+                prompt: prompt.prompt().to_string(),
+                attachments: prompt.attachments().to_vec(),
+                workspace_live_sync_mode: Some(
+                    crate::provider::provider_workspace_live_sync_mode_for_session(
+                        target_agent.provider(),
+                        &self.config_projection.snapshot(),
+                        Some(&session),
                     ),
-                    prompt_origin: prompt.prompt_origin(),
-                    external_provider: prompt.external_provider().map(str::to_string),
-                    external_provider_session_id: prompt
-                        .external_provider_session_id()
-                        .map(str::to_string),
-                    external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-                    workflow_context: None,
-                })
-            } else {
-                None
-            };
+                ),
+                prompt_origin: prompt.prompt_origin(),
+                external_provider: prompt.external_provider().map(str::to_string),
+                external_provider_session_id: prompt
+                    .external_provider_session_id()
+                    .map(str::to_string),
+                external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+                workflow_context: None,
+            })
+        } else {
+            None
+        };
         let session = if prepared.refresh_projection {
             self.session_snapshot(&session_id)?
         } else {

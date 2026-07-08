@@ -501,13 +501,11 @@ fn tournament_pattern_generates_power_of_two_brackets() {
             .count(),
         3
     );
-    assert!(
-        result4
-            .definition
-            .nodes
-            .iter()
-            .any(|node| node.handle == "final_judge")
-    );
+    assert!(result4
+        .definition
+        .nodes
+        .iter()
+        .any(|node| node.handle == "final_judge"));
 
     let bracket16 = BTreeMap::from([("bracket_size".to_string(), serde_json::json!(16))]);
     let result16 = compile_workflow_code_javascript_with_parameters(

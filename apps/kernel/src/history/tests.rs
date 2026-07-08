@@ -855,11 +855,9 @@ fn operational_history_store_appends_and_loads_events_idempotently() {
         .prune_events_before(i64::MAX as u64, false)
         .expect("archived events should prune");
     assert_eq!(deleted, 1);
-    assert!(
-        !store
-            .has_session_events("session-1")
-            .expect("session event presence should load")
-    );
+    assert!(!store
+        .has_session_events("session-1")
+        .expect("session event presence should load"));
     assert!(
         store
             .legacy_fallback_disabled("session-1")

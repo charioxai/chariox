@@ -407,13 +407,15 @@ impl KernelRuntimeState {
         .await
     }
 
-    pub(crate) async fn pump_relay_leased_runtime_projections(
+    pub(crate) async fn try_pump_relay_leased_runtime_projections(
         &self,
-    ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
-        self.with_app_side_effect(|app| {
+    ) -> Result<Option<Vec<(String, RelayPeerEvent)>>, DaemonError> {
+        match self.try_with_app_side_effect(|app| {
             RemoteLeaseRuntime::new(app).pump_leased_runtime_projections()
-        })
-        .await
+        }) {
+            Some(result) => result.map(Some),
+            None => Ok(None),
+        }
     }
 
     pub(crate) async fn drain_relay_leased_runtime_projection(

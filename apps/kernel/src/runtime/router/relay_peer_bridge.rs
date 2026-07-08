@@ -328,10 +328,11 @@ impl CommandRouter {
         ))
     }
 
-    pub(crate) async fn relay_pump_leased_runtime_projections(
+    pub(crate) async fn relay_try_pump_leased_runtime_projections(
         &self,
-    ) -> Result<Vec<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::pump_relay_leased_runtime_projections(&self.runtime_state).await
+    ) -> Result<Option<Vec<(String, crate::transport::relay_peer::RelayPeerEvent)>>, DaemonError>
+    {
+        relay_peer_runtime::try_pump_relay_leased_runtime_projections(&self.runtime_state).await
     }
 
     pub(crate) async fn relay_drain_leased_runtime_projection(

@@ -63,11 +63,11 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut first_socket,
@@ -114,13 +114,13 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
 
         let first_response = wait_for_response(&mut first_socket, "submit-prompt-original").await;
         let retry_response = wait_for_response(&mut retry_socket, "submit-prompt-retry").await;
-        let first_prompt_id =
-        response_variant(&first_response, "PromptSubmitted")["outcome"]["Started"]["prompt"]["id"]
+        let first_prompt_id = response_variant(&first_response, "PromptSubmitted")["outcome"]
+            ["Started"]["prompt"]["id"]
             .as_str()
             .expect("first prompt id should be present")
             .to_string();
-        let retry_prompt_id =
-        response_variant(&retry_response, "PromptSubmitted")["outcome"]["Started"]["prompt"]["id"]
+        let retry_prompt_id = response_variant(&retry_response, "PromptSubmitted")["outcome"]
+            ["Started"]["prompt"]["id"]
             .as_str()
             .expect("retry prompt id should be present");
         assert_eq!(first_prompt_id, retry_prompt_id);

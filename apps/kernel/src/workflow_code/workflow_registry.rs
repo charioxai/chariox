@@ -810,8 +810,8 @@ fn workflow_registry_summary_cache_key(metadata: &WorkflowRegistryEntryMetadata)
         .unwrap_or_else(|| metadata.source_sha256.clone())
 }
 
-fn workflow_registry_summary_cache()
--> &'static Mutex<BTreeMap<String, WorkflowRegistrySummaryCacheEntry>> {
+fn workflow_registry_summary_cache(
+) -> &'static Mutex<BTreeMap<String, WorkflowRegistrySummaryCacheEntry>> {
     static CACHE: OnceLock<Mutex<BTreeMap<String, WorkflowRegistrySummaryCacheEntry>>> =
         OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))

@@ -102,10 +102,10 @@ fn kernel_websocket_provider_process_gc_reaps_idle_managed_process() {
                 }),
             )
             .await;
-            let processes =
-                response_variant(&listed_response, "ProviderProcessesListed")["processes"]
-                    .as_array()
-                    .expect("provider processes should be present");
+            let processes = response_variant(&listed_response, "ProviderProcessesListed")
+                ["processes"]
+                .as_array()
+                .expect("provider processes should be present");
             if processes.is_empty() {
                 break;
             }

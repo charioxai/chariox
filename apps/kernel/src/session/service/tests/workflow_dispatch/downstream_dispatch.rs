@@ -313,12 +313,10 @@ fn workflow_max_concurrent_limits_ready_downstream_dispatches() {
         .resolve_workflow_run_ref(session.id(), workflow_run.id())
         .expect("workflow run should resolve");
     assert_eq!(resolved.node_runs().len(), 3);
-    assert!(
-        resolved
-            .messages()
-            .iter()
-            .filter(|message| message.target_node_id() == worker_a.id()
-                || message.target_node_id() == worker_b.id())
-            .all(|message| message.consumed_by_node_run_id().is_some())
-    );
+    assert!(resolved
+        .messages()
+        .iter()
+        .filter(|message| message.target_node_id() == worker_a.id()
+            || message.target_node_id() == worker_b.id())
+        .all(|message| message.consumed_by_node_run_id().is_some()));
 }

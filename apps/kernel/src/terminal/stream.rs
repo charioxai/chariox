@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use crate::history::{SessionHistoryEntrySource, SessionHistoryExternalObservation};
-use crate::session::{PromptOrigin, unix_epoch_ms};
+use crate::session::{unix_epoch_ms, PromptOrigin};
 
 mod json_size;
 mod records;

@@ -218,13 +218,11 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
             .and_then(serde_json::Value::as_str),
         Some("WorkflowRun")
     );
-    assert!(
-        run_status
-            .payload
-            .pointer("/response/workflow_run/node_run_counts_by_status")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|counts| !counts.is_empty())
-    );
+    assert!(run_status
+        .payload
+        .pointer("/response/workflow_run/node_run_counts_by_status")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|counts| !counts.is_empty()));
 }
 
 #[test]
@@ -422,12 +420,10 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(
-        session
-            .agents()
-            .iter()
-            .all(|agent| agent.id() != worker.id())
-    );
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
 }
 
 #[test]
@@ -438,8 +434,8 @@ fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_managemen
     );
 }
 
-async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner()
- {
+async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
+) {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -578,12 +574,11 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(
-        app.sessions()
-            .get_session(&session_id)
-            .expect("session should remain")
-            .has_member("user-2")
-    );
+    assert!(app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should remain")
+        .has_member("user-2"));
 
     let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-meta"))

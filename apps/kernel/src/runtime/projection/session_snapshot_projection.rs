@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AgentQueuedPromptControlProjection, ProjectionMetadata, queued_prompt_controls_projection,
+    queued_prompt_controls_projection, AgentQueuedPromptControlProjection, ProjectionMetadata,
 };
 use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};

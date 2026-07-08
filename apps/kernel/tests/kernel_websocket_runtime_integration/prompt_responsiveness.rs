@@ -67,11 +67,11 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut socket,
@@ -208,11 +208,11 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut socket,
@@ -343,11 +343,11 @@ fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut socket,
@@ -480,11 +480,11 @@ fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         send_frame(
             &mut socket,
@@ -625,11 +625,11 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut socket,

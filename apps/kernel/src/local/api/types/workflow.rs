@@ -1,6 +1,16 @@
 use super::*;
 use crate::session::WorkflowPublicationInvocationEnvelope;
 
+fn deserialize_nullable_patch_field<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
     pub session_id: String,
@@ -789,23 +799,43 @@ pub struct WorkflowDesignWorkflow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignWorkflowPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub alias: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub prompt: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flush_agent_context_before_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub run_output_schema_ref: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignSchemaPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub alias: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub description: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
@@ -835,7 +865,11 @@ pub struct WorkflowDesignNode {
 pub struct WorkflowDesignNodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub instructions: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_complete_workflow_run: Option<bool>,
@@ -843,9 +877,17 @@ pub struct WorkflowDesignNodePatch {
     pub can_emit_intermediate_run_output: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_for_all_inputs: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub intermediate_output_schema_ref: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_turns: Option<Option<u32>>,
 }
 
@@ -866,9 +908,17 @@ pub struct WorkflowDesignEdge {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignEdgePatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub handoff_schema_ref: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub validation_policy: Option<Option<crate::session::WorkflowHandoffValidationPolicy>>,
 }
 
@@ -882,7 +932,11 @@ pub struct WorkflowDesignEndpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignEndpointPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub alias: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_node_id: Option<String>,

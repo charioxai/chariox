@@ -259,18 +259,14 @@ fn packages_and_materializes_complete_skill_directory() {
     let package = package_skill_directory(&skill_dir).unwrap();
     assert_eq!(package.metadata.name, "browser-qa");
     assert!(package.files.iter().any(|file| file.path == "SKILL.md"));
-    assert!(
-        package
-            .files
-            .iter()
-            .any(|file| file.path == "assets/prompt.txt")
-    );
-    assert!(
-        package
-            .files
-            .iter()
-            .any(|file| file.path == "assets/nested/fixture.json")
-    );
+    assert!(package
+        .files
+        .iter()
+        .any(|file| file.path == "assets/prompt.txt"));
+    assert!(package
+        .files
+        .iter()
+        .any(|file| file.path == "assets/nested/fixture.json"));
 
     let destination = materialize_skill_package(&materialized_root, &package).unwrap();
     assert_eq!(
@@ -305,12 +301,10 @@ fn package_skips_symlinks_and_ignored_directories() {
     std::os::unix::fs::symlink("/etc/passwd", skill_dir.join("passwd-link")).unwrap();
 
     let package = package_skill_directory(&skill_dir).unwrap();
-    assert!(
-        package
-            .files
-            .iter()
-            .all(|file| !file.path.starts_with(".git"))
-    );
+    assert!(package
+        .files
+        .iter()
+        .all(|file| !file.path.starts_with(".git")));
     assert!(package.files.iter().all(|file| file.path != "passwd-link"));
 
     let _ = fs::remove_dir_all(root);

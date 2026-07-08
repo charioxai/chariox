@@ -101,24 +101,14 @@ impl RuntimeSession {
             .interrupt_active_prompts(self.focused_agent_id.as_deref())
             .len();
 
+        let mut stopped_workflow_run_ids = Vec::new();
         for workflow_run in &mut self.workflow_runs {
-            let should_stop = matches!(
+            let should_stop = !matches!(
                 workflow_run.status(),
-                WorkflowRunStatus::Running | WorkflowRunStatus::Completing
-            ) || workflow_run
-                .active_node_run_id()
-                .and_then(|active_node_run_id| {
-                    workflow_run
-                        .node_runs()
-                        .iter()
-                        .find(|node_run| node_run.id() == active_node_run_id)
-                })
-                .is_some_and(|node_run| {
-                    matches!(
-                        node_run.status(),
-                        WorkflowNodeRunStatus::Running | WorkflowNodeRunStatus::Waiting
-                    )
-                });
+                WorkflowRunStatus::Completed
+                    | WorkflowRunStatus::Failed
+                    | WorkflowRunStatus::Stopped
+            );
             if !should_stop {
                 continue;
             }
@@ -163,7 +153,11 @@ impl RuntimeSession {
                 "workflow run was interrupted by kernel restart; relaunch or resume it explicitly",
             ));
             workflow_run.set_status(WorkflowRunStatus::Stopped);
+            stopped_workflow_run_ids.push(workflow_run.id().to_string());
             reconciliation.stopped_workflow_run_count += 1;
+        }
+        for workflow_run_id in stopped_workflow_run_ids {
+            self.remove_queued_prompts_by_workflow_run(&workflow_run_id);
         }
 
         reconciliation

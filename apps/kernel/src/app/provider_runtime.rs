@@ -9,8 +9,8 @@ use crate::provider::{
 use super::provider_activation::ProviderRunActivationState;
 pub(crate) use super::provider_activation::StartedProviderLaunch;
 use super::provider_launch_policy::failed_provider_resume_state_replacement;
-pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 use super::provider_liveness::clear_active_provider_run_session_pointer;
+pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
 impl DaemonApp {

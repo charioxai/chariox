@@ -6,9 +6,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    AgentInstance, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    GridPosition, RemoteAgentBinding, calculate_agent_layout, generate_agent_ref,
-    recalculate_positions,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]

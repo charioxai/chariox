@@ -15,8 +15,8 @@ use crate::local::{ExternalProviderSessionCapabilities, ExternalProviderSessionR
 #[cfg(test)]
 use crate::provider::ExternalProviderObservationPolicy;
 use crate::provider::{
-    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole, clean_observed_turn_text,
-    clean_provider_prompt, observed_role, text_from_content,
+    clean_observed_turn_text, clean_provider_prompt, observed_role, text_from_content,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 use crate::session::unix_epoch_ms;
 

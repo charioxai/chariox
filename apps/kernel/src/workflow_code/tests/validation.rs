@@ -436,12 +436,10 @@ fn enforces_configured_limits() {
     let report = definition.validate_with_limits(&limits);
 
     assert!(!report.ok);
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "limit_exceeded")
-    );
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "limit_exceeded"));
 }
 
 #[test]

@@ -313,11 +313,10 @@ async fn first_output_timeout_records_diagnostic_and_closes_prompt() {
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(
-        run.terminal_diagnostic()
-            .expect("timeout diagnostic should be recorded")
-            .contains("Provider prompt produced no output")
-    );
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
     let notices = runtime
         .owned
         .terminal_stream
@@ -423,11 +422,10 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
         .provider_store
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(
-        run.terminal_diagnostic()
-            .expect("timeout diagnostic should be recorded")
-            .contains("Provider prompt produced no output")
-    );
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
     let notices = runtime
         .owned
         .terminal_stream
@@ -630,11 +628,9 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
             .list(metaagent.id(), Some("agent.turn.failed"), None, 10);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
-    assert!(
-        events[0]
-            .summary
-            .contains("Provider prompt produced no output")
-    );
+    assert!(events[0]
+        .summary
+        .contains("Provider prompt produced no output"));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())

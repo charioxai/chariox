@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -17,8 +17,8 @@ use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summ
 use crate::runtime::cloud_api_client::issue_cloud_runtime_token;
 use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection;
 use crate::runtime::cloud_relay_control::{
-    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS, cloud_relay_profile_has_runtime_credentials,
-    cloud_runtime_token_subject,
+    cloud_relay_profile_has_runtime_credentials, cloud_runtime_token_subject,
+    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 
 pub(super) async fn execute_list_slices_request(

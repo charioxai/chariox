@@ -340,9 +340,7 @@ fn append_observed_external_assistant_turn_clears_external_active_prompt_after_s
         .sessions()
         .get_session(session.id())
         .expect("session mirror should load");
-    assert!(
-        mirrored_session
-            .active_prompt_for_agent(agent.id())
-            .is_none()
-    );
+    assert!(mirrored_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
 }

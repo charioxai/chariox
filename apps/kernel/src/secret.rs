@@ -20,9 +20,9 @@ use crate::error::DaemonError;
 mod vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease, arroba_encrypted_vault_status,
-    clear_all_arroba_encrypted_vault_unlocks, extend_arroba_encrypted_vault,
-    is_arroba_vault_locked_error, lock_arroba_encrypted_vault, unlock_arroba_encrypted_vault,
+    arroba_encrypted_vault_status, clear_all_arroba_encrypted_vault_unlocks,
+    extend_arroba_encrypted_vault, is_arroba_vault_locked_error, lock_arroba_encrypted_vault,
+    unlock_arroba_encrypted_vault, ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease,
 };
 
 type HmacSha256 = Hmac<Sha256>;

@@ -125,11 +125,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(
-        owned_agents.iter().any(|agent| {
-            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
-        })
-    );
+    assert!(owned_agents
+        .iter()
+        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
     let owned_worker = owned_agents
         .iter()
         .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()))
@@ -300,22 +298,20 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide list should dispatch");
     assert!(listed_guides.ok);
-    assert!(
-        listed_guides
-            .payload
-            .get("guides")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|guides| guides.iter().any(|guide| {
-                guide
-                    .get("commands")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|commands| {
-                        commands
-                            .iter()
-                            .any(|command| command.as_str() == Some("workflow run"))
-                    })
-            }))
-    );
+    assert!(listed_guides
+        .payload
+        .get("guides")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|guides| guides.iter().any(|guide| {
+            guide
+                .get("commands")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|commands| {
+                    commands
+                        .iter()
+                        .any(|command| command.as_str() == Some("workflow run"))
+                })
+        })));
 
     let guide = router
         .runtime_state
@@ -329,11 +325,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide read should dispatch");
     assert!(guide.ok);
-    assert!(
-        guide
-            .payload
-            .get("body")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|body| body.contains("Do not implement directly"))
-    );
+    assert!(guide
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|body| body.contains("Do not implement directly")));
 }

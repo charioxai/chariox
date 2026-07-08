@@ -56,11 +56,11 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id")
+            .to_string();
 
         send_frame(
             &mut socket,
@@ -94,7 +94,8 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
         .await;
         let provider_run_id = provider_run_id_from_launch_response(&launch_response);
         assert_eq!(
-            response_variant(&launch_response, "ProviderRunLaunchAccepted")["provider_run"]["state"],
+            response_variant(&launch_response, "ProviderRunLaunchAccepted")["provider_run"]
+                ["state"],
             "Starting"
         );
 

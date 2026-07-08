@@ -66,11 +66,11 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
             }),
         )
         .await;
-        let attachment_id =
-            response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-                .as_str()
-                .expect("attachment id should be present")
-                .to_string();
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
         let provider_response = send_request(
             &mut socket,
@@ -247,7 +247,8 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
         )
         .await;
         assert!(
-            response_variant(&cancel_response, "PromptCancelled")["cancellation"]["prompt"]["status"]
+            response_variant(&cancel_response, "PromptCancelled")["cancellation"]["prompt"]
+                ["status"]
                 == "Cancelling",
             "cancel should ack while structured provider abort is slow: {cancel_response}"
         );

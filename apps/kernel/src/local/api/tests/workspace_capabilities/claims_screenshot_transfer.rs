@@ -196,12 +196,10 @@ fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
 
     match response {
         LocalDaemonResponse::FileTransferred { result } => {
-            assert!(
-                result
-                    .stored_path
-                    .to_string_lossy()
-                    .contains("arroba-session-artifacts")
-            );
+            assert!(result
+                .stored_path
+                .to_string_lossy()
+                .contains("arroba-session-artifacts"));
             assert_eq!(result.bytes, 8);
         }
         _ => panic!("unexpected transfer response"),

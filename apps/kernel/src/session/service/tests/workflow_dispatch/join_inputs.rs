@@ -143,13 +143,11 @@ fn join_nodes_wait_for_all_inputs_before_dispatching_once() {
             .count(),
         1
     );
-    assert!(
-        waiting
-            .messages()
-            .iter()
-            .filter(|message| message.target_node_id() == join.id())
-            .all(|message| message.consumed_by_node_run_id().is_none())
-    );
+    assert!(waiting
+        .messages()
+        .iter()
+        .filter(|message| message.target_node_id() == join.id())
+        .all(|message| message.consumed_by_node_run_id().is_none()));
 
     service
         .start_workflow_node_run(session.id(), workflow_run.id(), branch_two_run.id())
@@ -187,13 +185,11 @@ fn join_nodes_wait_for_all_inputs_before_dispatching_once() {
             .count(),
         2
     );
-    assert!(
-        resolved
-            .messages()
-            .iter()
-            .filter(|message| message.target_node_id() == join.id())
-            .all(|message| message.consumed_by_node_run_id() == Some(join_dispatch.node_run.id()))
-    );
+    assert!(resolved
+        .messages()
+        .iter()
+        .filter(|message| message.target_node_id() == join.id())
+        .all(|message| message.consumed_by_node_run_id() == Some(join_dispatch.node_run.id())));
 }
 
 #[test]
@@ -401,12 +397,10 @@ fn wait_for_all_inputs_groups_by_source_iteration() {
             None,
         )
         .expect("branch one iteration 1 completion should succeed");
-    assert!(
-        branch_one_completion_1
-            .dispatches
-            .iter()
-            .all(|dispatch| dispatch.node_run.node_id() != join.id())
-    );
+    assert!(branch_one_completion_1
+        .dispatches
+        .iter()
+        .all(|dispatch| dispatch.node_run.node_id() != join.id()));
     let repeater_run_1 = branch_one_completion_1
         .dispatches
         .iter()
@@ -448,12 +442,10 @@ fn wait_for_all_inputs_groups_by_source_iteration() {
             None,
         )
         .expect("branch one iteration 2 completion should succeed");
-    assert!(
-        branch_one_completion_2
-            .dispatches
-            .iter()
-            .all(|dispatch| dispatch.node_run.node_id() != join.id())
-    );
+    assert!(branch_one_completion_2
+        .dispatches
+        .iter()
+        .all(|dispatch| dispatch.node_run.node_id() != join.id()));
 
     service
         .start_workflow_node_run(session.id(), workflow_run.id(), branch_two_run_1.id())
@@ -494,9 +486,7 @@ fn wait_for_all_inputs_groups_by_source_iteration() {
         })
         .collect::<Vec<_>>();
     assert_eq!(branch_one_iteration_2_messages.len(), 1);
-    assert!(
-        branch_one_iteration_2_messages[0]
-            .consumed_by_node_run_id()
-            .is_none()
-    );
+    assert!(branch_one_iteration_2_messages[0]
+        .consumed_by_node_run_id()
+        .is_none());
 }

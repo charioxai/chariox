@@ -462,6 +462,11 @@ fn agent_outline_preserves_external_identity_for_promptless_observed_activity() 
         Some("thread-1")
     );
     assert_eq!(turn.external_provider_turn_id.as_deref(), Some("tool-1"));
+    assert_eq!(turn.completed_at_ms, Some(42));
+    assert_eq!(
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Completed
+    );
     assert!(turn.user_prompt.entry.is_external_provider_observed());
     assert!(
         turn.user_prompt.entry.text.contains("no recorded prompt"),
@@ -472,6 +477,127 @@ fn agent_outline_preserves_external_identity_for_promptless_observed_activity() 
     assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
     assert_eq!(turn.blobs[0].summary, "$ cargo test");
 
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_caps_large_provider_output_inline_payloads() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-large-output-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "prompt"),
+            context.clone(),
+        ))
+        .expect("prompt should append");
+    let large_output = "x".repeat(MAX_OUTLINE_INLINE_CHARS + 1024);
+    store
+        .append(&HistoryEvent::transcript(
+            20,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some("merge-1".to_string()),
+                large_output.clone(),
+            ),
+            context,
+        ))
+        .expect("large provider output should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    let turn = &outline.turns[0];
+    let summary = turn.summary.as_ref().expect("summary should be present");
+    assert_eq!(summary.total_chars, large_output.chars().count());
+    assert_eq!(summary.fragment_end, MAX_OUTLINE_INLINE_CHARS);
+    assert_eq!(summary.entry.text.chars().count(), MAX_OUTLINE_INLINE_CHARS);
+    assert!(turn.entries.is_empty());
+    assert_eq!(turn.blobs.len(), 1);
+    assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderOutput);
+    assert_eq!(turn.blobs[0].total_chars, large_output.chars().count());
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_groups_large_blob_metadata_sets() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-large-blob-metadata-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "prompt"),
+            context.clone(),
+        ))
+        .expect("prompt should append");
+    for index in 0..(MAX_OUTLINE_EVENTS_PER_BLOB + 17) {
+        let event = HistoryEvent::transcript(
+            20 + index as u64,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderTool,
+                Some(format!("tool-{index}")),
+                format!(r#"{{"tool":"bash","index":{index}}}"#),
+            ),
+            context.clone(),
+        );
+        store.append(&event).expect("tool output should append");
+    }
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    let turn = &outline.turns[0];
+    assert_eq!(turn.blobs.len(), 2);
+    assert_eq!(turn.blobs[0].entry_count, MAX_OUTLINE_EVENTS_PER_BLOB);
+    assert_eq!(turn.blobs[1].entry_count, 17);
+
+    drop(store);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));

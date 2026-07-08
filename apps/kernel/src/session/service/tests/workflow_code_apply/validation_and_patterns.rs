@@ -198,13 +198,11 @@ fn planner_worker_reviewer_pattern_preserves_goal_workflow_contract() {
         .find(|node| node.handle == "planner")
         .expect("planner node should exist");
     assert_eq!(planner.can_complete_workflow_run, Some(true));
-    assert!(
-        planner
-            .instructions
-            .as_deref()
-            .unwrap_or_default()
-            .contains("only node allowed to finish")
-    );
+    assert!(planner
+        .instructions
+        .as_deref()
+        .unwrap_or_default()
+        .contains("only node allowed to finish"));
     for node in compiled
         .nodes
         .iter()
@@ -256,11 +254,9 @@ fn planner_worker_reviewer_pattern_preserves_goal_workflow_contract() {
     )));
     assert_eq!(compiled.endpoints[0].handle, "entry");
     assert_eq!(compiled.endpoints[0].entry_node, "planner");
-    assert!(
-        compiled
-            .parameters_schema
-            .as_ref()
-            .and_then(|schema| schema.pointer("/properties/max_review_cycles_per_step/default"))
-            .is_some_and(|value| value == 6)
-    );
+    assert!(compiled
+        .parameters_schema
+        .as_ref()
+        .and_then(|schema| schema.pointer("/properties/max_review_cycles_per_step/default"))
+        .is_some_and(|value| value == 6));
 }

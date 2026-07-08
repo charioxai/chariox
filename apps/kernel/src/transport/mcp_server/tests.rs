@@ -96,78 +96,50 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
         .as_array()
         .expect("tools should be an array");
     assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "validate_workflow_handoff")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "workflow_console_read")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "workflow_console_write")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "workflow_console_clear")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.read_artifact")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.list_extensions")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.request_extension")
-    );
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "validate_workflow_handoff"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_read"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_write"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_clear"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.read_artifact"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.list_extensions"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.request_extension"));
     assert!(!tools.iter().any(|tool| tool["name"] == "list_extensions"));
     assert!(!tools.iter().any(|tool| tool["name"] == "request_extension"));
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.list_credential_handles")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "list_credential_handles")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.http_request_with_credential")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "http_request_with_credential")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.send_secret_to_terminal")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "send_secret_to_terminal")
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.slice_screenshot")
-    );
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.list_credential_handles"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "list_credential_handles"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.http_request_with_credential"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "http_request_with_credential"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.send_secret_to_terminal"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "send_secret_to_terminal"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_screenshot"));
 }
 
 #[tokio::test]
@@ -468,18 +440,14 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
         edit_value["result"]["structuredContent"]["change"]["kind"],
         "update"
     );
-    assert!(
-        edit_value["result"]["structuredContent"]["change"]["diff"]
-            .as_str()
-            .expect("edit diff should be present")
-            .contains("-beta")
-    );
-    assert!(
-        edit_value["result"]["structuredContent"]["change"]["diff"]
-            .as_str()
-            .expect("edit diff should be present")
-            .contains("+gamma")
-    );
+    assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("edit diff should be present")
+        .contains("-beta"));
+    assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("edit diff should be present")
+        .contains("+gamma"));
     assert_eq!(
         std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
         "alpha\ngamma\n"
@@ -511,12 +479,10 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
         .to_bytes();
     let patch_value: Value = serde_json::from_slice(&patch_body).expect("patch body json");
     assert_eq!(patch_value["result"]["structuredContent"]["applied"], true);
-    assert!(
-        patch_value["result"]["structuredContent"]["change"]["diff"]
-            .as_str()
-            .expect("patch diff should be present")
-            .contains("+delta")
-    );
+    assert!(patch_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("patch diff should be present")
+        .contains("+delta"));
     assert_eq!(
         std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
         "alpha\ndelta\n"
@@ -553,12 +519,10 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
         write_value["result"]["structuredContent"]["change"]["kind"],
         "add"
     );
-    assert!(
-        write_value["result"]["structuredContent"]["change"]["diff"]
-            .as_str()
-            .expect("write diff should be present")
-            .contains("+created through arroba")
-    );
+    assert!(write_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("write diff should be present")
+        .contains("+created through arroba"));
     assert_eq!(
         std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
         "created through arroba\n"

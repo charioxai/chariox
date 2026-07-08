@@ -139,13 +139,11 @@ async fn home_extension_invocation_replays_completed_idempotent_result() {
     let tool = tool("lookup");
     let mut metadata = metadata("invoke-1");
     metadata.idempotency_key = Some("idem-1".to_string());
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .expect("first invocation should start")
+        .is_none());
     assert!(
         state
             .complete_home_extension_invocation(
@@ -173,13 +171,11 @@ async fn home_extension_idempotency_replay_is_scoped_to_tool() {
     let second_tool = tool("create_issue");
     let mut metadata = metadata("invoke-scoped");
     metadata.idempotency_key = Some("shared-idempotency-key".to_string());
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &first_tool, &metadata)
-            .await
-            .expect("first tool invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &first_tool, &metadata)
+        .await
+        .expect("first tool invocation should start")
+        .is_none());
     assert!(
         state
             .complete_home_extension_invocation(
@@ -191,13 +187,11 @@ async fn home_extension_idempotency_replay_is_scoped_to_tool() {
             .await
     );
 
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &second_tool, &metadata)
-            .await
-            .expect("same idempotency key on another tool should not replay")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &second_tool, &metadata)
+        .await
+        .expect("same idempotency key on another tool should not replay")
+        .is_none());
 }
 
 #[tokio::test]
@@ -208,13 +202,11 @@ async fn home_extension_idempotency_replay_is_scoped_to_agent() {
     let tool = tool("lookup");
     let mut metadata = metadata("invoke-agent-scoped");
     metadata.idempotency_key = Some("shared-agent-idempotency-key".to_string());
-    assert!(
-        state
-            .begin_home_extension_invocation(&first_context, &tool, &metadata)
-            .await
-            .expect("first agent invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&first_context, &tool, &metadata)
+        .await
+        .expect("first agent invocation should start")
+        .is_none());
     assert!(
         state
             .complete_home_extension_invocation(
@@ -226,13 +218,11 @@ async fn home_extension_idempotency_replay_is_scoped_to_agent() {
             .await
     );
 
-    assert!(
-        state
-            .begin_home_extension_invocation(&second_context, &tool, &metadata)
-            .await
-            .expect("same idempotency key on another agent should not replay")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&second_context, &tool, &metadata)
+        .await
+        .expect("same idempotency key on another agent should not replay")
+        .is_none());
 }
 
 #[tokio::test]
@@ -241,13 +231,11 @@ async fn home_extension_invocation_rejects_completed_non_idempotent_duplicate() 
     let context = context("agent-1");
     let tool = tool("lookup");
     let metadata = metadata("invoke-2");
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .expect("first invocation should start")
+        .is_none());
     assert!(
         state
             .complete_home_extension_invocation(
@@ -278,13 +266,11 @@ async fn home_extension_invocation_rejects_duplicate_provider_tool_call_without_
     let tool = tool("lookup");
     let first = metadata_with_provider_call("invoke-provider-1", "provider-call-1");
     let second = metadata_with_provider_call("invoke-provider-2", "provider-call-1");
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &first)
-            .await
-            .expect("first provider tool call should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &first)
+        .await
+        .expect("first provider tool call should start")
+        .is_none());
     assert!(
         state
             .complete_home_extension_invocation(
@@ -315,13 +301,11 @@ async fn home_extension_invocation_rejects_in_flight_duplicate_provider_tool_cal
     let tool = tool("lookup");
     let first = metadata_with_provider_call("invoke-provider-inflight-1", "provider-call-2");
     let second = metadata_with_provider_call("invoke-provider-inflight-2", "provider-call-2");
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &first)
-            .await
-            .expect("first provider tool call should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &first)
+        .await
+        .expect("first provider tool call should start")
+        .is_none());
 
     let error = state
         .begin_home_extension_invocation(&context, &tool, &second)
@@ -339,13 +323,11 @@ async fn home_extension_invocation_rejects_in_flight_duplicate() {
     let context = context("agent-1");
     let tool = tool("lookup");
     let metadata = metadata("invoke-3");
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .expect("first invocation should start")
+        .is_none());
 
     let error = state
         .begin_home_extension_invocation(&context, &tool, &metadata)
@@ -364,13 +346,11 @@ async fn home_extension_invocation_cancelled_in_flight_is_not_cached_for_replay(
     let tool = tool("lookup");
     let mut metadata = metadata("invoke-4");
     metadata.idempotency_key = Some("idem-cancelled".to_string());
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .expect("first invocation should start")
+        .is_none());
 
     state
         .owned
@@ -390,13 +370,11 @@ async fn home_extension_invocation_cancelled_in_flight_is_not_cached_for_replay(
         "late completion after cancellation must be suppressed"
     );
 
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &tool, &metadata)
-            .await
-            .expect("cancelled invocation should not leave replay state behind")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .expect("cancelled invocation should not leave replay state behind")
+        .is_none());
 }
 
 #[tokio::test]
@@ -410,20 +388,16 @@ async fn home_extension_cancellation_is_scoped_to_invocation_not_shared_idempote
     let mut second_metadata = metadata("invoke-cancel-second");
     second_metadata.idempotency_key = first_metadata.idempotency_key.clone();
 
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &first_tool, &first_metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none()
-    );
-    assert!(
-        state
-            .begin_home_extension_invocation(&context, &second_tool, &second_metadata)
-            .await
-            .expect("second tool with same idempotency key should start independently")
-            .is_none()
-    );
+    assert!(state
+        .begin_home_extension_invocation(&context, &first_tool, &first_metadata)
+        .await
+        .expect("first invocation should start")
+        .is_none());
+    assert!(state
+        .begin_home_extension_invocation(&context, &second_tool, &second_metadata)
+        .await
+        .expect("second tool with same idempotency key should start independently")
+        .is_none());
 
     state
         .owned

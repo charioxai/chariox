@@ -1,7 +1,7 @@
 use super::*;
 
 use tokio::sync::oneshot;
-use tokio::time::{Instant as TokioInstant, timeout};
+use tokio::time::{timeout, Instant as TokioInstant};
 use tokio_tungstenite::connect_async;
 
 #[test]
@@ -11,11 +11,9 @@ fn kernel_event_writer_coalesces_event_lane_with_stable_deadline() {
 
     assert!(coalescer.push_event("event-1", now).is_none());
     assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
-    assert!(
-        coalescer
-            .push_event("event-2", now + Duration::from_millis(10))
-            .is_none()
-    );
+    assert!(coalescer
+        .push_event("event-2", now + Duration::from_millis(10))
+        .is_none());
     assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
 
     assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);

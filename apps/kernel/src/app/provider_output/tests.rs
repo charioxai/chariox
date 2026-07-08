@@ -224,11 +224,10 @@ fn legacy_pump_reaps_inactive_provider_turn() {
         .providers
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(
-        run.terminal_diagnostic()
-            .expect("timeout diagnostic should be recorded")
-            .contains("Provider prompt produced no output")
-    );
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
 }
 
 #[test]

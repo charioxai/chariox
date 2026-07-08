@@ -299,11 +299,10 @@ fn compatibility_output_pump_reaps_first_output_timeout() {
         .providers()
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(
-        run.terminal_diagnostic()
-            .expect("timeout diagnostic should be recorded")
-            .contains("Provider prompt produced no output")
-    );
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
     let notices = app
         .terminal_mut()
         .drain_notice_records(session.id(), attachment.id());

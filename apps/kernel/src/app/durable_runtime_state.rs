@@ -397,11 +397,13 @@ impl DaemonApp {
 
     fn reconcile_restored_runtime_state_after_restart(&self) -> Result<(), DaemonError> {
         let sessions = self.sessions.read().store().list();
+        let mut reconciled_runtime_state = false;
         for mut session in sessions {
             let reconciliation = session.reconcile_after_kernel_restart();
             if !reconciliation.changed() {
                 continue;
             }
+            reconciled_runtime_state = true;
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.sessions.restore_session(session.clone());
@@ -417,6 +419,9 @@ impl DaemonApp {
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
                 }),
             );
+        }
+        if reconciled_runtime_state {
+            self.save_durable_state_snapshot()?;
         }
         let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
             crate::session::unix_epoch_ms(),

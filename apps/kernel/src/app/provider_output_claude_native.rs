@@ -12,8 +12,8 @@ use crate::provider::{
     RuntimeProviderRun,
 };
 use crate::session::{
-    PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionKind, RuntimeInteractionLevel, unix_epoch_ms,
+    unix_epoch_ms, PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionKind, RuntimeInteractionLevel,
 };
 use crate::terminal::TerminalOutputKind;
 

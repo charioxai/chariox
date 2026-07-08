@@ -12,17 +12,18 @@ use crate::local::{
     SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
     SessionHistoryOutlineTurnLifecycle,
 };
-use crate::provider::ExternalProviderImportMetadata;
 use crate::provider::normalized_observed_prompt_text;
+use crate::provider::ExternalProviderImportMetadata;
 use crate::session::PromptOrigin;
 
 mod projection;
 
 #[cfg(test)]
-use projection::{MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS, blob_id};
+use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS};
 use projection::{
     event_needs_outline_blob, event_projects_as_outline_entry, has_content,
     outline_blobs_from_events, outline_page_entry_from_event, page_entry_from_event, parse_blob_id,
+    MAX_OUTLINE_INLINE_ENTRIES_PER_TURN,
 };
 
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
@@ -583,17 +584,34 @@ fn outline_turn_from_events(
             .cloned()
             .and_then(outline_page_entry_from_event)
     });
-    let entries = events
+    let inline_entry_candidates = events
         .iter()
         .filter(|event| event.sequence != prompt.sequence)
         .filter(|event| Some(event.sequence) != summary_sequence)
         .filter(|event| has_content(event))
         .filter(|event| event_projects_as_outline_entry(event))
         .filter(|event| !event_needs_outline_blob(event))
+        .collect::<Vec<_>>();
+    let overflow_entry_count = inline_entry_candidates
+        .len()
+        .saturating_sub(MAX_OUTLINE_INLINE_ENTRIES_PER_TURN);
+    let forced_blob_sequences = inline_entry_candidates
+        .iter()
+        .take(overflow_entry_count)
+        .map(|event| event.sequence)
+        .collect::<BTreeSet<_>>();
+    let entries = inline_entry_candidates
+        .into_iter()
+        .skip(overflow_entry_count)
         .cloned()
         .filter_map(outline_page_entry_from_event)
         .collect::<Vec<_>>();
-    let blobs = outline_blobs_from_events(&events, prompt.sequence, summary_sequence);
+    let blobs = outline_blobs_from_events(
+        &events,
+        prompt.sequence,
+        summary_sequence,
+        &forced_blob_sequences,
+    );
     Some(SessionHistoryOutlineTurn {
         turn_id: prompt
             .turn_id

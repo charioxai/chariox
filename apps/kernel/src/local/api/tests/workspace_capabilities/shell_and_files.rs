@@ -247,12 +247,10 @@ fn local_request_api_reads_directory_tree_file_and_git_status_inner() {
 
     match tree {
         LocalDaemonResponse::DirectoryTreeRead { result } => {
-            assert!(
-                result
-                    .entries
-                    .iter()
-                    .any(|entry| entry.relative_path == "README.md")
-            );
+            assert!(result
+                .entries
+                .iter()
+                .any(|entry| entry.relative_path == "README.md"));
         }
         _ => panic!("unexpected tree response"),
     }
@@ -316,24 +314,18 @@ fn local_request_api_inspects_workspace_git_overview_inner() {
             assert_eq!(overview.compare_ref, "HEAD");
             assert_eq!(overview.totals.files, 2);
             assert_eq!(overview.totals.additions, 2);
-            assert!(
-                overview
-                    .compare_refs
-                    .iter()
-                    .any(|reference| reference.name == "HEAD" && reference.selected)
-            );
-            assert!(
-                overview
-                    .files
-                    .iter()
-                    .any(|file| file.path == "README.md" && file.additions == 1)
-            );
-            assert!(
-                overview
-                    .files
-                    .iter()
-                    .any(|file| file.path == "new.txt" && file.status == "untracked")
-            );
+            assert!(overview
+                .compare_refs
+                .iter()
+                .any(|reference| reference.name == "HEAD" && reference.selected));
+            assert!(overview
+                .files
+                .iter()
+                .any(|file| file.path == "README.md" && file.additions == 1));
+            assert!(overview
+                .files
+                .iter()
+                .any(|file| file.path == "new.txt" && file.status == "untracked"));
         }
         _ => panic!("unexpected local response"),
     }
@@ -387,12 +379,10 @@ fn local_request_api_lists_workspace_repo_files_inner() {
             assert_eq!(listing.compare_ref, "HEAD");
             assert_eq!(listing.total_entries, 2);
             assert!(!listing.truncated);
-            assert!(
-                listing
-                    .entries
-                    .iter()
-                    .any(|entry| entry.name == "src" && entry.kind == "directory" && entry.changed)
-            );
+            assert!(listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == "src" && entry.kind == "directory" && entry.changed));
         }
         _ => panic!("unexpected local response"),
     }

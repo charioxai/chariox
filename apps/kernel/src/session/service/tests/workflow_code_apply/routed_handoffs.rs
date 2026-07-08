@@ -197,12 +197,10 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         router_node.intermediate_output_schema_ref(),
         Some(progress_schema_id.as_str())
     );
-    assert!(
-        workflow_after_apply
-            .edges()
-            .iter()
-            .all(|edge| edge.handoff_schema_ref() == Some(handoff_schema_id.as_str()))
-    );
+    assert!(workflow_after_apply
+        .edges()
+        .iter()
+        .all(|edge| edge.handoff_schema_ref() == Some(handoff_schema_id.as_str())));
 
     let workflow_run = service
         .invoke_workflow_endpoint(

@@ -330,10 +330,84 @@ fn bootstrap_reconciles_stale_runtime_work_after_restart() {
         WorkflowNodeRunStatus::Stopped
     );
     assert_eq!(workflow_run.node_runs()[0].id(), workflow_node_run_id);
-    assert!(
-        workflow_run
-            .failure_events()
-            .iter()
-            .any(|event| { event.message().contains("interrupted by kernel restart") })
+    assert!(workflow_run
+        .failure_events()
+        .iter()
+        .any(|event| { event.message().contains("interrupted by kernel restart") }));
+}
+
+#[test]
+fn bootstrap_reconciles_prepared_created_workflow_run_after_restart() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, workflow_run_id, workflow_node_run_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let mut session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        let session_id = session.id().to_string();
+        let mut node_run = WorkflowNodeRun::new(
+            "node-run-prepared",
+            "node-1",
+            agent.id(),
+            1,
+            WorkflowNodeRunStatus::Ready,
+        );
+        node_run.set_turn_envelope(Some(WorkflowTurnEnvelope::new(
+            "workflow-ack:node-run-prepared",
+            "assembled prompt".to_string(),
+            None,
+            None,
+        )));
+        let mut workflow_run = WorkflowRun::new(
+            "workflow-run-prepared",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("invoke".to_string()),
+            None,
+            vec![node_run],
+            Vec::new(),
+        );
+        workflow_run.set_active_node_run("node-run-prepared");
+        session.create_workflow_run(workflow_run);
+        app.sessions.restore_session(session);
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save prepared runtime state");
+        (
+            session_id,
+            "workflow-run-prepared".to_string(),
+            "node-run-prepared".to_string(),
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert!(!restored.has_active_workflow_run());
+    let workflow_run = restored
+        .workflow_run(&workflow_run_id)
+        .expect("workflow run should restore");
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
+    assert_eq!(workflow_run.active_node_run_id(), None);
+    let node_run = &workflow_run.node_runs()[0];
+    assert_eq!(node_run.id(), workflow_node_run_id);
+    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Stopped);
+    assert_eq!(
+        node_run
+            .turn_envelope()
+            .expect("turn envelope should remain visible")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Cancelled
     );
+    assert!(workflow_run
+        .failure_events()
+        .iter()
+        .any(|event| { event.message().contains("interrupted by kernel restart") }));
 }

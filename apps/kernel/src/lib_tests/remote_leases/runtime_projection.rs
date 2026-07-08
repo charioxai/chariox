@@ -104,11 +104,9 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .session_state_projection_store()
         .get(session.id())
         .expect("projection should refresh");
-    assert!(
-        projected
-            .prompt_states()
-            .get(agent.id())
-            .and_then(|state| state.active_prompt())
-            .is_none()
-    );
+    assert!(projected
+        .prompt_states()
+        .get(agent.id())
+        .and_then(|state| state.active_prompt())
+        .is_none());
 }

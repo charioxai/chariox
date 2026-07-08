@@ -1,6 +1,6 @@
 use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
-use super::super::{GitTurnSnapshotStore, capture_turn_snapshot, observe_after_turn};
+use super::super::{capture_turn_snapshot, observe_after_turn, GitTurnSnapshotStore};
 use super::support::{run_git, test_context};
 
 #[test]
@@ -34,11 +34,9 @@ fn observes_commit_and_indexes_searchable_metadata() {
         OperationalHistoryStore::open(history_path.clone()).expect("history store should open");
     let events =
         observe_after_turn(before, after, candidates, &history).expect("observation should append");
-    assert!(
-        events
-            .iter()
-            .any(|event| event.kind == HistoryEventKind::GitCommitDetected)
-    );
+    assert!(events
+        .iter()
+        .any(|event| event.kind == HistoryEventKind::GitCommitDetected));
 
     let subject_matches = history
         .query_events(HistoryEventQuery {
@@ -64,11 +62,9 @@ fn observes_commit_and_indexes_searchable_metadata() {
             ..HistoryEventQuery::default()
         })
         .expect("path query should work");
-    assert!(
-        path_matches
-            .iter()
-            .any(|event| event.kind == HistoryEventKind::GitCommitDetected)
-    );
+    assert!(path_matches
+        .iter()
+        .any(|event| event.kind == HistoryEventKind::GitCommitDetected));
 
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_file(history_path.with_extension("db-wal"));

@@ -1,9 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::prompt_assembly::{
-    PromptManifest, PromptTemplate, PromptTemplateRegistry, bundled_metaagent_event_template,
-    bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
-    bundled_workflow_turn_template,
+    bundled_metaagent_event_template, bundled_workflow_run_completion_template,
+    bundled_workflow_run_intermediate_output_template, bundled_workflow_turn_template,
+    PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
 use crate::session::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowHandoffValidationPolicy, WorkflowMessage,
@@ -264,10 +264,22 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
             &context.node_instructions,
         );
     }
-    let workflow_instructions = format!(
-        "Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
-        context.workflow_prompt, context.node_instructions, system_prompt, system_node_prompt
-    );
+    let mut instruction_sections = Vec::new();
+    if !context.workflow_prompt.trim().is_empty() {
+        instruction_sections.push(format!(
+            "Workflow-level prompt:\n{}",
+            context.workflow_prompt.trim()
+        ));
+    }
+    if !context.node_instructions.trim().is_empty() {
+        instruction_sections.push(format!(
+            "Node-level instructions:\n{}",
+            context.node_instructions.trim()
+        ));
+    }
+    instruction_sections.push(system_prompt);
+    instruction_sections.push(system_node_prompt);
+    let workflow_instructions = instruction_sections.join("\n\n");
     WorkflowTurnPromptAssembly {
         visible_user_prompt,
         hidden_system_context: workflow_instructions,

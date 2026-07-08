@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
-use super::{ArrobaSkillMetadata, managed_capability_root, parse_skill_metadata};
+use super::{managed_capability_root, parse_skill_metadata, ArrobaSkillMetadata};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrobaSkillPackage {

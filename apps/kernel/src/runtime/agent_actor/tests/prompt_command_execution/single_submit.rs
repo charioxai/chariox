@@ -264,11 +264,9 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .expect("provider run should have runtime MCP auth token")
         .to_string();
     let specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
-    assert!(
-        specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL)
-    );
+    assert!(specs
+        .iter()
+        .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL));
     let completion = runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &auth_token,
@@ -433,10 +431,8 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
             .map(|prompt| prompt.id()),
         Some(prompt.id())
     );
-    assert!(
-        agent_activity
-            .get(&agent_id)
-            .map(|activity| activity.busy)
-            .unwrap_or(false)
-    );
+    assert!(agent_activity
+        .get(&agent_id)
+        .map(|activity| activity.busy)
+        .unwrap_or(false));
 }

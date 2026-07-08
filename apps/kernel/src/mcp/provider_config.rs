@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 
-use super::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig, home_dir};
+use super::{home_dir, ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 
 pub(super) fn codex_mcp_to_arroba(
     name: &str,

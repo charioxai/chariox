@@ -1,12 +1,12 @@
 use super::*;
 
-pub(super) fn provider_transcript_path_index()
--> &'static Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>> {
+pub(super) fn provider_transcript_path_index(
+) -> &'static Mutex<BTreeMap<String, ExternalProviderTranscriptIndexEntry>> {
     PROVIDER_TRANSCRIPT_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-pub(super) fn provider_transcript_discovery_path_index()
--> &'static Mutex<BTreeMap<(String, PathBuf), ExternalProviderTranscriptDiscoveryPathEntry>> {
+pub(super) fn provider_transcript_discovery_path_index(
+) -> &'static Mutex<BTreeMap<(String, PathBuf), ExternalProviderTranscriptDiscoveryPathEntry>> {
     PROVIDER_TRANSCRIPT_DISCOVERY_PATH_INDEX.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 

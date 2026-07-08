@@ -76,16 +76,14 @@ async fn provider_launch_rejects_cross_session_agent_before_acceptance_inner() {
         } if session_id == second_session_id && agent_id == first_agent_id
     ));
     let app = app.lock().await;
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&first_session_id, &first_agent_id)
-            .is_none()
-    );
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&second_session_id, &first_agent_id)
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&first_session_id, &first_agent_id)
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&second_session_id, &first_agent_id)
+        .is_none());
 }
 
 #[test]
@@ -231,17 +229,14 @@ async fn provider_batch_launch_rejects_duplicate_targets_without_partial_launch_
     };
     assert!(provider_runs.is_empty());
     assert_eq!(failures.len(), 2);
-    assert!(
-        failures
-            .iter()
-            .all(|failure| failure.message.contains("duplicate target agents"))
-    );
+    assert!(failures
+        .iter()
+        .all(|failure| failure.message.contains("duplicate target agents")));
     let app = app.lock().await;
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&session_id, &agent_id)
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&session_id, &agent_id)
+        .is_none());
 }
 
 #[test]
@@ -308,17 +303,14 @@ async fn provider_batch_launch_rejects_focused_and_explicit_duplicate_without_pa
     assert_eq!(failures.len(), 2);
     assert_eq!(failures[0].agent_id.as_deref(), Some(agent_id.as_str()));
     assert_eq!(failures[1].agent_id.as_deref(), Some(agent_id.as_str()));
-    assert!(
-        failures
-            .iter()
-            .all(|failure| failure.message.contains("duplicate target agents"))
-    );
+    assert!(failures
+        .iter()
+        .all(|failure| failure.message.contains("duplicate target agents")));
     let app = app.lock().await;
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&session_id, &agent_id)
-            .is_none()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&session_id, &agent_id)
+        .is_none());
 }
 
 #[test]
@@ -418,16 +410,14 @@ async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_in
         second_session_id.as_str()
     );
     let app = app.lock().await;
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&first_session_id, &first_agent_id)
-            .is_some()
-    );
-    assert!(
-        app.providers()
-            .get_latest_run_for_agent(&second_session_id, &second_agent_id)
-            .is_some()
-    );
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&first_session_id, &first_agent_id)
+        .is_some());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&second_session_id, &second_agent_id)
+        .is_some());
 }
 
 #[test]

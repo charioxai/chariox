@@ -4,8 +4,8 @@ use std::process::{Command, Stdio};
 use crate::error::DaemonError;
 
 use super::{
-    LocalDockerSliceOptions, ensure_host_docker_ready, local_docker_container_is_running,
-    local_docker_container_name, run_local_docker_slice_screen,
+    ensure_host_docker_ready, local_docker_container_is_running, local_docker_container_name,
+    run_local_docker_slice_screen, LocalDockerSliceOptions,
 };
 use crate::slice::model::{
     SliceBackendKind, SliceBackupRecord, SliceDisplayMode, SliceRecord, SliceSavedStateRecord,

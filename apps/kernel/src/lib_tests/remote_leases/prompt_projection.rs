@@ -42,12 +42,11 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .get_attachment(&leased_agent.backing_attachment_id)
         .expect("leased backing attachment should exist");
     assert_eq!(backing_attachment.owner_user_id(), "user-home");
-    assert!(
-        app.sessions()
-            .list_sessions()
-            .into_iter()
-            .all(|session| session.id() != leased_agent.backing_session_id)
-    );
+    assert!(app
+        .sessions()
+        .list_sessions()
+        .into_iter()
+        .all(|session| session.id() != leased_agent.backing_session_id));
 
     let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
         .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
@@ -132,11 +131,9 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
         .expect("settled backing prompt should not block completion projection")
         .expect("completion projection should be emitted");
     let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
-    assert!(
-        completions
-            .iter()
-            .any(|completion| completion.message_id == "assistant-msg-1")
-    );
+    assert!(completions
+        .iter()
+        .any(|completion| completion.message_id == "assistant-msg-1"));
 }
 
 #[test]
@@ -314,12 +311,11 @@ fn leased_projection_pump_settles_quiet_non_workflow_prompt() {
         .expect("quiet prompt completion should be projected");
     let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
     assert_eq!(completions.len(), 1);
-    assert!(
-        app.prompt_owner_active_prompt_for_agent_snapshot(
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
         )
         .expect("active prompt should load")
-        .is_none()
-    );
+        .is_none());
 }

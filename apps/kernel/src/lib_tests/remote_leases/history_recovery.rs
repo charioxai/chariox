@@ -76,11 +76,9 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
     assert_eq!(notices, vec!["remote notice".to_string()]);
     assert_eq!(output_chunks.len(), 1);
     assert_eq!(completions.len(), 1);
-    assert!(
-        completions[0]
-            .message_id
-            .contains(&format!("leased-{provider_run_id}-completion"))
-    );
+    assert!(completions[0]
+        .message_id
+        .contains(&format!("leased-{provider_run_id}-completion")));
 }
 
 #[test]

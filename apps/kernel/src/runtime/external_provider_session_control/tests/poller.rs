@@ -230,11 +230,9 @@ fn session_bounded_refresh_catches_up_after_attach() {
         let entries = app
             .load_session_history_entries(&session, Some(&agent_id))
             .expect("history should load");
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry.text == "catch up this attached thread")
-        );
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "catch up this attached thread"));
         assert!(entries.iter().any(|entry| entry.text == "caught up"));
     });
 

@@ -517,6 +517,42 @@ impl OperationalHistoryStore {
             })
     }
 
+    pub fn has_arroba_owned_user_prompts(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM history_events
+                    WHERE session_id = ?1
+                      AND kind = 'user_prompt'
+                      AND (
+                        metadata_text IS NULL
+                        OR metadata_text NOT LIKE '%' || ?2 || '%'
+                      )
+                    LIMIT 1
+                )",
+                params![
+                    session_id,
+                    SessionHistoryEntrySource::EXTERNAL_PROVIDER_OBSERVED_METADATA_LINE,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "check operational session arroba-owned prompts",
+                message: error.to_string(),
+            })
+    }
+
     pub fn legacy_fallback_disabled(&self, session_id: &str) -> Result<bool, DaemonError> {
         let connection =
             self.connection

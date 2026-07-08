@@ -51,16 +51,12 @@ fn reads_claude_observed_turns_preserves_latest_user_before_recent_jsonl_window(
     assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
     assert_eq!(turns[0].text, "Run a long Claude external drill.");
     assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-window"));
-    assert!(
-        turns
-            .iter()
-            .any(|turn| turn.text == "FINAL_EXTERNAL_PARITY_SUMMARY")
-    );
-    assert!(
-        turns
-            .iter()
-            .any(|turn| turn.text.starts_with("claude message completed"))
-    );
+    assert!(turns
+        .iter()
+        .any(|turn| turn.text == "FINAL_EXTERNAL_PARITY_SUMMARY"));
+    assert!(turns
+        .iter()
+        .any(|turn| turn.text.starts_with("claude message completed")));
 }
 
 #[test]
@@ -102,11 +98,9 @@ fn reads_changed_claude_observed_turns_reuses_cached_user_anchor() {
     assert_eq!(jsonl_incremental_read_count(), 1);
     assert_eq!(appended[0].role, ObservedExternalProviderTurnRole::User);
     assert_eq!(appended[0].text, "Run a long cached Claude external drill.");
-    assert!(
-        appended
-            .iter()
-            .any(|turn| turn.text == "CACHE_REUSED_CLAUDE_REPLY")
-    );
+    assert!(appended
+        .iter()
+        .any(|turn| turn.text == "CACHE_REUSED_CLAUDE_REPLY"));
 }
 
 #[test]
@@ -191,9 +185,7 @@ fn reads_claude_observed_reasoning_tools_and_status_metadata() {
     assert!(turns[6].text.contains("tool_result"));
     assert!(turns[6].text.contains("created"));
     assert!(turns[7].text.contains("claude last-prompt"));
-    assert!(
-        turns
-            .iter()
-            .all(|turn| !turn.text.contains("file-history-snapshot"))
-    );
+    assert!(turns
+        .iter()
+        .all(|turn| !turn.text.contains("file-history-snapshot")));
 }

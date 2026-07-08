@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde::{Serialize, Serializer};
 
 use super::{
-    DEFAULT_EVENT_ID_RESERVATION_BLOCK, EventLog, EventRetentionPolicy, LoggedEvent, ReplayOutcome,
+    EventLog, EventRetentionPolicy, LoggedEvent, ReplayOutcome, DEFAULT_EVENT_ID_RESERVATION_BLOCK,
 };
 
 static CLONE_COUNT: AtomicUsize = AtomicUsize::new(0);

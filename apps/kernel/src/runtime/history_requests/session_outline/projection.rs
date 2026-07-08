@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
+
 use crate::error::DaemonError;
 use crate::history::{
-    HistoryEvent, HistoryEventKind, STEERING_PROMPT_MERGE_KEY_PREFIX, SessionHistoryEntryKind,
+    HistoryEvent, HistoryEventKind, SessionHistoryEntryKind, STEERING_PROMPT_MERGE_KEY_PREFIX,
 };
 use crate::local::SessionHistoryOutlineBlob;
 use crate::session_history_page::SessionHistoryPageEntry;
@@ -8,6 +10,7 @@ use crate::session_history_page::SessionHistoryPageEntry;
 const BLOB_ID_PREFIX: &str = "history";
 pub(super) const MAX_OUTLINE_INLINE_CHARS: usize = 16 * 1024;
 pub(super) const MAX_OUTLINE_EVENTS_PER_BLOB: usize = 256;
+pub(super) const MAX_OUTLINE_INLINE_ENTRIES_PER_TURN: usize = 32;
 
 pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
     match event.kind {
@@ -80,12 +83,15 @@ pub(super) fn outline_blobs_from_events(
     events: &[HistoryEvent],
     prompt_sequence: u64,
     summary_sequence: Option<u64>,
+    forced_blob_sequences: &BTreeSet<u64>,
 ) -> Vec<SessionHistoryOutlineBlob> {
     let candidates = events
         .iter()
         .filter(|event| event.sequence != prompt_sequence)
         .filter(|event| Some(event.sequence) != summary_sequence || event_needs_outline_blob(event))
-        .filter(|event| event_projects_as_outline_blob(event))
+        .filter(|event| {
+            forced_blob_sequences.contains(&event.sequence) || event_projects_as_outline_blob(event)
+        })
         .filter(|event| {
             event
                 .to_session_history_entry()

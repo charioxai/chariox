@@ -1,11 +1,11 @@
 use base64::Engine as _;
 
 use super::super::{
-    GitTurnContext, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
-    WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
     apply_workspace_live_sync_change_to_target, capture_turn_snapshot, git_output,
     tracked_workspace_live_sync_change_after_turn, workspace_live_sync_git_branch,
-    workspace_live_sync_identity_conflict, workspace_live_sync_repo_fingerprint,
+    workspace_live_sync_identity_conflict, workspace_live_sync_repo_fingerprint, GitTurnContext,
+    WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange, WorkspaceLiveSyncFileChange,
+    WorkspaceLiveSyncFileChangeKind,
 };
 use super::support::{run_git, test_context};
 
@@ -58,11 +58,9 @@ fn workspace_live_sync_apply_target_applies_exact_base_changes() {
 
     let results = apply_workspace_live_sync_change_to_target(&change, &target);
 
-    assert!(
-        results
-            .iter()
-            .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied)
-    );
+    assert!(results
+        .iter()
+        .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied));
     assert_eq!(
         std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
         "new\n"
@@ -76,11 +74,9 @@ fn workspace_live_sync_apply_target_applies_exact_base_changes() {
         git_output(&target, &["rev-parse", "HEAD"]).expect("target head should be readable"),
         target_head_before
     );
-    assert!(
-        git_output(&target, &["status", "--porcelain"])
-            .expect("target status should be readable")
-            .contains("src/lib.rs")
-    );
+    assert!(git_output(&target, &["status", "--porcelain"])
+        .expect("target status should be readable")
+        .contains("src/lib.rs"));
 
     let _ = std::fs::remove_dir_all(&source);
     let _ = std::fs::remove_dir_all(&target);
@@ -202,11 +198,9 @@ fn workspace_live_sync_apply_target_treats_already_applied_paths_as_applied() {
 
     let results = apply_workspace_live_sync_change_to_target(&change, &target);
 
-    assert!(
-        results
-            .iter()
-            .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied)
-    );
+    assert!(results
+        .iter()
+        .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied));
     assert_eq!(
         std::fs::read_to_string(target.join("src/added.rs")).expect("target should read"),
         "added\n"
@@ -476,14 +470,12 @@ fn workspace_live_sync_identity_conflict_detects_branch_drift() {
         workspace_live_sync_git_branch(&target).as_deref(),
         Some("sync-main")
     );
-    assert!(
-        workspace_live_sync_identity_conflict(
-            &target,
-            Some("sync-main"),
-            Some(fingerprint.as_str()),
-        )
-        .is_none()
-    );
+    assert!(workspace_live_sync_identity_conflict(
+        &target,
+        Some("sync-main"),
+        Some(fingerprint.as_str()),
+    )
+    .is_none());
 
     run_git(&target, &["checkout", "-b", "other"]);
 

@@ -407,8 +407,8 @@ impl ProviderToolDeltaState {
     }
 }
 
-fn provider_tool_delta_gate()
--> &'static Mutex<BTreeMap<ProviderToolDeltaKey, ProviderToolDeltaState>> {
+fn provider_tool_delta_gate(
+) -> &'static Mutex<BTreeMap<ProviderToolDeltaKey, ProviderToolDeltaState>> {
     static GATE: OnceLock<Mutex<BTreeMap<ProviderToolDeltaKey, ProviderToolDeltaState>>> =
         OnceLock::new();
     GATE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -474,8 +474,8 @@ struct ProviderOutputTruncationLogState {
     suppressed_logs: u64,
 }
 
-fn provider_output_truncation_log_gate()
--> &'static Mutex<BTreeMap<ProviderOutputTruncationLogKey, ProviderOutputTruncationLogState>> {
+fn provider_output_truncation_log_gate(
+) -> &'static Mutex<BTreeMap<ProviderOutputTruncationLogKey, ProviderOutputTruncationLogState>> {
     static GATE: OnceLock<
         Mutex<BTreeMap<ProviderOutputTruncationLogKey, ProviderOutputTruncationLogState>>,
     > = OnceLock::new();

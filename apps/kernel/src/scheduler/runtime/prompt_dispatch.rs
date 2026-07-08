@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{PromptQueueItem, PromptSubmissionOutcome};
 use crate::transport::relay_client::{
-    LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, send_peer_request_via_temporary_connection_with_timeout,
+    send_peer_request_via_temporary_connection_with_timeout, LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
 };
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 

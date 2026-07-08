@@ -1,8 +1,8 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -232,13 +232,11 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
         result.payload["handoff_routing"]["final_json_field"],
         "workflow_handoffs"
     );
-    assert!(
-        result.payload["handoff_routing"]["select_by"]
-            .as_array()
-            .expect("select_by should be an array")
-            .iter()
-            .any(|value| value == "edge_id")
-    );
+    assert!(result.payload["handoff_routing"]["select_by"]
+        .as_array()
+        .expect("select_by should be an array")
+        .iter()
+        .any(|value| value == "edge_id"));
     assert_eq!(result.payload["workflow_node_run_id"], node_run_id);
 }
 

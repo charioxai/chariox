@@ -153,11 +153,10 @@ fn append_observed_external_turns_skips_active_arroba_prompt_echoes() {
 
     assert_eq!(outcome.changed_count, 0);
     assert!(!outcome.external_active_prompt_settled);
-    assert!(
-        app.load_session_history_entries(&session, Some(agent.id()))
-            .expect("history should load")
-            .is_empty()
-    );
+    assert!(app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load")
+        .is_empty());
     let active_prompt = app
         .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
         .expect("active prompt should load")

@@ -53,23 +53,20 @@ fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
         .teardown_provider_processes(None, false)
         .expect("safe teardown should succeed");
     assert_eq!(torn_down.len(), 1);
-    assert!(
-        app.list_provider_processes(None)
-            .expect("provider processes should relist")
-            .is_empty()
-    );
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .processes
-            .is_empty()
-    );
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .run_processes
-            .is_empty()
-    );
+    assert!(app
+        .list_provider_processes(None)
+        .expect("provider processes should relist")
+        .is_empty());
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .processes
+        .is_empty());
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .run_processes
+        .is_empty());
 }
 
 #[test]
@@ -99,18 +96,16 @@ fn provider_process_gc_reaps_idle_managed_run() {
         .expect("provider process gc should succeed");
 
     assert_eq!(summary.tracked_processes_reaped, 1);
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .processes
-            .is_empty()
-    );
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .run_processes
-            .is_empty()
-    );
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .processes
+        .is_empty());
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .run_processes
+        .is_empty());
     assert_eq!(
         app.providers()
             .get_run(run.id())
@@ -573,10 +568,9 @@ fn provider_launch_scrubs_configured_credential_env_names() {
         ))
         .expect("provider launch should succeed");
 
-    assert!(
-        run.pty_env_remove()
-            .contains(&"ARROBA_TEST_GH_TOKEN".to_string())
-    );
+    assert!(run
+        .pty_env_remove()
+        .contains(&"ARROBA_TEST_GH_TOKEN".to_string()));
     match old_home {
         Some(value) => std::env::set_var("HOME", value),
         None => std::env::remove_var("HOME"),
@@ -638,11 +632,10 @@ fn provider_processes_do_not_teardown_when_session_is_attached() {
         .teardown_provider_processes(None, true)
         .expect("forced teardown should succeed without active prompts");
     assert_eq!(torn_down.len(), 1);
-    assert!(
-        app.list_provider_processes(None)
-            .expect("provider processes should relist")
-            .is_empty()
-    );
+    assert!(app
+        .list_provider_processes(None)
+        .expect("provider processes should relist")
+        .is_empty());
 }
 
 #[test]
@@ -662,33 +655,29 @@ fn ending_session_clears_tracked_provider_processes() {
         ))
         .expect("provider launch should succeed");
 
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .processes
-            .values()
-            .any(|process| { process.owner_provider_run_ids == vec![run.id().to_string()] })
-    );
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .processes
+        .values()
+        .any(|process| { process.owner_provider_run_ids == vec![run.id().to_string()] }));
 
     let _ = crate::app::KernelSessionService::new(&mut app)
         .end_session(session.id())
         .expect("session should end");
 
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .processes
-            .is_empty()
-    );
-    assert!(
-        app.provider_process_tracking
-            .snapshot()
-            .run_processes
-            .is_empty()
-    );
-    assert!(
-        app.list_provider_processes(None)
-            .expect("provider processes should list")
-            .is_empty()
-    );
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .processes
+        .is_empty());
+    assert!(app
+        .provider_process_tracking
+        .snapshot()
+        .run_processes
+        .is_empty());
+    assert!(app
+        .list_provider_processes(None)
+        .expect("provider processes should list")
+        .is_empty());
 }

@@ -105,16 +105,12 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
     ));
     assert!(session.active_prompt_for_agent(&first_agent_id).is_some());
     assert!(session.active_prompt_for_agent(&second_agent_id).is_some());
-    assert!(
-        agent_activity
-            .get(&first_agent_id)
-            .is_some_and(|activity| activity.busy)
-    );
-    assert!(
-        agent_activity
-            .get(&second_agent_id)
-            .is_some_and(|activity| activity.busy)
-    );
+    assert!(agent_activity
+        .get(&first_agent_id)
+        .is_some_and(|activity| activity.busy));
+    assert!(agent_activity
+        .get(&second_agent_id)
+        .is_some_and(|activity| activity.busy));
 }
 
 #[tokio::test]
@@ -200,17 +196,13 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
     };
     assert!(results.is_empty());
     assert_eq!(failures.len(), 2);
-    assert!(
-        failures
-            .iter()
-            .all(|failure| failure.message.contains("duplicate target agents"))
-    );
+    assert!(failures
+        .iter()
+        .all(|failure| failure.message.contains("duplicate target agents")));
     assert!(session.active_prompt_for_agent(&agent_id).is_none());
-    assert!(
-        agent_activity
-            .get(&agent_id)
-            .is_some_and(|activity| !activity.busy)
-    );
+    assert!(agent_activity
+        .get(&agent_id)
+        .is_some_and(|activity| !activity.busy));
     let app = app.lock().await;
     let session_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&session_id)
@@ -305,11 +297,9 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
     assert_eq!(failures[0].agent_id.as_deref(), Some("missing-agent"));
     assert!(failures[0].message.contains("missing-agent"));
     assert!(session.active_prompt_for_agent(&agent_id).is_none());
-    assert!(
-        agent_activity
-            .get(&agent_id)
-            .is_some_and(|activity| !activity.busy)
-    );
+    assert!(agent_activity
+        .get(&agent_id)
+        .is_some_and(|activity| !activity.busy));
     let app = app.lock().await;
     let session_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&session_id)
@@ -434,16 +424,12 @@ async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
     let second_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&second_session_id)
         .expect("second session should remain available");
-    assert!(
-        first_after
-            .active_prompt_for_agent(&first_agent_id)
-            .is_some()
-    );
-    assert!(
-        second_after
-            .active_prompt_for_agent(&second_agent_id)
-            .is_some()
-    );
+    assert!(first_after
+        .active_prompt_for_agent(&first_agent_id)
+        .is_some());
+    assert!(second_after
+        .active_prompt_for_agent(&second_agent_id)
+        .is_some());
 }
 
 #[tokio::test]

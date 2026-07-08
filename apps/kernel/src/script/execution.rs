@@ -9,8 +9,8 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 
 use super::{
-    ArrobaEnvironmentConfig, ArrobaEnvironmentRuntime, ArrobaScriptRuntime, ScriptExecutionResult,
-    io_error,
+    io_error, ArrobaEnvironmentConfig, ArrobaEnvironmentRuntime, ArrobaScriptRuntime,
+    ScriptExecutionResult,
 };
 
 const PYTHON_INSPECTOR: &str = r#"

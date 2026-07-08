@@ -83,11 +83,9 @@ fn upsert_canonicalizes_known_provider_session_records() {
 #[test]
 fn attached_markers_match_canonicalized_provider_session_records() {
     let store = ExternalProviderSessionIndexStore::default();
-    assert!(
-        store
-            .mark_attached(" CODEX : thread-1 ", "session-1", "agent-1")
-            .is_none()
-    );
+    assert!(store
+        .mark_attached(" CODEX : thread-1 ", "session-1", "agent-1")
+        .is_none());
 
     store.upsert(record("Codex", " thread-1 ", 20));
 
@@ -146,11 +144,9 @@ fn replace_provider_sessions_preserves_attachment_markers() {
 #[test]
 fn attachment_marker_applies_to_later_discovered_provider_session() {
     let store = ExternalProviderSessionIndexStore::default();
-    assert!(
-        store
-            .mark_provider_session_attached("codex", "thread-1", "session-1", "agent-1")
-            .is_none()
-    );
+    assert!(store
+        .mark_provider_session_attached("codex", "thread-1", "session-1", "agent-1")
+        .is_none());
 
     store.replace_provider_sessions("codex", vec![record("codex", "thread-1", 40)]);
 
@@ -287,16 +283,14 @@ fn detach_session_returns_provider_session_to_attachable_list() {
     store.upsert(record("codex", "thread-1", 30));
     store.mark_attached("codex:thread-1", "session-1", "agent-1");
 
-    assert!(
-        store
-            .list(&ListExternalProviderSessionsRequest {
-                provider: Some("codex".to_string()),
-                cursor: None,
-                limit: None,
-            })
-            .sessions
-            .is_empty()
-    );
+    assert!(store
+        .list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        })
+        .sessions
+        .is_empty());
 
     store.detach_session("session-1");
 
@@ -327,16 +321,14 @@ fn detach_session_preserves_other_session_attachment_agents() {
     assert!(session.is_attached_to_arroba());
     assert_eq!(session.attached_session_ids, vec!["session-2"]);
     assert_eq!(session.attached_agent_ids, vec!["agent-2"]);
-    assert!(
-        store
-            .list(&ListExternalProviderSessionsRequest {
-                provider: Some("codex".to_string()),
-                cursor: None,
-                limit: None,
-            })
-            .sessions
-            .is_empty()
-    );
+    assert!(store
+        .list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        })
+        .sessions
+        .is_empty());
 }
 
 #[test]
@@ -405,16 +397,14 @@ fn detach_agent_preserves_other_agent_attachments() {
     assert!(session.is_attached_to_arroba());
     assert_eq!(session.attached_session_ids, vec!["session-1", "session-2"]);
     assert_eq!(session.attached_agent_ids, vec!["agent-2", "agent-3"]);
-    assert!(
-        store
-            .list(&ListExternalProviderSessionsRequest {
-                provider: Some("codex".to_string()),
-                cursor: None,
-                limit: None,
-            })
-            .sessions
-            .is_empty()
-    );
+    assert!(store
+        .list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        })
+        .sessions
+        .is_empty());
 
     store.detach_agent("session-1", "agent-2");
     let session = store

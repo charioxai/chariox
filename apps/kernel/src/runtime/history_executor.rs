@@ -20,7 +20,7 @@ use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_history_request(
-    _history_store: SessionHistoryStore,
+    history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -29,6 +29,11 @@ pub(crate) async fn execute_history_request(
     match request {
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
             let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
+            ensure_operational_history_for_outline(
+                &history_store,
+                &operational_history_store,
+                &snapshot,
+            )?;
             let agent_imports = snapshot
                 .agents()
                 .iter()
@@ -90,6 +95,37 @@ pub(crate) async fn execute_history_request(
             message: "unsupported recall request".to_string(),
         }),
     }
+}
+
+fn ensure_operational_history_for_outline(
+    history_store: &SessionHistoryStore,
+    operational_history_store: &OperationalHistoryStore,
+    session: &crate::session::RuntimeSession,
+) -> Result<(), DaemonError> {
+    if operational_history_store.has_arroba_owned_user_prompts(session.id())? {
+        return Ok(());
+    }
+    if operational_history_store.has_session_events(session.id())?
+        && operational_history_store.legacy_fallback_disabled(session.id())?
+    {
+        return Ok(());
+    }
+    let entries = history_store.load(session)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let imported = operational_history_store.append_missing_legacy_transcripts(&entries)?;
+    if !imported.is_empty() {
+        crate::logging::info_with_fields(
+            "history.outline",
+            "backfilled legacy session history for outline request",
+            serde_json::json!({
+                "session_id": session.id(),
+                "imported_event_count": imported.len(),
+            }),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn execute_prompt_input_history_request(

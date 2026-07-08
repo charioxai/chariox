@@ -297,11 +297,9 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
 
     assert_eq!(records.records.len(), 64);
     assert_eq!(records.changed_keys.len(), 1);
-    assert!(
-        records
-            .changed_keys
-            .contains(&("session-1".to_string(), "attachment-1".to_string()))
-    );
+    assert!(records
+        .changed_keys
+        .contains(&("session-1".to_string(), "attachment-1".to_string())));
 
     let drained = terminal.drain_output_records("session-1", "attachment-1");
     assert_eq!(drained.len(), 64);
@@ -708,11 +706,9 @@ fn notice_pending_index_tracks_recipient_drain() {
 
     let first = terminal.drain_notice_records("session-1", "attachment-1");
     assert_eq!(first.len(), 1);
-    assert!(
-        !terminal
-            .pending_notice_by_attachment
-            .contains_key(&("session-1".to_string(), "attachment-1".to_string()))
-    );
+    assert!(!terminal
+        .pending_notice_by_attachment
+        .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
     assert_eq!(
         terminal
             .pending_notice_by_attachment
@@ -769,16 +765,12 @@ fn terminal_event_drains_consume_single_recipient_attachment_queues() {
     assert_eq!(notices[0].message, "notice-0");
     assert_eq!(completions.len(), 3);
     assert_eq!(completions[2].message_id, "message-2");
-    assert!(
-        !terminal
-            .pending_notice_by_attachment
-            .contains_key(&("session-1".to_string(), "attachment-1".to_string()))
-    );
-    assert!(
-        !terminal
-            .pending_completion_by_attachment
-            .contains_key(&("session-1".to_string(), "attachment-1".to_string()))
-    );
+    assert!(!terminal
+        .pending_notice_by_attachment
+        .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
+    assert!(!terminal
+        .pending_completion_by_attachment
+        .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
     assert!(terminal.notice_records().is_empty());
     assert!(terminal.completion_records.is_empty());
 }
@@ -807,16 +799,12 @@ fn broadcast_notice_pending_index_tracks_session_drain() {
     let first = terminal.drain_notice_records("session-1", "attachment-1");
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].message, "broadcast notice");
-    assert!(
-        !terminal
-            .pending_broadcast_notice_by_session
-            .contains_key("session-1")
-    );
-    assert!(
-        terminal
-            .pending_broadcast_notice_by_session
-            .contains_key("session-2")
-    );
+    assert!(!terminal
+        .pending_broadcast_notice_by_session
+        .contains_key("session-1"));
+    assert!(terminal
+        .pending_broadcast_notice_by_session
+        .contains_key("session-2"));
     assert_eq!(terminal.notice_records().len(), 1);
 }
 
@@ -873,11 +861,9 @@ fn completion_pending_index_tracks_recipient_drain() {
 
     let first = terminal.drain_completion_records("session-1", "attachment-1");
     assert_eq!(first.len(), 1);
-    assert!(
-        !terminal
-            .pending_completion_by_attachment
-            .contains_key(&("session-1".to_string(), "attachment-1".to_string()))
-    );
+    assert!(!terminal
+        .pending_completion_by_attachment
+        .contains_key(&("session-1".to_string(), "attachment-1".to_string())));
     assert_eq!(
         terminal
             .pending_completion_by_attachment

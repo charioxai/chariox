@@ -1,9 +1,9 @@
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::provider::{
-    ProviderPromptSignalBatch, RuntimeProviderRun, classify_provider_terminal_failure_text,
+    classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
+use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
@@ -21,8 +21,8 @@ mod timeouts;
 
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
-    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, StructuredOutputRecordStore,
-    structured_output_batch_should_poll_immediately,
+    structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
+    STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS,
 };
 use timeouts::{reap_provider_first_output_timeouts, reap_provider_inactivity_timeouts};
 

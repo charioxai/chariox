@@ -47,28 +47,35 @@ fn test_context() -> WorkflowPromptInjectionContext {
 fn workflow_prompt_assembly_keeps_endpoint_visible_and_layers_hidden() {
     let assembly = build_workflow_turn_prompt_assembly(test_context());
 
-    assert!(
-        assembly
-            .visible_user_prompt
-            .contains("ENDPOINT_VISIBLE_TOKEN")
-    );
-    assert!(
-        !assembly
-            .visible_user_prompt
-            .contains("WORKFLOW_HIDDEN_TOKEN")
-    );
+    assert!(assembly
+        .visible_user_prompt
+        .contains("ENDPOINT_VISIBLE_TOKEN"));
+    assert!(!assembly
+        .visible_user_prompt
+        .contains("WORKFLOW_HIDDEN_TOKEN"));
     assert!(!assembly.visible_user_prompt.contains("NODE_HIDDEN_TOKEN"));
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("WORKFLOW_HIDDEN_TOKEN")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("WORKFLOW_HIDDEN_TOKEN"));
     assert!(assembly.hidden_system_context.contains("NODE_HIDDEN_TOKEN"));
-    assert!(
-        !assembly
-            .hidden_system_context
-            .contains("ENDPOINT_VISIBLE_TOKEN")
-    );
+    assert!(!assembly
+        .hidden_system_context
+        .contains("ENDPOINT_VISIBLE_TOKEN"));
+}
+
+#[test]
+fn workflow_prompt_assembly_omits_empty_workflow_prompt_section() {
+    let mut context = test_context();
+    context.workflow_prompt = "   ".to_string();
+
+    let assembly = build_workflow_turn_prompt_assembly(context);
+
+    assert!(!assembly
+        .hidden_system_context
+        .contains("Workflow-level prompt:"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("Node-level instructions:\nNODE_HIDDEN_TOKEN"));
 }
 
 #[test]
@@ -149,21 +156,15 @@ fn render_workflow_turn_prompt_reads_workflow_prompt_from_definition() {
     )
     .expect("workflow turn prompt should render");
 
-    assert!(
-        assembly
-            .visible_user_prompt
-            .contains("ENDPOINT_INVOCATION_PROMPT")
-    );
-    assert!(
-        !assembly
-            .visible_user_prompt
-            .contains("WORKFLOW_DEFINITION_PROMPT")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("WORKFLOW_DEFINITION_PROMPT")
-    );
+    assert!(assembly
+        .visible_user_prompt
+        .contains("ENDPOINT_INVOCATION_PROMPT"));
+    assert!(!assembly
+        .visible_user_prompt
+        .contains("WORKFLOW_DEFINITION_PROMPT"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("WORKFLOW_DEFINITION_PROMPT"));
 }
 
 #[test]
@@ -177,34 +178,24 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
     let assembly = build_workflow_turn_prompt_assembly(context);
     restore_arroba_home(previous_home);
 
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("Outgoing edge routing:")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("Outgoing edge routing:"));
     assert!(assembly.hidden_system_context.contains("workflow_handoffs"));
     assert!(assembly.hidden_system_context.contains("edge_id"));
     assert!(assembly.hidden_system_context.contains("to_node_id"));
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("the runtime sends the same handoff to every outgoing edge")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("the runtime sends handoffs only to the matching outgoing edges")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("validate the routed message for each selected edge")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("edge edge-1 -> node-2 (Reviewer)")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("the runtime sends the same handoff to every outgoing edge"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("the runtime sends handoffs only to the matching outgoing edges"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("validate the routed message for each selected edge"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("edge edge-1 -> node-2 (Reviewer)"));
 }
 
 #[test]
@@ -225,34 +216,24 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
     let assembly = build_workflow_turn_prompt_assembly(context);
     restore_arroba_home(previous_home);
 
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("Intermediate outputs are user-visible progress, event, or status updates")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("They do not send data downstream")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("multiple times in the same workflow node turn")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("same node-level intermediate output schema")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("Intermediate outputs are user-visible progress, event, or status updates"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("They do not send data downstream"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("multiple times in the same workflow node turn"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("same node-level intermediate output schema"));
     assert!(assembly.hidden_system_context.contains(
         "edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"
     ));
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("validate the routed message for each selected edge")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("validate the routed message for each selected edge"));
 }
 
 #[test]
@@ -301,37 +282,27 @@ fn workflow_prompt_assembly_reads_user_edited_registry_template() {
     let assembly = build_workflow_turn_prompt_assembly(test_context());
     restore_arroba_home(previous_home);
 
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("REGISTRY_WORKFLOW_TEMPLATE workflow-ack:test")
-    );
-    assert!(
-        !assembly
-            .visible_user_prompt
-            .contains("REGISTRY_WORKFLOW_TEMPLATE")
-    );
-    assert!(
-        assembly
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "workflow/turn")
-    );
-    assert!(
-        assembly
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "workflow/workflow-test/prompt")
-    );
-    assert!(
-        assembly
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "workflow-node/node-test/instructions")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("REGISTRY_WORKFLOW_TEMPLATE workflow-ack:test"));
+    assert!(!assembly
+        .visible_user_prompt
+        .contains("REGISTRY_WORKFLOW_TEMPLATE"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/turn"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/workflow-test/prompt"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow-node/node-test/instructions"));
 }
 
 #[test]
@@ -369,38 +340,26 @@ fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
     let assembly = build_workflow_turn_prompt_assembly(context);
     restore_arroba_home(previous_home);
 
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("REGISTRY_COMPLETION_TOKEN")
-    );
-    assert!(
-        assembly
-            .hidden_system_context
-            .contains("REGISTRY_INTERMEDIATE_TOKEN")
-    );
-    assert!(
-        !assembly
-            .visible_user_prompt
-            .contains("REGISTRY_COMPLETION_TOKEN")
-    );
-    assert!(
-        !assembly
-            .visible_user_prompt
-            .contains("REGISTRY_INTERMEDIATE_TOKEN")
-    );
-    assert!(
-        assembly
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "workflow/run-completion")
-    );
-    assert!(
-        assembly
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "workflow/run-intermediate-output")
-    );
+    assert!(assembly
+        .hidden_system_context
+        .contains("REGISTRY_COMPLETION_TOKEN"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("REGISTRY_INTERMEDIATE_TOKEN"));
+    assert!(!assembly
+        .visible_user_prompt
+        .contains("REGISTRY_COMPLETION_TOKEN"));
+    assert!(!assembly
+        .visible_user_prompt
+        .contains("REGISTRY_INTERMEDIATE_TOKEN"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/run-completion"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/run-intermediate-output"));
 }

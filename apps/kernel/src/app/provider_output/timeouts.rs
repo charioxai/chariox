@@ -1,5 +1,5 @@
-use crate::app::DaemonApp;
 use crate::app::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 

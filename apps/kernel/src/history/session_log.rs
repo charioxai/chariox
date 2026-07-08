@@ -978,7 +978,9 @@ mod tests {
         assert_eq!(entry.text, "");
         assert_eq!(
             entry.merge_key.as_deref(),
-            Some("external:codex:thread-1:state:active_prompt_settled:external:codex:thread-1:item-1")
+            Some(
+                "external:codex:thread-1:state:active_prompt_settled:external:codex:thread-1:item-1"
+            )
         );
         assert_eq!(entry.external_provider_turn_id.as_deref(), Some("turn-1"));
         assert_eq!(

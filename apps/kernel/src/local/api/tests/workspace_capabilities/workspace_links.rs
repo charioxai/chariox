@@ -120,11 +120,9 @@ fn local_request_api_manages_session_workspace_links_inner() {
     assert!(enrollment_notice.message.contains(
         "Mode choice: managed requires provider write fencing; tracked syncs at turn end"
     ));
-    assert!(
-        enrollment_notice
-            .message
-            .contains("live sync mode is unchanged")
-    );
+    assert!(enrollment_notice
+        .message
+        .contains("live sync mode is unchanged"));
     assert!(enrollment_notice.message.contains("workspace sync managed"));
     assert!(enrollment_notice.message.contains("workspace sync tracked"));
 
@@ -295,12 +293,10 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
         _ => panic!("unexpected local response"),
     };
     assert_eq!(created_session.agents().len(), 2);
-    assert!(
-        created_session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == spawned.id())
-    );
+    assert!(created_session
+        .agents()
+        .iter()
+        .any(|agent| agent.id() == spawned.id()));
 
     let attached_session = match harness
         .dispatch(LocalDaemonRequest::AttachWorkspaceLink(
@@ -318,12 +314,10 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
         _ => panic!("unexpected local response"),
     };
     assert_eq!(attached_session.agents().len(), 2);
-    assert!(
-        attached_session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == spawned.id())
-    );
+    assert!(attached_session
+        .agents()
+        .iter()
+        .any(|agent| agent.id() == spawned.id()));
 
     let session_state = match harness
         .dispatch(LocalDaemonRequest::GetSessionState(
@@ -383,12 +377,10 @@ fn attach_workspace_link_rejects_non_git_worktree_targets_inner() {
     ));
 
     assert!(matches!(denied, Err(DaemonError::LocalTransport { .. })));
-    assert!(
-        denied
-            .expect_err("non-git worktree attach should fail")
-            .to_string()
-            .contains("must be a Git worktree root")
-    );
+    assert!(denied
+        .expect_err("non-git worktree attach should fail")
+        .to_string()
+        .contains("must be a Git worktree root"));
     let _ = std::fs::remove_dir_all(root);
 }
 

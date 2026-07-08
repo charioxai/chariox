@@ -80,38 +80,26 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     let tools = value["result"]["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.slice_screenshot")
-    );
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_screenshot"));
     assert!(tools.iter().any(|tool| tool["name"] == "slice_screenshot"));
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.slice_find_text")
-    );
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_find_text"));
     assert!(tools.iter().any(|tool| tool["name"] == "slice_mouse"));
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.slice_browser_status")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "slice_browser_status")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "arroba.slice_browser_wait_for_text")
-    );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "slice_browser_wait_for_idle")
-    );
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_browser_status"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "slice_browser_status"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_browser_wait_for_text"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "slice_browser_wait_for_idle"));
 }
 
 #[cfg(unix)]

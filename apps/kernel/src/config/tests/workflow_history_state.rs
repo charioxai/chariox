@@ -254,11 +254,9 @@ fn operational_history_path_expands_home() {
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
     config.user_config.history.operational.path = Some("~/.arroba/custom/history.db".to_string());
 
-    assert!(
-        config
-            .operational_history_path()
-            .ends_with(".arroba/custom/history.db")
-    );
+    assert!(config
+        .operational_history_path()
+        .ends_with(".arroba/custom/history.db"));
 }
 
 #[test]
@@ -266,11 +264,9 @@ fn durable_state_path_expands_home() {
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
     config.user_config.state.path = Some("~/.arroba/custom/state.db".to_string());
 
-    assert!(
-        config
-            .durable_state_path()
-            .ends_with(".arroba/custom/state.db")
-    );
+    assert!(config
+        .durable_state_path()
+        .ends_with(".arroba/custom/state.db"));
 }
 
 #[test]
@@ -284,7 +280,5 @@ fn event_counter_paths_expand_state_home_before_parent() {
     assert!(!kernel_counter.starts_with("~"));
     assert!(!relay_counter.starts_with("~"));
     assert!(kernel_counter.ends_with(".arroba/custom/kernel-events/daemon/event-counter.json"));
-    assert!(
-        relay_counter.ends_with(".arroba/custom/kernel-events/daemon/relay-event-counter.json")
-    );
+    assert!(relay_counter.ends_with(".arroba/custom/kernel-events/daemon/relay-event-counter.json"));
 }
