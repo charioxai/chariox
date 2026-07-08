@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>49 allowlisted files remain after initial splits</td>
+              <td>48 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>53efae858</code> <span class="muted">Extract remote native TUI scenario helpers</span></td>
+              <td>The remote native TUI drill now keeps CLI option parsing, relay/kernel/slice setup, and drill orchestration in the executable script, while provider scenario execution, relay-client waiters, automation socket probes, badge/history checks, permissions, attachments, and MCP/skill validation live in a focused scenario helper module.</td>
+              <td><code>node --check apps/cli/scripts/live-remote-native-tui-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-remote-native-tui-drill-scenario.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>13bb96f1e</code> <span class="muted">Extract provider context injection drill helpers</span></td>
