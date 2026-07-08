@@ -266,11 +266,18 @@ function queuedPromptItemFromProjection(
   }
   if (optimistic) {
     return applyOverride({
-      ...optimistic,
+      promptId: prompt.id,
+      agentId,
       prompt: trimSingleTrailingNewline(prompt.prompt),
       promptOrigin: prompt.promptOrigin,
       sourceAttachmentId: prompt.sourceAttachmentId,
+      status: prompt.status,
       attachmentCount: prompt.attachmentCount,
+      steerDisabled: prompt.steerDisabled,
+      canSteer: prompt.canSteer,
+      canCancel: prompt.canCancel,
+      steerDisabledReason: prompt.steerDisabledReason,
+      cancelDisabledReason: prompt.cancelDisabledReason,
     })
   }
   return applyOverride({

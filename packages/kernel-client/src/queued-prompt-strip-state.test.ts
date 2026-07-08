@@ -38,7 +38,7 @@ test("queuedPromptStripItemsForAgent projects queued prompts for the agent", () 
   }])
 })
 
-test("queuedPromptStripItemsForAgent overlays optimistic transcript action state", () => {
+test("queuedPromptStripItemsForAgent replaces optimistic transcript action state from projection", () => {
   const entries: QueuedPromptStripSourceEntry[] = [{
     id: 1,
     role: "user",
@@ -58,9 +58,9 @@ test("queuedPromptStripItemsForAgent overlays optimistic transcript action state
 
   const [item] = queuedPromptStripItemsForAgent(session(), entries, "agent-1")
 
-  assert.equal(item?.status, "steering")
-  assert.equal(item?.canSteer, false)
-  assert.equal(item?.canCancel, false)
+  assert.equal(item?.status, "queued")
+  assert.equal(item?.canSteer, true)
+  assert.equal(item?.canCancel, true)
   assert.equal(item?.attachmentCount, 2)
 })
 
