@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>57 allowlisted files remain after initial splits</td>
+              <td>56 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>855fa6764</code> <span class="muted">Split workflow tool tests</span></td>
+              <td>Workflow runtime-tool production handling now stays under the cap, with workflow turn-context and Agent App HTTP action/audit coverage moved into a sibling Rust test module.</td>
+              <td><code>rustfmt --edition 2024 --config skip_children=true apps/kernel/src/runtime/state/workflow_tool.rs apps/kernel/src/runtime/state/workflow_tool/tests.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::state::workflow_tool::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>6da1ae3aa</code> <span class="muted">Extract workflow publication package helpers</span></td>
