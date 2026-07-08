@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>54 allowlisted files remain after initial splits</td>
+              <td>53 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>42dff2244</code> <span class="muted">Extract drill artifact index summary actions</span></td>
+              <td>The artifact-index summary CLI now keeps argument parsing, freshness diagnostics, metadata requirements, and text output in the executable script, while aggregate next-action construction lives in a focused helper module.</td>
+              <td><code>node --check apps/cli/scripts/drill-artifact-index-summary.mjs</code>, <code>node --check apps/cli/scripts/lib/drill-artifact-index-summary-actions.mjs</code>, <code>node apps/cli/scripts/drill-artifact-index-summary.mjs --help</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>379cd21f2</code> <span class="muted">Split provider projection tests by responsibility</span></td>
