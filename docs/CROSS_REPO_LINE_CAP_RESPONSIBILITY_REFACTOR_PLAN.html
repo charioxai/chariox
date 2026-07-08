@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>11 allowlisted files remain after initial splits</td>
+              <td>10 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>148b30453</code> <span class="muted">Split meta runtime command router</span></td>
+              <td><code>meta_runtime_command.rs</code> is now a facade. Dispatch/audit methods, spawn argument parsing, local daemon request builders, result payload shaping, response summarizers, and parser tests live in focused modules under <code>runtime/router/meta_runtime_command/</code>.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched meta command modules; <code>cargo test -p arroba-kernel runtime::router::meta_runtime_command --lib</code> (5 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (10 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>e8e1422b3</code> <span class="muted">Split terminal stream responsibilities</span></td>
