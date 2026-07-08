@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>81 allowlisted files remain after initial splits</td>
+              <td>80 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>9618f2a1b</code> <span class="muted">Split runtime integration test support</span></td>
+              <td>Runtime integration test support now keeps the original module as the stable public API and environment-lock owner, while terminal/provider polling helpers, the mock OpenCode HTTP/SSE server, and fixture script generation live in bounded child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/tests/support/runtime_integration.rs apps/kernel/tests/support/runtime_integration/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml --test runtime_integration --no-run</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml --test opencode_prompt_routing_integration --no-run</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml --test opencode_runtime_lifecycle_integration --no-run</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml --test opencode_runtime_integration external_opencode_endpoint_accepts_prompts_and_streams_output -- --nocapture --test-threads=1</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>. Full runtime suites were not used as green gates because current <code>runtime_integration</code> has two prompt-queue assertion failures and one OpenCode tool-activity test still fails outside this split.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8ca605be0</code> <span class="muted">Split remote lease tests</span></td>
