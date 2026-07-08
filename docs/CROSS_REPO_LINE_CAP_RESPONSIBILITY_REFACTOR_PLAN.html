@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>61 allowlisted files remain after initial splits</td>
+              <td>60 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>8905e57d7</code> <span class="muted">Extract script execution helpers</span></td>
+              <td>Script registry/config policy now stays in <code>script.rs</code>, while embedded Python/Node inspection, test-run, timeout, and execution helper code lives in <code>script/execution.rs</code>.</td>
+              <td><code>rustfmt --edition 2024 --config skip_children=true apps/kernel/src/script.rs apps/kernel/src/script/execution.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml script::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>eae7c6485</code> <span class="muted">Split agent service facade</span></td>
