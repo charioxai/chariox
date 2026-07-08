@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>70 allowlisted files remain after initial splits</td>
+              <td>69 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>c35c243b1</code> <span class="muted">Split daemon health model tests</span></td>
+              <td>Daemon health projection model code now stays below the cap with its health aggregation tests extracted to a sibling Rust test module.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::projection::daemon_health_model::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>6bbf051a3</code> <span class="muted">Split session snapshot projection tests</span></td>
