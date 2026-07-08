@@ -45,6 +45,5 @@ docs/PROTOCOL.md
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
 apps/server/scripts/live-publication-trace-drill.mjs
 docs/ARCHITECTURE.md
-apps/cli/scripts/lib/drill-validation-gate-presets.mjs
 apps/kernel/src/runtime/slice_command_executor/lifecycle.rs
 apps/kernel/src/transport/kernel_protocol.rs
