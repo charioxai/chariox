@@ -403,6 +403,7 @@ export function retargetEquivalentTranscriptTurnSiblings<
       || sibling.role === "user"
       || sibling.turnId !== equivalentOutput.previousTurnId
       || sibling.turnTracking === "none"
+      || externalProviderObservedExactIdentityConflicts(sibling, canonicalEntry)
     ) {
       continue
     }

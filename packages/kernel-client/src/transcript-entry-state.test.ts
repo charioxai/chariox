@@ -476,6 +476,47 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   assert.deepEqual(retargetedAt, [[8, "tool", 1_200]])
 })
 
+test("retargetEquivalentTranscriptTurnSiblings rejects conflicting exact external identities", () => {
+  const entries: AssignmentEntry<string>[] = [
+    assignmentEntry("equivalent", "assistant", {
+      turnId: "history-turn",
+      outputIdentity: "external:codex:thread-1:user-1:assistant",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-1",
+      createdAtMs: 1_100,
+    }),
+    assignmentEntry("conflicting-tool", "tool", {
+      turnId: "history-turn",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-2",
+      createdAtMs: 1_200,
+    }),
+    assignmentEntry("matching-tool", "tool", {
+      turnId: "history-turn",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-1",
+      createdAtMs: 1_300,
+    }),
+  ]
+
+  const retargeted = retargetEquivalentTranscriptTurnSiblings<string, AssignmentEntry<string>>(entries, {
+    entry: entries[0]!,
+    previousTurnId: "history-turn",
+  }, assignmentEntry("canonical", "assistant", {
+    turnId: "canonical-turn",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }))
+
+  assert.equal(retargeted, 1)
+  assert.equal(entries[1]?.turnId, "history-turn")
+  assert.equal(entries[2]?.turnId, "canonical-turn")
+})
+
 test("transcriptRetentionSlice trims old entries by count", () => {
   const entries = [
     entry(1, "assistant", "one"),
