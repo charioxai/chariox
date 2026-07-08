@@ -718,6 +718,72 @@ mod tests {
     }
 
     #[test]
+    fn clean_provider_prompt_strips_system_wrappers_and_compacts_request_text() {
+        assert_eq!(
+            clean_provider_prompt(
+                "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>hidden</INSTRUCTIONS>"
+                    .to_string()
+            ),
+            None
+        );
+        assert_eq!(
+            clean_provider_prompt("<environment_context>\n  <cwd>/repo</cwd>".to_string()),
+            None
+        );
+        assert_eq!(
+            clean_provider_prompt(
+                "preamble\n## My request for Codex:\n  run   the\ncheck  ".to_string()
+            ),
+            Some("run the check".to_string())
+        );
+        assert_eq!(
+            clean_provider_prompt("meta\n## My request:\n  use   provider form  ".to_string()),
+            Some("use provider form".to_string())
+        );
+    }
+
+    #[test]
+    fn observed_turn_text_cleanup_is_role_specific() {
+        assert_eq!(
+            clean_observed_turn_text(Some("user"), "  ask   this\nnow ".to_string()),
+            Some("ask this now".to_string())
+        );
+        assert_eq!(
+            clean_observed_turn_text(Some("assistant"), "  final answer\n".to_string()),
+            Some("final answer".to_string())
+        );
+        assert_eq!(
+            clean_observed_turn_text(Some("status"), "  codex task_complete {}\n".to_string()),
+            Some("codex task_complete {}".to_string())
+        );
+        assert_eq!(
+            clean_observed_turn_text(Some("unknown"), "text".to_string()),
+            None
+        );
+    }
+
+    #[test]
+    fn text_from_content_extracts_provider_content_shapes() {
+        assert_eq!(
+            text_from_content(&serde_json::json!("plain text")),
+            Some("plain text".to_string())
+        );
+        assert_eq!(
+            text_from_content(&serde_json::json!([
+                {"type": "text", "text": "first"},
+                {"type": "image", "url": "ignored"},
+                {"type": "text", "content": "second"},
+                {"value": "third"}
+            ])),
+            Some("first\nsecond\nthird".to_string())
+        );
+        assert_eq!(
+            text_from_content(&serde_json::json!({"content": "object content"})),
+            Some("object content".to_string())
+        );
+    }
+
+    #[test]
     fn active_external_prompt_turn_uses_latest_user_until_explicit_settlement() {
         let policy = ExternalProviderObservationPolicy::for_provider("codex");
         let turns = vec![
