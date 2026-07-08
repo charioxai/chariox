@@ -7,8 +7,8 @@ use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    external_session_id_for_provider_session, normalized_observed_prompt_text,
-    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderSessionAttachmentRef,
+    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey, DaemonApp,
+    ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
@@ -23,9 +23,10 @@ use crate::local::{
 };
 use crate::provider::{
     external_provider_import_model, external_provider_session_providers,
-    ExternalProviderImportMetadata, ExternalProviderObservationPolicy,
-    ExternalProviderObservedCursor, LaunchProviderRequest, ObservedExternalProviderTurn,
-    ObservedExternalProviderTurnRole, ProviderResumeState, ProviderRunState, RuntimeProviderRun,
+    normalized_observed_prompt_text, ExternalProviderImportMetadata,
+    ExternalProviderObservationPolicy, ExternalProviderObservedCursor, LaunchProviderRequest,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole, ProviderResumeState,
+    ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};

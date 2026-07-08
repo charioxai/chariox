@@ -79,7 +79,6 @@ use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
-pub(crate) use crate::provider::normalized_observed_prompt_text;
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,
