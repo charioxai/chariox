@@ -34,7 +34,6 @@ apps/kernel/src/slice/local_docker.rs
 docs/ops/PROGRESS_LOG.md
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/Kernel/KernelProtocol.swift
 apps/kernel/src/local/api/types.rs
-apps/cli/scripts/live-remote-native-tui-drill.mjs
 docs/KERNEL_WEB_TERMINAL_PERFORMANCE_PLAN.html
 apps/kernel/src/session/runtime_session.rs
 apps/cli/scripts/lib/drill-artifacts.mjs
