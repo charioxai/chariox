@@ -59,15 +59,20 @@ impl SessionStateProjectionStore {
 
     pub(crate) fn update(&self, session: RuntimeSession) {
         let session_id = session.id().to_string();
-        {
+        let changed = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            upsert_session(&mut state.session_list, session.clone());
-            state
-                .session_states
-                .insert(session.id().to_string(), session);
+            let list_changed = upsert_session(&mut state.session_list, session.clone());
+            let session_changed = state.session_states.get(&session_id) != Some(&session);
+            if session_changed {
+                state.session_states.insert(session_id.clone(), session);
+            }
+            list_changed || session_changed
+        };
+        if !changed {
+            return;
         }
         self.changes.record_change();
         self.session_change_signal(&session_id).record_change();
@@ -78,22 +83,32 @@ impl SessionStateProjectionStore {
             .iter()
             .map(|session| session.id().to_string())
             .collect::<Vec<_>>();
-        {
+        let changed = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut changed = false;
             for session in &sessions {
-                state
-                    .session_states
-                    .insert(session.id().to_string(), session.clone());
+                if state.session_states.get(session.id()) != Some(session) {
+                    state
+                        .session_states
+                        .insert(session.id().to_string(), session.clone());
+                    changed = true;
+                }
             }
-            state.session_list = Some(
-                sessions
-                    .into_iter()
-                    .filter(|session| !session.is_hidden())
-                    .collect(),
-            );
+            let session_list = sessions
+                .into_iter()
+                .filter(|session| !session.is_hidden())
+                .collect::<Vec<_>>();
+            if state.session_list.as_ref() != Some(&session_list) {
+                state.session_list = Some(session_list);
+                changed = true;
+            }
+            changed
+        };
+        if !changed {
+            return;
         }
         self.changes.record_change();
         for session_id in changed_session_ids {
@@ -263,21 +278,27 @@ impl SessionProjectionChangeSignal {
     }
 }
 
-fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) {
+fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) -> bool {
     let Some(session_list) = session_list.as_mut() else {
-        return;
+        return false;
     };
     if session.is_hidden() {
+        let before_len = session_list.len();
         session_list.retain(|existing| existing.id() != session.id());
-        return;
+        return session_list.len() != before_len;
     }
     if let Some(existing) = session_list
         .iter_mut()
         .find(|existing| existing.id() == session.id())
     {
+        if existing == &session {
+            return false;
+        }
         *existing = session;
+        true
     } else {
         session_list.push(session);
+        true
     }
 }
 
@@ -314,6 +335,59 @@ mod tests {
 
         assert_eq!(store.get("hidden"), Some(hidden));
         assert_eq!(store.list(), Some(vec![visible]));
+    }
+
+    #[test]
+    fn identical_session_update_does_not_publish_projection_change() {
+        let store = SessionStateProjectionStore::default();
+        let session = session("session-1");
+        store.update(session.clone());
+        let global_sequence = store.change_sequence();
+        let session_sequence = store.session_change_sequence(session.id());
+
+        store.update(session.clone());
+
+        assert_eq!(store.get(session.id()), Some(session));
+        assert_eq!(store.change_sequence(), global_sequence);
+        assert_eq!(
+            store.session_change_sequence("session-1"),
+            session_sequence,
+            "identical session snapshots must not wake scoped subscribers"
+        );
+    }
+
+    #[test]
+    fn identical_warmed_list_update_does_not_publish_projection_change() {
+        let store = SessionStateProjectionStore::default();
+        let first = session("session-1");
+        let second = session("session-2");
+        store.update_list(vec![first.clone(), second.clone()]);
+        let global_sequence = store.change_sequence();
+        let first_sequence = store.session_change_sequence(first.id());
+        let second_sequence = store.session_change_sequence(second.id());
+
+        store.update_list(vec![first.clone(), second.clone()]);
+
+        assert_eq!(store.list(), Some(vec![first, second]));
+        assert_eq!(store.change_sequence(), global_sequence);
+        assert_eq!(store.session_change_sequence("session-1"), first_sequence);
+        assert_eq!(store.session_change_sequence("session-2"), second_sequence);
+    }
+
+    #[test]
+    fn warming_list_publishes_even_when_session_snapshot_already_exists() {
+        let store = SessionStateProjectionStore::default();
+        let session = session("session-1");
+        store.update(session.clone());
+        let global_sequence = store.change_sequence();
+
+        store.update_list(vec![session.clone()]);
+
+        assert_eq!(store.list(), Some(vec![session]));
+        assert!(
+            store.change_sequence() > global_sequence,
+            "warming the session list changes projection availability"
+        );
     }
 
     #[tokio::test]

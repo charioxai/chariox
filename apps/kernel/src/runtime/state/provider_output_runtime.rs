@@ -263,7 +263,7 @@ impl KernelRuntimeState {
         DaemonError,
     > {
         let owned = &self.owned;
-        let had_projected_session = owned.session_projection.get(session_id).is_some();
+        let projected_session = owned.session_projection.get(session_id);
         owned.reap_structured_prompt_jobs();
         self.reap_provider_first_output_timeouts(session_id).await?;
         self.reap_provider_inactivity_timeouts(session_id).await?;
@@ -302,13 +302,10 @@ impl KernelRuntimeState {
         let records = owned
             .terminal_stream
             .drain_output_records(session_id, attachment_id);
-        let session = if had_projected_session {
-            None
-        } else {
-            owned
-                .session_snapshot_without_projection_update(session_id)
-                .ok()
-        };
+        let session = owned
+            .session_snapshot_without_projection_update(session_id)
+            .ok()
+            .filter(|session| projected_session.as_ref() != Some(session));
         for provider_run_id in &provider_run_ids {
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
