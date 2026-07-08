@@ -1,0 +1,339 @@
+use super::*;
+
+#[test]
+fn bootstrap_restores_created_session_and_agents_from_durable_state() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, default_agent_id, reviewer_agent_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let reviewer = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("agent should spawn");
+        (
+            session.id().to_string(),
+            default_agent.id().to_string(),
+            reviewer.id().to_string(),
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored_session = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert_eq!(restored_session.id(), session_id);
+    assert_eq!(
+        app.agents
+            .get_agent(&default_agent_id)
+            .expect("default agent should restore")
+            .session_id(),
+        session_id
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(&reviewer_agent_id)
+            .expect("spawned agent should restore")
+            .session_id(),
+        session_id
+    );
+}
+
+#[test]
+fn bootstrap_restores_ended_session_without_live_agents() {
+    let config = DaemonConfig::for_tests();
+    let session_id = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("agent should spawn");
+        crate::app::KernelSessionService::new(&mut app)
+            .end_session(session.id())
+            .expect("session should end");
+        session.id().to_string()
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored_session = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("ended session should restore");
+    assert_eq!(restored_session.status(), SessionStatus::Ended);
+    assert!(
+        app.agents.get_session_agents(&session_id).is_empty(),
+        "ended sessions should not restore live agents"
+    );
+}
+
+#[test]
+fn bootstrap_restores_snapshot_then_replays_later_events() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, reviewer_agent_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save");
+        let reviewer = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"))
+            .expect("post-snapshot agent should spawn");
+        (session.id().to_string(), reviewer.id().to_string())
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    app.sessions()
+        .get_session(&session_id)
+        .expect("snapshot session should restore");
+    assert_eq!(
+        app.agents
+            .get_agent(&reviewer_agent_id)
+            .expect("post-snapshot event should replay")
+            .session_id(),
+        session_id
+    );
+}
+
+#[test]
+fn bootstrap_restores_metaagent_events_from_snapshot_then_replays_state() {
+    let config = DaemonConfig::for_tests();
+    let (metaagent_id, event_id, subscription_id, deleted_subscription_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, metaagent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let metaagent = app
+            .agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("agent should enter meta mode");
+        let metaagent_id = metaagent.id().to_string();
+        let event = app.metaagent_event_store().record(
+            crate::runtime::metaagent_event::NewMetaagentEvent {
+                session_id: session.id().to_string(),
+                metaagent_id: metaagent_id.clone(),
+                owner_user_id: metaagent.owner_user_id().to_string(),
+                kind: "agent.turn.completed".to_string(),
+                source_agent_id: None,
+                title: "Worker completed".to_string(),
+                summary: "Worker completed a turn".to_string(),
+                detail: serde_json::json!({ "prompt_id": "prompt-1" }),
+                injected_prompt_id: Some("prompt-meta-1".to_string()),
+            },
+        );
+        app.durable_state_store()
+            .append_event(
+                "metaagent.event.recorded",
+                Some(event.event_id.clone()),
+                serde_json::json!({ "record": &event }),
+            )
+            .expect("event record should persist");
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save recorded event");
+
+        let delivered = app
+            .metaagent_event_store()
+            .update_prompt_delivery_status(
+                &event.event_id,
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued,
+                None,
+            )
+            .expect("event delivery status should update");
+        app.durable_state_store()
+            .append_event(
+                "metaagent.event.delivery_updated",
+                Some(delivered.event_id.clone()),
+                serde_json::json!({ "record": &delivered }),
+            )
+            .expect("event delivery update should persist");
+
+        let read = app
+            .metaagent_event_store()
+            .read(&metaagent_id, &event.event_id)
+            .expect("event should read");
+        app.durable_state_store()
+            .append_event(
+                "metaagent.event.read",
+                Some(read.event_id.clone()),
+                serde_json::json!({ "record": &read }),
+            )
+            .expect("event read should persist");
+
+        let acked = app
+            .metaagent_event_store()
+            .ack(&metaagent_id, &[event.event_id.clone()], None);
+        let acked_event = acked.first().expect("event should ack");
+        app.durable_state_store()
+            .append_event(
+                "metaagent.event.acked",
+                Some(acked_event.event_id.clone()),
+                serde_json::json!({ "record": acked_event }),
+            )
+            .expect("event ack should persist");
+
+        let subscription = app.metaagent_event_store().subscribe(
+            &metaagent_id,
+            "workflow.run.completed".to_string(),
+            None,
+        );
+        app.durable_state_store()
+            .append_event(
+                "metaagent.subscription.created",
+                Some(subscription.subscription_id.clone()),
+                serde_json::json!({ "subscription": &subscription }),
+            )
+            .expect("subscription should persist");
+
+        let deleted_subscription = app.metaagent_event_store().subscribe(
+            &metaagent_id,
+            "workflow.run.failed".to_string(),
+            None,
+        );
+        app.durable_state_store()
+            .append_event(
+                "metaagent.subscription.created",
+                Some(deleted_subscription.subscription_id.clone()),
+                serde_json::json!({ "subscription": &deleted_subscription }),
+            )
+            .expect("deleted subscription create should persist");
+        let deleted_subscription = app
+            .metaagent_event_store()
+            .unsubscribe(&metaagent_id, &deleted_subscription.subscription_id)
+            .expect("subscription should remove");
+        app.durable_state_store()
+            .append_event(
+                "metaagent.subscription.deleted",
+                Some(deleted_subscription.subscription_id.clone()),
+                serde_json::json!({ "subscription": &deleted_subscription }),
+            )
+            .expect("subscription deletion should persist");
+
+        (
+            metaagent_id,
+            event.event_id,
+            subscription.subscription_id,
+            deleted_subscription.subscription_id,
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored_events = app.metaagent_event_store().list(
+        &metaagent_id,
+        Some("agent.turn.completed"),
+        Some("acked"),
+        10,
+    );
+    assert_eq!(restored_events.len(), 1);
+    assert_eq!(restored_events[0].event_id, event_id);
+    assert!(restored_events[0].read_at_ms.is_some());
+    assert!(restored_events[0].ack_at_ms.is_some());
+    assert_eq!(
+        restored_events[0].injected_prompt_id.as_deref(),
+        Some("prompt-meta-1")
+    );
+    assert_eq!(
+        restored_events[0].prompt_delivery_status,
+        crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued
+    );
+    assert!(restored_events[0].prompt_delivery_updated_at_ms.is_some());
+
+    let restored_subscriptions = app
+        .metaagent_event_store()
+        .list_subscriptions(&metaagent_id);
+    assert_eq!(restored_subscriptions.len(), 1);
+    assert_eq!(restored_subscriptions[0].subscription_id, subscription_id);
+    assert_ne!(
+        restored_subscriptions[0].subscription_id,
+        deleted_subscription_id
+    );
+}
+
+#[test]
+fn bootstrap_reconciles_stale_runtime_work_after_restart() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, workflow_run_id, workflow_node_run_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.sessions_mut()
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                agent.id(),
+                "still running when the kernel stops",
+                Vec::new(),
+            )
+            .expect("prompt should start");
+
+        let mut session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        let session_id = session.id().to_string();
+        session.set_active_provider_run(Some("provider-run-stale".to_string()));
+        let node_run = WorkflowNodeRun::new(
+            "node-run-stale",
+            "node-1",
+            agent.id(),
+            1,
+            WorkflowNodeRunStatus::Running,
+        );
+        let mut workflow_run = WorkflowRun::new(
+            "workflow-run-stale",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("invoke".to_string()),
+            None,
+            vec![node_run],
+            Vec::new(),
+        );
+        workflow_run.set_active_node_run("node-run-stale");
+        workflow_run.set_status(WorkflowRunStatus::Running);
+        session.create_workflow_run(workflow_run);
+        app.sessions.restore_session(session);
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save stale runtime state");
+        (
+            session_id,
+            "workflow-run-stale".to_string(),
+            "node-run-stale".to_string(),
+        )
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert_eq!(restored.active_provider_run_id(), None);
+    assert!(restored.active_prompt().is_none());
+    assert_eq!(restored.scheduler_state(), SchedulerState::Idle);
+    let workflow_run = restored
+        .workflow_run(&workflow_run_id)
+        .expect("workflow run should restore");
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
+    assert_eq!(workflow_run.active_node_run_id(), None);
+    assert_eq!(
+        workflow_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Stopped
+    );
+    assert_eq!(workflow_run.node_runs()[0].id(), workflow_node_run_id);
+    assert!(
+        workflow_run
+            .failure_events()
+            .iter()
+            .any(|event| { event.message().contains("interrupted by kernel restart") })
+    );
+}
