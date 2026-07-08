@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>87 allowlisted files remain after initial splits</td>
+              <td>86 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>b5f854f0b</code> <span class="muted">Split remote agent shell executor tests</span></td>
+              <td>Kernel-client shell executor coverage now keeps shell context, fake client, and session/agent fixture imports in a support re-export, while agent list/inspect, agent config/substitutes, spawn placement, and machine/client pairing behavior live in bounded TypeScript modules behind the existing test entrypoint.</td>
+              <td><code>pnpm --filter @arroba/kernel-client run build</code>, <code>node --test packages/kernel-client/dist/shell-executor-agents-remote.test.js</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>48c62a3b2</code> <span class="muted">Split kernel command handler tests</span></td>
