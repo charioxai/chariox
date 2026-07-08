@@ -31,7 +31,6 @@ apps/cli/scripts/lib/drill-matrix-report.mjs
 apps/kernel/src/app/provider_runtime.rs
 apps/kernel/src/app/provider_output.rs
 apps/kernel/src/slice/local_docker.rs
-docs/ops/PROGRESS_LOG.md
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/Kernel/KernelProtocol.swift
 apps/kernel/src/local/api/types.rs
 apps/kernel/src/session/runtime_session.rs

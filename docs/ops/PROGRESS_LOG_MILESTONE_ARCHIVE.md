@@ -1,0 +1,906 @@
+# Arroba Progress Log Milestone Archive
+
+Extracted from [PROGRESS_LOG.md](PROGRESS_LOG.md) to keep the active operations progress log below the line cap while preserving historical M0-M14 milestone notes and validation history.
+
+## 2026-03-16
+
+### Context
+
+- M0 assessed as not complete yet.
+- M0 implementation direction clarified and accepted:
+  - include Rust daemon bootstrap
+  - use GitHub Actions now
+  - Option A baseline structure
+  - smoke tests + minimal domain contract tests
+  - include Prisma schema now
+
+### Changes made in this update
+
+- Added `docs/M0_IMPLEMENTATION_CHECKLIST.md` with concrete M0 task breakdown and DoD.
+- Added `docs/ops/TASKS.md` lightweight board for backlog/in-progress/done tracking.
+- Added this `docs/ops/PROGRESS_LOG.md` for chronological handoff notes.
+
+### Next recommended execution order
+
+1. M0-001 workspace root and scripts
+2. M0-004 server stub
+3. M0-002 + M0-003 domain + contract tests
+4. M0-005 daemon rust crate
+5. M0-006 prisma schema
+6. M0-007 CI workflow
+7. M0-008 docs alignment and status update
+
+### 3.1 implementation progress
+
+- Completed workspace/package bootstrapping (`M0-001`, `M0-002`, `M0-004`, `M0-005`).
+- Added root workspace scripts for `build`, `lint`, `test`, and daemon test invocation.
+
+### M0 completion update
+
+- Expanded `packages/domain` to cover the full M0 entity baseline and added contract tests.
+- Added `prisma/schema.prisma` for the initial persistence model.
+- Added `.github/workflows/ci.yml` for pnpm and Rust verification.
+- Updated `README.md`, `docs/CONTRIBUTING.md`, `docs/ROADMAP.md`, and `docs/M0_IMPLEMENTATION_CHECKLIST.md`.
+- M0 verification now consists of `pnpm lint`, `pnpm build`, `pnpm test`, and `cargo test --manifest-path apps/kernel/Cargo.toml`.
+- M0 is considered complete once those commands pass on the repository state produced in this update.
+
+### M1 planning update
+
+- Added `docs/M1_IMPLEMENTATION_CHECKLIST.md` to break M1 into concrete runtime, PTY, attachment, provider, and test workstreams.
+- Seeded `docs/ops/TASKS.md` with `M1-001` through `M1-008`.
+- Recommended M1 execution order:
+  1. daemon runtime skeleton
+  2. session lifecycle service
+  3. attachment and shared-session interaction logic
+  4. provider adapter baseline
+  5. PTY manager and terminal fan-out
+  6. local harness/API
+  7. runtime tests
+  8. docs/protocol alignment
+
+### M1-001 implementation update
+
+- Added the daemon runtime skeleton in `apps/kernel` with:
+  - `app.rs` for bootstrap and shutdown handling
+  - `config.rs` for daemon configuration loading/validation
+  - `error.rs` for structured daemon runtime errors
+  - a lean application container that owns only real runtime services
+- Switched the daemon binary to a Tokio-based async entrypoint and documented Tokio as the M1 async runtime baseline.
+- Added crate tests to verify config validation and top-level runtime wiring.
+
+### M1-002 implementation update
+
+- Implemented an in-memory session lifecycle service in `apps/kernel/src/session/`.
+- Added runtime session records for workspace/worktree/host ownership, active provider run, and attachment membership state. This was later extended to prompt-queue and config-state ownership.
+- Added explicit session transition validation for `created`, `active`, `parked`, and `ended` states.
+- Added Rust unit tests for create/get/list/end flows, invalid transitions, and unknown-session lookup behavior.
+- Refined the session model to remove duplicated derived state, keep host metadata out of the in-memory store, and encapsulate session mutation behind methods.
+
+### M1-003 implementation update
+
+- Initial implementation added a real `attachment` runtime module with in-memory attachment records and daemon-facing event recording.
+- The original implementation used controller-style semantics, which were later superseded by the shared-attachment prompt-queue/config-state model.
+- Current runtime behavior is governed by the later shared-attachment refactor notes in this log.
+
+## 2026-03-17
+
+### Scope clarification update
+
+- Multi-agent workflow execution is explicitly in scope for v1.
+- Circular topology is the earlier implementation priority inside v1.
+- Hierarchical topology remains in scope for v1, but is planned for a later stage of v1 after lower-level runtime, capability, control, and protocol foundations stabilize.
+
+### Documentation alignment update
+
+- Updated `README.md` to distinguish current implementation status from planned v1 scope.
+- Updated `agents/AGENTS.md`, `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/PROTOCOL.md` so workflow execution is clearly in v1 scope, with circular earlier and hierarchical later within v1.
+- Corrected planning/status drift by marking `M1-004` as pending again in `docs/M1_IMPLEMENTATION_CHECKLIST.md` and `docs/ops/TASKS.md`.
+- Updated `docs/CONTRIBUTING.md` so testing guidance and baseline-command wording match the current repository state and the new workflow-oriented scope.
+
+### Runtime review update
+
+- Reviewed the current daemon runtime against the new workflow-oriented specifications before continuing M1 work.
+- Added explicit session execution mode metadata so the session model now distinguishes current single-agent behavior from future multi-agent workflow mode.
+- Kept PTY ownership and terminal stream handling keyed by provider run so future node-scoped provider runs can reuse the same runtime surfaces.
+
+### M1-004 implementation update
+
+- Added a provider adapter trait, registry, and deterministic `dev-stub` adapter for local runtime tests without depending on external provider CLIs.
+- Added in-memory provider run lifecycle management for launch, park, resume, terminate, and session active-run ownership.
+- Added provider runtime tests covering first launch, automatic parking on active-run replacement, and inconsistent active-run rejection.
+
+### M1-005 implementation update
+
+- Integrated `portable-pty` as the PTY baseline for the daemon runtime.
+- Added a PTY manager for spawn, write, resize, output draining, and process cleanup keyed by provider run.
+- Added terminal stream records for attachment-driven input routing and multi-attachment output fan-out.
+- Added daemon-level tests covering PTY spawn, terminal input/write path, resize behavior, and output fan-out to multiple attachments.
+
+### Runtime hardening update
+
+- Hardened PTY lifecycle ownership so the daemon now retains child-process handles and performs explicit PTY cleanup on provider/session teardown instead of only dropping in-memory records.
+- Updated failed provider-switch handling to resume the previously active run automatically when the replacement PTY cannot be established, and record a user-facing runtime notice for that recovery path.
+- Expanded `packages/domain` with workflow-oriented v1 entities and enums so shared contracts no longer stop at the earlier single-agent baseline.
+
+### M1-006 implementation update
+
+- Added a local daemon request/response API in `apps/kernel/src/local/` covering create, attach, detach, provider launch, session state reads, notice polling, prompt submit/complete, config updates, terminal output polling, terminal resize, and session end flows.
+- Added a local smoke harness binary in `apps/kernel/src/bin/arroba-kernel-harness.rs` plus runtime tests proving a managed-session path through the PTY and terminal fan-out surfaces.
+- Updated `docs/PROTOCOL.md` to record the local-first daemon API baseline for M1 flows.
+
+### Domain and schema alignment update
+
+- Expanded `packages/domain/src/index.ts` and `packages/domain/src/index.test.ts` to reflect workflow-oriented runtime naming, richer workflow entities, handoff/completion fields, worktree-isolation modes, and delivery statuses.
+- Updated `prisma/schema.prisma` to add workflow-oriented enums, execution-mode/session fields, and baseline models for workflow definitions, runs, nodes, edges, node messages, worktree assignments, and aggregation state.
+
+### M1-007 implementation update
+
+- Added daemon integration tests in `apps/kernel/tests/runtime_integration.rs`.
+- Covered session lifecycle cleanup, prompt queue/notification behavior, provider run switching with PTY-backed terminal flow, and the local managed-session smoke harness path.
+- Marked the M1 testing/verification checklist items complete now that daemon integration coverage passes and the documented JS workspace verification plus dedicated daemon verification commands both pass.
+
+### Shared-attachment refactor update
+
+- Replaced the earlier controller/observer runtime model with shared attachment participation in the daemon runtime.
+- Added daemon-owned prompt queue state, active-prompt completion/advancement, and queued-message notices for the other attachments in a session.
+- Added canonical session config state with versioned updates plus propagation notices to the rest of the session attachments.
+- Updated local daemon APIs, domain types, Prisma schema, and daemon tests to match the shared-attachment queue/config model.
+
+### M1-008 documentation alignment update
+
+- Aligned `docs/PROTOCOL.md` with the current local daemon API: session state reads, notice polling, prompt submit/complete, and config update responses now match the implemented runtime surface.
+- Aligned `docs/ARCHITECTURE.md`, `docs/spec-v1.md`, `agents/AGENTS.md`, and `docs/CONTRIBUTING.md` with the shared-attachment prompt/config model and the current client/daemon responsibilities.
+- Reconciled the M1 checklist and task board with the now-complete runtime, integration coverage, and documentation work for M1-001 through M1-008.
+
+### M1 closure update
+
+- Added explicit scheduler-state ownership and primary worktree-assignment-compatible session state so the remaining workflow-compatibility guardrails are satisfied without redesigning the current runtime.
+- Closed the remaining M1 checklist items and marked M1 complete in the project status docs.
+
+### M2 planning update
+
+- Added `docs/M2_IMPLEMENTATION_CHECKLIST.md` to break M2 into concrete capability workstreams, local API alignment, testing, and documentation requirements.
+- Seeded the task board with initial M2 planning and implementation tasks.
+
+### M2 shell capability baseline update
+
+- Added a new `capability` module in the daemon runtime and implemented a structured shell command capability service.
+- Exposed shell command execution through the local daemon API with structured stdout/stderr/exit-code results.
+- Added daemon tests and local API tests covering successful shell execution, non-zero exits, and working-directory scoping.
+
+### M2 shell hardening update
+
+- Added timeout bounds and worktree-boundary validation to the shell capability so long-running or escaped commands do not silently bypass daemon safety expectations.
+- Added attachment-aware authorization for shell execution through the local daemon API.
+- Tightened prompt lifecycle UX by emitting notices when queued prompts are dropped because an attachment detached.
+
+### M2 filesystem and git capability update
+
+- Added structured directory tree capability support scoped to the session worktree.
+- Added file read and file edit capabilities with structured results and worktree-boundary validation.
+- Added structured git/worktree inspection capability for branch and status reporting.
+- Exposed the new capabilities through the local daemon API and added daemon/local API tests for each baseline capability.
+
+### M2 screenshot baseline update
+
+- Added a screenshot capability contract and local runtime baseline with structured unavailable fallback when no capture backend is available.
+- Exposed screenshot capture through the local daemon API and added daemon/local API tests for the baseline unavailable path.
+
+### M2 transfer baseline update
+
+- Added a daemon-owned file transfer storage baseline that copies source files from the session worktree into a session artifact root.
+- Exposed transfer storage through the local daemon API and added daemon/local API tests for the stored-artifact path.
+
+### Roadmap reprioritization update
+
+- Reordered the near-term roadmap around one end-to-end local success path before broader platform scope.
+
+### Workflow runtime phase 1 update
+
+- Added daemon-owned workflow runtime entities for `WorkflowRun`, `WorkflowNodeRun`, and `WorkflowMessage` on the current session runtime path.
+- Added local API invoke/list/get/cancel flow for workflow runs, keyed off existing workflow endpoints.
+- Added workflow-run daemon tests plus a local IPC socket round-trip covering create -> list -> get -> cancel on the new transport surface.
+- Kept this slice intentionally narrow: endpoint invocation now persists runnable workflow state, but it does not yet schedule provider turns or execute graph handoffs.
+- New immediate priority: local daemon + CLI + OpenCode integration with prompt submission and live output streaming.
+- Deferred broader local capabilities, additional providers, multi-agent workflows, relay/web surfaces, provider switching, memory, compaction, and per-agent extension management to later milestones after that baseline is proven.
+
+### Workflow runtime scheduler slice update
+
+- Added daemon-owned entry-node scheduling for endpoint-triggered workflow runs on top of the existing prompt queue and provider runtime.
+- Workflow-owned prompts now carry workflow run/node run context so prompt start, completion, cancellation, and unexpected provider exits reconcile back into `WorkflowRun` and `WorkflowNodeRun` state.
+- Entry-node scheduling can auto-launch a provider run for the bound agent when one is not already active, then dispatch the workflow prompt through the same top-level agent runtime.
+- Kept this slice intentionally narrow: there is still no CLI `/workflow run` surface yet, and downstream node handoffs are not executed. Runs currently become `Completed` when the entry node has no outgoing edges, or `Waiting` when downstream edges exist.
+
+### Workflow runtime handoff slice update
+
+- Added a daemon-owned structured handoff payload for downstream routing, including workflow run id, workflow id, source node run id, source node id, source agent id, target node id, and the root invocation prompt.
+- Node completion now creates one workflow message per outgoing edge, creates one downstream node run per routed message, and schedules those downstream node prompts through the same prompt/provider runtime.
+- Queued workflow prompts can now auto-launch the target agent's provider run when they reach the front of the session queue, so chained workflow execution no longer depends on pre-launched runs.
+- Added daemon tests plus a local IPC socket round-trip covering entry execution -> downstream routing -> downstream completion for a simple chained workflow.
+
+### Workflow join gating slice update
+
+- Workflow handoffs are now buffered on the target side instead of immediately creating one node run per incoming edge.
+- Join nodes default to `all_inputs` gating when their indegree is greater than one, so one downstream node run starts only after all required parent messages are present.
+- Workflow messages now record which node run consumed them, making aggregated activations and later audit/replay possible without forwarding transcript history.
+- Fixed a queue-advancement bug where completing one workflow prompt could overwrite an already-started downstream prompt instead of only advancing when no active prompt remained.
+- Added daemon coverage for service-level join gating and a local API round-trip proving that join nodes do not start early and do start exactly once after the final parent completes.
+
+### Workflow runtime CLI slice update
+
+- Wired `/workflow run`, `/workflow runs`, and `/workflow cancel` into the TypeScript CLI on top of the existing daemon workflow-run API.
+- Added command-center entries and CLI help text for the new workflow runtime commands.
+- Updated the workflow canvas to show the selected workflow's display run id/status and per-node status derived from the newest active run, falling back to the newest run overall.
+- Added CLI tests covering workflow runtime commands plus graph-layout tests for runtime status rendering.
+
+### M2 checklist realignment update
+
+- Rewrote `docs/M2_IMPLEMENTATION_CHECKLIST.md` so it now matches the new M2 milestone instead of the earlier capability-first ordering.
+- Broke the M2 task board into concrete sub-workstreams: daemon transport, CLI app, OpenCode adapter, and end-to-end smoke coverage.
+- Explicitly marked the already-implemented local capability work as preserved but deferred relative to the new OpenCode-first critical path.
+
+### M2 closure update
+
+- Closed M2 formally after landing the real local daemon IPC transport, minimal local CLI, real `opencode` adapter, and end-to-end delayed-output smoke coverage through the daemon.
+- Updated `README.md`, `docs/ROADMAP.md`, `docs/M2_IMPLEMENTATION_CHECKLIST.md`, `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, and `docs/ops/TASKS.md` so repository status now reflects M2 as complete and M3 as the next milestone.
+- Recorded shipped M2 implementation work against commit `727a97f`.
+
+### TypeScript CLI migration update
+
+- Promoted `apps/cli` to the primary local CLI implementation using TypeScript + OpenTUI.
+- Kept `arroba-cli` as a Rust compatibility launcher that builds and starts the TypeScript client.
+- Removed the previous Rust-only CLI after the TypeScript client became the only supported local CLI implementation.
+
+### TypeScript CLI hardening update
+
+- Added retry/backoff policy for transient local IPC polling failures in the TypeScript CLI instead of treating the first poll error as immediately fatal.
+- Changed TypeScript CLI exit semantics so cleanup failures remain visible and require a second explicit exit attempt before forcing shutdown.
+- Added initial TypeScript CLI behavior tests around retry/exit policy helpers and updated the roadmap/checklist so M3 now explicitly calls out TypeScript CLI hardening before slash-command expansion.
+
+### M3 observability priority update
+
+- Raised a project-wide logging/debugging system ahead of the remaining M3 tasks after the TypeScript CLI migration.
+- Documented the intended baseline as one shared machine-local log root with per-process structured log files and shared session/provider/client correlation fields.
+- Reprioritized the next M3 slice toward persistent session management: detached sessions should remain resumable, deletion should be explicit, the CLI should support a no-session state after deletion, and session references should move toward commit-like ids plus optional aliases.
+- Marked privacy policy, retention, and content-capture scope as explicit design decisions to resolve before implementation.
+
+### M3 logging foundation update
+
+- Added a shared NDJSON logging baseline for the daemon, the Rust `arroba-cli` launcher, and the primary TypeScript CLI.
+- Standardized log-root resolution around `ARROBA_LOG_DIR`, `XDG_STATE_HOME/arroba/logs`, `~/.local/state/arroba/logs`, then `./.arroba/logs`.
+- Added built-in local log inspection through `arroba-cli logs`.
+- Removed the previous ad hoc CLI debug-file hook and daemon IPC debug stderr hook in favor of the shared logger.
+- Updated contributor and agent guidance so future debug work must extend the shared logging system instead of introducing separate mechanisms.
+
+### Workflow runtime completion snapshot update
+
+- Extended workflow node completion so the daemon now derives a summary-only completion payload from persisted provider output for the exact provider run that settled the node.
+- Persisted that summary-only payload on completed `WorkflowNodeRun` records and forwarded it in downstream workflow handoff payloads, while keeping the full transcript only in session history for audit rather than as workflow output.
+- Added daemon coverage proving that downstream handoffs retain the upstream node summary when provider output exists before prompt completion.
+
+### Workflow runtime artifact reference update
+
+- Added optional artifact refs to the workflow completion payload so a completed node can forward `summary + artifacts` without forwarding transcript data.
+- Namespaced session artifacts by attachment/workflow source under the daemon artifact root so workflow-owned artifacts can be discovered without sweeping unrelated session files.
+- Added daemon coverage proving that a workflow-owned artifact appears on the completed node run and in the downstream handoff payload.
+
+### Workflow explicit output contract update
+
+- Changed the workflow runtime contract so `summary` remains human-facing while downstream routing uses an explicit `output.message` plus optional artifact refs.
+- Updated workflow-owned prompts to request a structured JSON completion envelope with separate `summary` and `output`.
+- Reframed the docs around graph-derived execution and per-node gating/release policy instead of user-declared circular vs hierarchical workflow modes.
+
+### M4.5 prompt dispatch and terminal cleanup update
+
+- Removed provider-prompt worktree claim admission from prompt submit, so cross-session same-worktree prompts are no longer rejected before `PromptSubmitted`.
+- Moved local provider prompt PTY writes and provider actor enqueue work into the spawned provider-run operation dispatch after owner-backed prompt mutation, reducing work done inline by the per-agent mailbox response path.
+- Added session-runtime terminal cleanup on session end/delete so terminal input, pending output, notices, completions, and terminal backlog health do not retain stale records for removed sessions.
+- Added CLI request helpers for `CompletePrompt` and `AckWorkflowTurn` so deterministic live drills can use the public kernel API once the non-I/O runtime slices are complete.
+
+### M4.5 compatibility facade retirement update
+
+- Added an explicit facade-retirement checklist to the M4.5 plan, separating public facade retirement, router independence, actor ownership, runtime service extraction, and final compatibility handler deletion.
+- Added a router-backed in-process local daemon client for tests and smoke harnesses that need to send `LocalDaemonRequest` without calling `DaemonApp::handle_local_request` directly.
+- Moved the local smoke harness and external daemon integration test off direct `handle_local_request` calls.
+- Demoted `DaemonApp::handle_local_request` to crate-private compatibility surface. It remains only for internal compatibility tests and transitional service code until later ownership slices remove the remaining facade-only handlers.
+
+### M4.5 session ownership cutover update
+
+- Completed the point-2 cutover for the local session lifecycle: attach, detach, focus, cycle focus, resize validation, end, and delete now run through owned `SessionRuntime` state instead of `KernelSessionService<&mut DaemonApp>` mutation paths.
+- Kept resize and provider process teardown behind narrow app side-effect ports while owned stores perform session/provider validation, queue cleanup, prompt-owner cleanup, provider-run projection updates, and session projection cleanup.
+- Added no-app-lock regressions for attach/detach, focus/cycle, end/delete, resize validation, and router delete behavior.
+
+### M4.5 prompt ownership and provider advancement update
+
+- Broadened the point-3 owned prompt path beyond the earlier single-agent structured case: local multi-agent prompt submit, PTY prompt submit, PTY cancellation acknowledgement, and queued prompt advancement now mutate prompt owner/session mirrors through owned runtime state.
+- Added an explicit prompt-abort dispatch source attachment so PTY cancellation can acknowledge immediately and send `Ctrl-C` through the side-effect port asynchronously.
+- Started point 4 by moving provider post-launch queued prompt advancement out of `DaemonApp::advance_next_queued_prompt`; provider launch completion now activates the next prompt and builds dispatch from owned runtime state.
+
+### M4.5 prompt ownership closure update
+
+- Closed point 3 by removing the production `CompatibilityRuntimeState` fallbacks to `KernelAgentService` prompt submit/cancel/complete methods.
+- Moved remote prompt submit/cancel/complete owner mutation into owned runtime state while keeping relay I/O as an explicit side-effect port.
+- Restored workflow prompt start/completion handoffs after owned prompt mutation and refreshed owned session projections so workflow run reads observe completed/downstream state.
+
+### M4.5 provider output ownership update
+
+- Completed point 4 for production runtime paths by moving active provider-output pumping, structured output batch application, structured prompt job reaping, prompt activity settlement, and provider-exit prompt cleanup onto owned runtime stores.
+- Removed the app-level provider-exit prompt settlement helper; provider liveness now closes/cancels owned prompts and advances queued work without routing through `DaemonApp` prompt lifecycle helpers.
+- Kept remaining PTY spawn/poll/drain/write calls as narrow process I/O side-effect ports while provider run state, output fanout/history, prompt claims, and projections are owned by runtime state.
+
+### M4.5 workflow command ownership update
+
+- Cut workflow command mutation over to the runtime-state owner: workflow definition, endpoint, graph, schema, watchdog, queued-prompt, validation, and ack commands now mutate cloneable session/workflow stores directly from `CompatibilityRuntimeState`.
+- Deleted the transitional `KernelWorkflowService` module and removed `WorkflowRuntimeStore`'s per-method app-backed service delegation.
+- Kept invoke/cancel/resume workflow progression behind explicit runtime-state scheduler ports while the scheduler internals remain the remaining point-5 work before transport/relay cleanup.
+
+### M4.5 workflow runtime-tool ownership update
+
+- Moved owned workflow resume, workflow prompt start/cancel bookkeeping, workflow provider-run ensure, blocked workspace-claim retry, and local/forwarded workflow runtime-tool mutation into `CompatibilityRuntimeOwnedState` store operations.
+- Runtime MCP calls authenticated by provider tokens now resolve local workflow turns from owned provider/prompt/session state before recording ack, validation, output-submission, and console tool effects.
+- Kept workflow prompt completion scheduling on the existing scheduler renderer because that path still owns mailbox rendering, outgoing edge contracts, join-node readiness, and queued downstream prompt text fidelity; this is the remaining hard center of point 5 rather than point 6.
+
+### M4.5 workflow progression ownership closure update
+
+- Moved workflow prompt completion scheduling, invoke admission/start, cancel cleanup, queued-prompt start, provider-run ensure, and blocked-claim retry behavior onto owned runtime-state operations for the production local workflow path.
+- Preserved workflow join-node readiness by preventing incomplete joins from being dispatched while still retrying the blocked sibling branch after workspace-claim release.
+- Left the old app workflow-runtime helpers only as compatibility/test-facing surfaces; router/workflow-lane invoke and cancel no longer use the app-backed workflow launch or cancellation helpers.
+
+### M4.5 transport and relay ownership update
+
+- Closed point 6 for the production relay transport path by routing relay registration/config/key reads, subscription authorization/watch snapshots, peer lease commands, leased prompt settlement, and remote projection events through `CommandRouter` relay/runtime ports instead of direct relay-client `DaemonApp` state access.
+- Kept connector bootstrap and the unused relay test helper as the only direct `relay_client.rs` app-lock reads; production daemon/workflow relay requests, runtime MCP forwarding, subscription replay, and peer prompt handling now enter the router/runtime boundary.
+- Hardened workflow cancellation cleanup by releasing session workflow-dispatch workspace claims when a run is cancelled, preventing subsequent queued or manual workflow launches from inheriting stale claim conflicts.
+
+### M4.5 compatibility deletion update
+
+- Started point 7 as deletion, not quarantine: removed the test-only no-owned `CompatibilityRuntimeState::new` constructor and moved the remaining actor/executor regressions onto owned runtime-state construction so the old generic fallback can no longer be instantiated by tests.
+- Tightened the owned workflow claim lifecycle by blocking entry-node dispatch on workspace-claim conflicts, releasing workflow-node claims on completion/cancellation/validation-stop, and retrying blocked workflow work after workflow-node claim release.
+- Verified the deletion slice with the full daemon lib suite plus runtime, WebSocket, and relay transport integration suites.
+
+### M4.5 runtime fallback deletion closure
+
+- Closed point 7 for production command/runtime ownership by replacing `CompatibilityRuntimeState` with mandatory `KernelRuntimeState`/`KernelRuntimeOwnedState`; runtime construction no longer carries optional owned state or a no-owned compatibility fallback.
+- Deleted the unreachable app-backed runtime fallback branches for session reads/mutations, prompt dispatch/abort cleanup, provider launch mutation, terminal-output pumping, capability authorization, and workflow runtime-tool dispatch. Remaining `DaemonApp` access is limited to named side-effect ports for PTY/process/relay operations and remote-agent lifecycle.
+- Removed the obsolete app-backed prompt-dispatch runtime helper and kept the legacy relay helper test-only, leaving `DaemonApp` as bootstrap/composition plus explicit side-effect services rather than the command mutation owner.
+
+### M4.5 live drill gate update
+
+- Added the live drill matrix and adopted **freeform multi-agent mode** as the name for normal non-workflow multi-agent sessions.
+- Local freeform OpenCode + Codex passed after fixing router bootstrap lock contention during concurrent router construction.
+- Local workflow drills are blocked on entry-node live provider completion: downstream workflow turns can ack and emit output, but entry-node turns that launch a provider lazily can complete without a drained structured output payload. The reproducible hard-fail command is `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario validated-increment-chain --providers codex,opencode --model gpt-5.4 --poll-limit 120 --poll-interval-ms 2000`.
+- Current drill fixes in progress: workflow prompts rendered by owned runtime now include node instructions and validation/tool rules, structured provider completion ignores stale lifecycle events, queued workflow prompts advanced after provider launch receive workflow-start bookkeeping, and terminal output pumping drains all running session provider runs rather than only the focused active run.
+
+### M4.5 local workflow live drill closure
+
+- Closed live-drill point 2 locally: the full workflow catalog passes with a spawned local daemon and `opencode,codex` providers, including validated handoff, workflow console tools, final run output, cyclic final output, budgeted cyclic final output, and cyclic intermediate-output/final-output flows.
+- Fixed the hard runtime issues found by the catalog: invoke now enqueues owned entry dispatches, workflow console write no longer deadlocks on session-store lock ordering, resolved workflow failures are cleaned after successful retry/final submission, node turn budgets ignore no-payload recovery attempts, and final-output turns no longer emit stale downstream handoff failures before pending final output is committed.
+- Tightened the live workflow drill prompts where the intended first-turn payload was ambiguous for live providers, using exact fenced workflow output examples for entry turns and explicit console-output payload contracts.
+
+### M4.5 remote freeform relay live drill closure
+
+- Closed live-drill point 3: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex --model gpt-5.4 --timeout-ms 240000 --poll-ms 1000` passed with a relay, home daemon, worker daemon, direct local client, and relayed client.
+- The drill spawned OpenCode and Codex local sidecar agents plus OpenCode and Codex worker-machine leased agents in the same freeform multi-agent session. Prompts submitted from both local and relayed clients completed, both clients observed all four completions, the relayed client observed relay `transport_closed` and `transport_resumed`, and worker-machine agents completed prompts after relay restart.
+- Updated the remote freeform drill automation to accept `--providers opencode,codex` so point 3 is a single mixed-provider session instead of two independent single-provider passes.
+
+### M4.5 remote workflow relay live drill closure
+
+- Closed live-drill point 4: the remote workflow catalog passes through relay with `opencode,codex`, a home daemon, a worker daemon, worker-machine leased agents, forwarded workflow runtime tools, cyclic progression, validated intermediate output, final workflow output, and clean final workflow projections.
+- Fixed the remote workflow hard center found by the drills: remote entry turns now start and settle leased prompts, forwarded worker runtime-tool calls complete worker-side leased workflow prompts after validated handoff/final-output submission, and workflow completion can fall back to the last successful validation tool payload when a live provider validates but does not emit the final fenced block.
+- Tightened the live cyclic drill scenarios to exercise one deterministic cycle rather than long model-dependent loops, keeping coverage for cyclic handoff, turn budget, intermediate output, and final workflow-output submission without making the gate depend on repeated live-provider instruction compliance.
+
+### M7.5 embedded shell scriptability update
+
+- Moved line-oriented Arroba shell script execution into `packages/kernel-client/src/shell-script.ts`, so standalone `arroba-shell` and the embedded workflow-pane shell share `source`/`run`, nested script loading, variables, line diagnostics, and context propagation.
+- Updated the workflow-pane shell to select the workflow returned in shell context after workflow creation/show/load commands, keeping the visible workflow graph synchronized with shell-driven mutations.
+- Manual TUI drill confirmed direct `@` workflow graph creation and `@ source <file>` graph loading update the workflow pane to the expected node/edge/endpoint counts. Dev-stub workflow execution still fails with `missing_structured_output`; provider-backed runtime behavior remains covered by the workflow runtime drill suite.
+
+### M7.5 shell context and hardening update
+
+- Added shell-local `context` and `pwd` commands for standalone and embedded shells; they render the active workspace, worktree, session, attachment, agent, workflow, provider/model/effort, and shell variables without making a kernel request.
+- Extended parser/executor/shell usage tests plus the live shell scriptability drill to cover `context`/`pwd` and documented the remaining shared-executor command gaps against the TUI slash surface.
+- Revalidated standalone shell scriptability with `pnpm --filter @arroba/cli run shell:drill`. A provider-backed embedded TUI runtime drill was attempted manually, but the PTY input path is still unreliable for slash/workflow-mode automation; the committed validation remains the shared executor tests plus the scriptability drill rather than a flaky TUI automation artifact.
+
+### M7.5 CLI automation drill update
+
+- Added `--automation-socket` to the CLI so live drills can drive embedded UI integration through semantic JSONL actions rather than raw PTY keystrokes.
+- The automation API supports `ping`, `switch_screen`, `workspace_shell_exec`, `snapshot`, `wait_for`, and `exit`, returning structured snapshots for screen mode, selected workflow/node, workflow graph counts, workflow runs, shell context, shell transcript, and footer state.
+- Added `pnpm --filter @arroba/cli run embedded-shell:drill`, which launches the real CLI under a PTY, sources a workflow script through the workflow-pane shell, and validates selected-workflow graph/source updates through automation snapshots.
+
+### M7.5 shell prompt command update
+
+- Added shared shell `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]` support for standalone `arroba-shell` and the embedded workflow-pane shell.
+- No-wait prompt submission returns the prompt id immediately; wait/show modes poll prompt completion, read session history, and render prompt-id-headed output blobs with aligned content.
+- Changed `context` from a purely local shell command into a kernel-aware shared command when a session is set, so it can show the current agent as `(busy)` after a no-wait shell prompt.
+
+### M7.5 Arroba Shell milestone closure
+
+- Closed M7.5 after landing `arroba-shell` as a sibling app to the TUI CLI, shared shell execution in `packages/kernel-client`, line-oriented scripts, embedded workflow-pane shell support, reliable CLI automation snapshots, and freeform prompt submission from shell surfaces.
+- Validated closeout with `pnpm --filter @arroba/kernel-client test`, `pnpm --filter @arroba/shell test`, `pnpm --filter @arroba/cli test -- workspace-shell.test.ts command-actions.test.ts`, `pnpm --filter @arroba/cli run shell:drill`, `pnpm --filter @arroba/cli run embedded-shell:drill`, and `git diff --check`.
+- Deferred remaining shell parity gaps to later hardening: session/agent deletion aliases, machine approval/rename/forget, relay configuration, workflow node instruction editor actions, workflow endpoint removal, and provider-native namespace passthrough.
+
+### M8 history and persistence plan kickoff
+
+- Added the M8 plan for operational transcript history, optional archive adapters, durable kernel state, manual remote restart reconciliation, provider resume descriptors, and Git observation events.
+- Locked in the v1 split: operational history stays Arroba-owned/local for active UX, while archive history is optional and adapter-backed; if archive is disabled, retained operational history remains searchable and expired/deleted transcript content can disappear.
+- Added TOML-backed config structs for history operational policy, archive mode/policy, and durable state policy without changing runtime storage behavior yet.
+
+### M8 canonical history event model update
+
+- Added provider-neutral canonical history event types for transcript, workflow, capability, remote-machine, and Git observation events.
+- Added turn/provider/model/worktree attribution fields plus candidate attribution lists for ambiguous Git and multi-agent cases.
+- Added a compatibility conversion from existing `SessionHistoryEntry` transcript records into canonical `HistoryEvent` records while leaving the current JSONL runtime storage path unchanged.
+
+### M8 operational SQLite store foundation
+
+- Added the first operational history SQLite store behind a new `OperationalHistoryStore` API without cutting over `GetSessionHistory` yet.
+- The store creates its schema, enables SQLite WAL mode, appends canonical events idempotently by `event_id`, and can load ordered events by session with optional agent filtering.
+- Added focused coverage for opening the store, idempotent append, and session/agent event loading.
+
+### M8 operational history dual-write update
+
+- Wired the operational history store into `DaemonApp` and owned runtime state while keeping the existing JSONL session history path as the read source.
+- Prompt, provider-output, and notice transcript appends now dual-write canonical operational history events after the legacy append succeeds.
+- Test configs now use isolated operational history database paths, and session history preservation coverage verifies the operational store receives restored prompt transcript events.
+
+### M8 session history read cutover update
+
+- Changed app and router session-history reads to prefer operational history and fall back to legacy JSONL only when no operational entries exist for a pre-cutover session.
+- Added canonical-event to `SessionHistoryEntry` conversion so existing transcript pagination and CLI rendering can continue while reading from operational history.
+- Added focused coverage proving `session_history_page` reads transcript entries from the operational store.
+
+### M8 history query/search API update
+
+- Added kernel `QueryHistory` and `SearchHistory` requests backed by the operational SQLite store.
+- The query path returns canonical `HistoryEvent` rows with filters for session, agent, provider, model, workflow, machine, repo/worktree, event kind, text, sequence cursor, and bounded limits.
+- Added TypeScript kernel-client history event/query types and request builders, plus focused store and router coverage for operational history queries.
+
+### M8 archive adapter client foundation
+
+- Added a history archive adapter client for disabled and external archive modes.
+- External adapters can now receive canonical `HistoryEvent` batches at `/arroba/history/events`, expose `/arroba/history/capabilities`, and optionally require bearer-token auth through the configured token environment variable.
+- Archive append responses are validated for durable acceptance of every event before callers can treat the archive write as successful.
+
+### M8 archive outbox checkpoint update
+
+- Added a durable `history_archive_outbox` table to the operational SQLite store.
+- The store can idempotently enqueue canonical history events for archive export, reload pending work after reopening, record failed attempts, and mark adapter-accepted events as archived.
+- Extended operational-history store coverage to verify duplicate enqueue handling, retry metadata, acceptance marking, and reopen persistence.
+
+### M8 archive enqueue/exporter update
+
+- External archive mode now enqueues newly appended transcript history events into the durable archive outbox.
+- Added a one-shot `HistoryArchiveExporter` that loads pending outbox events, calls the configured archive adapter, marks accepted events archived, and records failed/rejected attempts for retry.
+- Added focused coverage for archive-mode prompt enqueue and adapter-backed outbox flushing.
+
+### M8 retention prune safety update
+
+- Added operational-history pruning before a timestamp cutoff, with separate modes for archive-disabled deletion and verified-archive-only deletion.
+- Added session markers that disable legacy JSONL fallback after pruning removes all operational history for a session, preventing deleted retained history from being resurrected by the compatibility store.
+- Tightened session-history fallback so JSONL is used only for truly pre-cutover sessions with no operational rows and no retention marker.
+
+### M8 durable state store foundation
+
+- Added `DurableKernelStateStore`, a WAL-backed SQLite store for kernel state snapshots and append-only state events.
+- Added config path resolution for the durable state database from `[state].path`.
+- Added focused coverage for appending ordered state events, saving a snapshot, reopening the store, and loading the latest snapshot.
+
+### M8 durable state app wiring update
+
+- Wired `DurableKernelStateStore` into `DaemonApp` using the configured `[state].path`.
+- Session creation now writes a `session.created` durable state event containing the created session and default agent payload.
+- Added focused coverage that creates a session through `KernelSessionService` and verifies the durable event is written.
+
+### M8 durable lifecycle event update
+
+- Local agent spawn now writes an `agent.created` durable state event.
+- Session end now writes a `session.ended` durable state event with removed attachments, terminated provider run ids, and removed agent references.
+- Added focused coverage for session create, agent spawn, and session end event ordering in the durable state journal.
+
+### M8 durable boot restore update
+
+- Kernel bootstrap now replays the durable state journal for the lifecycle events currently emitted by the app: `session.created`, `agent.created`, and `session.ended`.
+- Restored sessions and agents are inserted without writing new durable events; ended-session replay clears live agents so ended sessions do not come back with runnable agents.
+- Added focused restart coverage for created sessions, default agents, spawned agents, and ended sessions restored from the durable journal.
+
+### M8 durable grant persistence update
+
+- User-triggered MCP/skill grants and revokes now append durable agent mutation events with full agent snapshots.
+- Agent-triggered capability requests through the runtime MCP tool path now append the same durable grant events, so discovered grants survive restart too.
+- Boot restore replays those grant mutation events by restoring the latest agent snapshot, and focused coverage verifies a skill grant survives kernel restart.
+
+### M8 durable workflow state update
+
+- Workflow runtime commands that return a changed session now append a durable `session.updated` snapshot.
+- Boot restore replays `session.updated` snapshots so workflow definitions, nodes, endpoints, run state, queues, and watchdog/session workflow fields can be recovered from the latest session snapshot.
+- Added focused restart coverage that creates a workflow, adds a node, restarts the kernel, and verifies the workflow definition is restored.
+
+### M8 durable provider profile update
+
+- Provider launch success now appends a durable `agent.runtime_profile_updated` snapshot after updating an agent's provider/model/effort/resume state.
+- Boot restore replays provider profile updates as agent snapshots so provider resume descriptors survive kernel restart.
+- Added focused restart coverage using the `dev-stub` provider to verify provider/model profile restoration after a kernel restart.
+
+### M8 runtime lifecycle durability update
+
+- Runtime-state session end now appends `session.ended`, closing the CLI-facing lifecycle path in addition to the app service path.
+- Runtime-state session deletion now appends `session.deleted`, and boot restore replays it by removing the session and clearing any live agents/projections.
+- Added focused restart coverage for runtime end/delete paths to verify ended sessions stay ended and deleted sessions stay absent after reboot.
+
+### M8 background lifecycle invariant update
+
+- Documented the rule that retention, archive export, snapshots, Git observation, and remote reconciliation must not hold the main app lock while doing filesystem, network, Git, archive-adapter, or long-running SQLite work.
+- Moved runtime-state durable event appends off the main `DaemonApp` lock by passing the durable state store into the owned runtime-state facade.
+- Foreground commands still write small durable/operational/outbox rows synchronously, but no longer need the app lock just to append M8 durable agent/session mutation events.
+
+### M8 durable snapshot restore update
+
+- Boot restore now loads the latest durable state snapshot, restores sessions/agents from it, and replays only events after the snapshot sequence.
+- Added an app-level snapshot writer that captures current sessions and agents against the latest durable event sequence; the future scheduler can call this from a background worker.
+- Added focused coverage proving bootstrap restores snapshot state and then replays post-snapshot lifecycle events.
+
+### M8 durable snapshot scheduler update
+
+- Added a background durable snapshot scheduler for websocket and local IPC daemon lifetimes, controlled by `[state].snapshot_interval_events`.
+- The scheduler reads event/snapshot sequence checkpoints, captures sessions and agents through cloneable stores under short store locks, then writes the SQLite snapshot outside the main `DaemonApp` lock.
+- Snapshot write failures are logged and retried on later ticks without failing foreground kernel commands.
+- Added focused coverage for interval gating, checkpointed snapshot writes, and no-main-app-lock snapshot ticks.
+
+### M8 boot recovery reconciliation update
+
+- Added boot-time reconciliation after durable snapshot/event replay so runtime-only work that cannot survive a kernel process restart is not shown as still running.
+- Restored sessions now clear stale active provider run ids, interrupt active prompts, and mark in-flight workflow runs stopped with a `RunStopped` failure event explaining the kernel restart interruption.
+- Fixed the restore/projection loops to materialize session lists before write-back, avoiding session read-lock retention across reconciliation writes.
+- Added focused restart coverage that snapshots stale active provider, prompt, and workflow state, then verifies rebooted state is idle/stopped with the interruption surfaced on the workflow run.
+
+### M8 local restart drill update
+
+- Added `apps/cli/scripts/live-local-restart-drill.mjs` and `pnpm --filter @arroba/cli run local-restart:drill`.
+- The drill rebuilds the kernel, runs an isolated daemon/home/config/state/history/workspace, creates durable session, spawned-agent, MCP-grant, skill-grant, provider-profile, completed-history, and active-workflow state, restarts the daemon, then verifies restored state and boot reconciliation end to end.
+- Verified the live drill passes with stale active provider/prompt state cleared, the interrupted workflow run marked `Stopped` with the kernel-restart failure event, and the completed prompt marker available through both transcript paging and operational history search.
+
+### M8 CLI restart/reconnect drill update
+
+- Added `apps/cli/scripts/live-cli-kernel-restart-drill.mjs` and `pnpm --filter @arroba/cli run cli-restart:drill`.
+- Extended CLI automation snapshots with `daemonDisconnected`, `statusLine`, and `sessionId` checks so PTY-hosted drills can assert restart UX instead of scraping terminal pixels.
+- Fixed the runtime actor create-session path to append `session.created`; CLI-created sessions now restore after a kernel process restart instead of only sessions created through the app service path.
+- Added CLI recovery for full kernel restarts: on transport close, an attached CLI polls for the previous session, creates a fresh attachment, resubscribes to kernel events, refreshes panes, clears the disconnected state, and keeps the restored agent visible.
+- Hardened `session_unavailable` handling during reconnect by verifying the session state before transitioning to no-session, avoiding stale replay events from hiding a successfully restored session.
+- Verified the live drill passes with a real PTY-hosted CLI: the CLI shows `Lost connection to the Arroba kernel.` after daemon stop, then reconnects after daemon restart and returns to the restored session with its agent present.
+
+### M8 remote restart/reconcile drill update
+
+- Added `apps/cli/scripts/live-remote-restart-drill.mjs` and `pnpm --filter @arroba/cli run remote-restart:drill`.
+- Remote agent spawn now writes durable home-side agent snapshots, so home can restore remote agents after a kernel reboot.
+- Remote prompt dispatch detects stale or missing worker leases, refreshes the remote agent binding through the live worker kernel, and retries the prompt submit. Relay daemon registration now replaces stale peers for the same daemon id, so worker restarts do not leave home routing requests to an old dead peer handle.
+- Remote prompt completion now treats worker-side `NoActivePrompt` as an already-settled leased prompt and completes the home-side prompt, matching the dev-stub/fast-provider case where the worker finishes before home asks for completion.
+- Verified the live drill passes through baseline prompt, home restart with worker alive, worker restart with stale lease refresh, and both home/worker restart with a final refreshed lease.
+
+### M8 local Git observation update
+
+- Added local provider-turn Git observation for structured prompt dispatch: Arroba captures a pre-turn Git snapshot from the provider working directory, captures a post-turn snapshot after prompt completion, and records operational history events without holding the main app lock during Git commands.
+- Operational history now records `git_commit_detected`, worktree dirty/clean/change, and push-detected events with provider, model, prompt id, branch, worktree, prompt summary, commit SHA, commit subject, author metadata, changed paths, before/after HEAD, and attribution candidates.
+- Added `apps/cli/scripts/live-git-observation-drill.mjs` and `pnpm --filter @arroba/cli run git-observation:drill`; the live drill passed against an isolated local kernel/dev-stub agent by committing `feature.txt` during a dispatched agent turn and verifying the commit event is searchable by subject/path/provider/model/prompt attribution.
+- Remote Git observation follows the same event model with worker-local observation and home-owned persistence. The relay protocol now carries home prompt context to the worker and can return Git observations on leased prompt completion so home operational history gets the searchable commit event with home agent/prompt ids and worker machine/repo/worktree metadata.
+- Added `apps/cli/scripts/live-remote-git-observation-drill.mjs` and `pnpm --filter @arroba/cli run remote-git-observation:drill`; the live drill passed against isolated relay/home/worker kernels by committing `feature.txt` in the worker repo during a remote dev-stub turn and verifying home history contains the commit with worker `repo_root`/`worktree_path`.
+
+### M8 Postgres archive adapter drill update
+
+- Added `arroba-history-archive-flush [--limit N]`, an ops binary that loads Arroba config, opens operational SQLite, flushes pending archive outbox events through the configured archive adapter, and prints attempted/accepted/rejected ids as JSON.
+- Added `apps/cli/scripts/live-postgres-archive-adapter-drill.mjs` and `pnpm --filter @arroba/cli run postgres-archive:drill`.
+- The drill runs a real ephemeral `postgres:16-alpine` container behind an HTTP adapter, creates transcript events through an isolated dev-stub kernel, and validates bearer-token auth, capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only search when external archive search is disabled, and Postgres-backed archive search through Arroba once the matching operational row is deleted.
+
+### M8 artifact archive store update
+
+- Added a filesystem-backed operational artifact store with a SQLite artifact index/outbox. Transferred files are now registered as content-addressed SHA-256 blobs, emit an `artifact_stored` canonical history event, and can be flushed to external archive storage.
+- Extended the archive adapter protocol with `PUT /arroba/artifacts/blobs/:artifact_id` for raw blob upload and `POST /arroba/artifacts/manifest` for durable artifact metadata acceptance.
+- Extended `arroba-history-archive-flush` to flush pending artifact blobs/manifests before history events. The JSON output now has separate `artifacts` and `history` sections.
+- Extended the Postgres archive drill to use production-shaped archive storage: Postgres stores events/artifact manifests/searchable metadata and MinIO stores S3-compatible artifact blobs. Verified `pnpm --filter @arroba/cli run postgres-archive:drill` passes with one archived transferred artifact and four archived transcript events.
+
+### M9 workflow publication kickoff
+
+- Added `docs/M9_WORKFLOW_PUBLICATION_PLAN.md`, defining publication gateways as transport/auth/parser/control infrastructure that forwards workflow-produced outputs without semantic manipulation.
+- Reworked `apps/server` into the first `arroba-workflow-gateway` app. It loads a publication config, exposes HTTP routes, supports anonymous/bearer/API-key auth, built-in JSON/query/header/webhook/regex/path-template parsers, custom command parsers, lightweight input schema checks, sync/async kernel invocation, and passthrough `http_response` workflow output forwarding.
+- Extended the M9 plan with paired-sender auth for published workflows and OpenClaw-derived connector/security notes. Pairing is documented as a short-lived bootstrap code that creates kernel-owned trusted sender records, while connector-specific webhook verification and sender policy stay beside each connector.
+- Moved Slack, Discord, Telegram, WhatsApp, and Signal connectors into M9 V1 scope and clarified the single Arroba identity model: connector verification proves an external identity claim, then Arroba maps that identity to a registered user/team, paired sender, API token owner, or explicit anonymous caller.
+- Added the first workflow-gateway Arroba auth resolver. Publication configs can now use `auth.mode="arroba"` with bearer/API-key principal mappings, external connector identity mappings, per-principal connector restrictions, and explicit anonymous access. Gateway raw-body parsing now supports Slack-style HMAC verification. Gateway tests cover connector-to-principal mapping, disallowed connector rejection, and anonymous opt-in behavior.
+- Added gateway coverage for health, auth rejection/acceptance, JSON parsing/schema checks, transport-shaped output passthrough, regex parsing, and path-template parsing.
+- Added M9.1/M9.9 kernel-owned workflow publication records in session state with local API variants for create/list/get/disable, TypeScript kernel-client helpers/types, and `workflow publication ...` shell command routing for `arroba-shell` and the CLI shell pane. Added focused session-service coverage for create/list/resolve/disable.
+- Added M9.4 gateway kernel lookup by `ARROBA_PUBLICATION_SESSION_ID` plus `ARROBA_PUBLICATION_ID`, preserving file and explicit env fallback modes. Added M9.6 `publication:drill`, which starts an isolated kernel, creates a kernel-owned HTTP workflow publication, starts the gateway from that publication id, and invokes it through HTTP.
+- Added M9.5 paired-sender auth. Pairing is optional per publication through `auth.mode="arroba"` plus `paired_senders.enabled=true`; publications without it do not expose the pair endpoint. Kernel session state now owns pairing codes and trusted sender records, shell/client APIs can create/redeem/list/revoke senders, and the gateway redeems `POST /.well-known/arroba/publication/pair`, authenticates sender bearer credentials, and forwards sender identity in invocation metadata. The publication live drill now validates anonymous publication and paired publication reject/redeem/invoke/revoke/reject behavior.
+- Added M9.9 publication package export. `workflow publication export <publication> <directory> [--kernel-url <url>]` writes `publication.config.json`, `.env.example`, `run.sh`, and `README.md` for `arroba-workflow-gateway`, preserving auth/parser/method/mode config and paired-sender instructions. The publication live drill now exports a publication package and starts the gateway from the exported config before running paired-sender checks.
+- Added M9.10 workflow-to-workflow publication drill. `pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill` starts two isolated kernels and gateways, publishes workflow B over HTTP, publishes workflow A over HTTP with a custom parser that calls workflow B's published endpoint, and verifies both workflows return accepted async run metadata.
+- Added M9.6 HTTPS/TLS support for the HTTP publication gateway. TLS can be supplied through publication config or `ARROBA_PUBLICATION_TLS_*` env vars, exported gateway packages document the HTTPS env shape, parser/schema failures now return HTTP 400, and the publication live drill covers HTTP success, parser failure, and self-signed HTTPS invocation.
+- Added M9.12 Slack connector coverage. The gateway now handles signed Slack URL verification without workflow invocation, accepts signed slash-command form payloads through the Arroba connector identity model, and the publication live drill creates a Slack-shaped publication covering challenge and signed invocation.
+- Added M9.13 Telegram connector coverage. Telegram webhook-secret verification now has unit and live drill coverage, sender ids map through the Arroba connector identity model, and the publication live drill covers invalid-secret rejection plus accepted Telegram webhook invocation.
+- Added M9.14 Discord connector coverage. The gateway verifies Discord Ed25519 signatures over `timestamp + raw_body`, handles signed PING interactions without invoking workflows, maps signed interaction users through the Arroba connector identity model, and the publication live drill covers PING, invalid signature rejection, and accepted signed invocation.
+- Added M9.15 WhatsApp and M9.16 Signal connector coverage. WhatsApp now supports Meta webhook verification plus `x-hub-signature-256` raw-body HMAC checks; Signal supports bridge-style `x-signal-webhook-secret` verification. Both connectors map sender identities through the Arroba connector identity model and are covered by unit tests plus the publication live drill.
+- Added M9.7 WebSocket/WSS publication support. The gateway now accepts WebSocket upgrades at `/.well-known/arroba/publication/ws`, reuses publication auth and input schema validation, invokes the same kernel workflow endpoint, streams accepted/status/final/error messages where possible, and supports WSS through the existing TLS config. Unit tests cover WS invocation and validation errors; the publication live drill covers WS and self-signed WSS.
+- Added M9.8 local IPC publication invocation. `arroba-workflow-call` can invoke exported `publication.config.json` packages or kernel-owned publications by session/publication id, validates the configured input schema, forwards to the same kernel workflow endpoint as HTTP/WebSocket, emits JSON results, and is covered by unit tests plus the publication live drill.
+- Added a Docker-backed M9 publication connector drill. `pnpm --filter @arroba/cli run publication:docker-connectors-drill` builds a checked-in Node/curl client image and verifies an external container can kick off workflow runs through HTTP, HTTPS, WS, WSS, Slack, Telegram, Discord, WhatsApp, and Signal ingress paths.
+- Added a semantic URL renderer drill. `pnpm --filter @arroba/cli run semantic-url-renderer:drill` drives session/workflow/publication setup through shell commands, uses one Codex `gpt-5.4` workflow agent, publishes an async renderer workflow, and validates that a wrapper site first serves a loading page and then serves workflow-generated HTML for `/about/<prompt>`.
+
+### iOS app implementation kickoff
+
+- Added the native SwiftUI iOS app under `apps/ios` as an OSS Arroba client surface, with a minimal Xcode app shell and `ArrobaPackage` for feature code.
+- Implemented the first local-kernel client slice: typed request/response envelopes, `ListSessions`, `CreateSession`, `AttachToSession`, and a `URLSessionWebSocketTask` request path matching the TypeScript kernel-client IPC frame shape.
+- Added an `@Observable` app model and a terminal-inspired waiting-room UI with kernel URL/workspace/worktree configuration, session refresh, session creation, selected-session summary, runtime drawer, and global footer.
+- Added Swift Testing coverage for protocol encoding/decoding and model session selection, plus XCUITest launch coverage for the waiting-room UI.
+- Documented iOS local development, build/test commands, component parity rules, and QA guidance in `apps/ios/README.md`; updated `docs/ios/IOS_APP_PLAN.md` with the first implementation decisions and remaining IOS-M1 transport work.
+
+### iOS kernel event stream update
+
+- Extended the Swift kernel protocol layer with local WebSocket subscribe/unsubscribe frames, transport event frame decoding, and typed handling for `session_snapshot`, `heartbeat`, `session_unavailable`, `transport_resumed`, and `replay_gap` events.
+- Added attach-and-subscribe behavior to the waiting-room app model, including a stable iOS client id, attachment state, event cursor tracking, heartbeat timestamp, session snapshot upserts, replay-gap surfacing, and reconnect with the last received event id after stream interruptions.
+- Added Attach and Detach actions plus attachment/stream status to the SwiftUI runtime drawer while keeping the app as a kernel client rather than a runtime authority.
+- Expanded Swift Testing coverage to 8 tests and XCUITest launch coverage to include the Attach/Detach affordances; verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass.
+
+### iOS prompt composer update
+
+- Added the first single-agent prompt composer to the iOS waiting room. The composer requires an active attachment, sends `SubmitPrompt` to the selected session/focused agent, clears the draft only after kernel acceptance, and exposes a Stop action backed by `CancelActivePrompt`.
+- Extended Swift protocol fixtures and app model tests for prompt submission, bringing package coverage to 10 tests. The XCUITest launch smoke now asserts the prompt composer, Send, and Stop affordances exist.
+- Re-verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass.
+
+### iOS transcript and agent focus update
+
+- Added recent session-history loading after attach, live transcript rendering for terminal output/runtime notices/completion markers, and replay-aware auto-scroll behavior in the SwiftUI waiting-room surface.
+- Added kernel protocol coverage for `GetSessionHistory`, `FocusAgent`, `CycleAgentFocus`, `AgentFocused`, terminal output frames, and session-history responses.
+- Added runtime-drawer agent focus controls so iOS can focus a specific kernel-reported agent or cycle focus, matching the TypeScript client prompt-routing model at the request boundary.
+- Verified `swift test --package-path apps/ios/ArrobaPackage` passes with 17 Swift Testing cases and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' build` succeeds.
+
+### iOS command-center subset update
+
+- Added the first native command-center catalog for iOS with `/session`, `/agent`, `/stop`, and `/waiting` discovery from the prompt composer.
+- Routed slash-command drafts through the existing `ArrobaAppModel` actions so `/session list`, `/session new|create`, `/session attach [ref]`, `/session detach`, `/agent list`, `/agent focus <ref>`, `/agent cycle`, `/stop`, and `/waiting` use the same typed kernel-backed request paths as the buttons and agent controls.
+- Added command feedback into the transcript as notices and kept failed freeform prompt submission behavior intact.
+- Expanded Swift Testing coverage to 20 cases for command catalog filtering plus slash command execution; verified `swift test --package-path apps/ios/ArrobaPackage` and `xcodebuild -workspace apps/ios/Arroba.xcworkspace -scheme Arroba -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' test` pass. A simulator text-entry command-center assertion was intentionally not kept because XCTest did not reliably expose the transient SwiftUI suggestion buttons; package/model coverage is the stable gate for that logic for now.
+
+### M14B home-managed slice native TUI update
+
+- Added `--slice <ref>` native TUI placement for Codex, OpenCode, and Claude so `arroba codex/opencode/claude <session> --slice <slice_id>` attaches to a home-kernel session and places provider execution on the home-managed slice worker.
+- Local Docker slices now reuse the home relay when available, start only the worker runtime, bind provider endpoints for worker access, import provider auth on demand, install Claude Code, copy Claude credentials from file or macOS Keychain, and trust `/workspace` for Claude Code.
+- Fixed slice worker kernel ref resolution so shared-relay home-managed slices keep the recorded home relay endpoint/token instead of being rewritten to the old slice-private Docker relay.
+- Extended `live-remote-native-tui-drill.mjs` with `--home-managed-slice-local-docker` and validated Codex, OpenCode, and Claude with two provider-native TUIs plus one Arroba observer in one home session, provider execution on the slice worker, prompt/turns, provider permissions, prompt attachments, cross-agent separation, and badge transitions back to idle.
+
+### M14B native TUI MCP/skills contract update
+
+- Documented the native TUI MCP/skills placement contract: local native TUI reuses agent-scoped grants, standard home-worker remote does not copy/install capabilities across machines, and home-managed slices may receive home skill packages because the home kernel owns the child worker.
+- Started native remote MCP propagation for provider-native runs by forwarding grant-derived MCP requirements through `LaunchLeasedNativeProviderRun`, validating worker availability before remote native launch, and rendering the required MCP set into the worker-owned provider run.
+- Extended Claude native TUI launch planning so granted MCPs and the Arroba runtime MCP are passed through `--mcp-config`/`--strict-mcp-config`, matching the structured Claude launch path.
+
+### Workspace live sync local validation pass
+
+- Revalidated the local Workspace Live Sync matrix after deferring Scalingo-hosted drills: `pnpm --filter @arroba/kernel-client test -- shell-executor`, `pnpm --filter @arroba/cli test -- workspace-command-handlers cli-polling-controller session-chrome command-center`, `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`, `swift test --package-path apps/ios/ArrobaPackage`, and `/Users/miguel/arroba-cloud pnpm test` all passed.
+- Re-ran Codex live drills for direct managed, same-branch tracked, cross-branch tracked, local permission, same-host relay managed, same-host relay tracked, and same-host relay permission. Managed and tracked now have parity across direct local and relay validation for two-target fanout, explicit branch/workspace-link binding, `.arrobaignore`, outside-turn exclusion, no-commit guarantees, dirty target rebase/conflict reporting, resolver convergence, and permission surfacing where the managed tool path requires it.
+- Re-ran the focused same-host relay restart path with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --mode tracked --tracked-target-count 2 --tracked-bidirectional --target-branch remote-live-sync-restart-tracked-target --full --restart-relay-before-sync --timeout-ms 700000`; it passed with relay restart before sync, two target worktrees, cross-branch workspace-link binding, bidirectional tracked fanout, `.arrobaignore`, outside-turn exclusion, no commits, conflict reporting, and resolver convergence.
+- Fast-forwarded the actual Hetzner worker checkout `/tmp/arroba-native-remote-validate` from stale `d989aa3` to current HEAD `3e084e7`, rebuilt the remote kernel and relay with `/root/.cargo/bin` Cargo 1.95, and re-ran Codex Hetzner Workspace Live Sync drills. Tracked passed with two targets, cross-branch binding, bidirectional fanout, `.arrobaignore`, outside-turn exclusion, no commits, conflict reporting, and resolver convergence; managed passed with two targets, managed tool writes, opaque move/delete, direct-write suppression, collision serialization, non-overlap rebase, and overlap rejection; permission passed with the remote worker request surfacing as a home-kernel approval interaction. Cleaned orphaned remote drill kernels afterward.
+- Repeated the actual Hetzner worker validation on current HEAD `19cd5df6a5568f9c0dc7f1b70bb7c490ded8c7c7` after fast-forwarding `/tmp/arroba-native-remote-validate` from `3e084e7` and rebuilding the remote kernel and relay. Codex tracked passed with `--target-branch hetzner-live-sync-current-head-tracked-target`, two cross-branch targets, bidirectional fanout, `.arrobaignore`, outside-turn exclusion, no commits, conflict reporting, and resolver convergence; Codex managed passed with two targets, managed writes, opaque move/delete, direct-write suppression, collision serialization, non-overlap rebase, and overlap rejection; Codex permission passed with the remote worker request surfacing as a home-kernel approval interaction. Cleaned local drill roots and orphaned remote drill kernels afterward.
+- Remaining validation is intentionally limited to external blockers: Scalingo/staging hosted plus hosted second-user drills are deferred until the platform issue is cleared. OpenCode Workspace Live Sync is validated locally through the OpenCode Zen `opencode/gpt-5.2` provider path; only the OpenAI OAuth-backed OpenCode model path still fails before Arroba behavior with `Token refresh failed: 401`.
+- Tightened the local Workspace Live Sync command/documentation surface after the validation pass: command center now suggests `off`, `managed`, and `tracked` for `/workspace sync`, shell help names the legal session-mode values, and `docs/RUNNING_LOCAL.md` describes managed vs tracked semantics, `.arrobaignore`, outside-turn exclusion, and the off-by-default policy. Re-ran the focused CLI/kernel-client UI tests plus the full local direct/relay Workspace Live Sync drill set above; all passed, including the same-host relay restart tracked drill.
+- Added TypeScript kernel-client types for `GetDaemonHealth` and the Workspace Live Sync health fields, including reservation counts, workspace identity monitor health, external-change monitor health, and workspace coordination claims. Re-ran `pnpm --filter @arroba/kernel-client test`; 77 tests passed.
+- Brought the iOS command center into parity for explicit Workspace Live Sync mode selection by suggesting `/workspace sync mode managed`, `/workspace sync mode tracked`, and `/workspace sync mode off`. Re-ran `swift test --package-path apps/ios/ArrobaPackage`; 65 tests passed.
+
+### Slice local Docker port assignment hardening
+
+- Local Docker slices now persist a per-slice host port assignment in the slice record instead of relying on fixed `slice-N` derived ports. Creation skips reserved and currently busy host ports, and provisioning, display URLs, relay config, and log/diagnostic paths use the stored assignment.
+- Bumped the local daemon protocol to 76 and extended Rust, kernel-client, CLI, and web SliceRecord types with `local_docker_ports`.
+- Added focused coverage for distinct persisted local Docker port assignments, busy-port reporting against the assigned port set, private relay config, and the versioned slice record protocol shape.
+
+### Slice Docker seccomp default hardening
+
+- Added `slices.linux.allow_unconfined_seccomp` as an explicit advanced config flag. Local Docker slices keep Docker's default seccomp profile unless the home user opts in, and the kernel now passes `ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP=0|1` to the provisioner from typed config.
+- Updated config parsing/schema coverage and protocol notes so clients can present the flag as a security compatibility setting rather than an implicit slice default.
+
+### Slice provider auth removal
+
+- Added kernel-owned slice provider auth removal for local Docker slices. `RemoveSliceProviderAuth` purges provider credential files inside the slice, clears matching provider auth summaries from kernel state, records accepted/failed/completed audit events, and scopes provider families consistently with import (`opencode` removes `opencode:*`).
+- Bumped the local daemon protocol to 77 and extended the kernel-client, CLI, and web request surfaces. TUI/web terminals now expose provider auth removal alongside import, login, and alias controls.
+
+### Slice model refactor
+
+- Split the serialized slice model and input/action structs out of `slice.rs` into `slice/model.rs`, keeping protocol shapes stable while reducing the mixed-responsibility slice module. The store, local Docker runner, auth, display, and remaining diagnostics code are still candidates for follow-up extraction.
+
+### Slice store refactor
+
+- Split slice record persistence, operation guards, lookup, worktree scoping, lifecycle attachment, provider-auth summary mutation, and restart reconciliation out of `slice.rs` into `slice/store.rs`. The top-level slice module now keeps the local Docker runner and public re-exports, reducing mixed responsibilities without changing the slice API.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice local Docker refactor
+
+- Split the local Docker slice runner, provider-login parser, relay URL mapping, log collection, port checks, and provisioner command wiring out of `slice.rs` into `slice/local_docker.rs`. The public `crate::slice::*` exports remain stable, while the slice façade dropped from 1015 lines to 420 lines.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice command provider-auth refactor
+
+- Split slice provider-auth normalization, provider-family matching, scoped filtering, and alias-preserving merge policy out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/provider_auth.rs`. The command executor now delegates auth policy instead of owning it inline.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice production path cleanup
+
+- Moved the Lume slice provisioner and provider session smoke scripts from `experiments/slice-spike` into the production-owned kernel path `apps/kernel/slice-linux-lume`, removed spike naming from defaults/logging/docs, and updated validation script paths.
+- Versioned the default Linux Docker slice image as `arroba-slice-linux:0.1.0` across config defaults, local Docker fallback behavior, the Docker provisioner, and native-TUI slice drill setup; custom user image overrides still work.
+- Re-ran `bash -n` for both slice provisioners, `cargo test --manifest-path apps/kernel/Cargo.toml user_config -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`, and the CLI test command covering slice command handlers/launch helpers; all passed.
+
+### Slice audit hardening
+
+- Slice create now writes a durable `slice.audit` event, and all slice audit events include first-class result, actor, client type, provider, workspace/worktree/mount, owner, and redacted-error fields instead of forcing provider/error context into freeform messages.
+- Added coverage that slice creation still ignores forged client-supplied provider auth while writing the enriched create audit event. Re-ran the focused create-slice audit test and the full slice-focused Rust suite; both passed.
+
+### Slice stopping lifecycle state
+
+- Added an explicit protocol-visible `stopping` slice status and bumped the local daemon protocol to 78. Stop requests now publish the transitional state before invoking the local Docker stop action, while start/stop/delete operation guards still serialize lifecycle mutations.
+- Restart reconciliation now marks interrupted `starting`, `stopping`, and `running` slices `unhealthy` so clients do not show stale runtime-only states after a kernel restart.
+- Updated Rust, kernel-client, CLI, and web slice record types. Web slice controls now disable start/stop actions while a slice is in transitional states.
+
+### Slice restart reconciliation hardening
+
+- Added local Docker host-state inspection during durable restore. Reconciliation now checks whether the slice container is running, stopped, missing, or unverifiable before deciding whether restored slice state should become `stopped` or `unhealthy`.
+- Preserved conservative semantics for still-running or unknown containers: stale worker presence, relay endpoint, and provider listings are cleared and the slice is marked `unhealthy` until the user restarts or diagnoses it. Missing/stopped containers for previously running or unhealthy slices become `stopped`.
+
+### Slice detached-start validation
+
+- Hardened the Docker slice child scripts so detached relay/kernel screen sessions and headed screen processes must stay running after launch. Runtime or display startup failures now make provisioning fail instead of being hidden behind a successful detached process spawn.
+
+### Slice lifecycle command refactor
+
+- Split slice lifecycle/read/log/display command handling, start/stop/delete policy, active-agent guards, and worker discovery out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/lifecycle.rs`. The root executor now stays focused on request routing and provider-auth command handling.
+
+### Home extension local relay revalidation
+
+- Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --continue-on-failure` on OSS main `78ada11b` after the latest terminal/web slice-auth UX alignment. Local self-hosted relay passed both `local-single` and `local-collab`; each scenario validated home-owned script, MCP, and connector invocation from a worker agent plus revoke enforcement.
+- Aligned the web terminal command center slice-auth descriptions in `arroba-cloud` main `5fd0709` with the TUI/shell wording: import copies this machine's provider credentials into the slice, login starts provider authentication inside the slice for another account, remove purges slice-local credentials/account summaries, and alias is an Arroba display label fallback.
+
+### Home extension Hetzner revalidation
+
+- Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single,hetzner-collab --continue-on-failure` on OSS main `1fcb8edd`. Both Hetzner scenarios passed: single-user in 17.7s and collab in 15.9s. The drill validated home-owned script, MCP, and connector execution from a leased Hetzner worker agent, worker-local MCP collision rejection, revoke removing worker advertisement and blocking stale calls, and collaborator inability to grant, revoke, or request home-owned extensions.
+
+### Slice provisioner reliability hardening
+
+- Re-ran `node apps/cli/scripts/live-slice-lifecycle-drill.mjs` locally. The first run exposed two lifecycle reliability issues: headed desktop startup failures surfaced as an unlabeled status 124, and slice provider-auth import/remove spent kernel response time on optional provider CLI status probes.
+- Hardened the local Docker slice provisioner so required startup phases log explicit `desktop`, `runtime`, and `provider-servers` boundaries, desktop failures collect screen/process/log diagnostics, provider-auth import/remove no longer wait on provider CLI probes, and provision completion no longer runs synchronous Docker status probes. A follow-up run now fails with the actionable root cause `desktop: No space left on device` in the local Docker environment instead of a generic transport timeout.
+- Added local Docker slice storage preflight checks for desktop, runtime, provider-servers, provider-auth, and provider-login phases. Re-running `node apps/cli/scripts/live-slice-lifecycle-drill.mjs` in the same full Docker/Colima environment now fails before desktop launch with `slice storage preflight failed for desktop: /home/slice has 0MiB free, needs 256MiB`, followed by the explicit recovery action to free Docker disk or delete unused slice containers/volumes.
+
+### Home extension invocation reliability
+
+- Hardened home-executed remote extension cancellation bookkeeping so cancellation is scoped to the concrete invocation id while idempotent replay remains scoped to context, idempotency key, and tool. This prevents cancelling one in-flight idempotent tool call from suppressing another tool call that shares the same provider idempotency key.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml home_extension -- --nocapture`; 17 focused tests passed, including replay, duplicate rejection, cancellation audit, and the new cross-tool cancellation regression.
+- Re-ran `pnpm --filter @arroba/cli run remote-home-extension:local-matrix-drill` on OSS main `99aebd35`. Local self-hosted relay passed both `local-single` and `local-collab`, validating home-owned script, MCP, and connector invocation plus revoke enforcement.
+- Fast-forwarded and rebuilt the Hetzner validation checkout `/tmp/arroba-native-remote-validate` to OSS main `04a68ee1`, then re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single,hetzner-collab --continue-on-failure`. Both actual-Hetzner scenarios passed: single-user in 18.1s and collab in 15.4s.
+- Fixed the remote home-extension matrix entrypoint so it accepts a literal package-manager `--` separator, matching the Workspace Live Sync matrix behavior. Revalidated with `node --check apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs`, direct dry-run with `-- --include-hetzner`, and `pnpm --filter @arroba/cli run remote-home-extension:matrix-drill -- --include-hetzner --only hetzner-single --dry-run`.
+- Revalidated hosted Cloud staging against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and hosted relay `wss://195.201.123.115.sslip.io` using the Cloud wrapper with `ARROBA_OSS_REPO=/Users/miguel/arroba`. `pnpm run smoke:hosted-oss-drill -- --second-kernel`, `-- --multi-user`, and `-- --second-kernel --multi-user` all passed. The combined run validated hosted second-kernel worker leasing, home-owned script/MCP/connector execution, collaborator-owned remote agent checks, collaborator grant/revoke/request denial, and Cloud multi-user invite/session-scoped relay access.
+
+### Hosted relay teardown and scoped live-sync writes
+
+- Hardened `LocalIpcClient.close()` with bounded shutdown, pending request rejection, and public force-destroy fallback. Fixed the hosted drill timeout race so the losing timeout is cleared and `client-close-timeout` is logged only when close really exceeds the bound. Revalidated with `pnpm --filter @arroba/kernel-client test`, `node --check apps/cli/scripts/live-hosted-cloud-relay-drill.mjs`, and hosted Cloud `pnpm run smoke:hosted-oss-drill -- --second-kernel`; the final hosted run passed without false client-close-timeout lines.
+- Updated OpenCode managed Workspace Live Sync so native edit/write/multiedit/apply_patch/external-directory tools stay visible outside synced roots. When no platform write fence is active, those native write permissions are kernel-gated as `ask`; protected-root requests are rejected by the runtime permission handler, while outside-repo requests can proceed normally.
+- Updated the Workspace Live Sync hidden instructions and prompt-template assertion to state that live sync is scoped to selected roots and provider-native edit/write/patch or shell tools may be used outside them.
+- Revalidated with `cargo fmt --manifest-path apps/kernel/Cargo.toml --check`, `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml opencode_binding -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml --test opencode_runtime_lifecycle_integration -- --nocapture`, and `pnpm --filter @arroba/cli run workspace-live-sync:opencode-permission-drill`. The broader OpenCode managed live drill could not complete because the OpenCode account returned `Insufficient balance` before the live-sync assertions.
+
+### Workspace Live Sync local parity revalidation
+
+- Re-ran `pnpm --filter @arroba/cli run remote-home-extension:local-matrix-drill`; local self-hosted relay passed both `local-single` and `local-collab`, covering home-owned script, MCP, connector invocation from a worker agent and revoke enforcement.
+- Re-ran `pnpm --filter @arroba/cli run workspace-live-sync:local-matrix-drill`; `local-off-codex`, `local-managed-codex`, `local-tracked-codex`, and `local-permission-codex` all passed.
+- The tracked drill validated cross-branch bidirectional fanout across three workspaces, `.arrobaignore` propagation and filtering, outside-turn changes ignored, tracked conflict detection/resolution, stable git heads, and sibling-repo writes left unsynced. The permission drill confirmed Workspace Live Sync does not block direct writes outside the synced repo.
+
+### Remote managed Workspace Live Sync parity
+
+- Fixed remote managed Workspace Live Sync fanout ordering. Home now handles forwarded managed tool calls as an authority/coordinator, the worker applies accepted final states to the source checkout, then the worker sends a finalize peer request so home fans out only after source apply succeeds. This prevents same-host remote workers from seeing their own fanout as an external source change.
+- Added worker kernel, machine, and worktree identity to the forwarded managed live-sync context; updated relay peer protocol shape coverage and bumped the local daemon protocol to 110.
+- Extracted shared managed file-change construction for local and remote managed fanout, and updated notices so remote managed changes render as managed summaries.
+- Revalidated with `cargo fmt --manifest-path apps/kernel/Cargo.toml`, `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`, and `pnpm --filter @arroba/cli run workspace-live-sync:matrix-drill -- --include-remote --only remote-managed-codex --continue-on-failure`. The final same-host relay managed drill passed in 263.9s, covering text write/edit, patch/move/delete, opaque move/delete, ignored direct writes, and collision/external-change checks across two managed targets.
+
+### Hosted Cloud home extension revalidation
+
+- Revalidated hosted Cloud staging on 2026-06-11 against OSS main `0b2f7ba6b` and `arroba-cloud` main `d6edc7b8` with `pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user` from `/Users/miguel/arroba-cloud`.
+- The run used `https://arroba-cloud-staging.osc-fr1.scalingo.io` and hosted relay `wss://195.201.123.115.sslip.io`. It passed the paired second-kernel worker path and Cloud multi-user path in one run.
+- The second-kernel scenario validated hosted worker machine pairing, relay target readiness, remote agent leasing, home-owned script/MCP/connector execution from the worker runtime MCP surface, revoke removing advertisement and blocking stale calls, and prompt completion through the leased worker agent.
+- The collab extension scenario validated a collaborator-owned remote agent on the hosted second kernel, collaborator denial for grant/revoke/request of owner home extensions, owner-scoped grant authority, and successful home-executed script/MCP/connector calls after owner grant.
+
+### Remote tracked Workspace Live Sync parity
+
+- Revalidated same-host relay tracked Workspace Live Sync on 2026-06-11 against OSS main `d21212443` with `pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill`.
+- The drill passed in full tracked mode with Codex, two target worktrees on `remote-live-sync-tracked-parity-target`, bidirectional fanout, `.arrobaignore` propagation, force-excludes, ignored outside-turn changes, unchanged source and target Git heads, conflict reporting, resolver convergence, final ready sync status, and a sibling-repo write outside the synced root left writable and unsynced.
+- Verified the drill cleaned its own `apps/cli/target/live-workspace-live-sync-drill/41519-1781136489232` and `/tmp/arroba-remote-workspace-live-sync-41341-*` artifacts after success.
+
+### Hetzner tracked Workspace Live Sync parity
+
+- Created an isolated Hetzner checkout `/tmp/arroba-workspace-live-sync-head-1781136653-48238`, built `arroba-kernel` and `arroba-relay` there, and verified it was at OSS main `7964baa`.
+- Revalidated actual-Hetzner tracked Workspace Live Sync on 2026-06-11 with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --mode tracked --tracked-target-count 2 --tracked-bidirectional --target-branch hetzner-live-sync-7964baa-tracked --full --timeout-ms 700000 --hetzner-worker --hetzner-repo /tmp/arroba-workspace-live-sync-head-1781136653-48238`.
+- The Linux worker drill passed in 93.6s, validating remote worker source side effects, two tracked target worktrees, bidirectional fanout, `.arrobaignore` propagation, force-excludes, ignored outside-turn changes, unchanged Git heads, conflict reporting, resolver convergence, and final ready sync status. Managed mode remains unsupported on this Linux worker because selective write fencing is macOS-only.
+- Removed the isolated Hetzner checkout after the run and verified local `apps/cli/target/live-workspace-live-sync-drill/hetzner-48614-1781136845735` plus `/tmp/arroba-remote-workspace-live-sync-48614-*` artifacts were gone.
+
+### Workspace Live Sync terminal UX validation
+
+- Revalidated current TUI Workspace Live Sync UX on OSS main `437fbf9af` with `pnpm --filter @arroba/cli test -- workspace-command-handlers command-center command-actions-provider-config cli-options`; the command passed the full CLI test suite with 1238 passing tests, including `/workspace sync off|managed|tracked`, `/workspace sync default`, `/workspace sync link`, audit/status/targets/conflicts/ignore rendering, command-center entries, and config default wording that live sync is scoped to the selected workspace/worktree while other repositories remain unrestricted.
+- Revalidated current web terminal Workspace Live Sync UX on `arroba-cloud` main `d6edc7b8`: `pnpm --filter @arroba-cloud/web run build` passed, then `node --test dist/react/terminal/SettingsSidebarPanelMount.test.js dist/terminal/terminal-side-panel-composition.test.js dist/terminal/settings-panel-dom-controller.test.js dist/terminal/terminal-slash-command-controller.test.js dist/terminal/command-center-controller.test.js dist/ui/waiting-room-option-picker.test.js` from `apps/web` passed 61 focused tests.
+- The web UX tests cover Settings-owned default/current live-sync controls, managed-unavailable disabled state from kernel health, diagnostics buttons for status/targets/conflicts/ignore/audit, mode-neutral enrollment, rollback on failed default updates, slash-command routing, command-center discoverability, and waiting-room live-sync mode descriptions.
+
+### Slice terminal UX validation
+
+- Reused the current OSS TUI test pass on main `437fbf9af`; the 1238-test CLI suite includes slice spawn primitives, `--slice off|new|<slice-ref>`, headed/headless selection, reusable-slice worktree validation, waiting-room slice rows, slice deletion guards for attached agents, `/slice` diagnostics/auth command-center entries, and `/agent inspect` slice placement summaries.
+- Revalidated focused web slice UX on `arroba-cloud` main `d6edc7b8` after the web build with `node --test dist/react/terminal/SlicesSidebarPanelMount.test.js dist/terminal/terminal-slices-panel-composition.test.js dist/terminal/slash-command-state.test.js dist/terminal/freeform-agent-dialog-projection.test.js dist/terminal/waiting-room-session-start-controller.test.js dist/terminal/waiting-room-slash-command-policy.test.js dist/react/terminal/SettingsRemoteRuntimeReadiness.test.js dist/kernel/kernel-requests.test.js` from `apps/web`; 82 tests passed.
+- The web slice tests cover kernel request shapes, new/reuse/off slice selection, stale-slice blockers, selected-worktree reuse filtering, headed slice screen links, provider-auth login/import/remove/alias actions, provider account labels, Slices panel routing, waiting-room slice inventory before a session exists, and remote-runtime readiness guidance for slice lifecycle/auth blockers.
+
+### Home extension terminal UX validation
+
+- Reused the current OSS TUI test pass on main `437fbf9af`; the 1238-test CLI suite includes active home-proxy grant confirmation, passive skill snapshot grants without active-tool confirmation, `/extension sync-status`, `/extension sync-retry`, `/extension audit`, `/agent inspect` home-proxy placement and manifest status, `/kernel remote-runtime` manifest counters, and native TUI runtime banners that keep pending revokes visible.
+- Revalidated focused web home-extension UX on `arroba-cloud` main `d6edc7b8` after the web build with `node --test dist/react/terminal/ExtensionsSidebarPanelMount.test.js dist/terminal/extensions-projection.test.js dist/terminal/extensions-controller.test.js dist/terminal/command-center-controller.test.js dist/react/terminal/SettingsRemoteRuntimeReadiness.test.js dist/react/terminal/SettingsSidebarPanelMount.test.js` from `apps/web`; 73 tests passed.
+- The web extension tests cover worker-local/home-proxy/skill-snapshot placement, home-owner-only grant/revoke controls for remote agents, active home-proxy grant confirmation, connector credential selection, manifest sync retry/status, pending revoke visibility, stale-call recovery guidance, audit routing, Settings remote-runtime manifest counters, and command-center discoverability.
+
+### Home extension local self-hosted relay revalidation
+
+- Revalidated local self-hosted relay home-extension execution on 2026-06-11 against OSS main `5a3afe074` after the native-TUI provider-run health and web-health parity checkpoints.
+- Ran `pnpm --filter @arroba/kernel-client run build && pnpm --filter @arroba/cli run remote-home-extension:local-matrix-drill`; both `local-single` and `local-collab` passed.
+- The drill covered home-owned script, MCP, and connector invocation from a worker agent, revoke removing worker advertisement and blocking stale calls, worker-local MCP collision rejection, and collaborator denial for grant/revoke/request authority.
+
+### Remote projected provider-run output pump hardening
+
+- Investigated intermittent Hetzner collab home-extension failures where the home daemon relay socket was closed for heartbeat timeout during `arroba.request_extension`. The kept artifacts showed a home-to-worker `DrainLeasedRuntimeProjection` call blocking for ~15s after remote native provider launch while the home output pump was treating a projected worker provider run as a local PTY run.
+- Hardened both legacy app and async runtime output-pump candidate selection so `session.active_provider_run_id` is pumped only when the run exists in the local provider store; projected remote runs remain projection-drained and are never local PTY targets.
+- Added focused regressions for both output-pump paths and made temporary relay peer clients send a close frame before dropping successful response sockets.
+- Revalidated with `cargo fmt --manifest-path apps/kernel/Cargo.toml --check`, `cargo test --manifest-path apps/kernel/Cargo.toml provider_output_pump_ignores_projected_remote_active_run -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml pump_active_prompt_outputs_ignores_projected_remote_active_run -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml peer_transport -- --nocapture`, `pnpm --filter @arroba/kernel-client run build`, `pnpm --filter @arroba/cli run remote-home-extension:local-matrix-drill`, `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single,hetzner-collab --continue-on-failure` (single passed, collab exposed the async path), then `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-collab --continue-on-failure` after the async fix; final Hetzner collab passed in 18.6s.
+- Revalidated hosted Cloud staging against OSS main `c53ac2d5a` and `arroba-cloud` main `c8317481` with `ARROBA_OSS_REPO=/Users/miguel/arroba pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user` from `/Users/miguel/arroba-cloud`. The run passed against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io`, covering hosted second-kernel worker leasing, home-owned script/MCP/connector execution, collaborator-owned remote agent denial for grant/revoke/request, and Cloud multi-user invite/session access.
+
+### Hosted Workspace Live Sync follow-up
+
+- Ran hosted Cloud Workspace Live Sync staging validation on 2026-06-11 from `/Users/miguel/arroba-cloud` with `ARROBA_OSS_REPO=/Users/miguel/arroba pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user --workspace-live-sync --tracked-workspace-live-sync` against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io`.
+- Hosted managed Workspace Live Sync passed for second-kernel single-user and collab paths, including `arroba.write_artifact` fanout to the worker/target worktrees and `.arrobaignore` rejection for ignored paths.
+- The first hosted tracked run exposed a drill observability gap: Codex `gpt-5.2` is unsupported for the current ChatGPT account and the provider terminal failure was persisted as a notice, so the drill waited for missing files instead of failing immediately. Updated the live Workspace Live Sync drill to treat structured provider terminal-failure notices as provider errors.
+- A hosted tracked OpenCode/Zen rerun proved the target-origin tracked fanout and source-side direct writes, including a sibling repo outside the synced root remaining writable, but OpenCode kept verifying and did not emit the exact final marker before the drill timeout. Updated the tracked drill prompt to use the absolute sibling repo path so it validates the product invariant rather than provider-dependent `../sibling-repo` resolution.
+- Hosted tracked parity remains not green: OpenCode/Zen is provider-behavior flaky for the final marker, and Codex `gpt-5.2-codex` did not complete the target-origin file phase before timeout. The next fix should make the hosted tracked drill assert file/fanout state independently from exact final provider wording or use a deterministic provider fixture for tracked propagation while keeping one real-provider smoke.
+
+### Hosted tracked Workspace Live Sync parity
+
+- Fixed OpenCode turn settlement so completed assistant messages are recorded but provider turns settle only after the OpenCode session reports idle. This prevents tool-using turns from clearing the active prompt and consuming the tracked Workspace Live Sync pre-turn snapshot before filesystem writes finish.
+- Restored explicit final-marker waits in the tracked live-sync drill before fanout assertions, so tracked mode only validates fanout after the provider turn has actually ended.
+- Revalidated with `node --check apps/cli/scripts/live-workspace-live-sync-drill.mjs` and `cargo test --manifest-path apps/kernel/Cargo.toml opencode_runtime`; both passed.
+- Revalidated hosted Cloud second-kernel tracked Workspace Live Sync on 2026-06-12 from a clean OSS worktree at `c652385cf` using `ARROBA_OSS_REPO=/tmp/arroba-live-sync-clean pnpm run smoke:hosted-oss-drill -- --second-kernel --tracked-workspace-live-sync --tracked-provider opencode --tracked-model zen` from `/Users/miguel/arroba-cloud`. The run passed against staging and hosted relay, covering OpenCode/Zen tracked fanout, bidirectional sync, `.arrobaignore`, sibling-repo writes outside the synced root, conflict detection, resolver convergence, and unchanged Git heads.
+- The broader `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync` filter is still not green in the shared dirty checkout because `transport::mcp_server::tests::mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact` currently stack-overflows even when run exactly. That remains an open validation gap outside the OpenCode idle-gating patch.
+
+### Remote execution follow-up validation
+
+- Closed the local Workspace Live Sync validation gap on 2026-06-12. Runtime bootstrap no longer re-locks `DaemonApp` while callers hold the app lock to clone `metaagent_event_store`; `KernelRuntimeState::new_with_owned_state*` now receives that store explicitly with the other owned stores.
+- Revalidated with `cargo test --manifest-path apps/kernel/Cargo.toml runtime::state::prompt_git_observer_runtime::tests:: -- --test-threads=1` (`7 passed`), `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --test-threads=1` (`151 passed`), and the same `workspace_live_sync` filter from a clean detached worktree at `de9bd4747` (`151 passed`).
+- Hardened `apps/cli/scripts/live-workspace-live-sync-drill.mjs` so daemon requests use the drill timeout instead of hanging indefinitely. Revalidated `node --check apps/cli/scripts/live-workspace-live-sync-drill.mjs` and `node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=zen --mode tracked --tracked-target-count 1 --tracked-bidirectional --timeout-ms 120000`; the tracked drill passed in 70.9s.
+- The tracked live drill covered bidirectional sync, `.arrobaignore`, force-excludes, ignored outside-turn changes, sibling-repo writes outside the synced root remaining writable and unsynced, conflict detection, resolver convergence, and unchanged source/target Git heads.
+- Revalidated `node apps/cli/scripts/live-slice-lifecycle-drill.mjs`; the drill passed headed slice creation/display, provider-auth summaries/import/remove, slash-command path, waiting-room delete, independent provider accounts across slices, worktree/session scope rejection, and reuse by multiple agents/sessions.
+- Revalidated local self-hosted home-extension execution with `node apps/cli/scripts/live-remote-home-extension-drill.mjs` and `node apps/cli/scripts/live-remote-home-extension-drill.mjs --collab`; both passed for home-owned script, MCP, connector execution from a worker agent, revoke enforcement, and collaborator authority denial.
+- Updated the Hetzner validation checkout `/tmp/arroba-native-remote-validate` to OSS main `2466e71b5`, installed the rustup stable toolchain because the system Cargo 1.75 could not parse the version-4 lockfile, and rebuilt `arroba-kernel`/`arroba-relay` with Cargo 1.96.
+- Revalidated Hetzner home-extension execution with `node apps/cli/scripts/live-remote-home-extension-drill.mjs --hetzner-worker` and `node apps/cli/scripts/live-remote-home-extension-drill.mjs --hetzner-worker --collab`; both passed against the actual Linux worker, including home-owned script/MCP/connector execution, revoke enforcement, scoped relay collab, and collaborator denial for grant/revoke/request authority.
+- Revalidated actual-Hetzner tracked Workspace Live Sync on current main with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=zen --mode tracked --tracked-target-count 1 --tracked-bidirectional --hetzner-worker --timeout-ms 300000`; the drill passed in 76.8s.
+- The Hetzner tracked WLS run covered remote-worker source side effects, bidirectional tracked fanout, `.arrobaignore`, force-excludes, ignored outside-turn changes, conflict detection, resolver convergence, final ready status, and unchanged source/target Git heads. Local artifacts were removed by the drill; the remote fixture directory `/tmp/arroba-remote-workspace-live-sync-10110-1781282918115` was removed manually after validation.
+- Revalidated the actual-Hetzner Workspace Live Sync permission boundary with `node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs --provider opencode --provider-model opencode=zen --hetzner-worker`; the drill passed and confirmed the synced repo still uses the WLS permission flow while direct writes to a separate outside repo remain allowed. Local and remote drill artifacts were clean after the run.
+
+### Hosted Cloud full-matrix follow-up
+
+- Rechecked Cloud staging on 2026-06-12 with a clean OSS worktree at `172cb10a2` and `arroba-cloud` main using `ARROBA_OSS_REPO=/tmp/arroba-hosted-clean-1781283222 pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user --workspace-live-sync --tracked-workspace-live-sync --tracked-provider opencode --tracked-model zen`.
+- The first two attempts were setup-only failures caused by the clean worktree missing `node_modules` and then missing a built `@arroba/tool-display` package. After `pnpm install --frozen-lockfile` and `pnpm --filter @arroba/tool-display run build`, the hosted drill reached the runtime matrix.
+- The runtime matrix passed staging login, hosted relay pairing, machine/client pairing, second-kernel startup, managed Workspace Live Sync for single-user and collab paths, and home-owned script/MCP/connector execution in the collab second-kernel path.
+- The hosted tracked Workspace Live Sync section remains open. The drill reached the Opencode/Zen source-agent prompt after the target-origin tracked fanout passed, but the provider turn stopped producing events after initial read tools and never performed the requested source writes or final marker. The owned drill process tree was stopped after confirming no new session-history or file activity.
+- This leaves hosted tracked WLS as a validation gap, not a confirmed data-path regression: local tracked WLS, actual-Hetzner tracked WLS, actual-Hetzner WLS permission boundary, local/Hetzner home-extension single-user, and local/Hetzner home-extension collab are green on the current validated main.
+
+### Remote Workspace Live Sync drill hardening follow-up
+
+- Hardened the remote Workspace Live Sync wrappers on 2026-06-12 at OSS main `d2200a2fd` so they self-build `@arroba/kernel-client`, isolate worker `XDG_CACHE_HOME`, require an accepting worker kernel that advertises the requested provider, report the selected worker kernel in final JSON, and reject `dev-stub` up front because these drills require a real file-editing provider.
+- Revalidated same-host relay OpenCode/Zen tracked Workspace Live Sync with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=zen --mode tracked --tracked-target-count 1 --tracked-bidirectional --timeout-ms 300000`; the drill passed, including bidirectional tracked fanout, `.arrobaignore`, outside-turn exclusion, unchanged Git heads, conflict reporting, and resolver convergence.
+- Revalidated same-host relay OpenCode/Zen Workspace Live Sync permission boundary with `node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs --provider opencode --provider-model opencode=zen --timeout-ms 300000`; the drill passed, including home WLS permission handling for the synced repo and provider-native writes to a separate outside repo.
+- The first actual-Hetzner WLS reruns exposed that `/tmp/arroba-native-remote-validate` was stale at `2466e71b`; after fast-forwarding it to `d2200a2fd` and rebuilding `arroba-kernel`/`arroba-relay` with `/root/.cargo/bin` Cargo 1.96, `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=zen --mode tracked --tracked-target-count 1 --hetzner-worker --timeout-ms 300000` passed in 65.9s.
+- Current actual-Hetzner gaps: the tracked bidirectional OpenCode/Zen rerun timed out waiting for provider-created files on the source workspace, and `node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs --provider opencode --provider-model opencode=zen --hetzner-worker --timeout-ms 300000` timed out before the expected WLS permission interaction. Run-specific remote workers and temp roots from these failed validations were identified by `ARROBA_DAEMON_ID` and removed without touching other remote kernels.
+
+### Remote Workspace Live Sync drill gap closure
+
+- Re-ran actual-Hetzner bidirectional tracked Workspace Live Sync with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=zen --mode tracked --tracked-target-count 1 --tracked-bidirectional --hetzner-worker --timeout-ms 240000 --keep-artifacts-on-failure`; the drill passed in 101s after the remote validation checkout rebuild, covering source and target writes, bidirectional fanout, `.arrobaignore`, outside-turn exclusion, unchanged Git heads, conflict reporting, and resolver convergence.
+- Investigated the actual-Hetzner Workspace Live Sync permission timeout and found the home history persisted `provider adapter opencode does not support managed workspace live sync write enforcement`; the requested topology was invalid because the Hetzner worker runs Linux and managed WLS write fencing is currently macOS-only for OpenCode.
+- Updated `live-remote-workspace-live-sync-permission-drill.mjs` to fail fast with structured `unsupported` output for `--hetzner-worker` managed permission validation instead of waiting for an impossible permission interaction.
+- Revalidated the same-host relay OpenCode/Zen Workspace Live Sync permission boundary with `node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs --provider opencode --provider-model opencode=zen --timeout-ms 300000 --keep-artifacts-on-failure`; the drill passed, including managed WLS permission handling for the synced repo and provider-native writes to a separate outside repo.
+
+### Hosted tracked Workspace Live Sync validation closure
+
+- Created a clean OSS worktree at `/tmp/arroba-hosted-clean-0d3a7cc0` from main `0d3a7cc0b`, installed dependencies, and rebuilt `@arroba/tool-display` plus `@arroba/kernel-client` so hosted validation did not use the shared dirty checkout.
+- Revalidated hosted Cloud second-kernel tracked Workspace Live Sync on 2026-06-12 with `ARROBA_OSS_REPO=/tmp/arroba-hosted-clean-0d3a7cc0 pnpm run smoke:hosted-oss-drill -- --second-kernel --tracked-workspace-live-sync --tracked-provider opencode --tracked-model zen`; the staging run passed against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io` in 119s for the tracked WLS section.
+- Revalidated the hosted full second-kernel plus multi-user path with `ARROBA_OSS_REPO=/tmp/arroba-hosted-clean-0d3a7cc0 pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user --tracked-workspace-live-sync --tracked-provider opencode --tracked-model zen`; the run passed hosted relay pairing, second-kernel worker leasing, collab home-extension execution, tracked WLS, and Cloud multi-user invite acceptance. The tracked WLS section passed in 124s with bidirectional fanout, `.arrobaignore`, sibling-repo outside-root writes, conflict detection, resolver convergence, and unchanged Git heads.
+
+### Hosted combined remote execution validation
+
+- Revalidated the combined hosted Cloud matrix on 2026-06-12 from a clean OSS worktree at `/tmp/arroba-hosted-full-05e95202` on main `05e95202f` with `ARROBA_OSS_REPO=/tmp/arroba-hosted-full-05e95202 pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user --workspace-live-sync --tracked-workspace-live-sync --tracked-provider opencode --tracked-model zen`.
+- The staging run passed against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io`, covering hosted relay pairing, second-kernel worker leasing, single-user managed WLS, collaborator managed WLS through the peer-owned remote agent, collab home-owned script/MCP/connector execution, OpenCode/Zen tracked WLS, bidirectional tracked fanout, `.arrobaignore`, outside-root sibling repo writes, conflict detection/resolution, unchanged Git heads, and Cloud multi-user invite acceptance.
