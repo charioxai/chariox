@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>7 allowlisted files remain after initial splits</td>
+              <td>6 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>ff1adcf86</code> <span class="muted">Split live workflow publication drill modules</span></td>
+              <td><code>live-workflow-publication-drill.mjs</code> is now a launcher for the publication drill flow. Runtime/process helpers, browser/CDP validation, polling/assertion waiters, deterministic session builders, session-suite scenarios, manifest mode, container validation, package/schedule validation, and main flow orchestration live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
+              <td><code>node --check</code> for the entrypoint and all extracted modules; module import smoke for flow, package validation, and session suite modules; <code>node scripts/check-line-cap.mjs</code> (6 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>e35592eb2</code> <span class="muted">Split workflow code artifact drill modules</span></td>
