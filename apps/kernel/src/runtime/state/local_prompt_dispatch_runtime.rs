@@ -213,6 +213,10 @@ mod tests {
             prompt: prompt.to_string(),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
+            prompt_origin: crate::session::PromptOrigin::Arroba,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
             steering,
         }
     }
@@ -492,6 +496,10 @@ impl KernelRuntimeState {
                     &dispatch.hidden_system_context,
                 ),
                 attachments: dispatch.attachments.clone(),
+                prompt_origin: dispatch.prompt_origin,
+                external_provider: dispatch.external_provider.clone(),
+                external_provider_session_id: dispatch.external_provider_session_id.clone(),
+                external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
                 steering: dispatch.steering,
             };
             let provider_run = provider_run.clone();

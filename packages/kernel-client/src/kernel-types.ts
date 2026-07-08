@@ -786,6 +786,10 @@ export type CompletedGitTurnActionProjection = {
   prompt_id: string
   provider_run_id: string
   agent_id: string
+  prompt_origin?: "arroba" | "external" | string | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
   completed_at_ms: number
   duration_ms?: number | null
   changed_paths: string[]
@@ -1525,7 +1529,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 234
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 235
 
 export type TerminalCommandCatalogNodeKind =
   | "group"

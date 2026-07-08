@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 234);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -82,7 +82,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 234);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -694,7 +694,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 234);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -744,7 +744,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 234);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -793,8 +793,55 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
+
+    let completed = crate::git_observer::CompletedGitTurnActionProjection {
+        turn_id: "turn-1".to_string(),
+        prompt_id: "external:codex:thread-1:user-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        prompt_origin: Some(crate::session::PromptOrigin::External),
+        external_provider: Some("codex".to_string()),
+        external_provider_session_id: Some("thread-1".to_string()),
+        external_provider_turn_id: Some("user-1".to_string()),
+        completed_at_ms: 1_234,
+        duration_ms: Some(234),
+        changed_paths: vec!["src/lib.rs".to_string()],
+        undo_available: true,
+        undo_unavailable_reason: None,
+    };
+
+    let snapshot = serde_json::to_value(completed).expect("completed turn action should serialize");
+    assert_eq!(
+        snapshot.pointer("/prompt_origin"),
+        Some(&serde_json::json!("external"))
+    );
+    assert_eq!(
+        snapshot.pointer("/external_provider"),
+        Some(&serde_json::json!("codex"))
+    );
+    assert_eq!(
+        snapshot.pointer("/external_provider_session_id"),
+        Some(&serde_json::json!("thread-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/external_provider_turn_id"),
+        Some(&serde_json::json!("user-1"))
+    );
+
+    let serialized =
+        serde_json::to_string(&snapshot).expect("completed turn action snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "d6b858110d453bdacccee98eb2c3417227b37c91312f1d28f89e1b9bebc29216"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 234);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 235);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

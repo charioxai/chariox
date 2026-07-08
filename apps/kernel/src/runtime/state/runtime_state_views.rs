@@ -40,8 +40,8 @@ impl KernelRuntimeState {
             .working_directory()
             .cloned()
             .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
-        let prompt_summary = session
-            .active_prompt_for_agent(agent_id)
+        let active_prompt = session.active_prompt_for_agent(agent_id);
+        let prompt_summary = active_prompt
             .map(|prompt| {
                 crate::prompt_transcript::render_prompt_transcript(
                     prompt.prompt(),
@@ -58,6 +58,13 @@ impl KernelRuntimeState {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: prompt_id.to_string(),
             turn_id: prompt_id.to_string(),
+            prompt_origin: active_prompt.map(|prompt| prompt.prompt_origin()),
+            external_provider: active_prompt
+                .and_then(|prompt| prompt.external_provider().map(str::to_string)),
+            external_provider_session_id: active_prompt
+                .and_then(|prompt| prompt.external_provider_session_id().map(str::to_string)),
+            external_provider_turn_id: active_prompt
+                .and_then(|prompt| prompt.external_provider_turn_id().map(str::to_string)),
             started_at_ms: self
                 .owned
                 .active_turns

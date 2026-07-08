@@ -60,6 +60,10 @@ export type AgentRuntimeCompletedTurnActionProjection = {
   readonly promptId: string
   readonly providerRunId: string
   readonly agentId: string
+  readonly promptOrigin?: string
+  readonly externalProvider?: string
+  readonly externalProviderSessionId?: string
+  readonly externalProviderTurnId?: string
   readonly completedAtMs: number
   readonly durationMs: number | null
   readonly changedPaths: readonly string[]
@@ -304,11 +308,35 @@ export function readAgentRuntimeCompletedTurn(
     promptId,
     providerRunId,
     agentId,
+    ...projectAgentRuntimeCompletedTurnOwnership(turn),
     completedAtMs,
     durationMs: readNumberField(turn, "duration_ms"),
     changedPaths: readStringArrayField(turn, "changed_paths"),
     undoAvailable: readBooleanField(turn, "undo_available") === true,
     undoUnavailableReason: readStringField(turn, "undo_unavailable_reason"),
+  }
+}
+
+function projectAgentRuntimeCompletedTurnOwnership(
+  turn: Record<string, unknown>,
+): Pick<AgentRuntimeCompletedTurnActionProjection,
+  | "promptOrigin"
+  | "externalProvider"
+  | "externalProviderSessionId"
+  | "externalProviderTurnId"
+> {
+  const externalMetadata = promptOriginExternalProviderObservedMetadata(turn)
+  const promptOrigin = promptOriginFromRecord(turn)
+    ?? (externalMetadata ? EXTERNAL_PROMPT_ORIGIN : undefined)
+  return {
+    ...(promptOrigin ? { promptOrigin } : {}),
+    ...(externalMetadata?.externalProvider ? { externalProvider: externalMetadata.externalProvider } : {}),
+    ...(externalMetadata?.externalProviderSessionId
+      ? { externalProviderSessionId: externalMetadata.externalProviderSessionId }
+      : {}),
+    ...(externalMetadata?.externalProviderTurnId
+      ? { externalProviderTurnId: externalMetadata.externalProviderTurnId }
+      : {}),
   }
 }
 

@@ -4,7 +4,7 @@ use crate::error::DaemonError;
 use crate::execution_lease::RemoteWorkflowTurnContext;
 use crate::provider::ProviderRunState;
 use crate::session::{
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptOrigin, PromptQueueItem,
     PromptSubmissionOutcome,
 };
 use crate::transport::relay_peer::RelayPromptAttachment;
@@ -202,6 +202,10 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) prompt: String,
     pub(crate) hidden_system_context: String,
     pub(crate) attachments: Vec<PromptAttachment>,
+    pub(crate) prompt_origin: PromptOrigin,
+    pub(crate) external_provider: Option<String>,
+    pub(crate) external_provider_session_id: Option<String>,
+    pub(crate) external_provider_turn_id: Option<String>,
     pub(crate) steering: bool,
 }
 

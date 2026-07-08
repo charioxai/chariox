@@ -198,6 +198,12 @@ impl KernelRuntimeOwnedState {
             prompt: started_next.prompt().to_string(),
             hidden_system_context: started_next.hidden_system_context().to_string(),
             attachments: started_next.attachments().to_vec(),
+            prompt_origin: started_next.prompt_origin(),
+            external_provider: started_next.external_provider().map(str::to_string),
+            external_provider_session_id: started_next
+                .external_provider_session_id()
+                .map(str::to_string),
+            external_provider_turn_id: started_next.external_provider_turn_id().map(str::to_string),
             steering: false,
         }))
     }
@@ -310,6 +316,12 @@ impl KernelRuntimeOwnedState {
                 prompt: prompt.prompt().to_string(),
                 hidden_system_context: prompt.hidden_system_context().to_string(),
                 attachments: prompt.attachments().to_vec(),
+                prompt_origin: prompt.prompt_origin(),
+                external_provider: prompt.external_provider().map(str::to_string),
+                external_provider_session_id: prompt
+                    .external_provider_session_id()
+                    .map(str::to_string),
+                external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
                 steering: true,
             },
             prompt,

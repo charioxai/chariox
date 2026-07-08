@@ -34,6 +34,10 @@ impl KernelRuntimeState {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: dispatch.prompt_id.clone(),
             turn_id: dispatch.prompt_id.clone(),
+            prompt_origin: Some(dispatch.prompt_origin),
+            external_provider: dispatch.external_provider.clone(),
+            external_provider_session_id: dispatch.external_provider_session_id.clone(),
+            external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
             started_at_ms: self
                 .owned
                 .active_turns
@@ -206,6 +210,10 @@ impl KernelRuntimeState {
             provider_session_id: before.provider_session_id.clone(),
             prompt_id: before.prompt_id.clone(),
             turn_id: before.turn_id.clone(),
+            prompt_origin: before.prompt_origin,
+            external_provider: before.external_provider.clone(),
+            external_provider_session_id: before.external_provider_session_id.clone(),
+            external_provider_turn_id: before.external_provider_turn_id.clone(),
             started_at_ms: before.started_at_ms,
             worktree_path: std::path::PathBuf::from(before.worktree_path.clone()),
             workspace_live_sync_tracked: before.workspace_live_sync_tracked,

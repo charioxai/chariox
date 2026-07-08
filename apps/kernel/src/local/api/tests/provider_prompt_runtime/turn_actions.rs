@@ -293,6 +293,10 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head_inner() {
         provider_session_id: None,
         prompt_id: "prompt-undo".to_string(),
         turn_id: "turn-undo".to_string(),
+        prompt_origin: Some(crate::session::PromptOrigin::Arroba),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
         started_at_ms: Some(crate::session::unix_epoch_ms()),
         worktree_path: root.clone(),
         workspace_live_sync_tracked: true,
@@ -318,6 +322,10 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head_inner() {
         provider_session_id: None,
         prompt_id: "prompt-undo".to_string(),
         turn_id: "turn-undo".to_string(),
+        prompt_origin: before.prompt_origin,
+        external_provider: before.external_provider.clone(),
+        external_provider_session_id: before.external_provider_session_id.clone(),
+        external_provider_turn_id: before.external_provider_turn_id.clone(),
         started_at_ms: before.started_at_ms,
         worktree_path: root.clone(),
         workspace_live_sync_tracked: true,
@@ -431,6 +439,10 @@ fn undo_turn_request_allows_noop_turns_without_workspace_changes_inner() {
         provider_session_id: None,
         prompt_id: "prompt-noop".to_string(),
         turn_id: "turn-noop".to_string(),
+        prompt_origin: Some(crate::session::PromptOrigin::Arroba),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
         started_at_ms: Some(crate::session::unix_epoch_ms()),
         worktree_path: root.clone(),
         workspace_live_sync_tracked: false,
@@ -447,6 +459,10 @@ fn undo_turn_request_allows_noop_turns_without_workspace_changes_inner() {
         provider_session_id: None,
         prompt_id: "prompt-noop".to_string(),
         turn_id: "turn-noop".to_string(),
+        prompt_origin: before.prompt_origin,
+        external_provider: before.external_provider.clone(),
+        external_provider_session_id: before.external_provider_session_id.clone(),
+        external_provider_turn_id: before.external_provider_turn_id.clone(),
         started_at_ms: before.started_at_ms,
         worktree_path: root.clone(),
         workspace_live_sync_tracked: false,
@@ -696,9 +712,7 @@ fn turn_actions_without_agent_ref_require_focused_agent() {
             .expect_err("omitted agent ref should require focus");
         match error {
             DaemonError::LocalTransport { message, .. } => {
-                assert!(
-                    message.contains("agent reference is required because no agent is focused")
-                );
+                assert!(message.contains("agent reference is required because no agent is focused"));
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -827,12 +841,10 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
             session: forked_session,
         } => {
             assert_eq!(source_agent_id, source.id());
-            assert!(
-                forked_session
-                    .agents()
-                    .iter()
-                    .any(|session_agent| session_agent.id() == agent.id())
-            );
+            assert!(forked_session
+                .agents()
+                .iter()
+                .any(|session_agent| session_agent.id() == agent.id()));
             (agent, provider_run)
         }
         other => panic!("unexpected fork response: {other:?}"),
