@@ -1465,12 +1465,20 @@ impl<'a> KernelSessionReadService<'a> {
     }
 
     pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        let session = self.session_snapshot_without_projection_update(session_id)?;
+        self.app.update_session_projection(session.clone());
+        Ok(session)
+    }
+
+    pub(crate) fn session_snapshot_without_projection_update(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
         let mut session =
             SessionStateReader::new(self.app.session_state_store()).get_session(session_id)?;
         let agents = self.app.agents().get_session_agents(session_id);
         session.set_agents(agents);
         self.app.project_session_runtime_view(&mut session);
-        self.app.update_session_projection(session.clone());
         Ok(session)
     }
 

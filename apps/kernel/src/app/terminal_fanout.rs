@@ -35,8 +35,8 @@ impl DaemonApp {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), crate::error::DaemonError> {
-        let session =
-            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
+        let session = crate::app::KernelSessionReadService::new(self)
+            .session_snapshot_without_projection_update(session_id)?;
         let entry = SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
@@ -59,8 +59,8 @@ impl DaemonApp {
         _workflow_run_id: Option<&str>,
         _workflow_node_run_id: Option<&str>,
     ) -> Result<(), crate::error::DaemonError> {
-        let session =
-            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
+        let session = crate::app::KernelSessionReadService::new(self)
+            .session_snapshot_without_projection_update(session_id)?;
         let mut entry = SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
@@ -628,6 +628,50 @@ mod tests {
         assert_eq!(entries[0].text.trim_end(), "reload me");
 
         let _ = fs::remove_file(&legacy_history_root);
+    }
+
+    #[test]
+    fn spawned_user_prompt_history_append_does_not_publish_session_projection() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-history-read-only",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should create");
+        let projection = app.session_state_projection_store();
+        let before_sequence = projection.change_sequence();
+
+        app.spawn_user_prompt_history_append_with_prompt_id(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "history without projection churn",
+            &[],
+            "prompt-history-read-only",
+            None,
+            None,
+        )
+        .expect("history append should prepare");
+
+        assert_eq!(
+            projection.change_sequence(),
+            before_sequence,
+            "history-only prompt persistence must not wake session projection subscribers"
+        );
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.text.contains("history without projection churn")),
+            "prompt history should still be persisted: {entries:?}"
+        );
     }
 
     #[test]
