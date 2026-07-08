@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>79 allowlisted files remain after initial splits</td>
+              <td>78 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>02bfaf819</code> <span class="muted">Split agent lifecycle session actor tests</span></td>
+              <td>Session actor agent lifecycle coverage now keeps shared git and external-provider fixtures in the parent module, while owned-runtime spawn behavior, spawn validation and worktree placement, config invalidation, and destroy cleanup live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/runtime/session_actor/tests/agent_lifecycle_execution.rs apps/kernel/src/runtime/session_actor/tests/agent_lifecycle_execution/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::session_actor::tests::agent_lifecycle_execution -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>c0b15aa7a</code> <span class="muted">Split workflow code apply tests</span></td>
