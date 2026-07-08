@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>63 allowlisted files remain after initial splits</td>
+              <td>62 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>c09127ddf</code> <span class="muted">Split provider output fanout helpers</span></td>
+              <td>Provider-output fanout orchestration now stays focused on routing, recipient scoping, prompt context, and history append behavior, while live terminal payload bounding/delta/truncation policy and provider-tool history dedupe live in bounded sibling Rust modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/app/provider_output_fanout.rs apps/kernel/src/app/provider_output_fanout/output_bounds.rs apps/kernel/src/app/provider_output_fanout/tool_history.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml app::provider_output_fanout -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>579a6f75d</code> <span class="muted">Split config tests</span></td>
