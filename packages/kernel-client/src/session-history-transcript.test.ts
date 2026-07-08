@@ -647,6 +647,37 @@ test("session history outline hydration projects sparse external turn metadata",
   assert.equal(placeholder?.historyTurnLifecycle, "completed")
 })
 
+test("session history outline hydration infers external ownership from provider identity", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "user-1",
+      started_at_ms: 1,
+      lifecycle: "completed",
+      completed_at_ms: 2,
+      user_prompt: pageEntry(0, "user_prompt", "external prompt\n"),
+      entries: [pageEntry(1, "provider_output", "external reply\n")],
+      summary: null,
+      blobs: [blob("blob-1", "provider_reasoning", 2, "thinking", "reasoning")],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const prompt = entries.find((entry) => entry.role === "user")
+  const assistant = entries.find((entry) => entry.role === "assistant")
+  const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
+  assert.equal(prompt?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(assistant?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(placeholder?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(prompt?.externalProvider, "codex")
+  assert.equal(assistant?.externalProviderSessionId, "thread-1")
+  assert.equal(placeholder?.externalProviderTurnId, "user-1")
+})
+
 test("session history outline hydration does not infer external ownership for arroba-origin turns", () => {
   const entries = hydrateSessionHistoryOutlineAgentEntries({
     agent_id: "agent-1",
