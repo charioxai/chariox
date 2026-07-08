@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>23 allowlisted files remain after initial splits</td>
+              <td>22 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,18 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>8fc92a34f</code> <span class="muted">Extract history legacy import module</span></td>
+              <td>The operational history root now keeps event types, storage, query, append, replacement, retention, archive, and schema wiring, while legacy transcript backfill/deduplication by merge key and exact transcript identity lives in a focused operational legacy-import module; the matching idempotency test lives in a child history test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, legacy-import module, parent test module, and child test module; <code>cargo test --manifest-path apps/kernel/Cargo.toml history -- --nocapture</code> (110 library tests plus filtered integration history tests passed); <code>node scripts/check-line-cap.mjs</code> (22 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>59fd5f541</code> <span class="muted">Split terminal command catalog data</span></td>
+              <td>The terminal command catalog loader now owns parsing, enrichment, inferred kind/target/source defaults, and revision calculation, while catalog data is split into focused command-surface fragments for core/session commands, extension registration commands, workflow commands, workspace/slice commands, and provider/config/view commands.</td>
+              <td><code>rustfmt --edition 2024</code> for the loader; <code>cargo test --manifest-path apps/kernel/Cargo.toml terminal_command_catalog -- --nocapture</code> (4 passed); <code>node scripts/check-line-cap.mjs</code> (22 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all catalog fragments.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8f20dc1c9</code> <span class="muted">Split external provider observation tests</span></td>
