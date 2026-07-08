@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>83 allowlisted files remain after initial splits</td>
+              <td>82 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>be769839e</code> <span class="muted">Split workflow run service tests</span></td>
+              <td>Workflow run service coverage now keeps the endpoint fixture builder in the parent module, while run lifecycle, prompt queue arbitration, console output, watchdog policy behavior, publication observability, and watchdog budget exhaustion live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/session/service/tests/workflow_runs.rs apps/kernel/src/session/service/tests/workflow_runs/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service::tests::workflow_runs -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>d0812d179</code> <span class="muted">Split terminal output API tests</span></td>
