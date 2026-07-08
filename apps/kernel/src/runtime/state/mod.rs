@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -194,7 +194,10 @@ mod transport_runtime_state;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
+mod workflow_artifact_request_runtime_state;
 mod workflow_blocked_claim_retry;
+mod workflow_code_request_runtime_state;
+mod workflow_code_request_support;
 mod workflow_completion_owned_state;
 mod workflow_completion_snapshot_owned_state;
 mod workflow_console_tool;
@@ -213,6 +216,7 @@ pub(crate) mod workflow_publication_endpoint_runtime;
 mod workflow_publication_owned_state;
 pub(crate) mod workflow_publication_runtime_lifecycle;
 mod workflow_query_owned_state;
+mod workflow_registry_request_runtime_state;
 mod workflow_request_runtime_state;
 mod workflow_resume_owned_state;
 mod workflow_run_request_runtime_state;
