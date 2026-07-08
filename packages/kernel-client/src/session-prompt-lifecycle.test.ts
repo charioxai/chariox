@@ -372,6 +372,92 @@ test("sessionActivePromptLifecycleRecords preserves projected provider identity 
   }])
 })
 
+test("sessionActivePromptLifecycleRecords does not merge sparse external prompt ownership", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "projected-prompt",
+          status: "running",
+          phase: "streaming",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+        },
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+        },
+        queued_prompts: [],
+      },
+    },
+  })), [{
+    id: "projected-prompt",
+    status: "running",
+    promptOrigin: null,
+    target_agent_id: "agent-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }])
+})
+
+test("sessionActivePromptLifecycleRecords merges prompt state when exact external turn identity matches", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "projected-prompt",
+          status: "running",
+          phase: "streaming",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+        },
+      },
+    },
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+        },
+        queued_prompts: [],
+      },
+    },
+  })), [{
+    id: "projected-prompt",
+    status: "running",
+    promptOrigin: null,
+    target_agent_id: "agent-1",
+    source_attachment_id: "attachment-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }])
+})
+
 test("sessionPromptLifecycleTransition settles cancelling external prompts", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({

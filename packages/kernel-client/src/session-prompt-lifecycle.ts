@@ -8,7 +8,9 @@ import {
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
 import {
+  externalProviderObservedExactIdentityMatches,
   externalProviderObservedIdentityKey,
+  type ExternalProviderObservedIdentityFields,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
 import {
@@ -196,15 +198,10 @@ function activePromptLifecycleRecordMatchesPromptState(
   if (stateActivePrompt.id === record.id) {
     return true
   }
-  const stateExternalKey = activePromptLifecycleRecordExternalIdentityKey(
-    activePromptLifecycleRecordFromPrompt(stateActivePrompt),
+  return externalProviderObservedExactIdentityMatches(
+    activePromptLifecycleRecordExternalIdentityFields(activePromptLifecycleRecordFromPrompt(stateActivePrompt)),
+    activePromptLifecycleRecordExternalIdentityFields(record),
   )
-  if (!stateExternalKey) {
-    return false
-  }
-  return stateExternalKey.provider === normalizeExternalProviderLifecycleProvider(record.externalProvider)
-    && stateExternalKey.providerSessionId === (record.externalProviderSessionId ?? "")
-    && stateExternalKey.providerTurnId === (record.externalProviderTurnId ?? "")
 }
 
 function activePromptLifecycleRecordFingerprint(prompt: ActivePromptLifecycleRecord): string {
@@ -229,13 +226,19 @@ function activePromptLifecycleRecordIdentityFingerprint(prompt: ActivePromptLife
 }
 
 function activePromptLifecycleRecordExternalIdentityKey(prompt: ActivePromptLifecycleRecord) {
-  return externalProviderObservedIdentityKey({
+  return externalProviderObservedIdentityKey(activePromptLifecycleRecordExternalIdentityFields(prompt))
+}
+
+function activePromptLifecycleRecordExternalIdentityFields(
+  prompt: ActivePromptLifecycleRecord,
+): ExternalProviderObservedIdentityFields {
+  return {
     ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
     ...(prompt.externalProviderSessionId !== undefined
       ? { externalProviderSessionId: prompt.externalProviderSessionId }
       : {}),
     ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
-  })
+  }
 }
 
 function compareActivePromptLifecycleRecords(

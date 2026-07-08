@@ -83,6 +83,21 @@ export function externalProviderObservedExactIdentityKey(
   return key
 }
 
+export function externalProviderObservedExactIdentityMatches(
+  candidate: ExternalProviderObservedIdentityFields,
+  expected: ExternalProviderObservedIdentityFields,
+): boolean {
+  const candidateKey = externalProviderObservedExactIdentityKey(candidate)
+  const expectedKey = externalProviderObservedExactIdentityKey(expected)
+  return Boolean(
+    candidateKey
+      && expectedKey
+      && candidateKey.provider === expectedKey.provider
+      && candidateKey.providerSessionId === expectedKey.providerSessionId
+      && candidateKey.providerTurnId === expectedKey.providerTurnId,
+  )
+}
+
 export function externalProviderObservedIdentityMatches(
   candidate: ExternalProviderObservedIdentityFields,
   expected: ExternalProviderObservedIdentityFields,
