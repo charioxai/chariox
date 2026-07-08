@@ -18,6 +18,9 @@ export type QueuedPromptStripItem = {
   sourceAttachmentId: string | null
   prompt: string
   promptOrigin: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
   status: string
   attachmentCount: number
   steerDisabled: boolean
@@ -42,6 +45,9 @@ export type QueuedPromptTranscriptMetadata = {
   promptId: string
   agentId: string
   promptOrigin?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
   status: string
   attachmentCount: number
   steerDisabled: boolean
@@ -58,6 +64,9 @@ export type QueuedPromptStripTranscriptEntry = {
   promptId?: Exclude<SessionHistoryTranscriptEntry["promptId"], undefined>
   sourceAttachmentId?: Exclude<SessionHistoryTranscriptEntry["sourceAttachmentId"], undefined>
   promptOrigin?: Exclude<SessionHistoryTranscriptEntry["promptOrigin"], undefined>
+  externalProvider?: Exclude<SessionHistoryTranscriptEntry["externalProvider"], undefined>
+  externalProviderSessionId?: Exclude<SessionHistoryTranscriptEntry["externalProviderSessionId"], undefined>
+  externalProviderTurnId?: Exclude<SessionHistoryTranscriptEntry["externalProviderTurnId"], undefined>
   queuedPrompt?: QueuedPromptTranscriptMetadata
 }
 
@@ -68,6 +77,9 @@ export type QueuedPromptStripSourceEntry = {
   readonly promptId?: SessionHistoryTranscriptEntry["promptId"]
   readonly sourceAttachmentId?: SessionHistoryTranscriptEntry["sourceAttachmentId"]
   readonly promptOrigin?: SessionHistoryTranscriptEntry["promptOrigin"]
+  readonly externalProvider?: SessionHistoryTranscriptEntry["externalProvider"]
+  readonly externalProviderSessionId?: SessionHistoryTranscriptEntry["externalProviderSessionId"]
+  readonly externalProviderTurnId?: SessionHistoryTranscriptEntry["externalProviderTurnId"]
   readonly queuedPrompt?: Readonly<QueuedPromptTranscriptMetadata>
 }
 
@@ -130,10 +142,18 @@ export function queuedPromptStripItemToTranscriptEntry(
     promptId: item.promptId,
     sourceAttachmentId: item.sourceAttachmentId,
     promptOrigin: item.promptOrigin,
+    ...(item.externalProvider !== undefined ? { externalProvider: item.externalProvider } : {}),
+    ...(item.externalProviderSessionId !== undefined ? { externalProviderSessionId: item.externalProviderSessionId } : {}),
+    ...(item.externalProviderTurnId !== undefined ? { externalProviderTurnId: item.externalProviderTurnId } : {}),
     queuedPrompt: {
       promptId: item.promptId,
       agentId: item.agentId,
       promptOrigin: item.promptOrigin,
+      ...(item.externalProvider !== undefined ? { externalProvider: item.externalProvider } : {}),
+      ...(item.externalProviderSessionId !== undefined
+        ? { externalProviderSessionId: item.externalProviderSessionId }
+        : {}),
+      ...(item.externalProviderTurnId !== undefined ? { externalProviderTurnId: item.externalProviderTurnId } : {}),
       status: item.status,
       attachmentCount: item.attachmentCount,
       steerDisabled: item.steerDisabled,
@@ -233,6 +253,21 @@ function queuedPromptItemsFromEntries(
       sourceAttachmentId: entry.sourceAttachmentId ?? null,
       prompt: trimSingleTrailingNewline(entry.text),
       promptOrigin: queuedPrompt.promptOrigin ?? entry.promptOrigin ?? null,
+      ...(queuedPrompt.externalProvider !== undefined
+        ? { externalProvider: queuedPrompt.externalProvider }
+        : entry.externalProvider !== undefined
+          ? { externalProvider: entry.externalProvider }
+          : {}),
+      ...(queuedPrompt.externalProviderSessionId !== undefined
+        ? { externalProviderSessionId: queuedPrompt.externalProviderSessionId }
+        : entry.externalProviderSessionId !== undefined
+          ? { externalProviderSessionId: entry.externalProviderSessionId }
+          : {}),
+      ...(queuedPrompt.externalProviderTurnId !== undefined
+        ? { externalProviderTurnId: queuedPrompt.externalProviderTurnId }
+        : entry.externalProviderTurnId !== undefined
+          ? { externalProviderTurnId: entry.externalProviderTurnId }
+          : {}),
       status: queuedPrompt.status,
       attachmentCount: queuedPrompt.attachmentCount,
       steerDisabled: queuedPrompt.steerDisabled,
@@ -270,6 +305,11 @@ function queuedPromptItemFromProjection(
       agentId,
       prompt: trimSingleTrailingNewline(prompt.prompt),
       promptOrigin: prompt.promptOrigin,
+      ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
+      ...(prompt.externalProviderSessionId !== undefined
+        ? { externalProviderSessionId: prompt.externalProviderSessionId }
+        : {}),
+      ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
       sourceAttachmentId: prompt.sourceAttachmentId,
       status: prompt.status,
       attachmentCount: prompt.attachmentCount,
@@ -286,6 +326,11 @@ function queuedPromptItemFromProjection(
     sourceAttachmentId: prompt.sourceAttachmentId,
     prompt: trimSingleTrailingNewline(prompt.prompt),
     promptOrigin: prompt.promptOrigin,
+    ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
+    ...(prompt.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: prompt.externalProviderSessionId }
+      : {}),
+    ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
     status: prompt.status,
     attachmentCount: prompt.attachmentCount,
     steerDisabled: prompt.steerDisabled,

@@ -102,7 +102,7 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
         active_prompt: null,
         queued_prompts: [{
           id: "draft-queued",
-          pending_prompt_id: "pending-prompt-1",
+          pending_prompt_id: "external:codex:thread-1:turn-1",
           source_attachment_id: "attachment-1",
           target_agent_id: "agent-1",
           prompt: "queued prompt\n",
@@ -118,8 +118,8 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
         prompt_status: "running",
         busy: true,
         queued_prompt_controls: {
-          "pending-prompt-1": {
-            prompt_id: "pending-prompt-1",
+          "external:codex:thread-1:turn-1": {
+            prompt_id: "external:codex:thread-1:turn-1",
             status: "dispatching",
             can_steer: false,
             can_cancel: false,
@@ -134,12 +134,18 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
   assert.deepEqual({
     promptId: item?.promptId,
     promptOrigin: item?.promptOrigin,
+    externalProvider: item?.externalProvider,
+    externalProviderSessionId: item?.externalProviderSessionId,
+    externalProviderTurnId: item?.externalProviderTurnId,
     status: item?.status,
     canSteer: item?.canSteer,
     canCancel: item?.canCancel,
   }, {
-    promptId: "pending-prompt-1",
+    promptId: "external:codex:thread-1:turn-1",
     promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
     status: "dispatching",
     canSteer: false,
     canCancel: false,
@@ -255,6 +261,9 @@ test("queuedPromptStripItemToTranscriptEntry mirrors prompt ownership at transcr
           prompt: "external queued prompt",
           status: "queued",
           prompt_origin: "external",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
         }],
       },
     },
@@ -264,8 +273,14 @@ test("queuedPromptStripItemToTranscriptEntry mirrors prompt ownership at transcr
 
   assert.equal(entry.promptOrigin, "external")
   assert.equal(entry.promptId, "prompt-external")
+  assert.equal(entry.externalProvider, "codex")
+  assert.equal(entry.externalProviderSessionId, "thread-1")
+  assert.equal(entry.externalProviderTurnId, "user-1")
   assert.equal(entry.queuedPrompt?.promptOrigin, "external")
   assert.equal(entry.queuedPrompt?.promptId, "prompt-external")
+  assert.equal(entry.queuedPrompt?.externalProvider, "codex")
+  assert.equal(entry.queuedPrompt?.externalProviderSessionId, "thread-1")
+  assert.equal(entry.queuedPrompt?.externalProviderTurnId, "user-1")
 })
 
 test("syncQueuedPromptTranscriptEntriesForAgent removes stale queued rows when projection is authoritative", () => {

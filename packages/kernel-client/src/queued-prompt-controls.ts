@@ -1,5 +1,8 @@
 import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
+import {
+  externalProviderObservedIdentityFields,
+} from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   sessionAgentActivityRecordForAgent,
@@ -45,6 +48,9 @@ export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly targetAgentId: string | null
   readonly prompt: string
   readonly promptOrigin: string | null
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
   readonly createdAtMs?: number | null
   readonly attachmentCount: number
 }
@@ -113,6 +119,9 @@ export function projectedQueuedPromptMatches(
     && current.targetAgentId === next.targetAgentId
     && current.prompt === next.prompt
     && current.promptOrigin === next.promptOrigin
+    && current.externalProvider === next.externalProvider
+    && current.externalProviderSessionId === next.externalProviderSessionId
+    && current.externalProviderTurnId === next.externalProviderTurnId
     && (current.createdAtMs ?? null) === (next.createdAtMs ?? null)
     && current.attachmentCount === next.attachmentCount
     && queuedPromptActionabilityMatches(current, next)
@@ -216,6 +225,7 @@ export function projectQueuedPrompt(
   }
   const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
   const createdAtMs = finiteNumber(prompt.created_at_ms)
+  const externalIdentity = queuedPromptExternalIdentity(prompt, pendingPromptId)
   return {
     id: pendingPromptId ?? promptId,
     pendingPromptId,
@@ -223,9 +233,31 @@ export function projectQueuedPrompt(
     targetAgentId: nonBlankString(prompt.target_agent_id) ?? nonBlankString(options.fallbackTargetAgentId) ?? null,
     prompt: prompt.prompt,
     promptOrigin: promptOriginFromRecord(prompt),
+    ...externalIdentity,
     ...(createdAtMs !== null ? { createdAtMs } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
+  }
+}
+
+function queuedPromptExternalIdentity(
+  prompt: PromptQueueItem,
+  pendingPromptId: string | null,
+): Pick<ProjectedQueuedPrompt, "externalProvider" | "externalProviderSessionId" | "externalProviderTurnId"> {
+  const externalIdentity = externalProviderObservedIdentityFields({
+    ...prompt,
+    ...(pendingPromptId !== null ? { prompt_id: pendingPromptId } : {}),
+  })
+  return {
+    ...(externalIdentity.externalProvider !== undefined
+      ? { externalProvider: externalIdentity.externalProvider }
+      : {}),
+    ...(externalIdentity.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+      : {}),
+    ...(externalIdentity.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
+      : {}),
   }
 }
 

@@ -677,6 +677,40 @@ test("project queued prompt normalizes prompt ownership", () => {
     status: "queued",
   })?.promptOrigin, null)
 
+  assert.deepEqual(projectQueuedPrompt({
+    id: "external:codex:thread-1:turn-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "external queued",
+    status: "queued",
+  }), {
+    id: "external:codex:thread-1:turn-1",
+    pendingPromptId: null,
+    sourceAttachmentId: "attachment-1",
+    targetAgentId: "agent-1",
+    prompt: "external queued",
+    promptOrigin: null,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    attachmentCount: 0,
+    status: "queued",
+    steerDisabled: false,
+    canSteer: true,
+    canCancel: true,
+    steerDisabledReason: null,
+    cancelDisabledReason: null,
+  })
+
+  assert.deepEqual(projectQueuedPrompt({
+    id: "draft-1",
+    pending_prompt_id: "external:codex:thread-1:turn-2",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "external queued",
+    status: "queued",
+  })?.externalProviderTurnId, "turn-2")
+
   assert.equal(projectQueuedPrompt({
     id: "queued-external-provider",
     source_attachment_id: "attachment-1",
@@ -686,6 +720,16 @@ test("project queued prompt normalizes prompt ownership", () => {
     external_provider: "codex",
     external_provider_session_id: "thread-1",
   })?.promptOrigin, null)
+  assert.equal(projectQueuedPrompt({
+    id: "external:codex:thread-1:turn-from-id",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "external queued",
+    status: "queued",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "turn-explicit",
+  })?.externalProvider, "opencode")
 
   assert.equal(projectQueuedPrompt({
     id: "external:codex:thread-1:turn-1",
