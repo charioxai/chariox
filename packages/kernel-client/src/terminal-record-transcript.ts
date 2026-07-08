@@ -13,6 +13,7 @@ import {
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
+  promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
   type ExternalProviderObservedMutableTranscriptMetadataFields,
   type ExternalProviderObservedTranscriptMetadata,
@@ -87,11 +88,12 @@ export function terminalRecordTranscriptMetadata(
 function terminalRecordPromptOrigin(
   record: TerminalRecordTranscriptFields,
 ): string | null {
-  return promptOriginFromRecord({
-    prompt_origin: hasOwn(record, "prompt_origin")
-      ? normalizePromptOrigin(nullableStringField(record, "prompt_origin"))
-      : undefined,
-  })
+  if (hasOwn(record, "prompt_origin")) {
+    return promptOriginFromRecord({
+      prompt_origin: normalizePromptOrigin(nullableStringField(record, "prompt_origin")),
+    })
+  }
+  return promptOriginExternalProviderObservedMetadata(record) ? "external" : null
 }
 
 function nullableStringField(
