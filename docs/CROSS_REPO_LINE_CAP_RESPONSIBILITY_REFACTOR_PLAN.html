@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>75 allowlisted files remain after initial splits</td>
+              <td>74 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>be204d134</code> <span class="muted">Split kernel websocket runtime integration tests</span></td>
+              <td>Kernel websocket runtime integration coverage now keeps the original test crate as module wiring plus a large-stack Tokio runtime wrapper, while prompt responsiveness, prompt replay, provider process GC, provider launch edges, and structured-provider I/O responsiveness live in bounded Rust integration-test modules.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml --test kernel_websocket_runtime_integration -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>7e7c1896b</code> <span class="muted">Split kernel websocket integration tests</span></td>
