@@ -164,7 +164,6 @@ export function isCompleteSessionSnapshot(
     && typeof session.created_at_ms === "number"
     && typeof session.status === "string"
     && Array.isArray(session.attachment_ids)
-    && Array.isArray(session.queued_prompts)
     && Array.isArray(session.agents)
     && Array.isArray(session.workflows)
     && Array.isArray(session.workflow_runs)

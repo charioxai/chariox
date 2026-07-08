@@ -139,12 +139,15 @@ test("isCompleteSessionSnapshot requires full hydrated runtime fields", () => {
   const watchdogSession = makeSession()
   delete watchdogSession.workflow_schedules
   watchdogSession.workflow_watchdogs = []
+  const noLegacyPromptQueueSession = makeSession()
+  delete (noLegacyPromptQueueSession as Partial<RuntimeSession>).queued_prompts
   const incompleteSession = makeSession()
-  delete (incompleteSession as Partial<RuntimeSession>).queued_prompts
+  delete (incompleteSession as Partial<RuntimeSession>).agents
 
   assert.equal(isCompleteSessionSnapshot({ id: "session-1" }), false)
   assert.equal(isCompleteSessionSnapshot(makeSession()), true)
   assert.equal(isCompleteSessionSnapshot(watchdogSession), true)
+  assert.equal(isCompleteSessionSnapshot(noLegacyPromptQueueSession), true)
   assert.equal(isCompleteSessionSnapshot(incompleteSession), false)
 })
 
