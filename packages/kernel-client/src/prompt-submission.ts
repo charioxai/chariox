@@ -1,7 +1,11 @@
 import type { PromptAttachmentPart, PromptQueueItem, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
 import type { TranscriptPromptMetadata } from "./transcript-entry-state.js"
 import {
+  promptOriginExternalProviderObservedMetadata,
+} from "./external-provider-observation.js"
+import {
   promptOriginFromRecord,
+  EXTERNAL_PROMPT_ORIGIN,
 } from "./prompt-origin.js"
 import {
   normalizeRuntimeSessionWithAgentActivity,
@@ -180,6 +184,7 @@ export function promptSubmissionTranscriptMetadata(
     return {}
   }
   const promptOrigin = promptOriginFromRecord(prompt)
+    ?? (promptOriginExternalProviderObservedMetadata(prompt) ? EXTERNAL_PROMPT_ORIGIN : null)
   return {
     promptId: prompt.id,
     sourceAttachmentId: prompt.source_attachment_id,

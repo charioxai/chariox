@@ -363,6 +363,30 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
     sourceAttachmentId: "attachment-external",
     promptOrigin: "external",
   })
+
+  assert.deepEqual(promptSubmissionTranscriptMetadata({
+    outcome: {
+      Started: {
+        prompt: {
+          id: "external:codex:thread-2:turn-2",
+          source_attachment_id: "attachment-inferred",
+          target_agent_id: "agent-1",
+          prompt: "hello from outside",
+          status: "Running",
+          external_provider: "codex",
+          external_provider_session_id: "thread-2",
+          external_provider_turn_id: "turn-2",
+        },
+      },
+    },
+    session: makeSession(),
+    agent_activity: {},
+    agent_activity_revision: 1,
+  }, "agent-1"), {
+    promptId: "external:codex:thread-2:turn-2",
+    sourceAttachmentId: "attachment-inferred",
+    promptOrigin: "external",
+  })
 })
 
 test("prompt submission transcript metadata falls back to projected session prompt", () => {

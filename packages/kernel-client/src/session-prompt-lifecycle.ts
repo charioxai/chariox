@@ -9,6 +9,7 @@ import {
 } from "./agent-activity.js"
 import {
   externalProviderObservedIdentityKey,
+  promptOriginExternalProviderObservedMetadata,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
 import {
@@ -96,20 +97,21 @@ export function sessionPromptLifecycleTransition(
 }
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
-  const promptOrigin = promptOriginFromRecord(prompt)
+  const externalMetadata = promptOriginExternalProviderObservedMetadata(prompt)
+  const promptOrigin = promptOriginFromRecord(prompt) ?? (externalMetadata ? EXTERNAL_PROMPT_ORIGIN : null)
   const status = normalizeActivePromptLifecycleStatus(prompt.status)
   return {
     ...prompt,
     ...(status !== undefined ? { status } : {}),
     promptOrigin,
-    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider !== undefined
-      ? { externalProvider: prompt.external_provider }
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && externalMetadata?.externalProvider != null
+      ? { externalProvider: externalMetadata.externalProvider }
       : {}),
-    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider_session_id !== undefined
-      ? { externalProviderSessionId: prompt.external_provider_session_id }
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && externalMetadata?.externalProviderSessionId != null
+      ? { externalProviderSessionId: externalMetadata.externalProviderSessionId }
       : {}),
-    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && prompt.external_provider_turn_id !== undefined
-      ? { externalProviderTurnId: prompt.external_provider_turn_id }
+    ...(promptOrigin === EXTERNAL_PROMPT_ORIGIN && externalMetadata?.externalProviderTurnId != null
+      ? { externalProviderTurnId: externalMetadata.externalProviderTurnId }
       : {}),
   }
 }
@@ -157,7 +159,14 @@ function activePromptLifecycleRecordPromptOriginFromProjectedTurn(
       prompt_origin: projection.activeTurnPromptOrigin,
     })
   }
-  return null
+  return promptOriginExternalProviderObservedMetadata({
+    id: projection.activeTurnPromptId,
+    external_provider: projection.activeTurnExternalProvider,
+    external_provider_session_id: projection.activeTurnExternalProviderSessionId,
+    external_provider_turn_id: projection.activeTurnExternalProviderTurnId,
+  })
+    ? EXTERNAL_PROMPT_ORIGIN
+    : null
 }
 
 function activePromptLifecycleRecordWithPromptState(

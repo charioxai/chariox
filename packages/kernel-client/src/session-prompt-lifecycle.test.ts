@@ -310,6 +310,68 @@ test("sessionPromptLifecycleTransition settles external prompts when they disapp
   assert.deepEqual(transition.settledAgentIds, ["agent-1"])
 })
 
+test("sessionActivePromptLifecycleRecords infers external prompt ownership from provider identity", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "external:codex:thread-1:user-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+        },
+        queued_prompts: [],
+      },
+    },
+  })), [{
+    id: "external:codex:thread-1:user-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "running",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-1",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }])
+})
+
+test("sessionActivePromptLifecycleRecords infers projected external active turn ownership", () => {
+  assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "external:codex:thread-1:user-1",
+          status: "running",
+          phase: "streaming",
+          external_provider: "codex",
+          external_provider_session_id: "thread-1",
+          external_provider_turn_id: "user-1",
+        },
+      },
+    },
+  })), [{
+    id: "external:codex:thread-1:user-1",
+    status: "running",
+    promptOrigin: "external",
+    target_agent_id: "agent-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }])
+})
+
 test("sessionPromptLifecycleTransition settles cancelling external prompts", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
