@@ -148,9 +148,7 @@ test("session history outline prompt metadata follows durable prompt entry ident
   assert.deepEqual(sessionHistoryOutlineTurnPromptMetadata({
     ...turn(4),
     prompt_id: "external:codex:thread-1:turn-1",
-  }), {
-    promptOrigin: "external",
-  })
+  }), {})
   assert.deepEqual(sessionHistoryOutlineTurnPromptMetadata({
     ...turn(5),
     prompt_id: "external:codex:thread-1:turn-1",

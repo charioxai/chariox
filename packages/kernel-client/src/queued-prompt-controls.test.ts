@@ -640,7 +640,7 @@ test("project queued prompt normalizes prompt ownership", () => {
     target_agent_id: "agent-1",
     prompt: "external queued",
     status: "queued",
-  })?.promptOrigin, "external")
+  })?.promptOrigin, null)
 
   assert.equal(projectQueuedPrompt({
     id: "queued-external-provider",

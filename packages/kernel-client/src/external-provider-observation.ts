@@ -211,12 +211,11 @@ export function promptOriginExternalProviderObservedMetadata(
   record: ExternalProviderObservedPromptOriginFields,
 ): ExternalProviderObservedTurnMetadata | null {
   const promptOrigin = promptOriginFromRecord(record)
-  const promptIdentity = parseExternalProviderObservedId(record.id ?? record.prompt_id)
   const externalProvider = normalizeExternalProviderId(record.external_provider)
   const externalProviderSessionId = nonBlankString(record.external_provider_session_id)
   const externalProviderTurnId = nonBlankString(record.external_provider_turn_id)
   const hasExternalIdentity = Boolean(
-    promptIdentity || externalProvider || externalProviderSessionId || externalProviderTurnId,
+    externalProvider || externalProviderSessionId || externalProviderTurnId,
   )
   if (!promptOrigin && !hasExternalIdentity) {
     return null
@@ -226,9 +225,9 @@ export function promptOriginExternalProviderObservedMetadata(
   }
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: externalProvider ?? promptIdentity?.provider ?? null,
-    externalProviderSessionId: externalProviderSessionId ?? promptIdentity?.providerSessionId ?? null,
-    externalProviderTurnId: externalProviderTurnId ?? promptIdentity?.providerTurnId ?? null,
+    externalProvider: externalProvider ?? null,
+    externalProviderSessionId: externalProviderSessionId ?? null,
+    externalProviderTurnId: externalProviderTurnId ?? null,
   }
 }
 
