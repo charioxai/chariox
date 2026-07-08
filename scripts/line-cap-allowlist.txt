@@ -36,4 +36,3 @@ apps/kernel/src/local/api/types.rs
 apps/kernel/src/session/runtime_session.rs
 apps/kernel/src/transport/relay_client/connector.rs
 apps/kernel/src/session/service/turns.rs
-apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
