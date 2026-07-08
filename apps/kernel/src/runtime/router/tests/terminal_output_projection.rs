@@ -163,8 +163,24 @@ async fn terminal_output_without_active_run_drains_store_without_app_lock() {
     }
 }
 
-#[tokio::test]
-async fn append_native_provider_output_does_not_refresh_session_projection() {
+#[test]
+fn append_native_provider_output_does_not_refresh_session_projection() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    runtime.block_on(async {
+        tokio::spawn(async move {
+            append_native_provider_output_does_not_refresh_session_projection_inner().await
+        })
+        .await
+        .expect("test task should complete");
+    });
+}
+
+async fn append_native_provider_output_does_not_refresh_session_projection_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
