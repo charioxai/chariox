@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -82,7 +82,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -694,11 +694,12 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
         provider_run_id: Some("provider-run-1".to_string()),
+        source_attachment_id: Some("attachment-1".to_string()),
         prompt_origin: Some(crate::session::PromptOrigin::External),
         external_provider: Some("codex".to_string()),
         external_provider_session_id: Some("thread-1".to_string()),
@@ -716,6 +717,10 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/started_at_ms"),
         Some(&serde_json::json!(1234))
+    );
+    assert_eq!(
+        snapshot.pointer("/source_attachment_id"),
+        Some(&serde_json::json!("attachment-1"))
     );
     assert_eq!(
         snapshot.pointer("/prompt_origin"),
@@ -738,13 +743,13 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "dd97a59cf8c1c7f097ac3afc92431a16dfb0fdc542530a327f92e98322fc813c"
+        "68a42b6406519439687027cd8d14be740f174979dc4cb76d058ed055962df074"
     );
 }
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -794,7 +799,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -846,7 +851,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 236);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

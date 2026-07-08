@@ -72,6 +72,8 @@ pub struct AgentActiveTurnProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider: Option<String>,
@@ -226,6 +228,9 @@ pub(crate) fn agent_activity_for_session_projection(
                 active_turn_projection(
                     turn.prompt_id.clone(),
                     Some(turn.provider_run_id.clone()),
+                    active_prompt_for_turn
+                        .map(|prompt| prompt.source_attachment_id().to_string())
+                        .or_else(|| turn.source_attachment_id.clone()),
                     prompt_origin,
                     external_observed_id,
                     prompt_status.clone(),
@@ -238,6 +243,7 @@ pub(crate) fn agent_activity_for_session_projection(
                     active_turn_projection(
                         prompt.id().to_string(),
                         provider_run.as_ref().map(|run| run.id().to_string()),
+                        Some(prompt.source_attachment_id().to_string()),
                         Some(prompt.prompt_origin()),
                         prompt.external_observed_id(),
                         prompt_status.clone(),
@@ -317,6 +323,7 @@ fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatu
 fn active_turn_projection(
     prompt_id: String,
     provider_run_id: Option<String>,
+    source_attachment_id: Option<String>,
     prompt_origin: Option<PromptOrigin>,
     external_observed_id: Option<crate::history::ExternalProviderObservedId>,
     status: AgentPromptRuntimeStatus,
@@ -327,6 +334,7 @@ fn active_turn_projection(
     AgentActiveTurnProjection {
         prompt_id,
         provider_run_id,
+        source_attachment_id,
         prompt_origin,
         external_provider: external.as_ref().map(|metadata| metadata.provider.clone()),
         external_provider_session_id: external

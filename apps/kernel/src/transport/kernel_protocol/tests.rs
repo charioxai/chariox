@@ -221,6 +221,7 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
             active_turn: Some(crate::runtime::projection::AgentActiveTurnProjection {
                 prompt_id: "prompt-a".to_string(),
                 provider_run_id: None,
+                source_attachment_id: Some("attachment-a".to_string()),
                 status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
                 phase: crate::runtime::projection::AgentTurnRuntimePhase::Accepted,
                 prompt_origin: Some(crate::session::PromptOrigin::Arroba),

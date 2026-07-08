@@ -46,6 +46,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) prompt_id: String,
+    pub(crate) source_attachment_id: Option<String>,
     pub(crate) prompt_origin: Option<PromptOrigin>,
     pub(crate) external_observed_id: Option<crate::history::ExternalProviderObservedId>,
     pub(crate) provider_run_id: String,
@@ -67,6 +68,7 @@ impl ActiveTurnState {
             session_id,
             agent_id,
             prompt_id,
+            source_attachment_id: None,
             prompt_origin: None,
             external_observed_id: None,
             provider_run_id,
@@ -83,6 +85,7 @@ impl ActiveTurnState {
     }
 
     pub(crate) fn with_prompt_metadata(mut self, prompt: &PromptQueueItem) -> Self {
+        self.source_attachment_id = Some(prompt.source_attachment_id().to_string());
         self.prompt_origin = Some(prompt.prompt_origin());
         self.external_observed_id = prompt.external_observed_id();
         self
@@ -251,6 +254,7 @@ fn record_active_turn_event(turn: &ActiveTurnState, event: &str, settlement_requ
         serde_json::json!({
             "agent_id": &turn.agent_id,
             "prompt_id": &turn.prompt_id,
+            "source_attachment_id": turn.source_attachment_id.as_deref(),
             "prompt_origin": turn.prompt_origin.map(prompt_origin_label),
             "external_provider": turn.external_observed_id.as_ref().map(|metadata| metadata.provider.as_str()),
             "external_provider_session_id": turn.external_observed_id.as_ref().map(|metadata| metadata.provider_session_id.as_str()),
@@ -285,6 +289,9 @@ fn merge_active_turn_start(
         }
         if incoming.prompt_origin.is_none() {
             incoming.prompt_origin = existing.prompt_origin;
+        }
+        if incoming.source_attachment_id.is_none() {
+            incoming.source_attachment_id = existing.source_attachment_id.clone();
         }
         if incoming.external_observed_id.is_none() {
             incoming.external_observed_id = existing.external_observed_id.clone();

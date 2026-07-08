@@ -398,6 +398,10 @@ fn session_snapshot_projection_projects_external_active_turn_origin() {
     assert_eq!(activity.status, AgentRuntimeStatus::Working);
     assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
     assert_eq!(
+        active_turn.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
+    assert_eq!(
         active_turn.prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
@@ -454,6 +458,10 @@ fn session_snapshot_projection_matches_active_turn_by_pending_prompt_id() {
 
     assert_eq!(active_turn.prompt_id, "pending-prompt-1");
     assert_eq!(
+        active_turn.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
+    assert_eq!(
         active_turn.prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
@@ -501,6 +509,10 @@ fn session_snapshot_projection_keeps_external_active_turn_origin_without_active_
 
     assert_eq!(activity.status, AgentRuntimeStatus::Working);
     assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+    assert_eq!(
+        active_turn.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
     assert_eq!(
         active_turn.prompt_origin,
         Some(crate::session::PromptOrigin::External)
