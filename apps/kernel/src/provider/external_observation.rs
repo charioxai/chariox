@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::history::SessionHistoryExternalObservation;
 use crate::provider::ProviderRunTokenUsage;
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedExternalProviderTurn {
@@ -47,6 +48,10 @@ pub(crate) enum ObservedExternalProviderTurnRole {
 }
 
 impl ObservedExternalProviderTurnRole {
+    pub(crate) fn as_str(self) -> &'static str {
+        role_text(self)
+    }
+
     pub(crate) fn session_history_kind(self) -> crate::history::SessionHistoryEntryKind {
         match self {
             Self::User => crate::history::SessionHistoryEntryKind::UserPrompt,
@@ -56,6 +61,82 @@ impl ObservedExternalProviderTurnRole {
             Self::Status => crate::history::SessionHistoryEntryKind::ProviderStatus,
         }
     }
+}
+
+pub(crate) fn observed_role(role: Option<&str>) -> Option<ObservedExternalProviderTurnRole> {
+    match role {
+        Some("user") => Some(ObservedExternalProviderTurnRole::User),
+        Some("assistant") => Some(ObservedExternalProviderTurnRole::Assistant),
+        Some("reasoning") => Some(ObservedExternalProviderTurnRole::Reasoning),
+        Some("tool") => Some(ObservedExternalProviderTurnRole::Tool),
+        Some("status") => Some(ObservedExternalProviderTurnRole::Status),
+        _ => None,
+    }
+}
+
+pub(crate) fn clean_observed_turn_text(role: Option<&str>, text: String) -> Option<String> {
+    match observed_role(role)? {
+        ObservedExternalProviderTurnRole::User => clean_provider_prompt(text),
+        ObservedExternalProviderTurnRole::Assistant => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        ObservedExternalProviderTurnRole::Reasoning
+        | ObservedExternalProviderTurnRole::Tool
+        | ObservedExternalProviderTurnRole::Status => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+    }
+}
+
+pub(crate) fn text_from_content(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(|item| {
+                    item.get("text")
+                        .or_else(|| item.get("content"))
+                        .or_else(|| item.get("value"))
+                        .and_then(Value::as_str)
+                })
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        Value::Object(_) => value
+            .get("text")
+            .or_else(|| value.get("content"))
+            .or_else(|| value.get("value"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+pub(crate) fn clean_provider_prompt(prompt: String) -> Option<String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty()
+        || prompt.starts_with("# AGENTS.md instructions")
+        || prompt.starts_with("<environment_context>")
+        || prompt.starts_with("Native provider execution is enabled")
+    {
+        return None;
+    }
+    let prompt = prompt
+        .split("## My request for Codex:")
+        .last()
+        .unwrap_or(prompt)
+        .split("## My request:")
+        .last()
+        .unwrap_or(prompt)
+        .trim();
+    (!prompt.is_empty()).then(|| compact_whitespace(prompt))
+}
+
+fn compact_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {

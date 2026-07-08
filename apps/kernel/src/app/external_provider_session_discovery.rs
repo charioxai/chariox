@@ -14,7 +14,10 @@ use serde_json::Value;
 use crate::local::{ExternalProviderSessionCapabilities, ExternalProviderSessionRecord};
 #[cfg(test)]
 use crate::provider::ExternalProviderObservationPolicy;
-use crate::provider::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
+use crate::provider::{
+    clean_observed_turn_text, clean_provider_prompt, observed_role, text_from_content,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
+};
 use crate::session::unix_epoch_ms;
 
 const MAX_PROVIDER_FILES: usize = 1_000;
@@ -2237,7 +2240,7 @@ fn opencode_sqlite_part_observed_turn(
         (_, Some("text")) => {
             let role = observed_role(role)?;
             let text = text_from_content(&part)
-                .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))?;
+                .and_then(|text| clean_observed_turn_text(Some(role.as_str()), text))?;
             Some(ObservedExternalProviderTurn {
                 role,
                 text,
@@ -2252,16 +2255,6 @@ fn opencode_sqlite_part_observed_turn(
             observed_at_ms,
         }),
         _ => None,
-    }
-}
-
-fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
-    match role {
-        ObservedExternalProviderTurnRole::User => "user",
-        ObservedExternalProviderTurnRole::Assistant => "assistant",
-        ObservedExternalProviderTurnRole::Reasoning => "reasoning",
-        ObservedExternalProviderTurnRole::Tool => "tool",
-        ObservedExternalProviderTurnRole::Status => "status",
     }
 }
 
@@ -2484,58 +2477,6 @@ fn opencode_user_prompt(value: &Value) -> Option<String> {
         .and_then(clean_provider_prompt)
 }
 
-fn observed_role(role: Option<&str>) -> Option<ObservedExternalProviderTurnRole> {
-    match role {
-        Some("user") => Some(ObservedExternalProviderTurnRole::User),
-        Some("assistant") => Some(ObservedExternalProviderTurnRole::Assistant),
-        Some("reasoning") => Some(ObservedExternalProviderTurnRole::Reasoning),
-        Some("tool") => Some(ObservedExternalProviderTurnRole::Tool),
-        Some("status") => Some(ObservedExternalProviderTurnRole::Status),
-        _ => None,
-    }
-}
-
-fn clean_observed_turn_text(role: Option<&str>, text: String) -> Option<String> {
-    match observed_role(role)? {
-        ObservedExternalProviderTurnRole::User => clean_provider_prompt(text),
-        ObservedExternalProviderTurnRole::Assistant => {
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        }
-        ObservedExternalProviderTurnRole::Reasoning
-        | ObservedExternalProviderTurnRole::Tool
-        | ObservedExternalProviderTurnRole::Status => {
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        }
-    }
-}
-
-fn text_from_content(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(items) => {
-            let parts = items
-                .iter()
-                .filter_map(|item| {
-                    item.get("text")
-                        .or_else(|| item.get("content"))
-                        .or_else(|| item.get("value"))
-                        .and_then(Value::as_str)
-                })
-                .collect::<Vec<_>>();
-            (!parts.is_empty()).then(|| parts.join("\n"))
-        }
-        Value::Object(_) => value
-            .get("text")
-            .or_else(|| value.get("content"))
-            .or_else(|| value.get("value"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        _ => None,
-    }
-}
-
 fn parse_bounded_json_string_or_raw(value: &str) -> Value {
     if value.chars().count() > MAX_OBSERVED_METADATA_STRING_CHARS {
         return bounded_observed_string_value(value);
@@ -2593,26 +2534,6 @@ fn bounded_observed_string_value(value: &str) -> Value {
         truncate_chars(value, MAX_OBSERVED_METADATA_STRING_CHARS),
         value.chars().count() - MAX_OBSERVED_METADATA_STRING_CHARS,
     ))
-}
-
-fn clean_provider_prompt(prompt: String) -> Option<String> {
-    let prompt = prompt.trim();
-    if prompt.is_empty()
-        || prompt.starts_with("# AGENTS.md instructions")
-        || prompt.starts_with("<environment_context>")
-        || prompt.starts_with("Native provider execution is enabled")
-    {
-        return None;
-    }
-    let prompt = prompt
-        .split("## My request for Codex:")
-        .last()
-        .unwrap_or(prompt)
-        .split("## My request:")
-        .last()
-        .unwrap_or(prompt)
-        .trim();
-    (!prompt.is_empty()).then(|| compact_whitespace(prompt))
 }
 
 fn record_from_parts(
@@ -2679,10 +2600,6 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
         truncated.push_str("...");
     }
     truncated
-}
-
-fn compact_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn string_field(value: &Value, keys: &[&str]) -> Option<String> {

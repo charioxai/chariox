@@ -39,7 +39,8 @@ pub use command_catalog::{
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
 };
 pub(crate) use external_observation::{
-    normalized_observed_prompt_text, ExternalProviderObservationPolicy,
+    clean_observed_turn_text, clean_provider_prompt, normalized_observed_prompt_text,
+    observed_role, text_from_content, ExternalProviderObservationPolicy,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub use launch_contract::{
