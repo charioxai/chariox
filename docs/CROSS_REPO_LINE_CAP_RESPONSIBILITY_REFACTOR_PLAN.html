@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>88 allowlisted files remain after initial splits</td>
+              <td>87 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>48c62a3b2</code> <span class="muted">Split kernel command handler tests</span></td>
+              <td>Kernel command-handler coverage now keeps the daemon-health projection factory and handler imports in a support module, while provider-run diagnostics, slice lifecycle/auth, remote/workspace/transport formatter behavior, and command/debug-bundle flows live in bounded TypeScript modules behind the existing test entrypoint.</td>
+              <td><code>pnpm --filter @arroba/cli run build</code>, <code>node --test apps/cli/dist/kernel-command-handlers.test.js</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>875b1c760</code> <span class="muted">Split workflow command action tests</span></td>
