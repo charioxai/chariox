@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use crate::config::DaemonConfig;
@@ -13,18 +13,18 @@ use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
 };
 use super::{
-    unix_epoch_ms, CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem,
-    RuntimeSession, SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
-    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
-    WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    CollaborationLevel, CreateSessionRequest, DEFAULT_LOCAL_USER_ID, PromptDetachEffect,
+    PromptQueueItem, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
+    SessionStatus, SessionStore, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
     WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
     WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
     WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
+    WorkspaceLinkDefinition, unix_epoch_ms,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -138,6 +138,7 @@ mod launches;
 mod sessions;
 #[cfg(test)]
 mod tests;
+mod turn_completion;
 mod turns;
 mod watchdogs;
 mod workflow_code;
