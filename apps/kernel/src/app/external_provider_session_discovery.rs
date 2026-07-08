@@ -1,10 +1,8 @@
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -13,8 +11,10 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::history::SessionHistoryEntryKind;
 use crate::local::{ExternalProviderSessionCapabilities, ExternalProviderSessionRecord};
+#[cfg(test)]
+use crate::provider::ExternalProviderObservationPolicy;
+use crate::provider::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
 use crate::session::unix_epoch_ms;
 
 const MAX_PROVIDER_FILES: usize = 1_000;
@@ -76,38 +76,6 @@ struct CachedProviderObservedTranscript {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObservedExternalProviderTurn {
-    pub(crate) role: ObservedExternalProviderTurnRole,
-    pub(crate) text: String,
-    pub(crate) provider_turn_id: Option<String>,
-    pub(crate) observed_at_ms: Option<u64>,
-}
-
-impl ObservedExternalProviderTurn {
-    pub(crate) fn stable_fallback_id(&self) -> String {
-        let mut hasher = DefaultHasher::new();
-        self.role.hash(&mut hasher);
-        self.text.hash(&mut hasher);
-        self.observed_at_ms.hash(&mut hasher);
-        format!("observed-{}-{:016x}", role_text(self.role), hasher.finish())
-    }
-
-    pub(crate) fn provider_turn_id_or_fallback(&self) -> String {
-        self.provider_turn_id
-            .clone()
-            .unwrap_or_else(|| self.stable_fallback_id())
-    }
-
-    pub(crate) fn external_merge_key(&self, provider: &str, provider_session_id: &str) -> String {
-        crate::history::external_provider_observed_merge_key(
-            provider,
-            provider_session_id,
-            &self.provider_turn_id_or_fallback(),
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalProviderSessionDiscoverySignature {
     files: Vec<ExternalProviderSessionFileSignature>,
 }
@@ -118,27 +86,6 @@ struct ExternalProviderSessionFileSignature {
     path: PathBuf,
     len: u64,
     modified_at_ms: u64,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum ObservedExternalProviderTurnRole {
-    User,
-    Assistant,
-    Reasoning,
-    Tool,
-    Status,
-}
-
-impl ObservedExternalProviderTurnRole {
-    pub(crate) fn session_history_kind(self) -> SessionHistoryEntryKind {
-        match self {
-            Self::User => SessionHistoryEntryKind::UserPrompt,
-            Self::Assistant => SessionHistoryEntryKind::ProviderOutput,
-            Self::Reasoning => SessionHistoryEntryKind::ProviderReasoning,
-            Self::Tool => SessionHistoryEntryKind::ProviderTool,
-            Self::Status => SessionHistoryEntryKind::ProviderStatus,
-        }
-    }
 }
 
 pub(crate) fn discover_external_provider_sessions(
@@ -2887,6 +2834,7 @@ fn deduplicate_external_sessions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::SessionHistoryEntryKind;
     use std::fs::OpenOptions;
     use std::io::{self, Write};
 
@@ -2896,14 +2844,13 @@ mod tests {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let configured = crate::app::ExternalProviderObservationPolicy::configured_provider_ids()
-            .collect::<BTreeSet<_>>();
+        let configured =
+            ExternalProviderObservationPolicy::configured_provider_ids().collect::<BTreeSet<_>>();
 
         assert_eq!(discovered, configured);
         for provider in discovered {
             assert!(
-                crate::app::ExternalProviderObservationPolicy::for_provider(provider)
-                    .is_configured(),
+                ExternalProviderObservationPolicy::for_provider(provider).is_configured(),
                 "{provider} discovery must have explicit observation policy"
             );
         }

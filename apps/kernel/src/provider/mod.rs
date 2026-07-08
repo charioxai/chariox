@@ -6,6 +6,7 @@ mod codex;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
+mod external_observation;
 mod launch_contract;
 mod mcp_proxy;
 mod opencode;
@@ -36,6 +37,10 @@ pub use codex_runtime::CodexRuntimeState;
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
+};
+pub(crate) use external_observation::{
+    normalized_observed_prompt_text, ExternalProviderObservationPolicy,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub use launch_contract::{
     canonical_external_provider_session_id, default_provider_control_capabilities,

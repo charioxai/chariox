@@ -6,7 +6,6 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
-mod external_provider_observation_policy;
 mod external_provider_session_discovery;
 mod external_provider_sessions;
 mod history_access;
@@ -45,14 +44,10 @@ pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
-pub(crate) use external_provider_observation_policy::{
-    normalized_observed_prompt_text, ExternalProviderObservationPolicy,
-};
 pub(crate) use external_provider_session_discovery::{
     discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
     read_external_provider_observed_turns, ExternalProviderSessionDiscoverySignature,
-    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub(crate) use external_provider_sessions::{
     external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
@@ -84,6 +79,7 @@ use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
+pub(crate) use crate::provider::normalized_observed_prompt_text;
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,

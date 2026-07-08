@@ -8,8 +8,7 @@ use tokio::sync::{watch, Mutex};
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
     external_session_id_for_provider_session, normalized_observed_prompt_text,
-    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderObservationPolicy,
-    ExternalProviderSessionAttachmentRef,
+    AttachedProviderTranscriptCursorKey, DaemonApp, ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
@@ -24,8 +23,9 @@ use crate::local::{
 };
 use crate::provider::{
     external_provider_import_model, external_provider_session_providers,
-    ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
-    ProviderResumeState, ProviderRunState, RuntimeProviderRun,
+    ExternalProviderImportMetadata, ExternalProviderObservationPolicy,
+    ExternalProviderObservedCursor, LaunchProviderRequest, ObservedExternalProviderTurn,
+    ObservedExternalProviderTurnRole, ProviderResumeState, ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
@@ -103,7 +103,7 @@ enum AttachedExternalObserverCursorSource {
 #[derive(Debug, Clone)]
 struct AttachedExternalObserverRead {
     target: AttachedExternalObserverTarget,
-    turns: Vec<crate::app::ObservedExternalProviderTurn>,
+    turns: Vec<ObservedExternalProviderTurn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1132,20 +1132,20 @@ fn append_observed_external_turns_for_attached_target_with_options(
         latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
     let candidate_user_turn_ids = candidate_turns
         .iter()
-        .filter(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)
-        .map(crate::app::ObservedExternalProviderTurn::provider_turn_id_or_fallback)
+        .filter(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+        .map(ObservedExternalProviderTurn::provider_turn_id_or_fallback)
         .collect::<BTreeSet<_>>();
     for turn in &candidate_turns {
         let kind = turn.role.session_history_kind();
         let merge_turn_id = turn.provider_turn_id_or_fallback();
-        if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
+        if turn.role == ObservedExternalProviderTurnRole::User {
             visible_provider_turn_id = Some(merge_turn_id.clone());
         }
         let provider_turn_id = visible_provider_turn_id
             .clone()
             .unwrap_or_else(|| merge_turn_id.clone());
         let merge_key = turn.external_merge_key(&provider, &provider_session_id);
-        if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
+        if turn.role == ObservedExternalProviderTurnRole::User {
             current_observed_turn_is_arroba_owned = arroba_owned_provider_turn_ids
                 .contains(&merge_turn_id)
                 || consume_arroba_owned_prompt_text_match(
@@ -1304,9 +1304,9 @@ fn update_provider_run_usage_from_external_observation(
     app: &mut DaemonApp,
     provider_run_id: Option<&str>,
     provider: &str,
-    turn: &crate::app::ObservedExternalProviderTurn,
+    turn: &ObservedExternalProviderTurn,
 ) {
-    if turn.role != crate::app::ObservedExternalProviderTurnRole::Status {
+    if turn.role != ObservedExternalProviderTurnRole::Status {
         return;
     }
     let Some(provider_run_id) = provider_run_id else {
@@ -1363,10 +1363,10 @@ fn persist_observed_external_settlement_history_signal(
 }
 
 fn latest_observed_external_turns_by_merge_key(
-    turns: &[crate::app::ObservedExternalProviderTurn],
+    turns: &[ObservedExternalProviderTurn],
     provider: &str,
     provider_session_id: &str,
-) -> Vec<crate::app::ObservedExternalProviderTurn> {
+) -> Vec<ObservedExternalProviderTurn> {
     let mut latest_indices_by_merge_key = BTreeMap::new();
     for (index, turn) in turns.iter().enumerate() {
         latest_indices_by_merge_key.insert(
@@ -1429,7 +1429,7 @@ fn consume_arroba_owned_prompt_text_match(
 
 fn external_active_prompt_from_turn(
     target: &AttachedExternalObserverTarget,
-    latest: &crate::app::ObservedExternalProviderTurn,
+    latest: &ObservedExternalProviderTurn,
 ) -> PromptQueueItem {
     let provider_turn_id = latest.provider_turn_id_or_fallback();
     let external_prompt_id = crate::history::external_provider_observed_merge_key(
@@ -3149,9 +3149,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target,
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-native".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "native prompt outside Arroba".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -3215,15 +3215,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "arroba owned prompt\n<image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "reply to Arroba owned prompt".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3293,15 +3293,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "previously classified Arroba prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "reply to previously classified Arroba prompt".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3350,9 +3350,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-native".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "native prompt outside Arroba".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -3381,15 +3381,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-native".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "native prompt outside Arroba".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("complete-native".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        role: ObservedExternalProviderTurnRole::Status,
                         text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3462,9 +3462,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-native".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "native prompt outside Arroba".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -3509,15 +3509,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-native".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "native prompt outside Arroba".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("complete-native".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        role: ObservedExternalProviderTurnRole::Status,
                         text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3582,15 +3582,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "external reply".to_string(),
             observed_at_ms: Some(84),
         };
@@ -3694,9 +3694,9 @@ mod tests {
                     None,
                     import,
                 ),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "observed reply".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -3752,27 +3752,27 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "external prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("reasoning-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Reasoning,
+                        role: ObservedExternalProviderTurnRole::Reasoning,
                         text: "external reasoning".to_string(),
                         observed_at_ms: Some(63),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("tool-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Tool,
+                        role: ObservedExternalProviderTurnRole::Tool,
                         text: "{\"tool\":\"bash\",\"status\":\"completed\"}".to_string(),
                         observed_at_ms: Some(72),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "external answer".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3877,22 +3877,22 @@ mod tests {
                     import,
                 ),
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("status-before-user".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        role: ObservedExternalProviderTurnRole::Status,
                         text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
                             .to_string(),
                         observed_at_ms: Some(21),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "external prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "external answer".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -3945,9 +3945,9 @@ mod tests {
                     None,
                     import,
                 ),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "external prompt".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -4001,9 +4001,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "external prompt".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -4021,9 +4021,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "external reply".to_string(),
                     observed_at_ms: Some(84),
                 }],
@@ -4044,9 +4044,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target,
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "external reply".to_string(),
                     observed_at_ms: Some(84),
                 }],
@@ -4091,21 +4091,21 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "intermediate commentary".to_string(),
             observed_at_ms: Some(84),
         };
-        let task_complete = crate::app::ObservedExternalProviderTurn {
+        let task_complete = ObservedExternalProviderTurn {
             provider_turn_id: Some("task-complete-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
             observed_at_ms: Some(126),
         };
@@ -4180,9 +4180,9 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
@@ -4201,9 +4201,9 @@ mod tests {
             "observed prompt should create an external active prompt"
         );
 
-        let abort = crate::app::ObservedExternalProviderTurn {
+        let abort = ObservedExternalProviderTurn {
             provider_turn_id: Some("turn-aborted-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "codex event turn_aborted { \"type\": \"turn_aborted\" }".to_string(),
             observed_at_ms: Some(84),
         };
@@ -4260,9 +4260,9 @@ mod tests {
                 None,
                 import,
             );
-            let prompt = crate::app::ObservedExternalProviderTurn {
+            let prompt = ObservedExternalProviderTurn {
                 provider_turn_id: Some("user-1".to_string()),
-                role: crate::app::ObservedExternalProviderTurnRole::User,
+                role: ObservedExternalProviderTurnRole::User,
                 text: "external prompt".to_string(),
                 observed_at_ms: Some(42),
             };
@@ -4281,9 +4281,9 @@ mod tests {
                 "{provider} prompt should mark the external turn running"
             );
 
-            let abort_status = crate::app::ObservedExternalProviderTurn {
+            let abort_status = ObservedExternalProviderTurn {
                 provider_turn_id: Some("abort-status-1".to_string()),
-                role: crate::app::ObservedExternalProviderTurnRole::Status,
+                role: ObservedExternalProviderTurnRole::Status,
                 text: status_text.to_string(),
                 observed_at_ms: Some(84),
             };
@@ -4345,9 +4345,9 @@ mod tests {
             None,
             import,
         );
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "external reply".to_string(),
             observed_at_ms: Some(84),
         };
@@ -4356,9 +4356,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("user-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    role: ObservedExternalProviderTurnRole::User,
                     text: "external prompt".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -4439,21 +4439,21 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "final external reply".to_string(),
             observed_at_ms: Some(84),
         };
-        let telemetry = crate::app::ObservedExternalProviderTurn {
+        let telemetry = ObservedExternalProviderTurn {
             provider_turn_id: Some("last-prompt-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude last-prompt {\"lastPrompt\":\"external prompt\"}".to_string(),
             observed_at_ms: Some(126),
         };
@@ -4545,15 +4545,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "final external reply".to_string(),
             observed_at_ms: Some(84),
         };
@@ -4574,9 +4574,9 @@ mod tests {
             "new assistant output should keep the external turn running through the grace window"
         );
 
-        let telemetry = crate::app::ObservedExternalProviderTurn {
+        let telemetry = ObservedExternalProviderTurn {
             provider_turn_id: Some("last-prompt-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude last-prompt {\"lastPrompt\":\"external prompt\"}".to_string(),
             observed_at_ms: Some(126),
         };
@@ -4623,33 +4623,33 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let tool = crate::app::ObservedExternalProviderTurn {
+        let tool = ObservedExternalProviderTurn {
             provider_turn_id: Some("tool-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Tool,
+            role: ObservedExternalProviderTurnRole::Tool,
             text: "TOOL_STEP_20: complete".to_string(),
             observed_at_ms: Some(84),
         };
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "FINAL_EXTERNAL_PARITY_SUMMARY".to_string(),
             observed_at_ms: Some(126),
         };
-        let completion = crate::app::ObservedExternalProviderTurn {
+        let completion = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1:completed".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude message completed\n{\"stop_reason\":\"end_turn\"}".to_string(),
             observed_at_ms: Some(126),
         };
-        let telemetry = crate::app::ObservedExternalProviderTurn {
+        let telemetry = ObservedExternalProviderTurn {
             provider_turn_id: Some("last-prompt-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude last-prompt {\"lastPrompt\":\"external prompt\"}".to_string(),
             observed_at_ms: Some(168),
         };
@@ -4721,15 +4721,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let tool = crate::app::ObservedExternalProviderTurn {
+        let tool = ObservedExternalProviderTurn {
             provider_turn_id: Some("tool-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Tool,
+            role: ObservedExternalProviderTurnRole::Tool,
             text: "TOOL_STEP_20: complete".to_string(),
             observed_at_ms: Some(84),
         };
@@ -4750,21 +4750,21 @@ mod tests {
             "external tool output should keep the prompt running"
         );
 
-        let assistant = crate::app::ObservedExternalProviderTurn {
+        let assistant = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "FINAL_EXTERNAL_PARITY_SUMMARY".to_string(),
             observed_at_ms: Some(126),
         };
-        let completion = crate::app::ObservedExternalProviderTurn {
+        let completion = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1:completed".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude message completed\n{\"stop_reason\":\"end_turn\"}".to_string(),
             observed_at_ms: Some(126),
         };
-        let telemetry = crate::app::ObservedExternalProviderTurn {
+        let telemetry = ObservedExternalProviderTurn {
             provider_turn_id: Some("last-prompt-leaf-assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "claude last-prompt {\"leafUuid\":\"assistant-1\"}".to_string(),
             observed_at_ms: None,
         };
@@ -4809,15 +4809,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let tool = crate::app::ObservedExternalProviderTurn {
+        let tool = ObservedExternalProviderTurn {
             provider_turn_id: Some("tool-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Tool,
+            role: ObservedExternalProviderTurnRole::Tool,
             text: "{\"tool\":\"bash\",\"status\":\"completed\"}".to_string(),
             observed_at_ms: Some(84),
         };
@@ -4875,15 +4875,15 @@ mod tests {
             Some(run.id().to_string()),
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let token_count = crate::app::ObservedExternalProviderTurn {
+        let token_count = ObservedExternalProviderTurn {
             provider_turn_id: Some("token-count-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
                 .to_string(),
             observed_at_ms: Some(84),
@@ -4966,15 +4966,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let status = crate::app::ObservedExternalProviderTurn {
+        let status = ObservedExternalProviderTurn {
             provider_turn_id: Some("message-status-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "opencode message completed\n{\"finish\":\"stop\"}".to_string(),
             observed_at_ms: Some(84),
         };
@@ -5053,34 +5053,34 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: None,
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt without provider item id".to_string(),
             observed_at_ms: Some(42),
         };
         let prompt_turn_id = prompt.stable_fallback_id();
-        let reasoning = crate::app::ObservedExternalProviderTurn {
+        let reasoning = ObservedExternalProviderTurn {
             provider_turn_id: Some("reasoning-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Reasoning,
+            role: ObservedExternalProviderTurnRole::Reasoning,
             text: "external reasoning".to_string(),
             observed_at_ms: Some(63),
         };
-        let tool = crate::app::ObservedExternalProviderTurn {
+        let tool = ObservedExternalProviderTurn {
             provider_turn_id: Some("tool-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Tool,
+            role: ObservedExternalProviderTurnRole::Tool,
             text: "{\"tool\":\"bash\",\"status\":\"completed\"}".to_string(),
             observed_at_ms: Some(72),
         };
-        let reply_one = crate::app::ObservedExternalProviderTurn {
+        let reply_one = ObservedExternalProviderTurn {
             provider_turn_id: Some("msg-reply-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "external reply one".to_string(),
             observed_at_ms: Some(84),
         };
-        let reply_two = crate::app::ObservedExternalProviderTurn {
+        let reply_two = ObservedExternalProviderTurn {
             provider_turn_id: Some("msg-reply-2".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "external reply two".to_string(),
             observed_at_ms: Some(126),
         };
@@ -5196,9 +5196,9 @@ mod tests {
                     prompt,
                     reasoning,
                     tool,
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("task-complete-1".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        role: ObservedExternalProviderTurnRole::Status,
                         text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
                         observed_at_ms: Some(168),
                     },
@@ -5252,15 +5252,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "arroba owned prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "provider reply to arroba owned prompt".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -5353,15 +5353,15 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "arroba owned prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "provider reply before completion".to_string(),
                         observed_at_ms: Some(84),
                     },
@@ -5423,27 +5423,27 @@ mod tests {
             AttachedExternalObserverRead {
                 target,
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "repeatable prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "provider reply to arroba owned prompt".to_string(),
                         observed_at_ms: Some(84),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-external".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "repeatable prompt".to_string(),
                         observed_at_ms: Some(126),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-external".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "provider reply to external repeated prompt".to_string(),
                         observed_at_ms: Some(168),
                     },
@@ -5516,21 +5516,21 @@ mod tests {
                     import,
                 ),
                 turns: vec![
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("user-owned-active".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        role: ObservedExternalProviderTurnRole::User,
                         text: "arroba-owned active prompt".to_string(),
                         observed_at_ms: Some(42),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("tool-owned-active".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Tool,
+                        role: ObservedExternalProviderTurnRole::Tool,
                         text: "{\"tool\":\"bash\",\"status\":\"completed\"}".to_string(),
                         observed_at_ms: Some(84),
                     },
-                    crate::app::ObservedExternalProviderTurn {
+                    ObservedExternalProviderTurn {
                         provider_turn_id: Some("assistant-owned-active".to_string()),
-                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        role: ObservedExternalProviderTurnRole::Assistant,
                         text: "provider reply to arroba-owned active prompt".to_string(),
                         observed_at_ms: Some(126),
                     },
@@ -5577,9 +5577,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target: target.clone(),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "partial external reply".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -5591,9 +5591,9 @@ mod tests {
             &mut app,
             AttachedExternalObserverRead {
                 target,
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("assistant-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "complete external reply".to_string(),
                     observed_at_ms: Some(84),
                 }],
@@ -5645,15 +5645,15 @@ mod tests {
             import.clone(),
         );
         let turns = vec![
-            crate::app::ObservedExternalProviderTurn {
+            ObservedExternalProviderTurn {
                 provider_turn_id: Some("assistant-1".to_string()),
-                role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                role: ObservedExternalProviderTurnRole::Assistant,
                 text: "partial external reply".to_string(),
                 observed_at_ms: Some(42),
             },
-            crate::app::ObservedExternalProviderTurn {
+            ObservedExternalProviderTurn {
                 provider_turn_id: Some("assistant-1".to_string()),
-                role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                role: ObservedExternalProviderTurnRole::Assistant,
                 text: "complete external reply".to_string(),
                 observed_at_ms: Some(84),
             },
@@ -5704,9 +5704,9 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let turn = crate::app::ObservedExternalProviderTurn {
+        let turn = ObservedExternalProviderTurn {
             provider_turn_id: Some("assistant-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            role: ObservedExternalProviderTurnRole::Assistant,
             text: "complete external reply".to_string(),
             observed_at_ms: Some(84),
         };
@@ -5790,9 +5790,9 @@ mod tests {
                     Some(run.id().to_string()),
                     import,
                 ),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "observed reply".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -5847,9 +5847,9 @@ mod tests {
                     None,
                     import,
                 ),
-                turns: vec![crate::app::ObservedExternalProviderTurn {
+                turns: vec![ObservedExternalProviderTurn {
                     provider_turn_id: Some("item-1".to_string()),
-                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    role: ObservedExternalProviderTurnRole::Assistant,
                     text: "observed reply".to_string(),
                     observed_at_ms: Some(42),
                 }],
@@ -5922,15 +5922,15 @@ mod tests {
             None,
             import,
         );
-        let prompt = crate::app::ObservedExternalProviderTurn {
+        let prompt = ObservedExternalProviderTurn {
             provider_turn_id: Some("user-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::User,
+            role: ObservedExternalProviderTurnRole::User,
             text: "external prompt".to_string(),
             observed_at_ms: Some(42),
         };
-        let completion = crate::app::ObservedExternalProviderTurn {
+        let completion = ObservedExternalProviderTurn {
             provider_turn_id: Some("task-complete-1".to_string()),
-            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            role: ObservedExternalProviderTurnRole::Status,
             text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
             observed_at_ms: Some(84),
         };

@@ -1,8 +1,72 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 
-use super::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
 use crate::history::SessionHistoryExternalObservation;
 use crate::provider::ProviderRunTokenUsage;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObservedExternalProviderTurn {
+    pub(crate) role: ObservedExternalProviderTurnRole,
+    pub(crate) text: String,
+    pub(crate) provider_turn_id: Option<String>,
+    pub(crate) observed_at_ms: Option<u64>,
+}
+
+impl ObservedExternalProviderTurn {
+    pub(crate) fn stable_fallback_id(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.role.hash(&mut hasher);
+        self.text.hash(&mut hasher);
+        self.observed_at_ms.hash(&mut hasher);
+        format!("observed-{}-{:016x}", role_text(self.role), hasher.finish())
+    }
+
+    pub(crate) fn provider_turn_id_or_fallback(&self) -> String {
+        self.provider_turn_id
+            .clone()
+            .unwrap_or_else(|| self.stable_fallback_id())
+    }
+
+    pub(crate) fn external_merge_key(&self, provider: &str, provider_session_id: &str) -> String {
+        crate::history::external_provider_observed_merge_key(
+            provider,
+            provider_session_id,
+            &self.provider_turn_id_or_fallback(),
+        )
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ObservedExternalProviderTurnRole {
+    User,
+    Assistant,
+    Reasoning,
+    Tool,
+    Status,
+}
+
+impl ObservedExternalProviderTurnRole {
+    pub(crate) fn session_history_kind(self) -> crate::history::SessionHistoryEntryKind {
+        match self {
+            Self::User => crate::history::SessionHistoryEntryKind::UserPrompt,
+            Self::Assistant => crate::history::SessionHistoryEntryKind::ProviderOutput,
+            Self::Reasoning => crate::history::SessionHistoryEntryKind::ProviderReasoning,
+            Self::Tool => crate::history::SessionHistoryEntryKind::ProviderTool,
+            Self::Status => crate::history::SessionHistoryEntryKind::ProviderStatus,
+        }
+    }
+}
+
+fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
+    match role {
+        ObservedExternalProviderTurnRole::User => "user",
+        ObservedExternalProviderTurnRole::Assistant => "assistant",
+        ObservedExternalProviderTurnRole::Reasoning => "reasoning",
+        ObservedExternalProviderTurnRole::Tool => "tool",
+        ObservedExternalProviderTurnRole::Status => "status",
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExternalProviderObservationPolicy<'a> {
