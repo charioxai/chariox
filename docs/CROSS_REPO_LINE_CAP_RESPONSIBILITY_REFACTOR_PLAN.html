@@ -209,8 +209,8 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>3 allowlisted files remain after initial splits</td>
-              <td>Kernel provider/runtime authority files remain the active oversized targets; relay, workflow-code, drill, and CLI-root splits have already removed their current allowlist entries</td>
+              <td>2 allowlisted files remain after initial splits</td>
+              <td>Kernel external-provider session control and discovery remain the active oversized targets; relay, workflow-code, meta tool-dispatch, drill, and CLI-root splits have already removed their current allowlist entries</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>c2f8aa636</code> <span class="muted">Split meta tool-dispatch modules</span></td>
+              <td><code>meta.rs</code> is now below the 1000-line cap and acts as the runtime meta-tool dispatcher/facade plus shared argument and subscription helpers. Workflow-code and workflow-registry runtime tools moved to <code>meta/workflow_code.rs</code>, trace subscription/poll/wait batching moved to <code>meta/trace.rs</code>, and session overview, turn/blob, interaction resolution, task/plan payload, and agent-reference helpers moved to <code>meta/session_tools.rs</code>. Cross-module helpers are exposed only at <code>pub(super)</code> where sibling modules or the dispatcher need them.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent and child modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::state::tool_dispatch::meta --lib --no-run</code> (compiled; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (2 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for <code>meta.rs</code> (832 lines), <code>meta/workflow_code.rs</code> (943 lines), <code>meta/trace.rs</code> (710 lines), and <code>meta/session_tools.rs</code> (637 lines).</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8c27c80b5</code> <span class="muted">Split CLI root queued prompt controllers</span></td>
