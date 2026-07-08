@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>37 allowlisted files remain after initial splits</td>
+              <td>36 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>452e5c8b4</code> <span class="muted">Split iOS kernel protocol decoding tests</span></td>
+              <td>The iOS kernel protocol request-shape test file now keeps request encoding, subscribe frames, workspace live sync, provider auth, MCP/skill listing, interaction, prompt, history, and agent request coverage, while runtime session, history, agent/session update, provider catalog/auth, MCP/skill response, interaction response, session state, and transport event decoding coverage lives in a sibling decoding test file.</td>
+              <td><code>swift test --package-path apps/ios/ArrobaPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for both Swift test files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>6aebf686b</code> <span class="muted">Extract slice display endpoint handling</span></td>
