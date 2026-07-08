@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>46 allowlisted files remain after initial splits</td>
+              <td>45 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>605230af2</code> <span class="muted">Extract workflow runtime drill scenarios</span></td>
+              <td>The live workflow runtime drill now keeps CLI parsing, runtime module loading, kernel/relay connection setup, workflow execution, polling, daemon cleanup, and artifact finalization in the executable script, while scenario prompt builders, MCP echo setup, workflow edge helpers, and configurable scenario request wiring live in a focused helper module.</td>
+              <td><code>node --check</code> for the entrypoint and scenario helper, <code>--help</code> smoke, <code>--dry-run --scenario simple-chain</code> smoke, direct scenario-helper request-injection smoke for max-turn and MCP grant/install request builders, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>9c4c760c1</code> <span class="muted">Extract drill artifact validators</span></td>
