@@ -11,5 +11,4 @@ apps/kernel/src/terminal/stream.rs
 apps/kernel/src/app/kernel_session.rs
 apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
-apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/cli/src/cli-app-root.tsx
