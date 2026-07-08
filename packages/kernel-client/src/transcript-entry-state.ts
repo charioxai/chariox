@@ -438,36 +438,13 @@ export function retargetEquivalentTranscriptTurnSiblings<
 
 function applyTranscriptTurnAssignmentMetadata<TTurnId extends TranscriptTurnAssignmentId>(
   entry: TranscriptTurnAssignmentEntry<TTurnId>,
-  metadata: {
-    readonly promptId?: string | null | undefined
-    readonly promptOrigin?: string | null | undefined
-    readonly sourceAttachmentId?: string | null | undefined
+  metadata: TranscriptPromptMetadata & {
     readonly providerRunId?: string | null | undefined
-    readonly externalProvider?: string | null | undefined
-    readonly externalProviderSessionId?: string | null | undefined
-    readonly externalProviderTurnId?: string | null | undefined
   },
 ): void {
-  if (entry.promptId === undefined && metadata.promptId !== undefined) {
-    entry.promptId = metadata.promptId
-  }
-  if (entry.promptOrigin === undefined && metadata.promptOrigin !== undefined) {
-    entry.promptOrigin = metadata.promptOrigin
-  }
-  if (entry.sourceAttachmentId === undefined && metadata.sourceAttachmentId !== undefined) {
-    entry.sourceAttachmentId = metadata.sourceAttachmentId
-  }
+  applyTranscriptPromptMetadata(entry, metadata, { preserveExisting: true })
   if (entry.providerRunId === undefined && metadata.providerRunId !== undefined) {
     entry.providerRunId = metadata.providerRunId
-  }
-  if (entry.externalProvider === undefined && metadata.externalProvider !== undefined) {
-    entry.externalProvider = metadata.externalProvider
-  }
-  if (entry.externalProviderSessionId === undefined && metadata.externalProviderSessionId !== undefined) {
-    entry.externalProviderSessionId = metadata.externalProviderSessionId
-  }
-  if (entry.externalProviderTurnId === undefined && metadata.externalProviderTurnId !== undefined) {
-    entry.externalProviderTurnId = metadata.externalProviderTurnId
   }
 }
 
