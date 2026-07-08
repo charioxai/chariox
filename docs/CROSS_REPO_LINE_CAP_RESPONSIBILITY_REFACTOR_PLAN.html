@@ -215,8 +215,8 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>1 allowlisted file remains after initial splits</td>
-              <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
+              <td>0 allowlisted files remain; Cloud is below the 1000-line cap</td>
+              <td>No current oversized targets; keep terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills under the cap as they evolve</td>
             </tr>
           </tbody>
         </table>
@@ -347,6 +347,12 @@
               <td><code>96b8aa4f4</code> <span class="muted">Split shell executor workflow code tests</span></td>
               <td>Shell executor workflow command coverage now keeps workflow list, registry, graph, publication, and queue scenarios in the parent file, while workflow-code package/source/artifact command scenarios live in a dedicated test module.</td>
               <td><code>pnpm --filter @arroba/kernel-client run build</code>, focused compiled shell-executor workflow tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>809be53a</code> <span class="muted">Split terminal browser app responsibilities</span></td>
+              <td>The terminal browser app now stays under the cap as composition and route wiring, while publication/collaboration/download commands live in a publication controller and browser-drill behavior is split into context, shared constants, route/view fixtures, freeform live fixtures, history fixtures, workflow fixtures, and pure workflow topology data.</td>
+              <td><code>pnpm --filter @arroba-cloud/web run build</code>, targeted source-shape tests for client ownership, mobile UX, view route refresh, and route coverage, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
