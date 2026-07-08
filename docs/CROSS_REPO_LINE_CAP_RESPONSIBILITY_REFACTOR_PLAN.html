@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>22 allowlisted files remain after initial splits</td>
+              <td>21 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>83cda945f</code> <span class="muted">Split relay server tests</span></td>
+              <td>The relay server production module now keeps server construction, listener lifecycle, health/display/packet dispatch, draining rejection, and shared registry access, while relay server test coverage is split by registry basics, daemon lifecycle, display tunnels, metadata/scoped tokens, runtime-client validation, routing ownership, subscription ownership, and daemon peer routing.</td>
+              <td><code>rustfmt --edition 2024</code> for the relay server parent and new test modules; <code>cargo test --manifest-path apps/relay/Cargo.toml server -- --nocapture</code> (43 passed); <code>node scripts/check-line-cap.mjs</code> (21 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8fc92a34f</code> <span class="muted">Extract history legacy import module</span></td>
