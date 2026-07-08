@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>77 allowlisted files remain after initial splits</td>
+              <td>76 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>94a867651</code> <span class="muted">Split workflow dispatch service tests</span></td>
+              <td>Workflow dispatch service coverage now keeps the shared completion fixture in the parent module, while baseline downstream dispatch and concurrency, routed edge selection, schema validation policy, and multi-input join behavior live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/session/service/tests/workflow_dispatch.rs apps/kernel/src/session/service/tests/workflow_dispatch/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service::tests::workflow_dispatch -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>797a08f53</code> <span class="muted">Split workspace capability API tests</span></td>
