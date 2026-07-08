@@ -385,7 +385,6 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
   }, "agent-1"), {
     promptId: "external:codex:thread-2:turn-2",
     sourceAttachmentId: "attachment-inferred",
-    promptOrigin: "external",
   })
 })
 

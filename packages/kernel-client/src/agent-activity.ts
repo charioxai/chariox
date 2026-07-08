@@ -1,8 +1,4 @@
 import {
-  promptOriginExternalProviderObservedMetadata,
-} from "./external-provider-observation.js"
-import {
-  EXTERNAL_PROMPT_ORIGIN,
   promptOriginFromRecord,
   promptOriginIsExternal,
 } from "./prompt-origin.js"
@@ -325,18 +321,17 @@ function projectAgentRuntimeCompletedTurnOwnership(
   | "externalProviderSessionId"
   | "externalProviderTurnId"
 > {
-  const externalMetadata = promptOriginExternalProviderObservedMetadata(turn)
-  const promptOrigin = promptOriginFromRecord(turn)
-    ?? (externalMetadata ? EXTERNAL_PROMPT_ORIGIN : undefined)
+  const promptOrigin = promptOriginFromRecord(turn) ?? undefined
+  const externalProvider = normalizeAgentRuntimeProviderId(
+    readNonBlankStringField(turn, "external_provider"),
+  ) ?? undefined
+  const externalProviderSessionId = readNonBlankStringField(turn, "external_provider_session_id") ?? undefined
+  const externalProviderTurnId = readNonBlankStringField(turn, "external_provider_turn_id") ?? undefined
   return {
     ...(promptOrigin ? { promptOrigin } : {}),
-    ...(externalMetadata?.externalProvider ? { externalProvider: externalMetadata.externalProvider } : {}),
-    ...(externalMetadata?.externalProviderSessionId
-      ? { externalProviderSessionId: externalMetadata.externalProviderSessionId }
-      : {}),
-    ...(externalMetadata?.externalProviderTurnId
-      ? { externalProviderTurnId: externalMetadata.externalProviderTurnId }
-      : {}),
+    ...(externalProvider ? { externalProvider } : {}),
+    ...(externalProviderSessionId ? { externalProviderSessionId } : {}),
+    ...(externalProviderTurnId ? { externalProviderTurnId } : {}),
   }
 }
 
@@ -396,10 +391,9 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnPromptId = readStringField(activeTurn, "prompt_id") ?? undefined
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
   const activeTurnSourceAttachmentId = readNullableStringField(activeTurn, "source_attachment_id")
-  const activeTurnExternalMetadata = promptOriginExternalProviderObservedMetadata(activeTurn)
   const activeTurnPromptOrigin = promptOriginFromRecord({
     prompt_origin: readStringField(activeTurn, "prompt_origin"),
-  }) ?? (activeTurnExternalMetadata ? EXTERNAL_PROMPT_ORIGIN : undefined)
+  }) ?? undefined
   const activeTurnExternalProvider = normalizeAgentRuntimeProviderId(
     readNonBlankStringField(activeTurn, "external_provider"),
   ) ?? undefined

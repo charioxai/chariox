@@ -310,7 +310,7 @@ test("sessionPromptLifecycleTransition settles external prompts when they disapp
   assert.deepEqual(transition.settledAgentIds, ["agent-1"])
 })
 
-test("sessionActivePromptLifecycleRecords infers external prompt ownership from provider identity", () => {
+test("sessionActivePromptLifecycleRecords preserves provider identity without inferring prompt ownership", () => {
   assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
     prompt_states: {
       "agent-1": {
@@ -336,14 +336,14 @@ test("sessionActivePromptLifecycleRecords infers external prompt ownership from 
     external_provider: "codex",
     external_provider_session_id: "thread-1",
     external_provider_turn_id: "user-1",
-    promptOrigin: "external",
+    promptOrigin: null,
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
   }])
 })
 
-test("sessionActivePromptLifecycleRecords infers projected external active turn ownership", () => {
+test("sessionActivePromptLifecycleRecords preserves projected provider identity without inferring prompt ownership", () => {
   assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
     agent_activity: {
       "agent-1": {
@@ -364,7 +364,7 @@ test("sessionActivePromptLifecycleRecords infers projected external active turn 
   })), [{
     id: "external:codex:thread-1:user-1",
     status: "running",
-    promptOrigin: "external",
+    promptOrigin: null,
     target_agent_id: "agent-1",
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",

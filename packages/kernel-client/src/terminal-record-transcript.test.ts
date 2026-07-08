@@ -36,7 +36,7 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
     kind: "prompt_echo",
     external_provider: "codex",
     external_provider_session_id: "thread-1",
-  }).promptOrigin, "external")
+  }).promptOrigin, undefined)
 
   assert.equal(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",

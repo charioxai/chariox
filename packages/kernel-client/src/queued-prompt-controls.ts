@@ -2,9 +2,6 @@ import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
-  promptOriginExternalProviderObservedMetadata,
-} from "./external-provider-observation.js"
-import {
   sessionAgentActivityRecordForAgent,
   sessionHasAgentActivityProjection,
   sessionHasPromptStateProjection,
@@ -225,8 +222,7 @@ export function projectQueuedPrompt(
     sourceAttachmentId: nonBlankString(prompt.source_attachment_id) ?? "",
     targetAgentId: nonBlankString(prompt.target_agent_id) ?? nonBlankString(options.fallbackTargetAgentId) ?? null,
     prompt: prompt.prompt,
-    promptOrigin: promptOriginFromRecord(prompt)
-      ?? (promptOriginExternalProviderObservedMetadata(prompt) ? "external" : null),
+    promptOrigin: promptOriginFromRecord(prompt),
     ...(createdAtMs !== null ? { createdAtMs } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),

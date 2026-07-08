@@ -112,15 +112,14 @@ test("transcript entry lineage keys ignore partial external observed identities"
   ])
 })
 
-test("transcript entry lineage keys recover exact external identity from prompt id", () => {
+test("transcript entry lineage keys treat external-looking prompt ids as opaque prompt identity", () => {
   assert.deepEqual(transcriptEntryLineageKeys({
     role: "assistant",
     text: "hello",
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     promptId: "external:codex:thread-1:turn-1",
   }), [
-    "external:codex:thread-1:turn-1:assistant",
-    "text:external_provider_observed:external:codex:thread-1:turn-1:assistant:hello",
+    "text:external_provider_observed:prompt:external:codex:thread-1:turn-1:assistant:hello",
   ])
 })
 

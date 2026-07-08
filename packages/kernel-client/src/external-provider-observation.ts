@@ -16,12 +16,6 @@ export type ExternalProviderObservedTurnMetadata = {
   externalProviderTurnId: string | null
 }
 
-export type ExternalProviderObservedId = {
-  provider: string
-  providerSessionId: string
-  providerTurnId: string
-}
-
 export type ExternalProviderObservedTurnMarker = {
   provider: string
   providerSessionId: string
@@ -55,26 +49,6 @@ export function sessionHistoryEntryIsExternalProviderObserved(
   return normalizeExternalProviderObservedSource(entry.source) === EXTERNAL_PROVIDER_OBSERVED_SOURCE
 }
 
-export function parseExternalProviderObservedId(
-  value: string | null | undefined,
-): ExternalProviderObservedId | null {
-  const parts = value?.split(":")
-  if (!parts || parts.length < 4 || parts[0] !== "external") {
-    return null
-  }
-  const provider = normalizeExternalProviderId(parts[1]) ?? ""
-  const providerSessionId = parts[2]?.trim() ?? ""
-  const providerTurnId = parts.slice(3).join(":").trim()
-  if (!provider || !providerSessionId || !providerTurnId) {
-    return null
-  }
-  return {
-    provider,
-    providerSessionId,
-    providerTurnId,
-  }
-}
-
 export function externalProviderObservedIdentityIsPresent(
   value: ExternalProviderObservedIdentityFields,
 ): boolean {
@@ -84,15 +58,11 @@ export function externalProviderObservedIdentityIsPresent(
 export function externalProviderObservedIdentityKey(
   value: ExternalProviderObservedIdentityFields,
 ): ExternalProviderObservedIdentityKey | null {
-  const promptIdentity = parseExternalProviderObservedId(value.promptId)
   const provider = normalizeExternalProviderId(value.externalProvider)
-    ?? (promptIdentity ? normalizeExternalProviderId(promptIdentity.provider) : null)
     ?? ""
   const providerSessionId = nonBlankString(value.externalProviderSessionId)
-    ?? promptIdentity?.providerSessionId
     ?? ""
   const providerTurnId = nonBlankString(value.externalProviderTurnId)
-    ?? promptIdentity?.providerTurnId
     ?? ""
   if (!providerSessionId && !providerTurnId) {
     return null
@@ -145,14 +115,11 @@ export function historyEntryExternalProviderObservedMetadata(
   if (!sessionHistoryEntryIsExternalProviderObserved(entry)) {
     return null
   }
-  const mergeKeyIdentity = parseExternalProviderObservedId(entry.merge_key)
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: normalizeExternalProviderId(entry.external_provider)
-      ?? (mergeKeyIdentity ? normalizeExternalProviderId(mergeKeyIdentity.provider) : null),
-    externalProviderSessionId:
-      nonBlankString(entry.external_provider_session_id) ?? mergeKeyIdentity?.providerSessionId ?? null,
-    externalProviderTurnId: nonBlankString(entry.external_provider_turn_id) ?? mergeKeyIdentity?.providerTurnId ?? null,
+    externalProvider: normalizeExternalProviderId(entry.external_provider),
+    externalProviderSessionId: nonBlankString(entry.external_provider_session_id),
+    externalProviderTurnId: nonBlankString(entry.external_provider_turn_id),
     observedAtMs: finiteNumber(entry.observed_at_ms),
     externalObservation: normalizedExternalObservation(entry.external_observation),
   }
@@ -214,13 +181,7 @@ export function promptOriginExternalProviderObservedMetadata(
   const externalProvider = normalizeExternalProviderId(record.external_provider)
   const externalProviderSessionId = nonBlankString(record.external_provider_session_id)
   const externalProviderTurnId = nonBlankString(record.external_provider_turn_id)
-  const hasExternalIdentity = Boolean(
-    externalProvider || externalProviderSessionId || externalProviderTurnId,
-  )
-  if (!promptOrigin && !hasExternalIdentity) {
-    return null
-  }
-  if (promptOrigin !== null && !promptOriginIsExternal(promptOrigin)) {
+  if (!promptOriginIsExternal(promptOrigin)) {
     return null
   }
   return {

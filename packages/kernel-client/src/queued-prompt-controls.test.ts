@@ -650,7 +650,7 @@ test("project queued prompt normalizes prompt ownership", () => {
     status: "queued",
     external_provider: "codex",
     external_provider_session_id: "thread-1",
-  })?.promptOrigin, "external")
+  })?.promptOrigin, null)
 
   assert.equal(projectQueuedPrompt({
     id: "external:codex:thread-1:turn-1",

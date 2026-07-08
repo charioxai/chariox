@@ -20,26 +20,12 @@ import {
   mergeExternalProviderObservedSource,
   mergeExternalProviderObservedTranscriptFields,
   mergeExternalProviderObservation,
-  parseExternalProviderObservedId,
   promptOriginExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
   transcriptExternalProviderObservedTurnMarker,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedMutableKernelFields,
 } from "./external-provider-observation.js"
-
-test("external provider observed id parser follows runtime merge key shape", () => {
-  assert.deepEqual(parseExternalProviderObservedId("external: CODEX : thread-1 : item:with:colon "), {
-    provider: "codex",
-    providerSessionId: "thread-1",
-    providerTurnId: "item:with:colon",
-  })
-  assert.equal(parseExternalProviderObservedId(" external:codex:thread-1:item-1"), null)
-  assert.equal(parseExternalProviderObservedId("external:codex"), null)
-  assert.equal(parseExternalProviderObservedId("external:codex:thread-1:"), null)
-  assert.equal(parseExternalProviderObservedId("prompt-1"), null)
-  assert.equal(parseExternalProviderObservedId(null), null)
-})
 
 test("external provider observed identity matching normalizes provider and trims ids", () => {
   assert.equal(externalProviderObservedIdentityIsPresent({
@@ -53,21 +39,13 @@ test("external provider observed identity matching normalizes provider and trims
   }, {
     externalProvider: " codex ",
     externalProviderSessionId: "thread-1",
-  }), true)
-  assert.deepEqual(externalProviderObservedIdentityKey({
+  }), false)
+  assert.equal(externalProviderObservedIdentityKey({
     promptId: "external: CODEX : thread-1 : user-1",
-  }), {
-    provider: "codex",
-    providerSessionId: "thread-1",
-    providerTurnId: "user-1",
-  })
-  assert.deepEqual(externalProviderObservedExactIdentityKey({
+  }), null)
+  assert.equal(externalProviderObservedExactIdentityKey({
     promptId: "external: CODEX : thread-1 : user-1",
-  }), {
-    provider: "codex",
-    providerSessionId: "thread-1",
-    providerTurnId: "user-1",
-  })
+  }), null)
   assert.equal(externalProviderObservedExactIdentityKey({
     externalProviderSessionId: "thread-1",
   }), null)
@@ -90,7 +68,7 @@ test("external provider observed identity matching normalizes provider and trims
     externalProviderTurnId: "user-1",
   }, {
     promptId: "external:codex:thread-1:user-1",
-  }), true)
+  }), false)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: "opencode",
     externalProviderSessionId: "thread-1",
@@ -159,15 +137,15 @@ test("external provider observed metadata projects kernel history fields", () =>
   })
 })
 
-test("external provider observed metadata falls back to merge key identity", () => {
+test("external provider observed metadata treats merge keys as opaque", () => {
   assert.deepEqual(historyEntryExternalProviderObservedMetadata({
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     merge_key: "external:CODEX:thread-1:item-1",
   }), {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: "item-1",
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
     observedAtMs: null,
     externalObservation: null,
   })
@@ -233,15 +211,10 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
   })
-  assert.deepEqual(promptOriginExternalProviderObservedMetadata({
+  assert.equal(promptOriginExternalProviderObservedMetadata({
     external_provider: " codex ",
     external_provider_session_id: " thread-1 ",
-  }), {
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: null,
-  })
+  }), null)
   assert.equal(promptOriginExternalProviderObservedMetadata({
     id: "external:codex:thread-1:turn-from-id",
   }), null)
