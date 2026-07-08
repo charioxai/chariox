@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>9 allowlisted files remain after initial splits</td>
+              <td>8 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>dc80da97d</code> <span class="muted">Split live workspace sync drill modules</span></td>
+              <td><code>live-workspace-live-sync-drill.mjs</code> is now the orchestration entrypoint. Option parsing/help, runtime/workspace setup, provider history/tool polling, managed collision/external-change checks, and tracked-mode scenarios live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
+              <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/live-workspace-live-sync-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (8 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>21714a18f</code> <span class="muted">Split session outline projection helpers</span></td>
