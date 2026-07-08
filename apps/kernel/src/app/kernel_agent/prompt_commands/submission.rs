@@ -300,34 +300,41 @@ impl<'a> KernelAgentService<'a> {
         DaemonError,
     > {
         let mut remote_dispatch = None;
-        if let (Some(remote_execution), PromptSubmissionOutcome::Started { prompt }) = (
-            submitted.admission.remote_execution.as_ref(),
-            &submitted.outcome,
-        ) {
-            remote_dispatch = Some(KernelRemotePromptDispatch {
-                session_id: submitted.admission.session_id.clone(),
-                agent_id: submitted.admission.target_agent_id.clone(),
-                prompt_id: prompt.id().to_string(),
-                worker_kernel_id: remote_execution.worker_kernel_id.clone(),
-                leased_agent_id: remote_execution.leased_agent_id.clone(),
-                relay_url: remote_execution.relay_url.clone(),
-                relay_token: remote_execution.relay_token.clone(),
-                source_attachment_id: prompt.source_attachment_id().to_string(),
-                prompt: prompt.prompt().to_string(),
-                attachments: prompt.attachments().to_vec(),
-                workspace_live_sync_mode: remote_workspace_live_sync_mode_for_submission(
-                    self.app,
-                    &submitted.admission.session_id,
-                    &submitted.admission.target_agent_id,
-                ),
-                prompt_origin: prompt.prompt_origin(),
-                external_provider: prompt.external_provider().map(str::to_string),
-                external_provider_session_id: prompt
-                    .external_provider_session_id()
-                    .map(str::to_string),
-                external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-                workflow_context: None,
-            });
+        match &submitted.outcome {
+            PromptSubmissionOutcome::Started { prompt } => {
+                let Some(remote_execution) = submitted.admission.remote_execution.as_ref() else {
+                    return Ok((None, None));
+                };
+                remote_dispatch = Some(KernelRemotePromptDispatch {
+                    session_id: submitted.admission.session_id.clone(),
+                    agent_id: submitted.admission.target_agent_id.clone(),
+                    prompt_id: prompt.id().to_string(),
+                    worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    relay_url: remote_execution.relay_url.clone(),
+                    relay_token: remote_execution.relay_token.clone(),
+                    source_attachment_id: prompt.source_attachment_id().to_string(),
+                    prompt: prompt.prompt().to_string(),
+                    attachments: prompt.attachments().to_vec(),
+                    workspace_live_sync_mode: remote_workspace_live_sync_mode_for_submission(
+                        self.app,
+                        &submitted.admission.session_id,
+                        &submitted.admission.target_agent_id,
+                    ),
+                    prompt_origin: prompt.prompt_origin(),
+                    external_provider: prompt.external_provider().map(str::to_string),
+                    external_provider_session_id: prompt
+                        .external_provider_session_id()
+                        .map(str::to_string),
+                    external_provider_turn_id: prompt
+                        .external_provider_turn_id()
+                        .map(str::to_string),
+                    workflow_context: None,
+                });
+            }
+            PromptSubmissionOutcome::Queued { prompt } => {
+                self.record_queued_prompt_notice(submitted, prompt, None);
+            }
         }
         Ok((None, remote_dispatch))
     }
@@ -382,8 +389,38 @@ impl<'a> KernelAgentService<'a> {
                     steering: false,
                 });
             }
-            PromptSubmissionOutcome::Queued { .. } => {}
+            PromptSubmissionOutcome::Queued { prompt } => {
+                self.record_queued_prompt_notice(
+                    submitted,
+                    prompt,
+                    submitted.admission.provider_run_id.as_deref(),
+                );
+            }
         }
         Ok((dispatch, None))
+    }
+
+    fn record_queued_prompt_notice(
+        &mut self,
+        submitted: &KernelPromptOwnerSubmission,
+        prompt: &PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) {
+        let recipient_attachment_ids = self.app.other_attachment_ids(
+            &submitted.admission.session_id,
+            prompt.source_attachment_id(),
+        );
+        self.app.record_notice_for_agent(
+            &submitted.admission.session_id,
+            provider_run_id,
+            Some(&submitted.admission.target_agent_id),
+            recipient_attachment_ids,
+            format!(
+                "Attachment `{}` queued prompt `{}` for agent `{}`.",
+                prompt.source_attachment_id(),
+                prompt.id(),
+                submitted.admission.target_agent_id
+            ),
+        );
     }
 }

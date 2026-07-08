@@ -109,6 +109,27 @@ fn local_request_api_exposes_queue_config_and_notices() {
         _ => panic!("unexpected config response"),
     }
 
+    let queued_notices = harness
+        .dispatch(LocalDaemonRequest::PollRuntimeNotices(
+            PollRuntimeNoticesRequest {
+                session_id: session.id().to_string(),
+                attachment_id: a.id().to_string(),
+            },
+        ))
+        .expect("active attachment notice polling should succeed");
+    match queued_notices {
+        LocalDaemonResponse::RuntimeNotices { notices } => {
+            assert!(
+                notices.iter().any(|notice| {
+                    notice.message.contains("queued prompt")
+                        && notice.message.contains(queued_prompt.id())
+                }),
+                "active attachment should be notified when another attachment queues a prompt: {notices:?}"
+            );
+        }
+        _ => panic!("unexpected notices response"),
+    }
+
     let notices = harness
         .dispatch(LocalDaemonRequest::PollRuntimeNotices(
             PollRuntimeNoticesRequest {

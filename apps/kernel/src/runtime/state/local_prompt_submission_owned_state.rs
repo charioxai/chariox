@@ -146,7 +146,20 @@ impl KernelRuntimeOwnedState {
                 });
                 debug_assert!(prompt_sent_at_ms.is_some());
             }
-            crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                self.record_notice_for_agent(
+                    &session_id,
+                    provider_run_id.as_deref(),
+                    Some(&target_agent_id),
+                    self.other_attachment_ids(&session_id, prompt.source_attachment_id()),
+                    format!(
+                        "Attachment `{}` queued prompt `{}` for agent `{}`.",
+                        prompt.source_attachment_id(),
+                        prompt.id(),
+                        target_agent_id
+                    ),
+                );
+            }
         }
         let session = if prepared.refresh_projection {
             self.session_snapshot(&session_id)?
