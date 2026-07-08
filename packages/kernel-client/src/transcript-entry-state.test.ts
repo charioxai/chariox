@@ -404,6 +404,42 @@ test("assignMatchingUntrackedTranscriptEntriesToTurn rejects sparse external pro
   assert.equal(entries[1]?.turnId, undefined)
 })
 
+test("assignMatchingUntrackedTranscriptEntriesToTurn rejects provider-run matches with conflicting exact external identity", () => {
+  const turnId = 7
+  const entries: AssignmentEntry<number>[] = [
+    assignmentEntry("prompt", "user", {
+      promptOrigin: "external",
+      providerRunId: "history",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-1",
+      turnId,
+    }),
+    assignmentEntry("assistant-conflict", "assistant", {
+      providerRunId: "history",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-2",
+      createdAtMs: 1_100,
+    }),
+    assignmentEntry("assistant-match", "assistant", {
+      providerRunId: "history",
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "user-1",
+      createdAtMs: 1_200,
+    }),
+  ]
+
+  const assigned = assignMatchingUntrackedTranscriptEntriesToTurn<number, AssignmentEntry<number>>(entries, entries[0]!, {
+    turnId,
+  })
+
+  assert.equal(assigned, 1)
+  assert.equal(entries[1]?.turnId, undefined)
+  assert.equal(entries[2]?.turnId, turnId)
+})
+
 test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canonical turn", () => {
   const entries: AssignmentEntry<number>[] = [
     assignmentEntry("equivalent", "assistant", { turnId: 3, outputIdentity: "run-1:assistant", createdAtMs: 1_100 }),

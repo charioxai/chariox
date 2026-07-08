@@ -98,6 +98,20 @@ export function externalProviderObservedExactIdentityMatches(
   )
 }
 
+export function externalProviderObservedExactIdentityConflicts(
+  candidate: ExternalProviderObservedIdentityFields,
+  expected: ExternalProviderObservedIdentityFields,
+): boolean {
+  const candidateKey = externalProviderObservedExactIdentityKey(candidate)
+  const expectedKey = externalProviderObservedExactIdentityKey(expected)
+  if (!candidateKey || !expectedKey) {
+    return false
+  }
+  return candidateKey.provider !== expectedKey.provider
+    || candidateKey.providerSessionId !== expectedKey.providerSessionId
+    || candidateKey.providerTurnId !== expectedKey.providerTurnId
+}
+
 export function externalProviderObservedIdentityMatches(
   candidate: ExternalProviderObservedIdentityFields,
   expected: ExternalProviderObservedIdentityFields,

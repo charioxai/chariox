@@ -1,5 +1,6 @@
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 import {
+  externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
@@ -351,6 +352,9 @@ export function assignMatchingUntrackedTranscriptEntriesToTurn<
     )
     const matchesExternalIdentity = hasExternalIdentity
       && externalProviderObservedExactIdentityMatches(entry, externalIdentity)
+    if (externalProviderObservedExactIdentityConflicts(entry, externalIdentity)) {
+      continue
+    }
     if (!matchesPrompt && !matchesProviderRun && !matchesExternalIdentity) {
       continue
     }
