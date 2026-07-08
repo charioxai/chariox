@@ -54,7 +54,6 @@ apps/kernel/src/session/runtime_session.rs
 apps/kernel/src/runtime/router/tests/provider_projection.rs
 apps/kernel/src/app/provider_output_fanout.rs
 apps/kernel/tests/kernel_websocket_integration.rs
-apps/kernel/src/runtime/session_actor/tests/agent_lifecycle_execution.rs
 apps/cli/scripts/lib/drill-artifacts.mjs
 apps/cli/scripts/live-workflow-runtime-drill.mjs
 apps/kernel/src/transport/relay_client/connector.rs
