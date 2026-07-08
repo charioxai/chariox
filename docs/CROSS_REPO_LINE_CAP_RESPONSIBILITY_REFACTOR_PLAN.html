@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>71 allowlisted files remain after initial splits</td>
+              <td>70 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6bbf051a3</code> <span class="muted">Split session snapshot projection tests</span></td>
+              <td>Session snapshot projection production logic now stays below the cap, with projection behavior tests moved to a sibling Rust test module that preserves the original focused coverage.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::projection::session_snapshot_projection::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>4df167f91</code> <span class="muted">Split session outline tests</span></td>
