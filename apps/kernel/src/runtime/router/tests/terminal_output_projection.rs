@@ -264,6 +264,7 @@ async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
         .dispatch(list_command, list_request)
         .await
         .expect("initial list should warm active provider projection");
+    let before_projection_sequence = router.session_projection.change_sequence();
 
     let permit = router
         .provider_runtime_lanes
@@ -296,6 +297,11 @@ async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
         }
         _ => panic!("unexpected pump response"),
     }
+    assert_eq!(
+        router.session_projection.change_sequence(),
+        before_projection_sequence,
+        "empty active-run terminal output pumps must not wake session projection subscribers"
+    );
 }
 
 #[tokio::test]
