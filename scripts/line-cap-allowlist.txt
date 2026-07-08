@@ -7,7 +7,6 @@ apps/cli/scripts/live-workflow-publication-drill.mjs
 apps/cli/scripts/live-workspace-live-sync-drill.mjs
 apps/cli/scripts/workflow-code-artifact-drill.mjs
 apps/kernel/src/runtime/state/tool_dispatch/meta.rs
-packages/kernel-client/src/kernel-types.ts
 apps/kernel/src/terminal/stream.rs
 apps/kernel/src/app/kernel_session.rs
 apps/cli/scripts/live-provider-thread-transfer-drill.mjs

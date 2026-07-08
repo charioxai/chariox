@@ -228,7 +228,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "version_rules",
                     vec![evidence(
-                        "docs/PROTOCOL.md",
+                        "docs/PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md",
                         &["breaking changes require a new major protocol version"],
                     )],
                 ),
@@ -389,7 +389,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "protocol_snapshots",
                     vec![evidence(
-                        "docs/PROTOCOL.md",
+                        "docs/PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md",
                         &[
                             "Cross-Platform Terminal Conformance Profile",
                             "non-web clients should be validated against the same conformance suite and snapshot expectations",
@@ -400,7 +400,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "version_rules",
                     vec![
                         evidence(
-                            "docs/PROTOCOL.md",
+                            "docs/PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md",
                             &["breaking changes require a new major protocol version"],
                         ),
                         evidence(
@@ -437,7 +437,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "workflow_events",
                     vec![evidence(
-                        "packages/kernel-client/src/kernel-types.ts",
+                        "packages/kernel-client/src/kernel-types-workflow.ts",
                         &["WorkflowDesignOpForwarded", "WorkflowDesignOp"],
                     )],
                 ),
