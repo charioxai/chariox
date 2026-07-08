@@ -4,12 +4,9 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import {
-  listWorkflowRegistryRequest,
-} from "@arroba/kernel-client"
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createSignal } from "solid-js"
+import { batch, createEffect } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -47,9 +44,8 @@ import {
 } from "./cli-renderer-focus-controller.js"
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
-import type { CommandCenterWorkflowRegistryEntry } from "./command-center-context.js"
 import { renderCommandCenterOverlay } from "./command-center-renderer.js"
-import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
+import { createWorkflowRegistrySuggestionController } from "./workflow-registry-suggestion-controller.js"
 import { commandTreeFromTerminalCommandCatalog } from "./terminal-command-catalog.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
@@ -75,21 +71,11 @@ import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
 import {
   cancelActivePrompt,
-  cancelQueuedPrompt,
-  steerQueuedPrompt,
 } from "./prompt-runtime-api.js"
 import {
-  queuedPromptStripItemsForAgent,
-  queuedPromptStripItemToTranscriptEntry,
-  syncQueuedPromptTranscriptEntriesByAgentWithPreviews as syncQueuedPromptEntriesByAgent,
-  syncQueuedPromptTranscriptEntriesForAgent as syncQueuedPromptEntriesForAgent,
   type QueuedPromptStripItem,
-  type QueuedPromptStripStatusOverride,
 } from "@arroba/kernel-client/queued-prompt-strip-state"
-import {
-  nextQueuedPromptSelectionId,
-  selectedQueuedPromptIndex,
-} from "@arroba/kernel-client/queued-prompt-selection"
+import { createCliQueuedPromptController } from "./cli-queued-prompt-controller.js"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,
@@ -173,149 +159,42 @@ import { createTranscriptTurnStateController } from "./transcript-turn-state-con
 
 export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const {
-    client,
-    options,
-    supportsKernelEventStream,
-    initialBinding,
-    initialSession,
-    initialEntries,
-    initialPromptDraft,
-    initialWorkspaceTarget,
-    initialWorktreeTarget,
-    preferencesState,
-    setPreferencesState,
-    themeRevision,
-    setThemeRevision,
-    maxAgentsPerScreen,
-    sessionState,
-    setSessionState,
-    attachmentState,
-    setAttachmentState,
-    providerRunState,
-    setProviderRunState,
-    createdSessionState,
-    setCreatedSessionState,
-    availableSessions,
-    setAvailableSessions,
-    providerCatalogState,
-    setProviderCatalogState,
-    providerCommandCatalogState,
-    setProviderCommandCatalogState,
-    terminalCommandCatalogState,
-    setTerminalCommandCatalogState,
-    themeRegistryState,
-    relayStatusState,
-    setRelayStatusState,
-    remoteMachinesState,
-    setRemoteMachinesState,
-    remoteKernelsState,
-    setRemoteKernelsState,
-    slicesState,
-    setSlicesState,
-    terminalsState,
-    setTerminalsState,
-    externalProviderSessionsState,
-    setExternalProviderSessionsState,
-    externalProviderSessionsPageState,
-    setExternalProviderSessionsPageState,
-    waitingRoomInventoryStatus,
-    setWaitingRoomInventoryStatus,
-    waitingRoomHiddenKernelController,
-    waitingRoomCloudNotice,
-    setWaitingRoomCloudNotice,
-    terminalPairingOpen,
-    setTerminalPairingOpen,
-    terminalPairingState,
-    setTerminalPairingState,
-    terminalPairingQrLines,
-    setTerminalPairingQrLines,
-    sessionBrowserOpen,
-    setSessionBrowserOpen,
-    agentLocationLabel,
-    sessionBrowserIndex,
-    setSessionBrowserIndex,
-    waitingRoomState,
-    setWaitingRoomState,
-    pendingWorkspaceTarget,
-    setPendingWorkspaceTarget,
-    pendingWorktreeTarget,
-    setPendingWorktreeTarget,
-    multiAgentResponseLayout,
-    setMultiAgentResponseLayout,
-    entries,
-    setEntries,
-    activeStatusLabel,
-    setActiveStatusLabel,
-    providerActivityLabel,
-    setProviderActivityLabel,
-    agentActivityLabels,
-    setAgentActivityLabels,
-    streamingAgentId,
-    setStreamingAgentId,
-    statusLine,
-    setStatusLine,
-    fatalError,
-    setFatalError,
-    submitting,
-    setSubmitting,
-    entryCounter,
-    setEntryCounter,
-    daemonDisconnected,
-    setDaemonDisconnected,
-    kernelConnected,
-    setKernelConnected,
-    nextHistoryCursor,
-    setNextHistoryCursor,
-    agentPanePreviews,
-    setAgentPanePreviews,
-    agentPaneEntries,
-    setAgentPaneEntries,
-    agentBusyLatches,
-    setAgentBusyLatches,
-    sessionHydrating,
-    setSessionHydrating,
-    loadingHistory,
-    setLoadingHistory,
-    historyLoadingMessage,
-    setHistoryLoadingMessage,
-    workingAnimationFrame,
-    setWorkingAnimationFrame,
-    working,
-    setWorking,
-    footerFlash,
-    setFooterFlash,
-    pendingAttachments,
-    setPendingAttachments,
-    promptHistoryEntries,
-    setPromptHistoryEntries,
-    promptHistoryIndex,
-    setPromptHistoryIndex,
-    promptHistoryDraft,
-    setPromptHistoryDraft,
-    hotkeysOpen,
-    setHotkeysOpen,
-    collapsedTurnIdsByAgent,
-    setCollapsedTurnIdsByAgent,
-    workspaceScreenMode,
-    setWorkspaceScreenMode,
-    workspaceShellContext,
-    setWorkspaceShellContext,
-    workspaceShellEntries,
-    setWorkspaceShellEntries,
-    workspaceShellEntryCounter,
-    setWorkspaceShellEntryCounter,
-    workspaceLiveSyncStatus,
-    setWorkspaceLiveSyncStatus,
-    selectedWorkflowId,
-    setSelectedWorkflowId,
-    selectedWorkflowNodeId,
-    setSelectedWorkflowNodeId,
-    selectedWorkflowComponent,
-    setSelectedWorkflowComponent,
-    workflowInspectorMode,
-    setWorkflowInspectorMode,
-    workflowNodeInstructionsEditor,
-    setWorkflowNodeInstructionsEditor,
+    client, options, supportsKernelEventStream, initialBinding,
+    initialSession, initialEntries, initialPromptDraft, initialWorkspaceTarget,
+    initialWorktreeTarget, preferencesState, setPreferencesState, themeRevision,
+    setThemeRevision, maxAgentsPerScreen, sessionState, setSessionState,
+    attachmentState, setAttachmentState, providerRunState, setProviderRunState,
+    createdSessionState, setCreatedSessionState, availableSessions, setAvailableSessions,
+    providerCatalogState, setProviderCatalogState, providerCommandCatalogState, setProviderCommandCatalogState,
+    terminalCommandCatalogState, setTerminalCommandCatalogState, themeRegistryState, relayStatusState,
+    setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
+    setRemoteKernelsState, slicesState, setSlicesState, terminalsState,
+    setTerminalsState, externalProviderSessionsState, setExternalProviderSessionsState, externalProviderSessionsPageState,
+    setExternalProviderSessionsPageState, waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController,
+    waitingRoomCloudNotice, setWaitingRoomCloudNotice, terminalPairingOpen, setTerminalPairingOpen,
+    terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
+    sessionBrowserOpen, setSessionBrowserOpen, agentLocationLabel, sessionBrowserIndex,
+    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, pendingWorkspaceTarget,
+    setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, multiAgentResponseLayout,
+    setMultiAgentResponseLayout, entries, setEntries, activeStatusLabel,
+    setActiveStatusLabel, providerActivityLabel, setProviderActivityLabel, agentActivityLabels,
+    setAgentActivityLabels, streamingAgentId, setStreamingAgentId, statusLine,
+    setStatusLine, fatalError, setFatalError, submitting,
+    setSubmitting, entryCounter, setEntryCounter, daemonDisconnected,
+    setDaemonDisconnected, kernelConnected, setKernelConnected, nextHistoryCursor,
+    setNextHistoryCursor, agentPanePreviews, setAgentPanePreviews, agentPaneEntries,
+    setAgentPaneEntries, agentBusyLatches, setAgentBusyLatches, sessionHydrating,
+    setSessionHydrating, loadingHistory, setLoadingHistory, historyLoadingMessage,
+    setHistoryLoadingMessage, workingAnimationFrame, setWorkingAnimationFrame, working,
+    setWorking, footerFlash, setFooterFlash, pendingAttachments,
+    setPendingAttachments, promptHistoryEntries, setPromptHistoryEntries, promptHistoryIndex,
+    setPromptHistoryIndex, promptHistoryDraft, setPromptHistoryDraft, hotkeysOpen,
+    setHotkeysOpen, collapsedTurnIdsByAgent, setCollapsedTurnIdsByAgent, workspaceScreenMode,
+    setWorkspaceScreenMode, workspaceShellContext, setWorkspaceShellContext, workspaceShellEntries,
+    setWorkspaceShellEntries, workspaceShellEntryCounter, setWorkspaceShellEntryCounter, workspaceLiveSyncStatus,
+    setWorkspaceLiveSyncStatus, selectedWorkflowId, setSelectedWorkflowId, selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, workflowInspectorMode,
+    setWorkflowInspectorMode, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
   } = createCliAppState({
     bootstrap: props.bootstrap,
     cwd: process.cwd(),
@@ -332,23 +211,19 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptInputRefController = createPromptInputRefController<TextareaRenderable>()
   const transcriptScrollboxRefController = createTranscriptScrollboxRefController<ScrollBoxRenderable>()
   const responsePaneRenderRefStore = createResponsePaneRenderRefStoreController<
-    BoxRenderable,
-    ScrollBoxRenderable,
+    BoxRenderable, ScrollBoxRenderable,
     TextRenderable
   >()
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const interactionChoiceStore = createInteractionChoiceStoreController()
   const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
-    ScrollBoxRenderable,
-    TranscriptEntryRenderable,
-    BoxRenderable,
+    ScrollBoxRenderable, TranscriptEntryRenderable, BoxRenderable,
     ToolTranscriptUpdate
   >()
   const statusIndicatorRenderState = createStatusIndicatorRenderState()
   const closingStateController = createCliClosingStateController()
   const primaryTranscriptRuntimeStore = createPrimaryTranscriptRuntimeStoreController<
-    TranscriptEntryRenderable,
-    BoxRenderable,
+    TranscriptEntryRenderable, BoxRenderable,
     ToolTranscriptUpdate
   >({
     initialMountedTranscriptAgentId: initialBinding
@@ -400,79 +275,46 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderScheduler.requestRenderable(renderable)
     },
   })
-  const [selectedQueuedPromptIdsByAgent, setSelectedQueuedPromptIdsByAgent] = createSignal<Record<string, string>>({})
-  const [queuedPromptStatusOverridesByAgent, setQueuedPromptStatusOverridesByAgent] = createSignal<
-    Record<string, Record<string, QueuedPromptStripStatusOverride>>
-  >({})
+  let syncQueuedPromptsForSession = (_session: RuntimeSession) => {}
+  let handleQueuedPromptAction = (_entry: TranscriptEntry, _action: "steer" | "cancel") => {}
+  let handleQueuedPromptStripAction = (_item: QueuedPromptStripItem, _action: "steer" | "cancel") => {}
+  let queuedPromptStripItemsForAgentId = (_agentId: string | null | undefined): QueuedPromptStripItem[] => []
+  let selectedQueuedPromptIndexForAgent = (_agentId: string | null | undefined): number => -1
+  let handleQueuedPromptStripKey = (_event: {
+    name?: string
+    eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
+    shift?: boolean
+    preventDefault?: () => void
+    stopPropagation?: () => void
+  }): boolean => false
 
   const {
-    isAttached,
-    focusedAgentId,
-    multiAgentMode,
-    workflowScreenShowing,
-    splitAgentResponseMode,
-    activeInteractionForAgent,
-    focusedAgentInteraction,
-    workflowPromptState,
-    responsePaneSelection,
-    responsePaneAgentSignature,
-    responsePrimaryAgent,
-    responseVisibleAgents,
-    visibleTranscriptAgentId,
-    responsePaneRows,
-    primaryTranscriptSurfaceTone,
-    auxiliaryTranscriptSurfaceTone,
-    agentActivityLabel,
-    focusedAgent,
-    focusedBackendProvider,
-    focusedProviderRun,
-    resolveSessionAgent,
-    agentBusyLatch,
-    anyPromptWork,
-    anyTurnWork,
-    focusedQueueDepth,
-    focusedActivePrompt,
-    focusedActivityLabel,
-    markAgentBusy,
-    clearAgentBusy,
-    focusedAgentBusy,
-    allAgentsBusyState,
-    setAgentActivityLabel,
-    transcriptEntryProjectionController,
-    visibleTranscriptEntries,
-    connectedClientCount,
-    activePrompt,
-    focusedStatusBadge,
-    runtimeDebugLogger,
-    logProviderRunDebug,
-    logViewDebug,
-    logVisibleTranscriptOutput,
-    logFocusedBadgeChange,
+    isAttached, focusedAgentId, multiAgentMode, workflowScreenShowing,
+    splitAgentResponseMode, activeInteractionForAgent, focusedAgentInteraction, workflowPromptState,
+    responsePaneSelection, responsePaneAgentSignature, responsePrimaryAgent, responseVisibleAgents,
+    visibleTranscriptAgentId, responsePaneRows, primaryTranscriptSurfaceTone, auxiliaryTranscriptSurfaceTone,
+    agentActivityLabel, focusedAgent, focusedBackendProvider, focusedProviderRun,
+    resolveSessionAgent, agentBusyLatch, anyPromptWork, anyTurnWork,
+    focusedQueueDepth, focusedActivePrompt, focusedActivityLabel, markAgentBusy,
+    clearAgentBusy, focusedAgentBusy, allAgentsBusyState, setAgentActivityLabel,
+    transcriptEntryProjectionController, visibleTranscriptEntries, connectedClientCount, activePrompt,
+    focusedStatusBadge, runtimeDebugLogger, logProviderRunDebug, logViewDebug,
+    logVisibleTranscriptOutput, logFocusedBadgeChange,
   } = createCliRuntimeProjectionComposition({
     appLogger,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
-    attachmentState,
-    sessionState,
-    workspaceScreenMode,
-    multiAgentResponseLayout,
+    attachmentState, sessionState, workspaceScreenMode, multiAgentResponseLayout,
     maxAgentsPerScreen,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
-    selectedWorkflowId,
-    selectedWorkflowNodeId,
-    providerRunState,
-    primaryTranscriptRuntimeStore,
-    agentPaneRuntimeStore,
-    agentPanePreviews,
-    agentActivityLabels,
-    setAgentActivityLabels,
-    agentBusyLatches,
-    setAgentBusyLatches,
-    submitting,
-    promptSubmissionAgentStateController,
+    selectedWorkflowId, selectedWorkflowNodeId, providerRunState, primaryTranscriptRuntimeStore,
+    agentPaneRuntimeStore, agentPanePreviews, agentActivityLabels, setAgentActivityLabels,
+    agentBusyLatches, setAgentBusyLatches, submitting, promptSubmissionAgentStateController,
     streamingAgentId,
     entries: () => entries,
-    daemonDisconnected,
-    transcriptScrollboxRefController,
+    daemonDisconnected, transcriptScrollboxRefController,
   })
   createEffect(() => {
     if (!isAttached()) {
@@ -497,17 +339,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const scheduleResponsePaneRepaint = responsePaneRenderScheduleController.scheduleRepaint
   const {
-    workflowInspector,
-    bindWorkflowNodeInstructionsEditor,
+    workflowInspector, bindWorkflowNodeInstructionsEditor,
   } = createCliAppWorkflowProjectionComposition({
-    sessionState,
-    selectedWorkflowId,
-    selectedWorkflowNodeId,
-    selectedWorkflowComponent,
-    workflowInspectorMode,
-    workflowNodeInstructionsEditor,
-    agentPaneEntries,
-    setSelectedWorkflowId,
+    sessionState, selectedWorkflowId, selectedWorkflowNodeId, selectedWorkflowComponent,
+    workflowInspectorMode, workflowNodeInstructionsEditor, agentPaneEntries, setSelectedWorkflowId,
     setSelectedWorkflowNodeId,
   })
   const promptStopController = createPromptStopController({
@@ -540,66 +375,23 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
   const {
-    activateWaitingRoom,
-    applyModelSelection,
-    applyProviderCatalogChanged,
-    applyProviderSelection,
-    applyRelayStatusChanged,
-    applyRemoteMachinesChanged,
-    applySlicesChanged,
-    applyVariantSelection,
-    applyWaitingRoomRowsChanged,
-    applyWaitingRoomSessionLifecycleAction,
-    connectDetachedKernelFromWaitingRoom,
-    currentModelId,
-    currentProviderSelection,
-    currentVariantId,
-    promptMetaParts,
-    promptUsageMeta,
-    reconcileWaitingRoom,
-    refreshWaitingRoomData,
-    refreshWaitingRoomDataNow,
-    startSessionFromWaitingRoomDefaults,
+    activateWaitingRoom, applyModelSelection, applyProviderCatalogChanged, applyProviderSelection,
+    applyRelayStatusChanged, applyRemoteMachinesChanged, applySlicesChanged, applyVariantSelection,
+    applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
+    currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
+    reconcileWaitingRoom, refreshWaitingRoomData, refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
-    client,
-    options,
-    appLogger,
-    formatError,
-    isAttached,
-    kernelConnected,
-    waitingRoomState,
-    setWaitingRoomState,
-    availableSessions,
-    setAvailableSessions,
-    providerCatalogState,
-    setProviderCatalogState,
-    providerCommandCatalogState,
-    setProviderCommandCatalogState,
-    themeRegistryState,
-    waitingRoomCloudNotice,
-    waitingRoomInventoryStatus,
-    setWaitingRoomInventoryStatus,
-    waitingRoomHiddenKernelController,
-    relayStatusState,
-    setRelayStatusState,
-    remoteMachinesState,
-    setRemoteMachinesState,
-    remoteKernelsState,
-    setRemoteKernelsState,
-    terminalsState,
-    setTerminalsState,
-    externalProviderSessionsState,
-    setExternalProviderSessionsState,
-    externalProviderSessionsPageState,
-    setExternalProviderSessionsPageState,
-    slicesState,
-    setSlicesState,
-    pendingWorkspaceTarget,
-    pendingWorktreeTarget,
-    preferencesState,
-    setPreferencesState,
-    setThemeRevision,
+    client, options, appLogger, formatError,
+    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState,
+    availableSessions, setAvailableSessions, providerCatalogState, setProviderCatalogState,
+    providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
+    waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController, relayStatusState,
+    setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
+    setRemoteKernelsState, terminalsState, setTerminalsState, externalProviderSessionsState,
+    setExternalProviderSessionsState, externalProviderSessionsPageState, setExternalProviderSessionsPageState, slicesState,
+    setSlicesState, pendingWorkspaceTarget, pendingWorktreeTarget, preferencesState,
+    setPreferencesState, setThemeRevision,
     resetTranscriptSyntax: () => {
       transcriptSyntaxStyleController.reset()
     },
@@ -618,14 +410,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
     attachBinding: (session, createdSession, launch) => attachBinding(session, createdSession, launch),
     flashFooter: (message, tone) => flashFooter(message, tone),
-    setKernelConnected,
-    setDaemonDisconnected,
-    sessionBrowserOpen,
-    focusedProviderRun,
-    focusedAgent,
-    focusedAgentId,
-    providerRunState,
-    sessionState,
+    setKernelConnected, setDaemonDisconnected, sessionBrowserOpen, focusedProviderRun,
+    focusedAgent, focusedAgentId, providerRunState, sessionState,
     applySessionState: (session) => applySessionState(session),
     setProviderRunState,
     appendNotice: (text) => appendNotice(text),
@@ -635,43 +421,9 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptHeight: () => promptInputRefController.height(1),
   })
   const commandCenterVisibleRowCount = commandCenterLayoutController.visibleRowCount
-  let workflowRegistrySuggestionEntries: CommandCenterWorkflowRegistryEntry[] = []
-  let workflowRegistrySuggestionSessionId: string | null = null
-  let workflowRegistrySuggestionFetchedAtMs = 0
-  let workflowRegistrySuggestionFetchInFlight = false
-  let resyncWorkflowRegistrySuggestions: (() => void) | null = null
-  const invalidateWorkflowRegistrySuggestions = () => {
-    workflowRegistrySuggestionEntries = []
-    workflowRegistrySuggestionSessionId = null
-    workflowRegistrySuggestionFetchedAtMs = 0
-  }
-  const refreshWorkflowRegistrySuggestions = (input: string) => {
-    if (!shouldRefreshWorkflowRegistrySuggestions(input)) {
-      return
-    }
-    const sessionId = sessionState().id
-    const nowMs = Date.now()
-    if (
-      workflowRegistrySuggestionFetchInFlight
-      || (workflowRegistrySuggestionSessionId === sessionId && nowMs - workflowRegistrySuggestionFetchedAtMs < 5000)
-    ) {
-      return
-    }
-    workflowRegistrySuggestionFetchInFlight = true
-    void client.send<Record<string, unknown>>(listWorkflowRegistryRequest(sessionId))
-      .then((response) => {
-        workflowRegistrySuggestionEntries = workflowRegistrySuggestionEntriesFromResponse(response)
-        workflowRegistrySuggestionSessionId = sessionId
-        workflowRegistrySuggestionFetchedAtMs = Date.now()
-        resyncWorkflowRegistrySuggestions?.()
-      })
-      .catch((error) => {
-        getLogger("workflow-registry-suggestions")?.debug("workflow registry suggestion refresh failed", { error: formatError(error) })
-      })
-      .finally(() => {
-        workflowRegistrySuggestionFetchInFlight = false
-      })
-  }
+  const workflowRegistrySuggestions = createWorkflowRegistrySuggestionController({
+    client, sessionState, formatError,
+  })
   const commandCenterController = createCommandCenterController<BoxRenderable>({
     getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState()),
     getProviderCatalog: providerCatalogState,
@@ -680,14 +432,14 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getFocusedProvider: focusedBackendProvider,
     getCurrentModel: currentModelId,
     getCurrentVariant: currentVariantId,
-    getWorkflowRegistryEntries: () => workflowRegistrySuggestionEntries,
-    refreshWorkflowRegistryEntries: refreshWorkflowRegistrySuggestions,
+    getWorkflowRegistryEntries: workflowRegistrySuggestions.entries,
+    refreshWorkflowRegistryEntries: workflowRegistrySuggestions.refresh,
     getPromptText: promptTextController.currentText,
     replacePromptText: promptTextController.setText,
     executeCommand: async (command) => {
       await executeCommandCenterCommand(command)
-      if (shouldInvalidateWorkflowRegistrySuggestions(command)) {
-        invalidateWorkflowRegistrySuggestions()
+      if (workflowRegistrySuggestions.shouldInvalidate(command)) {
+        workflowRegistrySuggestions.invalidate()
       }
     },
     onCommandError: (error) => {
@@ -712,156 +464,68 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleCommandCenterKey = commandCenterController.handleKey
   const selectCommandCenterFromSubmit = commandCenterController.selectFromSubmit
   const renderCommandCenter = commandCenterController.render
-  resyncWorkflowRegistrySuggestions = () => {
-    if (commandCenterOpen() && shouldRefreshWorkflowRegistrySuggestions(promptTextController.currentText())) {
+  workflowRegistrySuggestions.setResync(() => {
+    if (commandCenterOpen() && workflowRegistrySuggestions.shouldRefresh(promptTextController.currentText())) {
       syncCommandCenter(promptTextController.currentText())
     }
-  }
+  })
   const {
-    addPendingPromptAttachments,
-    appendPromptEchoToSharedHistory,
-    beginSubmittedPromptUi,
-    clearPendingPromptAttachments,
-    clearPendingPromptDraftPersist,
-    flushPendingPromptDraftPersist,
-    footerHint,
-    handlePromptContentChange,
-    navigatePromptHistoryInput,
-    persistablePromptDraft,
-    persistSessionPromptState,
-    promptAreaBackground,
-    promptHistoryHydrationController,
-    promptInputHistoryRefreshController,
-    promptInputMaxHeight,
-    promptPlaceholder,
-    recordPromptAreaHistoryEntry,
-    refreshPromptAttachmentHighlights,
-    removeLastPendingPromptAttachment,
-    removePromptAttachmentsForEdit,
-    restoreFailedPromptUi,
-    retainPromptFocus,
-    scheduleSharedPromptInputHistoryRefresh,
-    sessionStatusMode,
-    setPromptText,
-    syncPromptPlaceholder,
-    syncPromptTextSnapshot,
+    addPendingPromptAttachments, appendPromptEchoToSharedHistory, beginSubmittedPromptUi, clearPendingPromptAttachments,
+    clearPendingPromptDraftPersist, flushPendingPromptDraftPersist, footerHint, handlePromptContentChange,
+    navigatePromptHistoryInput, persistablePromptDraft, persistSessionPromptState, promptAreaBackground,
+    promptHistoryHydrationController, promptInputHistoryRefreshController, promptInputMaxHeight, promptPlaceholder,
+    recordPromptAreaHistoryEntry, refreshPromptAttachmentHighlights, removeLastPendingPromptAttachment, removePromptAttachmentsForEdit,
+    restoreFailedPromptUi, retainPromptFocus, scheduleSharedPromptInputHistoryRefresh, sessionStatusMode,
+    setPromptText, syncPromptPlaceholder, syncPromptTextSnapshot,
   } = createCliPromptSurfaceComposition({
-    client,
-    appLogger,
-    formatError,
+    client, appLogger, formatError,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
-    daemonDisconnected,
-    working,
-    anyPromptWork,
-    anyTurnWork,
-    submitting,
-    focusedQueueDepth,
-    fatalError,
-    focusedActivePrompt,
-    statusLine,
-    isAttached,
-    workflowScreenShowing,
-    workflowPromptState,
-    themeRevision,
-    preferencesState,
-    setPreferencesState,
-    setPromptHistoryEntries,
-    setPromptHistoryIndex,
-    setPromptHistoryDraft,
-    promptTextController,
-    attachmentState,
-    promptHistoryEntries,
-    promptHistoryIndex,
-    promptHistoryDraft,
-    promptInputRefController,
-    pendingAttachments,
-    setPendingAttachments,
+    daemonDisconnected, working, anyPromptWork, anyTurnWork,
+    submitting, focusedQueueDepth, fatalError, focusedActivePrompt,
+    statusLine, isAttached, workflowScreenShowing, workflowPromptState,
+    themeRevision, preferencesState, setPreferencesState, setPromptHistoryEntries,
+    setPromptHistoryIndex, setPromptHistoryDraft, promptTextController, attachmentState,
+    promptHistoryEntries, promptHistoryIndex, promptHistoryDraft, promptInputRefController,
+    pendingAttachments, setPendingAttachments,
     terminalHeight: () => dimensions().height,
     requestRender: () => (renderer as { requestRender?: () => void }).requestRender?.(),
     updateSessionChrome: () => updateSessionChrome(),
-    syncCommandCenter,
-    clearCommandCenter,
+    syncCommandCenter, clearCommandCenter,
     attachPromptFiles: (files, insertAt) => attachPromptFiles(files, insertAt),
     getCwd: () => process.cwd(),
     flashFooter: (message, tone) => flashFooter(message, tone),
   })
   const {
-    assignDialogOverlayBox,
-    closeActiveDialogOverlay,
-    closeHotkeys,
-    closeSessionBrowserDialog,
-    closeTerminalPairingDialog,
-    copyPromptSelection,
-    dialogOverlayOpen,
-    handleHotkeysToggleShortcut,
-    handlePromptSelectionSurfaceMouseUp,
-    handleSessionBrowserKey,
-    openHotkeys,
-    openSessionBrowserDialog,
-    openTerminalPairingDialog,
-    renderHotkeysOverlay,
+    assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
+    closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
+    handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey, openHotkeys, openSessionBrowserDialog,
+    openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
-    client,
-    renderer,
-    dimensions,
-    appLogger,
+    client, renderer, dimensions, appLogger,
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
-    isAttached,
-    availableSessions,
-    sessionBrowserIndex,
-    setSessionBrowserIndex,
-    currentFocusedRenderable,
-    promptInputRefController,
-    describeRenderableDebug,
+    isAttached, availableSessions, sessionBrowserIndex, setSessionBrowserIndex,
+    currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
-    hotkeysOpen,
-    setHotkeysOpen,
-    terminalPairingOpen,
-    setTerminalPairingOpen,
-    terminalPairingState,
-    setTerminalPairingState,
-    terminalPairingQrLines,
-    setTerminalPairingQrLines,
-    sessionBrowserOpen,
-    setSessionBrowserOpen,
-    waitingRoomState,
-    providerCatalogState,
+    hotkeysOpen, setHotkeysOpen, terminalPairingOpen, setTerminalPairingOpen,
+    terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
+    sessionBrowserOpen, setSessionBrowserOpen, waitingRoomState, providerCatalogState,
     options,
     flashFooter: (message, tone) => flashFooter(message, tone),
     attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),
-    applyWaitingRoomSessionLifecycleAction,
-    retainPromptFocus,
+    applyWaitingRoomSessionLifecycleAction, retainPromptFocus,
   })
   const {
-    turnCompletionController,
-    cancelPendingTurnCompletion,
-    recordTurnActivity,
-    collapsedTurnIdsForAgent,
-    setExpandedTurnState,
-    applyCollapsedTurns,
-    toggleTurn,
-    toggleBlob,
-    appendEntry,
-    appendUserPrompt,
-    appendSteeredPrompt,
-    appendNotice,
-    appendCloudNotice,
-    appendProviderError,
-    clearLocalBusyStateForAuthoritativeIdle,
-    applyProviderActivity,
-    markAssistantMessageCompleted,
-    syncVisibleActivityLabel,
-    appendProviderChunk,
-    appendToolUpdate,
-    queueTerminalOutputRecords,
-    clearTerminalOutputRecordTimer,
-    setKernelTerminalOutputRecordProcessor,
+    turnCompletionController, cancelPendingTurnCompletion, recordTurnActivity, collapsedTurnIdsForAgent,
+    setExpandedTurnState, applyCollapsedTurns, toggleTurn, toggleBlob,
+    appendEntry, appendUserPrompt, appendSteeredPrompt, appendNotice,
+    appendCloudNotice, appendProviderError, clearLocalBusyStateForAuthoritativeIdle, applyProviderActivity,
+    markAssistantMessageCompleted, syncVisibleActivityLabel, appendProviderChunk, appendToolUpdate,
+    queueTerminalOutputRecords, clearTerminalOutputRecordTimer, setKernelTerminalOutputRecordProcessor,
   } = createCliTranscriptRuntimeComposition({
     batchUpdate: batch,
-    client,
-    formatError,
+    client, formatError,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
     runUiBatch: (callback) => runUiBatch(callback),
@@ -869,53 +533,29 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
-    entryCounter,
-    setEntryCounter,
-    sessionState,
-    statusLine,
-    setStatusLine,
-    setWorking,
-    setSubmitting,
-    setStreamingAgentId,
-    setAgentActivityLabels,
-    setAgentBusyLatches,
-    setProviderActivityLabel,
-    setActiveStatusLabel,
-    promptSubmissionAgentStateController,
-    promptStopController,
-    appendPromptEchoToSharedHistory,
-    focusedAgentId,
-    visibleTranscriptAgentId,
-    responsePrimaryAgent,
-    splitAgentResponseMode,
-    isAttached,
+    entryCounter, setEntryCounter, sessionState, statusLine,
+    setStatusLine, setWorking, setSubmitting, setStreamingAgentId,
+    setAgentActivityLabels, setAgentBusyLatches, setProviderActivityLabel, setActiveStatusLabel,
+    promptSubmissionAgentStateController, promptStopController, appendPromptEchoToSharedHistory, focusedAgentId,
+    visibleTranscriptAgentId, responsePrimaryAgent, splitAgentResponseMode, isAttached,
     currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
     appendTranscriptEntryToAgentPane: (agentId, entry, turnIds) => {
       appendTranscriptEntryToAgentPane(agentId, entry, turnIds)
     },
-    transcriptEntryProjectionController,
-    transcriptTurnStateController,
-    collapsedTurnIdsByAgent,
-    setCollapsedTurnIdsByAgent,
+    transcriptEntryProjectionController, transcriptTurnStateController, collapsedTurnIdsByAgent, setCollapsedTurnIdsByAgent,
     persistVisibleTranscriptEntries: (nextEntries) => {
       persistVisibleTranscriptEntries(nextEntries)
     },
     reconcileMountedTranscript: (currentEntries, nextEntries) => {
       reconcileMountedTranscript(currentEntries, nextEntries)
     },
-    retainPromptFocus,
-    transcriptScrollboxRefController,
-    historyScrollRestoreController,
-    primaryTranscriptRuntimeStore,
-    clearAgentBusy,
-    markAgentBusy,
-    setWaitingRoomCloudNotice,
+    retainPromptFocus, transcriptScrollboxRefController, historyScrollRestoreController, primaryTranscriptRuntimeStore,
+    clearAgentBusy, markAgentBusy, setWaitingRoomCloudNotice,
     renderSessionChromeBoundary: () => renderSessionChromeBoundary(),
     syncVisibleTranscriptPreview: () => syncVisibleTranscriptPreview(),
     updateSessionChrome: () => updateSessionChrome(),
     rebuildTranscript: () => rebuildTranscript(),
-    focusedActivityLabel,
-    logVisibleTranscriptOutput,
+    focusedActivityLabel, logVisibleTranscriptOutput,
     updateTranscriptEntry: (entryId, text, sourceText) => {
       updateTranscriptEntry(entryId, text, sourceText)
     },
@@ -939,17 +579,13 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     onFooterFlashChange: () => updateSessionChrome(),
   })
   const flashFooter = footerFlashController.flash
-  let syncQueuedPromptsForSession = (_session: RuntimeSession) => {}
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
     client,
     cwd: () => process.cwd(),
-    sessionState,
-    attachmentState,
+    sessionState, attachmentState,
     promptInsertOffset: promptTextController.cursorOffset,
-    addPendingPromptAttachments,
-    clearPendingPromptAttachments,
-    flashFooter,
+    addPendingPromptAttachments, clearPendingPromptAttachments, flashFooter,
   })
   const attachPromptFiles = promptAttachmentIntakeController.attachFiles
   const handleAttachmentCommand = promptAttachmentIntakeController.handleCommand
@@ -968,8 +604,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearSubmittingAgentId: promptSubmissionAgentStateController.clearSubmittingAgentId,
     getAgentBusyLatches: agentBusyLatches,
     getAgentActivityLabels: agentActivityLabels,
-    setAgentActivityLabels,
-    clearAgentBusy,
+    setAgentActivityLabels, clearAgentBusy,
     getStreamingAgentId: streamingAgentId,
     setStreamingAgentId,
     getProviderActivityLabel: providerActivityLabel,
@@ -992,67 +627,32 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const runUiBatch = uiBatchController.run
 
   const {
-    renderSplitPaneFooters,
-    renderAgentInteractions,
-    assignPromptMetaRef,
-    requestTranscriptRender,
-    setHistoryLoadingState,
-    setSessionHydratingState,
-    applyResponseLayout,
-    refreshSplitPaneFocusRepaint,
-    renderSessionChromeBoundary,
-    updateSessionChrome,
+    renderSplitPaneFooters, renderAgentInteractions, assignPromptMetaRef, requestTranscriptRender,
+    setHistoryLoadingState, setSessionHydratingState, applyResponseLayout, refreshSplitPaneFocusRepaint,
+    renderSessionChromeBoundary, updateSessionChrome,
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
-    assignStatusIndicatorBox,
-    assignFooterSummaryBox,
+    assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
-    uiBatchController,
-    splitPaneFooterRenderState,
-    statusIndicatorRenderState,
-    responsePaneRenderRefStore,
-    transcriptScrollboxRefController,
-    historyLoadingRenderController,
-    scheduleResponsePaneRepaint,
-    renderHistoryLoadingIndicator,
-    transcriptEntryProjectionController,
-    transcriptRenderDeferralController,
-    isAttached,
+    uiBatchController, splitPaneFooterRenderState, statusIndicatorRenderState, responsePaneRenderRefStore,
+    transcriptScrollboxRefController, historyLoadingRenderController, scheduleResponsePaneRepaint, renderHistoryLoadingIndicator,
+    transcriptEntryProjectionController, transcriptRenderDeferralController, isAttached,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
-    maxAgentsPerScreen,
-    responseVisibleAgents,
-    focusedAgentId,
-    providerRunState,
-    currentProviderSelection,
-    agentActivityLabels,
-    streamingAgentId,
-    agentBusyLatch,
-    agentBusyLatches,
-    sessionState,
-    workspaceLiveSyncStatus,
-    agentLocationLabel,
-    workingAnimationFrame,
-    activeInteractionForAgent,
-    queuedPromptStripItemsForAgent: queuedPromptStripItemsForAgentId,
-    selectedQueuedPromptIndexForAgent,
-    onQueuedPromptAction: handleQueuedPromptStripAction,
-    interactionChoiceStore,
-    promptUsageMeta,
-    sessionHydrating,
-    setSessionHydrating,
-    setLoadingHistory,
-    setHistoryLoadingMessage,
+    maxAgentsPerScreen, responseVisibleAgents, focusedAgentId, providerRunState,
+    currentProviderSelection, agentActivityLabels, streamingAgentId, agentBusyLatch,
+    agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
+    workingAnimationFrame, activeInteractionForAgent,
+    queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => queuedPromptStripItemsForAgentId(agentId),
+    selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
+    onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
+      handleQueuedPromptStripAction(item, action),
+    interactionChoiceStore, promptUsageMeta, sessionHydrating, setSessionHydrating,
+    setLoadingHistory, setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),
-    focusedStatusBadge,
-    runtimeDebugLogger,
-    logFocusedBadgeChange,
-    splitAgentResponseMode,
-    responsePaneRows,
-    responsePaneSelection,
-    workspaceScreenMode,
-    multiAgentResponseLayout,
+    focusedStatusBadge, runtimeDebugLogger, logFocusedBadgeChange, splitAgentResponseMode,
+    responsePaneRows, responsePaneSelection, workspaceScreenMode, multiAgentResponseLayout,
     terminalWidth: () => dimensions().width,
     responsePaneAgentSignature,
     clearAuxiliaryAgentPane: (agentId) => clearAuxiliaryAgentPane(agentId),
@@ -1061,440 +661,95 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setCurrentAuxiliaryAgentId: agentPaneRuntimeStore.setCurrentAuxiliaryAgentId,
     registerAgentScrollbox: agentPaneRuntimeStore.registerScrollbox,
     rebuildAuxiliaryAgentPane: (agentId) => rebuildAuxiliaryAgentPane(agentId),
-    primaryTranscriptRuntimeStore,
-    agentPaneEntries,
+    primaryTranscriptRuntimeStore, agentPaneEntries,
     replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
-    logViewDebug,
-    promptSubmissionAgentStateController,
-    setAgentBusyLatches,
+    logViewDebug, promptSubmissionAgentStateController, setAgentBusyLatches,
     providerRunStateSignal: providerRunState,
-    working,
-    activeStatusLabel,
-    providerActivityLabel,
-    syncPromptPlaceholder,
-    fatalError,
-    submitting,
-    footerHint,
-    connectedClientCount,
-    multiAgentMode,
-    sessionStatusMode,
-    footerFlash,
-    promptMetaParts,
+    working, activeStatusLabel, providerActivityLabel, syncPromptPlaceholder,
+    fatalError, submitting, footerHint, connectedClientCount,
+    multiAgentMode, sessionStatusMode, footerFlash, promptMetaParts,
   })
   sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
   const {
-    clearAllAuxiliaryAgentPanes,
-    clearAuxiliaryAgentPane,
-    rebuildAuxiliaryAgentPane,
-    persistVisibleTranscriptEntries,
-    setAgentPanePreview,
-    setAgentTranscriptEntries,
-    currentAgentPaneEntries,
-    hasTrailingUserPrompt,
-    toggleAuxiliaryPaneTurn,
-    toggleAuxiliaryPaneBlob,
-    syncVisibleTranscriptPreview,
-    appendAgentPanePreview,
-    appendTranscriptEntryToAgentPane,
-    appendProviderChunkToAgentPane,
-    appendToolUpdateToAgentPane,
-    refreshAgentPanes,
+    clearAllAuxiliaryAgentPanes, clearAuxiliaryAgentPane, rebuildAuxiliaryAgentPane, persistVisibleTranscriptEntries,
+    setAgentPanePreview, setAgentTranscriptEntries, currentAgentPaneEntries, hasTrailingUserPrompt,
+    toggleAuxiliaryPaneTurn, toggleAuxiliaryPaneBlob, syncVisibleTranscriptPreview, appendAgentPanePreview,
+    appendTranscriptEntryToAgentPane, appendProviderChunkToAgentPane, appendToolUpdateToAgentPane, refreshAgentPanes,
     shouldRefreshAgentPanesForSessionChange,
   } = createCliAgentPaneComposition({
-    client,
-    renderer,
-    isAttached,
-    visibleTranscriptAgentId,
+    client, renderer, isAttached, visibleTranscriptAgentId,
     visibleTranscriptEntries: transcriptEntryProjectionController.renderableEntries,
-    agentPaneEntries,
-    setAgentPaneEntries,
-    setAgentPanePreviews,
-    setCollapsedTurnIdsByAgent,
-    setNextHistoryCursor,
-    sessionState,
-    focusedAgentId,
-    maxAgentsPerScreen,
-    splitAgentResponseMode,
-    responsePrimaryAgent,
-    collapsedTurnIdsByAgent,
-    collapsedTurnIdsForAgent,
-    setExpandedTurnState,
-    applyCollapsedTurns,
-    retainPromptFocus,
-    formatError,
-    agentPaneRuntimeStore,
-    transcriptSyntaxStyleController,
-    auxiliaryTranscriptSurfaceTone,
-    onQueuedPromptAction: handleQueuedPromptAction,
-    renderScheduler,
-    primaryTranscriptRuntimeStore,
+    agentPaneEntries, setAgentPaneEntries, setAgentPanePreviews, setCollapsedTurnIdsByAgent,
+    setNextHistoryCursor, sessionState, focusedAgentId, maxAgentsPerScreen,
+    splitAgentResponseMode, responsePrimaryAgent, collapsedTurnIdsByAgent, collapsedTurnIdsForAgent,
+    setExpandedTurnState, applyCollapsedTurns, retainPromptFocus, formatError,
+    agentPaneRuntimeStore, transcriptSyntaxStyleController, auxiliaryTranscriptSurfaceTone,
+    onQueuedPromptAction: (entry, action) => handleQueuedPromptAction(entry, action),
+    renderScheduler, primaryTranscriptRuntimeStore,
     replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
     applyResponseLayout,
   })
 
   const {
-    mountTranscriptEntry,
-    reconcileMountedTranscript,
-    updateTranscriptEntry,
-    rebuildTranscript,
-    replaceTranscriptEntries,
-    primeAttachedSessionBinding,
-    bumpHistoryLoadGeneration,
-    transcriptHistoryAutoloadController,
+    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
+    replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     client,
     bootstrap: props.bootstrap,
-    renderer,
-    appLogger,
-    formatError,
+    renderer, appLogger, formatError,
     scheduleTimer: startTimeout,
-    isAttached,
-    sessionHydrating,
-    loadingHistory,
-    nextHistoryCursor,
-    setNextHistoryCursor,
-    entryCounter,
-    setEntryCounter,
-    setHistoryLoadingState,
+    isAttached, sessionHydrating, loadingHistory, nextHistoryCursor,
+    setNextHistoryCursor, entryCounter, setEntryCounter, setHistoryLoadingState,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
-    setPromptHistoryEntries,
-    setPromptHistoryIndex,
-    setPromptHistoryDraft,
-    setProviderCatalogState,
-    setProviderCommandCatalogState,
-    setTerminalCommandCatalogState,
-    updateSessionChrome,
-    flashFooter,
-    attachmentState,
-    sessionState,
-    selectedWorkflowId,
-    selectedWorkflowNodeId,
-    setSelectedWorkflowNodeId,
-    selectedWorkflowComponent,
-    setSelectedWorkflowComponent,
-    setWorkflowInspectorMode,
+    setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
+    setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
+    attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
-    workflowInspector,
-    workspaceShellEntries,
-    workspaceShellContext,
-    waitingRoomState,
-    availableSessions,
-    providerCatalogState,
-    waitingRoomCloudNotice,
-    waitingRoomInventoryStatus,
-    relayStatusState,
-    remoteMachinesState,
-    remoteKernelsState,
-    terminalsState,
-    externalProviderSessionsState,
-    externalProviderSessionsPageState,
-    slicesState,
-    waitingRoomTargets,
-    themeRegistryState,
-    transcriptScrollboxRefController,
-    primaryTranscriptRuntimeStore,
-    transcriptEntryProjectionController,
-    visibleTranscriptAgentId,
-    transcriptSyntaxStyleController,
-    historyScrollRestoreController,
-    transcriptTurnStateController,
-    collapsedTurnIdsForAgent,
-    syncVisibleTranscriptPreview,
-    toggleTurn,
-    toggleBlob,
-    onQueuedPromptAction: handleQueuedPromptAction,
-    primaryTranscriptSurfaceTone,
-    requestTranscriptRender,
+    workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
+    availableSessions, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
+    relayStatusState, remoteMachinesState, remoteKernelsState, terminalsState,
+    externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
+    themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,
+    visibleTranscriptAgentId, transcriptSyntaxStyleController, historyScrollRestoreController, transcriptTurnStateController,
+    collapsedTurnIdsForAgent, syncVisibleTranscriptPreview, toggleTurn, toggleBlob,
+    onQueuedPromptAction: (entry, action) => handleQueuedPromptAction(entry, action),
+    primaryTranscriptSurfaceTone, requestTranscriptRender,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
-    logViewDebug,
-    promptHistoryHydrationController,
-    splitAgentResponseMode,
-    maxAgentsPerScreen,
-    setAgentPaneEntries,
-    setAgentPanePreview,
+    logViewDebug, promptHistoryHydrationController, splitAgentResponseMode, maxAgentsPerScreen,
+    setAgentPaneEntries, setAgentPanePreview,
   })
 
-  syncQueuedPromptsForSession = (session: RuntimeSession) => {
-    let changed = false
-    const byAgent = syncQueuedPromptEntriesByAgent(agentPaneEntries(), session)
-    if (byAgent.changed) {
-      changed = true
-      setAgentPaneEntries(reconcile(byAgent.entriesByAgent))
-      setAgentPanePreviews((current) => ({
-        ...current,
-        ...byAgent.previews,
-      }))
-    }
-
-    const visibleAgentId = visibleTranscriptAgentId()
-    if (!visibleAgentId) {
-      if (changed) {
-        renderAgentInteractions()
-        applyResponseLayout()
-      }
-      return
-    }
-    const visibleSync = syncQueuedPromptEntriesForAgent(
-      transcriptEntryProjectionController.renderableEntries(),
-      session,
-      visibleAgentId,
-    )
-    if (visibleSync.changed) {
-      changed = true
-      replaceTranscriptEntries(visibleSync.entries, visibleAgentId)
-    }
-    if (changed) {
-      renderAgentInteractions()
-      applyResponseLayout()
-    }
-  }
-
-  function handleQueuedPromptAction(entry: TranscriptEntry, action: "steer" | "cancel") {
-    const queuedPrompt = entry.queuedPrompt
-    if (!queuedPrompt) {
-      return
-    }
-    if (action === "steer" ? !queuedPrompt.canSteer : !queuedPrompt.canCancel) {
-      flashFooter(
-        action === "steer"
-          ? queuedPrompt.steerDisabledReason ?? "Queued prompt steering is unavailable."
-          : queuedPrompt.cancelDisabledReason ?? "Queued prompt cancellation is unavailable.",
-        "info",
-      )
-      return
-    }
-    const attachment = attachmentState()
-    if (!attachment) {
-      flashFooter("No session attached.", "error")
-      return
-    }
-
-    updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, action === "steer" ? "steering" : "cancelling")
-    void (async () => {
-      try {
-        const payload = action === "steer"
-          ? await steerQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
-          : await cancelQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
-        if (action === "steer") {
-          const promptOrigin = payload.prompt.prompt_origin ?? queuedPrompt.promptOrigin
-          appendSteeredPrompt(payload.prompt.prompt, queuedPrompt.agentId, {
-            promptId: payload.prompt.id,
-            sourceAttachmentId: payload.prompt.source_attachment_id,
-            ...(promptOrigin !== undefined ? { promptOrigin } : {}),
-          })
-        }
-        applySessionState(payload.session)
-        updateQueuedPromptStatusOverride(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
-        updateSessionChrome()
-      } catch (error) {
-        updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
-        flashFooter(formatError(error), "error")
-      }
-    })()
-  }
-
-  function handleQueuedPromptStripAction(item: QueuedPromptStripItem, action: "steer" | "cancel") {
-    handleQueuedPromptAction(queuedPromptStripItemToTranscriptEntry(item), action)
-  }
-
-  function queuedPromptStripItemsForAgentId(agentId: string | null | undefined): QueuedPromptStripItem[] {
-    return queuedPromptStripItemsForAgent(
-      sessionState(),
-      agentId ? (agentPaneEntries()[agentId] ?? []) : [],
-      agentId,
-      queuedPromptStatusOverridesForAgent(agentId),
-    )
-  }
-
-  function queuedPromptStatusOverridesForAgent(agentId: string | null | undefined): QueuedPromptStripStatusOverride[] {
-    return agentId ? Object.values(queuedPromptStatusOverridesByAgent()[agentId] ?? {}) : []
-  }
-
-  function selectedQueuedPromptIndexForAgent(agentId: string | null | undefined): number {
-    if (!agentId) {
-      return -1
-    }
-    return selectedQueuedPromptIndex(
-      queuedPromptStripItemsForAgentId(agentId),
-      selectedQueuedPromptIdsByAgent()[agentId],
-    )
-  }
-
-  function selectQueuedPromptByDelta(agentId: string, delta: number): boolean {
-    const items = queuedPromptStripItemsForAgentId(agentId)
-    const nextPromptId = nextQueuedPromptSelectionId(items, selectedQueuedPromptIdsByAgent()[agentId], delta)
-    if (!nextPromptId) {
-      return false
-    }
-    setSelectedQueuedPromptIdsByAgent((current) => ({
-      ...current,
-      [agentId]: nextPromptId,
-    }))
-    renderAgentInteractions()
-    applyResponseLayout()
-    return true
-  }
-
-  function handleQueuedPromptStripKey(event: {
-    name?: string
-    eventType?: string
-    ctrl?: boolean
-    meta?: boolean
-    alt?: boolean
-    shift?: boolean
-    preventDefault?: () => void
-    stopPropagation?: () => void
-  }) {
-    if (
-      !isAttached()
-      || commandCenterOpen()
-      || event.eventType === "release"
-      || event.ctrl
-      || event.meta
-      || event.shift
-      || !event.alt
-    ) {
-      return false
-    }
-    const agentId = focusedAgentId()
-    if (!agentId) {
-      return false
-    }
-    const selectionDelta = event.name === "down" || event.name === "j"
-      ? 1
-      : event.name === "up" || event.name === "k"
-        ? -1
-        : null
-    if (selectionDelta !== null) {
-      if (!selectQueuedPromptByDelta(agentId, selectionDelta)) {
-        return false
-      }
-      event.preventDefault?.()
-      event.stopPropagation?.()
-      return true
-    }
-    const action = event.name === "s"
-      ? "steer"
-      : event.name === "c"
-        ? "cancel"
-        : null
-    if (!action) {
-      return false
-    }
-    const items = queuedPromptStripItemsForAgentId(agentId)
-    const selectedIndex = selectedQueuedPromptIndex(items, selectedQueuedPromptIdsByAgent()[agentId])
-    const item = selectedIndex >= 0 ? items[selectedIndex] : undefined
-    if (!item) {
-      return false
-    }
-    if (selectedQueuedPromptIdsByAgent()[agentId] !== item.promptId) {
-      setSelectedQueuedPromptIdsByAgent((current) => ({
-        ...current,
-        [agentId]: item.promptId,
-      }))
-    }
-    event.preventDefault?.()
-    event.stopPropagation?.()
-    handleQueuedPromptStripAction(item, action)
-    return true
-  }
-
-  function updateQueuedPromptEntryStatus(
-    agentId: string,
-    promptId: string,
-    status: "queued" | "steering" | "cancelling",
-  ) {
-    updateQueuedPromptStatusOverride(agentId, promptId, status)
-    const updateEntries = (currentEntries: TranscriptEntry[]) => currentEntries.map((candidate) => {
-      if (candidate.queuedPrompt?.agentId !== agentId || candidate.queuedPrompt.promptId !== promptId) {
-        return candidate
-      }
-      return {
-        ...candidate,
-        queuedPrompt: {
-          ...candidate.queuedPrompt,
-          status,
-          steerDisabled: candidate.queuedPrompt.steerDisabled,
-          canSteer: false,
-          canCancel: false,
-          steerDisabledReason: "This prompt is no longer waiting in the queue.",
-          cancelDisabledReason: "This prompt is no longer waiting in the queue.",
-        },
-      }
-    })
-    if (visibleTranscriptAgentId() === agentId) {
-      replaceTranscriptEntries(
-        updateEntries(transcriptEntryProjectionController.renderableEntries()),
-        agentId,
-      )
-    }
-    setAgentTranscriptEntries(agentId, updateEntries(currentAgentPaneEntries(agentId)))
-    renderAgentInteractions()
-    applyResponseLayout()
-  }
-
-  function updateQueuedPromptStatusOverride(
-    agentId: string,
-    promptId: string,
-    status: "queued" | "steering" | "cancelling",
-  ) {
-    setQueuedPromptStatusOverridesByAgent((current) => {
-      const next = { ...current }
-      const agentOverrides = { ...(next[agentId] ?? {}) }
-      if (status === "queued") {
-        delete agentOverrides[promptId]
-      } else {
-        const pendingReason = status === "steering"
-          ? "This prompt is currently being steered."
-          : "This prompt is currently being cancelled."
-        agentOverrides[promptId] = {
-          promptId,
-          agentId,
-          status,
-          steerDisabled: true,
-          canSteer: false,
-          canCancel: false,
-          steerDisabledReason: pendingReason,
-          cancelDisabledReason: pendingReason,
-        }
-      }
-      if (Object.keys(agentOverrides).length === 0) {
-        delete next[agentId]
-      } else {
-        next[agentId] = agentOverrides
-      }
-      return next
-    })
-  }
+  const queuedPromptController = createCliQueuedPromptController({
+    client, sessionState, attachmentState, agentPaneEntries,
+    setAgentPaneEntries, setAgentPanePreviews, visibleTranscriptAgentId, transcriptEntryProjectionController,
+    replaceTranscriptEntries, renderAgentInteractions, applyResponseLayout, flashFooter,
+    appendSteeredPrompt, applySessionState, updateSessionChrome, setAgentTranscriptEntries,
+    currentAgentPaneEntries, isAttached, commandCenterOpen, focusedAgentId,
+    formatError,
+  })
+  syncQueuedPromptsForSession = queuedPromptController.syncQueuedPromptsForSession
+  handleQueuedPromptAction = queuedPromptController.handleQueuedPromptAction
+  handleQueuedPromptStripAction = queuedPromptController.handleQueuedPromptStripAction
+  queuedPromptStripItemsForAgentId = queuedPromptController.queuedPromptStripItemsForAgentId
+  selectedQueuedPromptIndexForAgent = queuedPromptController.selectedQueuedPromptIndexForAgent
+  handleQueuedPromptStripKey = queuedPromptController.handleQueuedPromptStripKey
 
   const workflowActions = createCliAppWorkflowActionComposition({
-    client,
-    bindWorkflowNodeInstructionsEditor,
-    workflowNodeInstructionsEditor,
-    setWorkflowNodeInstructionsEditor,
-    workflowScreenShowing,
-    setWorkspaceScreenMode,
-    rebuildTranscript,
+    client, bindWorkflowNodeInstructionsEditor, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
+    workflowScreenShowing, setWorkspaceScreenMode, rebuildTranscript,
     scheduleTimer: startTimeout,
     focusPromptInput: () => {
       promptInputRefController.focus()
     },
-    setWorkflowInspectorMode,
-    setSelectedWorkflowId,
-    isAttached,
-    sessionState,
-    applySessionState,
-    selectedWorkflowId,
-    selectedWorkflowNodeId,
-    setSelectedWorkflowNodeId,
-    setSelectedWorkflowComponent,
-    workspaceScreenMode,
-    applyResponseLayout,
+    setWorkflowInspectorMode, setSelectedWorkflowId, isAttached, sessionState,
+    applySessionState, selectedWorkflowId, selectedWorkflowNodeId, setSelectedWorkflowNodeId,
+    setSelectedWorkflowComponent, workspaceScreenMode, applyResponseLayout,
   })
 
   const agentPaneRuntimeResetController = createAgentPaneRuntimeResetController({
@@ -1505,64 +760,29 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
-    hydrateCurrentAttachedSession,
-    kernelEventSubscriptionController,
-    syncKernelEventSubscription,
-    recoverAttachedSessionAfterKernelRestart,
-    transitionToNoSession,
-    detachCurrentAttachment,
-    attachBinding,
-    recoverProviderRun,
-    requestExit,
-    requestWaitingRoom,
-    restoreTerminalAndExit,
+    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
+    transitionToNoSession, detachCurrentAttachment, attachBinding, recoverProviderRun,
+    requestExit, requestWaitingRoom, restoreTerminalAndExit,
   } = createCliSessionLifecycleComposition({
-    client,
-    options,
-    appLogger,
-    renderer,
-    sleep,
-    formatError,
-    supportsKernelEventStream,
-    closingStateController,
-    isAttached,
-    daemonDisconnected,
-    attachmentState,
-    sessionState,
-    providerRunState,
-    createdSessionState,
-    waitingRoomState,
-    preferencesState,
-    connectedClientCount,
-    persistablePromptDraft,
-    syncPromptTextSnapshot,
-    flushPendingPromptDraftPersist,
-    persistSessionPromptState,
-    applySessionState,
-    refreshAgentPanes,
-    refreshSplitPaneFocusRepaint,
+    client, options, appLogger, renderer,
+    sleep, formatError, supportsKernelEventStream, closingStateController,
+    isAttached, daemonDisconnected, attachmentState, sessionState,
+    providerRunState, createdSessionState, waitingRoomState, preferencesState,
+    connectedClientCount, persistablePromptDraft, syncPromptTextSnapshot, flushPendingPromptDraftPersist,
+    persistSessionPromptState, applySessionState, refreshAgentPanes, refreshSplitPaneFocusRepaint,
     maybeResize: (sessionId) => maybeResize(client, sessionId),
     catchUpAttachedSession: (sessionId, attachmentId, session) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
-    primeAttachedSessionBinding,
-    clearLocalBusyStateForAuthoritativeIdle,
+    primeAttachedSessionBinding, clearLocalBusyStateForAuthoritativeIdle,
     recordDaemonActivity: (activityType) => recordDaemonActivity(activityType),
-    currentModelId,
-    currentVariantId,
-    focusedAgentId,
-    clearPendingPromptAttachments,
+    currentModelId, currentVariantId, focusedAgentId, clearPendingPromptAttachments,
     clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
-    clearAgentPaneRuntime,
-    setDirectoryTreeState,
-    replaceTranscriptEntries,
-    applyResponseLayout,
+    clearAgentPaneRuntime, setDirectoryTreeState, replaceTranscriptEntries, applyResponseLayout,
     setWorkspaceScreenMode,
     resetPromptStop: () => {
       promptStopController.reset()
     },
-    bumpHistoryLoadGeneration,
-    reconcileWaitingRoom,
-    refreshWaitingRoomData,
+    bumpHistoryLoadGeneration, reconcileWaitingRoom, refreshWaitingRoomData,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
@@ -1575,180 +795,64 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     focusPromptInput: () => {
       promptInputRefController.focus()
     },
-    setMultiAgentResponseLayout,
-    setAttachmentState,
-    setProviderRunState,
-    setCenterMode,
-    setCreatedSessionState,
-    setSessionState,
-    setProviderActivityLabel,
-    setActiveStatusLabel,
-    setAgentPaneEntries,
-    setAgentPanePreviews,
-    setAgentActivityLabels,
-    setStreamingAgentId,
-    setSubmitting,
-    setWorking,
-    setFatalError,
-    setDaemonDisconnected,
-    setNextHistoryCursor,
-    setSessionHydratingState,
-    setHistoryLoadingState,
-    setStatusLine,
-    setProviderCatalogState,
-    setTerminalCommandCatalogState,
-    availableSessions,
-    setAvailableSessions,
+    setMultiAgentResponseLayout, setAttachmentState, setProviderRunState, setCenterMode,
+    setCreatedSessionState, setSessionState, setProviderActivityLabel, setActiveStatusLabel,
+    setAgentPaneEntries, setAgentPanePreviews, setAgentActivityLabels, setStreamingAgentId,
+    setSubmitting, setWorking, setFatalError, setDaemonDisconnected,
+    setNextHistoryCursor, setSessionHydratingState, setHistoryLoadingState, setStatusLine,
+    setProviderCatalogState, setTerminalCommandCatalogState, availableSessions, setAvailableSessions,
     scheduleShortViewportHistoryCheck: () => transcriptHistoryAutoloadController.scheduleShortViewportCheck(),
-    updateSessionChrome,
-    appendNotice,
-    flashFooter,
-    logProviderRunDebug,
+    updateSessionChrome, appendNotice, flashFooter, logProviderRunDebug,
   })
 
   const {
-    cycleFocusedInteractionChoice,
-    executeCommandCenterCommand,
-    handleCloudCommand,
-    handlePromptKeyDown,
-    handleSigint,
-    handleStdinData,
-    requestPromptStop,
-    submitFocusedInteractionChoice,
-    submitPrompt,
-    submitWorkspaceShellCommand,
+    cycleFocusedInteractionChoice, executeCommandCenterCommand, handleCloudCommand, handlePromptKeyDown,
+    handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
+    submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
-    client,
-    options,
-    appLogger,
-    formatError,
-    preferencesState,
-    setPreferencesState,
-    initialWorkspaceTarget,
-    initialWorktreeTarget,
-    pendingWorkspaceTarget,
-    pendingWorktreeTarget,
-    setPendingWorkspaceTarget,
-    setPendingWorktreeTarget,
-    isAttached,
-    sessionState,
-    attachmentState,
-    providerRunState,
-    currentModelId,
-    currentVariantId,
-    focusedAgentId,
-    multiAgentResponseLayout,
-    maxAgentsPerScreen,
-    flashFooter,
-    appendNotice,
-    appendCloudNotice,
-    attachBinding,
-    transitionToNoSession,
-    applyProviderSelection,
-    applyModelSelection,
-    applyVariantSelection,
-    refreshWaitingRoomData,
-    setSlicesState,
-    setMultiAgentResponseLayout,
-    applyResponseLayout,
-    applySessionState,
-    refreshAgentPanes,
-    setWorkspaceLiveSyncStatus,
+    client, options, appLogger, formatError,
+    preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
+    pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
+    isAttached, sessionState, attachmentState, providerRunState,
+    currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
+    maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
+    attachBinding, transitionToNoSession, applyProviderSelection, applyModelSelection,
+    applyVariantSelection, refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
+    applyResponseLayout, applySessionState, refreshAgentPanes, setWorkspaceLiveSyncStatus,
     ...workflowActions,
     rebuildTranscript,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
     scheduleTimer: startTimeout,
-    logViewDebug,
-    describeRenderableDebug,
-    currentFocusedRenderable,
-    trackAgentFocusTransition,
-    setProviderRunState,
-    resolveSessionAgent,
-    selectedWorkflowId,
-    setSelectedWorkflowId,
-    setSelectedWorkflowNodeId,
-    refreshSplitPaneFocusRepaint,
-    recordPromptAreaHistoryEntry,
-    promptTextController,
-    setPromptHistoryIndex,
-    setPromptHistoryDraft,
-    clearCommandCenter,
-    requestExit,
-    requestWaitingRoom,
-    promptStopController,
-    handleAttachmentCommand,
-    workspaceShellContext,
-    setWorkspaceShellContext,
-    workspaceShellEntryCounter,
-    setWorkspaceShellEntryCounter,
-    setWorkspaceShellEntries,
-    workflowPromptState,
-    workflowInspectorMode,
-    setWorkflowInspectorMode,
-    selectedWorkflowNodeId,
-    selectedWorkflowComponent,
-    pendingAttachments,
-    beginSubmittedPromptUi,
-    restoreFailedPromptUi,
-    focusedBackendProvider,
-    workflowScreenShowing,
-    waitForPendingAgentFocusTransition,
-    primaryTranscriptRuntimeStore,
-    setProviderActivityLabel,
-    setActiveStatusLabel,
-    appendUserPrompt,
-    setStreamingAgentId,
-    setWorking,
-    updateSessionChrome,
-    promptSubmissionAgentStateController,
-    clearAgentBusy,
-    setSubmitting,
-    setFatalError,
-    setStatusLine,
-    promptInputRefController,
+    logViewDebug, describeRenderableDebug, currentFocusedRenderable, trackAgentFocusTransition,
+    setProviderRunState, resolveSessionAgent, selectedWorkflowId, setSelectedWorkflowId,
+    setSelectedWorkflowNodeId, refreshSplitPaneFocusRepaint, recordPromptAreaHistoryEntry, promptTextController,
+    setPromptHistoryIndex, setPromptHistoryDraft, clearCommandCenter, requestExit,
+    requestWaitingRoom, promptStopController, handleAttachmentCommand, workspaceShellContext,
+    setWorkspaceShellContext, workspaceShellEntryCounter, setWorkspaceShellEntryCounter, setWorkspaceShellEntries,
+    workflowPromptState, workflowInspectorMode, setWorkflowInspectorMode, selectedWorkflowNodeId,
+    selectedWorkflowComponent, pendingAttachments, beginSubmittedPromptUi, restoreFailedPromptUi,
+    focusedBackendProvider, workflowScreenShowing, waitForPendingAgentFocusTransition, primaryTranscriptRuntimeStore,
+    setProviderActivityLabel, setActiveStatusLabel, appendUserPrompt, setStreamingAgentId,
+    setWorking, updateSessionChrome, promptSubmissionAgentStateController, clearAgentBusy,
+    setSubmitting, setFatalError, setStatusLine, promptInputRefController,
     ensureBackgroundPollersStarted: () => ensureBackgroundPollersStarted(),
     workflowNodeInstructionsEditor,
     openWorkflowNodeInstructionsEditor: workflowActions.openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
-    focusedAgentInteraction,
-    interactionChoiceStore,
-    renderAgentInteractions,
-    handleHotkeysToggleShortcut,
-    dialogOverlayOpen,
-    closeActiveDialogOverlay,
-    activePrompt,
-    handleCommandCenterKey,
+    focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
+    dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
-    commandCenterOpen,
-    promptHistoryIndex,
-    promptHistoryDraft,
-    navigatePromptHistoryInput,
-    visibleTranscriptEntries,
-    transcriptScrollboxRefController,
-    commandCenterController,
-    waitingRoomState,
-    availableSessions,
-    providerCatalogState,
-    relayStatusState,
-    remoteMachinesState,
-    setRemoteMachinesState,
-    remoteKernelsState,
-    terminalsState,
-    slicesState,
-    themeRegistryState,
-    reconcileWaitingRoom,
-    setWaitingRoomState,
-    applyWaitingRoomSessionLifecycleAction,
-    activateWaitingRoom,
-    startSessionFromWaitingRoomDefaults,
-    handleSessionBrowserKey,
+    commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
+    visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,
+    availableSessions, providerCatalogState, relayStatusState, remoteMachinesState,
+    setRemoteMachinesState, remoteKernelsState, terminalsState, slicesState,
+    themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
+    activateWaitingRoom, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
-    copyPromptSelection,
-    removePromptAttachmentsForEdit,
-    removeLastPendingPromptAttachment,
+    copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
   })
 
   const {
@@ -1756,113 +860,48 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
-    client,
-    options,
-    appLogger,
-    formatError,
-    flashFooter,
-    handleSigint,
-    handleStdinData,
-    clearTerminalOutputRecordTimer,
+    client, options, appLogger, formatError,
+    flashFooter, handleSigint, handleStdinData, clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,
-    daemonDisconnected,
-    statusLine,
-    sessionState,
-    focusedAgentId,
-    agentActivityLabels,
-    streamingAgentId,
-    agentBusyLatch,
-    isAttached,
-    waitingRoomState,
-    setWaitingRoomState,
-    availableSessions,
-    providerCatalogState,
-    waitingRoomCloudNotice,
-    waitingRoomInventoryStatus,
-    relayStatusState,
-    remoteMachinesState,
-    remoteKernelsState,
-    terminalsState,
-    externalProviderSessionsState,
-    externalProviderSessionsPageState,
-    slicesState,
-    waitingRoomTargets,
-    themeRegistryState,
-    selectedWorkflowId,
-    selectedWorkflowNodeId,
-    workspaceShellContext,
-    workspaceShellEntries,
+    daemonDisconnected, statusLine, sessionState, focusedAgentId,
+    agentActivityLabels, streamingAgentId, agentBusyLatch, isAttached,
+    waitingRoomState, setWaitingRoomState, availableSessions, providerCatalogState,
+    waitingRoomCloudNotice, waitingRoomInventoryStatus, relayStatusState, remoteMachinesState,
+    remoteKernelsState, terminalsState, externalProviderSessionsState, externalProviderSessionsPageState,
+    slicesState, waitingRoomTargets, themeRegistryState, selectedWorkflowId,
+    selectedWorkflowNodeId, workspaceShellContext, workspaceShellEntries,
     transcriptEntries: () => entries,
     agentPaneEntries,
-    queuedPromptStripItemsForAgent: queuedPromptStripItemsForAgentId,
-    selectedQueuedPromptIndexForAgent,
-    onQueuedPromptAction: handleQueuedPromptStripAction,
+    queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => queuedPromptStripItemsForAgentId(agentId),
+    selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
+    onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
+      handleQueuedPromptStripAction(item, action),
     footerFlash,
     getInteractionChoiceSelection: interactionChoiceStore.getSelectedIndex,
     getInteractionCustomReply: interactionChoiceStore.getStoredCustomReply,
     isInteractionCustomEditing: interactionChoiceStore.isCustomEditing,
     setInteractionCustomReply: interactionChoiceStore.setCustomReply,
     setInteractionCustomEditing: interactionChoiceStore.setCustomEditing,
-    kernelConnected,
-    setWorkspaceScreenMode,
-    rebuildTranscript,
-    applyResponseLayout,
+    kernelConnected, setWorkspaceScreenMode, rebuildTranscript, applyResponseLayout,
     showWorkflowScreen: workflowActions.showWorkflowScreen,
-    submitWorkspaceShellCommand,
-    attachmentState,
-    setPromptText,
-    submitPrompt,
-    activateWaitingRoom,
-    requestWaitingRoom,
-    connectDetachedKernelFromWaitingRoom,
-    refreshWaitingRoomData,
-    submitFocusedInteractionChoice,
-    cycleFocusedInteractionChoice,
-    toggleTurn,
+    submitWorkspaceShellCommand, attachmentState, setPromptText, submitPrompt,
+    activateWaitingRoom, requestWaitingRoom, connectDetachedKernelFromWaitingRoom, refreshWaitingRoomData,
+    submitFocusedInteractionChoice, cycleFocusedInteractionChoice, toggleTurn,
     toggleAgentPaneTurn: toggleAuxiliaryPaneTurn,
     toggleBlob,
     toggleAgentPaneBlob: toggleAuxiliaryPaneBlob,
-    restoreTerminalAndExit,
-    sleep,
-    closingStateController,
-    supportsKernelEventStream,
+    restoreTerminalAndExit, sleep, closingStateController, supportsKernelEventStream,
     resizeSession: (sessionId: string) => maybeResize(client, sessionId),
-    setDaemonDisconnected,
-    setStatusLine,
-    updateSessionChrome,
-    appendNotice,
-    working,
-    recoverProviderRun,
-    recordTurnActivity,
-    resolveTerminalRecordAgentId,
-    setStreamingAgentId,
-    markAgentBusy,
-    splitAgentResponseMode,
-    visibleTranscriptAgentId,
-    hasTrailingUserPrompt,
-    currentAgentPaneEntries,
-    appendTranscriptEntryToAgentPane,
-    appendProviderChunkToAgentPane,
-    appendToolUpdateToAgentPane,
-    setAgentActivityLabel,
-    agentActivityLabel,
-    setProviderActivityLabel,
-    applyProviderActivity,
-    syncVisibleActivityLabel,
-    appendEntry,
-    appendProviderChunk,
-    appendToolUpdate,
-    appendProviderError,
-    syncVisibleTranscriptPreview,
-    appendAgentPanePreview,
-    markAssistantMessageCompleted,
-    providerRunState,
-    shouldRefreshAgentPanesForSessionChange,
-    applySessionState,
-    logProviderRunDebug,
-    setProviderRunState,
-    refreshAgentPanes,
+    setDaemonDisconnected, setStatusLine, updateSessionChrome, appendNotice,
+    working, recoverProviderRun, recordTurnActivity, resolveTerminalRecordAgentId,
+    setStreamingAgentId, markAgentBusy, splitAgentResponseMode, visibleTranscriptAgentId,
+    hasTrailingUserPrompt, currentAgentPaneEntries, appendTranscriptEntryToAgentPane, appendProviderChunkToAgentPane,
+    appendToolUpdateToAgentPane, setAgentActivityLabel, agentActivityLabel, setProviderActivityLabel,
+    applyProviderActivity, syncVisibleActivityLabel, appendEntry, appendProviderChunk,
+    appendToolUpdate, appendProviderError, syncVisibleTranscriptPreview, appendAgentPanePreview,
+    markAssistantMessageCompleted, providerRunState, shouldRefreshAgentPanesForSessionChange, applySessionState,
+    logProviderRunDebug, setProviderRunState, refreshAgentPanes,
     catchUpAttachedSession: (sessionId: string, attachmentId: string, session: RuntimeSession) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
     getSessionState: (sessionId: string) => getSessionState(client, sessionId),
@@ -1871,38 +910,17 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     tryGetProviderRun: (providerRunId: string) => tryGetProviderRun(client, providerRunId, appLogger),
     clearLocalBusyStateForAuthoritativeIdle,
     attachToSession: (sessionId: string) => attachToSession(client, sessionId, options.clientId),
-    setAttachmentState,
-    kernelEventSubscriptionController,
-    syncKernelEventSubscription,
-    transitionToNoSession,
-    queueTerminalOutputRecords,
-    scheduleSharedPromptInputHistoryRefresh,
+    setAttachmentState, kernelEventSubscriptionController, syncKernelEventSubscription, transitionToNoSession,
+    queueTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
-    applyWaitingRoomRowsChanged,
-    applyRelayStatusChanged,
-    applyRemoteMachinesChanged,
-    applyProviderCatalogChanged,
-    applySlicesChanged,
-    recoverAttachedSessionAfterKernelRestart,
-    setFatalError,
+    applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
+    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
-    promptInputRefController,
-    transcriptScrollboxRefController,
-    primaryTranscriptRuntimeStore,
-    syncPromptPlaceholder,
-    logViewDebug,
-    footerFlashController,
-    clearPendingPromptDraftPersist,
-    cancelPendingTurnCompletion,
-    sessionChromeUpdateController,
-    promptInputHistoryRefreshController,
-    transcriptHistoryAutoloadController,
-    setWorkingAnimationFrame,
-    sessionStatusMode,
-    workspaceLiveSyncStatus,
-    renderSplitPaneFooters,
-    hydrateCurrentAttachedSession,
+    promptInputRefController, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, syncPromptPlaceholder,
+    logViewDebug, footerFlashController, clearPendingPromptDraftPersist, cancelPendingTurnCompletion,
+    sessionChromeUpdateController, promptInputHistoryRefreshController, transcriptHistoryAutoloadController, setWorkingAnimationFrame,
+    sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
   recordDaemonActivity = runtimeRecordDaemonActivity
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
@@ -1952,21 +970,4 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderHotkeysOverlay={renderHotkeysOverlay}
     />
   )
-}
-
-function shouldRefreshWorkflowRegistrySuggestions(input: string): boolean {
-  const normalized = input.trimStart()
-  return normalized.startsWith("/workflow load ")
-    || normalized.startsWith("/workflow run ")
-    || normalized.startsWith("/workflow registry get ")
-    || normalized.startsWith("/workflow registry delete ")
-}
-
-function shouldInvalidateWorkflowRegistrySuggestions(command: string): boolean {
-  const normalized = command.trimStart()
-  return normalized.startsWith("/workflow load ")
-    || normalized.startsWith("/workflow run ")
-    || normalized.startsWith("/workflow registry add ")
-    || normalized.startsWith("/workflow registry add-from-workflow ")
-    || normalized.startsWith("/workflow registry delete ")
 }
