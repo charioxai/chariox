@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>85 allowlisted files remain after initial splits</td>
+              <td>84 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>986b6e9b0</code> <span class="muted">Split session actor projection router tests</span></td>
+              <td>Session actor projection coverage now keeps router imports in the parent module, while prompt routing and lane cleanup, runtime interactions and native provider projections, output-seen acknowledgements, session command projection reads, and prompt lifecycle completion/cancellation scenarios live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/runtime/router/tests/session_actor_projection.rs apps/kernel/src/runtime/router/tests/session_actor_projection/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::router::tests::session_actor_projection -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>755cf779e</code> <span class="muted">Split remote authorization router tests</span></td>
