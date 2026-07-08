@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>10 allowlisted files remain after initial splits</td>
+              <td>9 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>3b4c05fdb</code> <span class="muted">Split kernel session workflow code</span></td>
+              <td><code>kernel_session.rs</code> now owns the session read/lifecycle facade and workflow-code wrapper surface. Workflow-code apply validation, generated-agent spawn/rebinding, grants, and workflow updates live in <code>kernel_session/workflow_code.rs</code>, with tests split into workflow-code preflight, workflow-code apply, and bootstrap recovery modules.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched kernel session modules; <code>cargo test -p arroba-kernel app::kernel_session --lib</code> (26 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (9 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>148b30453</code> <span class="muted">Split meta runtime command router</span></td>
