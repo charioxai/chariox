@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>26 allowlisted files remain after initial splits</td>
+              <td>25 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6f79d0015</code> <span class="muted">Split Claude native output helpers</span></td>
+              <td>The Claude native provider-output bridge now keeps event processing, transcript fanout orchestration, terminal-permission interaction creation, prompt dispatch, and prompt injection sequencing in the parent module, while transcript cursor/drain logic, headless permission marker utilities, attachment formatting/materialization, and focused unit tests live in sibling modules.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, transcript, permission, attachment, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml provider_output_claude_native -- --nocapture</code> (4 passed); <code>node scripts/check-line-cap.mjs</code> (25 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>d9412f4a1</code> <span class="muted">Split MCP provider import modules</span></td>
