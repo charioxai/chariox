@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>66 allowlisted files remain after initial splits</td>
+              <td>65 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>3a4ac1408</code> <span class="muted">Split prompt git observer runtime tests</span></td>
+              <td>Prompt git observer runtime state now stays below the cap, with workspace live-sync fan-out, conflict/failure notices, forwarded attachments, and completed-turn projection tests moved to a bounded sibling Rust test module.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::state::prompt_git_observer_runtime::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>696d93cbb</code> <span class="muted">Split local IPC tests</span></td>
