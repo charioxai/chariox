@@ -34,18 +34,12 @@ test("external provider observed identity matching normalizes provider and trims
   assert.equal(externalProviderObservedIdentityIsPresent({
     externalProviderSessionId: " thread-1 ",
   }), true)
-  assert.equal(externalProviderObservedIdentityMatches({
-    promptId: "external: CODEX : thread-1 : user-1",
-  }, {
+  assert.equal(externalProviderObservedIdentityMatches({}, {
     externalProvider: " codex ",
     externalProviderSessionId: "thread-1",
   }), false)
-  assert.equal(externalProviderObservedIdentityKey({
-    promptId: "external: CODEX : thread-1 : user-1",
-  }), null)
-  assert.equal(externalProviderObservedExactIdentityKey({
-    promptId: "external: CODEX : thread-1 : user-1",
-  }), null)
+  assert.equal(externalProviderObservedIdentityKey({}), null)
+  assert.equal(externalProviderObservedExactIdentityKey({}), null)
   assert.equal(externalProviderObservedExactIdentityKey({
     externalProviderSessionId: "thread-1",
   }), null)
@@ -66,9 +60,7 @@ test("external provider observed identity matching normalizes provider and trims
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
-  }, {
-    promptId: "external:codex:thread-1:user-1",
-  }), false)
+  }, {}), false)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: "opencode",
     externalProviderSessionId: "thread-1",
@@ -87,9 +79,7 @@ test("external provider observed identity matching normalizes provider and trims
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
   }), false)
-  assert.equal(externalProviderObservedIdentityMatches({
-    promptId: "external:codex:thread-1:user-1",
-  }, {
+  assert.equal(externalProviderObservedIdentityMatches({}, {
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-2",

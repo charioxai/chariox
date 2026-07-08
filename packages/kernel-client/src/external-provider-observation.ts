@@ -31,7 +31,6 @@ export type ExternalProviderObservedTranscriptMetadata = {
 }
 
 export type ExternalProviderObservedIdentityFields = {
-  readonly promptId?: string | null
   readonly externalProvider?: string | null
   readonly externalProviderSessionId?: string | null
   readonly externalProviderTurnId?: string | null

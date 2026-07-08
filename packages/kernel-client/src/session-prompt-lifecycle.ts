@@ -230,7 +230,6 @@ function activePromptLifecycleRecordIdentityFingerprint(prompt: ActivePromptLife
 
 function activePromptLifecycleRecordExternalIdentityKey(prompt: ActivePromptLifecycleRecord) {
   return externalProviderObservedIdentityKey({
-    promptId: null,
     ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
     ...(prompt.externalProviderSessionId !== undefined
       ? { externalProviderSessionId: prompt.externalProviderSessionId }
