@@ -44,7 +44,6 @@ apps/kernel/src/secret.rs
 apps/kernel/src/session/service/tests/workflow_dispatch.rs
 apps/kernel/src/local/api/types.rs
 apps/cli/scripts/live-remote-native-tui-drill.mjs
-apps/kernel/src/local/api/tests/workspace_capabilities.rs
 apps/cli/scripts/live-cloud-publication-deployment-drill.mjs
 apps/kernel/tests/kernel_websocket_runtime_integration.rs
 apps/kernel/src/local/ipc.rs
