@@ -1,3 +1,2 @@
 # Current hand-authored files over 1000 lines.
 # This file is shrink-only: split files and remove entries during the migration.
-apps/kernel/src/runtime/external_provider_session_control.rs
