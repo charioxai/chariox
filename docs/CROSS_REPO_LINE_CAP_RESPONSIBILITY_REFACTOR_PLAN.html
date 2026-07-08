@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>53 allowlisted files remain after initial splits</td>
+              <td>52 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>5484c0251</code> <span class="muted">Extract live cloud relay drill helpers</span></td>
+              <td>The live Cloud relay drill now keeps environment setup, service orchestration, and scenario assertions in the executable script, while process control, wait loops, Cloud auth/token helpers, workflow request builders, and command dependency shims live in a focused helper module.</td>
+              <td><code>node --check apps/cli/scripts/live-cloud-relay-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-cloud-relay-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>42dff2244</code> <span class="muted">Extract drill artifact index summary actions</span></td>
