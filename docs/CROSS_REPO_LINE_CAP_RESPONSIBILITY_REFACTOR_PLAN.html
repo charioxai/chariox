@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>21 allowlisted files remain after initial splits</td>
+              <td>20 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>2e6d4096d</code> <span class="muted">Split external provider live parity drill</span></td>
+              <td>The live parity drill entrypoint now owns argument parsing, provider process orchestration, session import, and cleanup, while shared marker/report utilities, TUI/web/kernel observers, provider transcript evidence/assertions, and child-process automation helpers live in focused drill library modules.</td>
+              <td><code>node --check</code> for the entrypoint and all four extracted modules; <code>node apps/cli/scripts/live-external-provider-live-parity-drill.mjs --help</code>; dry-run smoke with a temporary artifact root; <code>node scripts/check-line-cap.mjs</code> (20 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>83cda945f</code> <span class="muted">Split relay server tests</span></td>
