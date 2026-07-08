@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>90 allowlisted files remain after initial splits</td>
+              <td>89 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6389ec8e7</code> <span class="muted">Split agent command action tests</span></td>
+              <td>Agent command-action coverage now keeps command handler/test fixture imports in a support re-export, while command basics, spawn refresh/inspection, spawn placement/readiness, and mode/focus behavior live in bounded TypeScript test modules behind the existing test entrypoint.</td>
+              <td><code>pnpm --filter @arroba/cli run build</code>, <code>node --test apps/cli/dist/command-actions-agent.test.js</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>e71ecf133</code> <span class="muted">Split cross repo validation gate tests</span></td>
