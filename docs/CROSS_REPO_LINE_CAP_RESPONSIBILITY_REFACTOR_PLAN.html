@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>47 allowlisted files remain after initial splits</td>
+              <td>46 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>9c4c760c1</code> <span class="muted">Extract drill artifact validators</span></td>
+              <td>The drill artifact facade now keeps lifecycle cleanup, artifact index IO, integrity verification, and aggregate assembly, while artifact content validation and artifact metadata validation live in focused helper modules behind unchanged public facade exports.</td>
+              <td><code>node --check</code> for the facade and both extracted validator modules, facade export smoke check, <code>node --test apps/cli/scripts/lib/drill-artifacts.test.mjs apps/cli/scripts/lib/drill-artifacts.test/*.test.mjs apps/cli/scripts/lib/drill-validation-gate-artifact-check.test.mjs apps/cli/scripts/lib/drill-failure-manifest.test.mjs apps/cli/scripts/drill-artifact-index-summary.test.mjs apps/cli/scripts/drill-artifact-index-summary.test/*.test.mjs</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>3dad4c186</code> <span class="muted">Extract validation gate preset data</span></td>
