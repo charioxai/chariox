@@ -253,6 +253,34 @@ test("transcript entry lineage matches refreshed external entries with normalize
   }]), true)
 })
 
+test("transcript entry lineage rejects blob fallback when exact external identities conflict", () => {
+  const current = [{
+    role: "assistant",
+    text: "same blob text",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    historyBlobSourceAgentId: "agent-a",
+    historyBlobSourceId: "provider-blob-1",
+    turnId: 1,
+  }]
+  const refreshed = [{
+    role: "assistant",
+    text: "same blob text",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-2",
+    historyBlobSourceAgentId: "agent-a",
+    historyBlobSourceId: "provider-blob-1",
+    turnId: 1,
+  }]
+
+  assert.equal(transcriptEntriesShareRenderableLineage(current, refreshed), false)
+  assert.equal(transcriptEntriesContainRenderableLineage(current, refreshed), false)
+})
+
 test("transcript entry lineage prepending skips duplicates without dropping unique older entries", () => {
   const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
     role: "assistant",
@@ -276,6 +304,35 @@ test("transcript entry lineage prepending skips duplicates without dropping uniq
     "older unique",
     "toggle",
     "current duplicate",
+  ])
+})
+
+test("transcript entry lineage prepending keeps blob fallback entries with conflicting external identities", () => {
+  const entries = prependTranscriptEntriesWithoutDuplicateRenderableLineage([{
+    role: "assistant",
+    text: "same blob text",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    historyBlobSourceAgentId: "agent-a",
+    historyBlobSourceId: "provider-blob-1",
+    turnId: 1,
+  }], [{
+    role: "assistant",
+    text: "same blob text",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-2",
+    historyBlobSourceAgentId: "agent-a",
+    historyBlobSourceId: "provider-blob-1",
+    turnId: 1,
+  }])
+
+  assert.deepEqual(entries.map((entry) => entry.externalProviderTurnId), [
+    "turn-1",
+    "turn-2",
   ])
 })
 

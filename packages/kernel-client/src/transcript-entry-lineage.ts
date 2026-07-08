@@ -1,5 +1,6 @@
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityKey,
   sessionHistoryEntryIsExternalProviderObserved,
 } from "./external-provider-observation.js"
@@ -174,60 +175,90 @@ export function transcriptEntriesShareRenderableLineage<TEntry extends Transcrip
   currentEntries: readonly TEntry[],
   refreshedEntries: readonly TEntry[],
 ): boolean {
-  const refreshedKeys = new Set(renderableLineageKeys(refreshedEntries))
-  if (refreshedKeys.size === 0) {
+  const refreshedRenderableEntries = renderableEntries(refreshedEntries)
+  if (renderableEntriesLineageKeys(refreshedRenderableEntries).length === 0) {
     return true
   }
   return renderableEntries(currentEntries)
-    .some((entry) => transcriptEntryLineageKeys(entry).some((key) => refreshedKeys.has(key)))
+    .some((currentEntry) => refreshedRenderableEntries
+      .some((refreshedEntry) => transcriptEntriesShareLineageKeys(
+        currentEntry,
+        refreshedEntry,
+        transcriptEntryLineageKeys,
+      )))
 }
 
 export function transcriptEntriesContainRenderableLineage<TEntry extends TranscriptLineageEntry>(
   containingEntries: readonly TEntry[],
   candidateEntries: readonly TEntry[],
 ): boolean {
-  const containingKeys = new Set(renderableLineageKeys(containingEntries))
+  const containingRenderableEntries = renderableEntries(containingEntries)
   return renderableEntries(candidateEntries)
-    .every((entry) => transcriptEntryLineageKeys(entry).some((key) => containingKeys.has(key)))
+    .every((candidateEntry) => containingRenderableEntries
+      .some((containingEntry) => transcriptEntriesShareLineageKeys(
+        containingEntry,
+        candidateEntry,
+        transcriptEntryLineageKeys,
+      )))
 }
 
 export function prependTranscriptEntriesWithoutDuplicateRenderableLineage<TEntry extends TranscriptLineageEntry>(
   olderEntries: readonly TEntry[],
   currentEntries: readonly TEntry[],
 ): TEntry[] {
-  const admittedKeys = new Set(renderableDeduplicationKeys(currentEntries))
+  const admittedRenderableEntries = renderableEntries(currentEntries)
   const prepend: TEntry[] = []
   for (const entry of olderEntries) {
     if (transcriptEntryIsRenderable(entry)) {
-      const keys = transcriptEntryDeduplicationKeys(entry)
-      if (keys.some((key) => admittedKeys.has(key))) {
+      if (admittedRenderableEntries.some((admittedEntry) => transcriptEntriesShareLineageKeys(
+        admittedEntry,
+        entry,
+        transcriptEntryDeduplicationKeys,
+      ))) {
         continue
       }
-      for (const key of keys) {
-        admittedKeys.add(key)
-      }
+      admittedRenderableEntries.push(entry)
     }
     prepend.push(entry)
   }
   return [...prepend, ...currentEntries]
 }
 
-function renderableLineageKeys<TEntry extends TranscriptLineageEntry>(
+function renderableEntriesLineageKeys<TEntry extends TranscriptLineageEntry>(
   entries: readonly TEntry[],
 ): string[] {
-  return renderableEntries(entries).flatMap(transcriptEntryLineageKeys)
-}
-
-function renderableDeduplicationKeys<TEntry extends TranscriptLineageEntry>(
-  entries: readonly TEntry[],
-): string[] {
-  return renderableEntries(entries).flatMap(transcriptEntryDeduplicationKeys)
+  return entries.flatMap(transcriptEntryLineageKeys)
 }
 
 function renderableEntries<TEntry extends TranscriptLineageEntry>(
   entries: readonly TEntry[],
 ): TEntry[] {
   return stripTranscriptDisplayOnlyEntries(entries)
+}
+
+function transcriptEntriesShareLineageKeys<TEntry extends TranscriptLineageEntry>(
+  left: TEntry,
+  right: TEntry,
+  keyFactory: (entry: TEntry) => string[],
+): boolean {
+  if (transcriptEntriesExternalExactIdentityConflict(left, right)) {
+    return false
+  }
+  const rightKeys = new Set(keyFactory(right))
+  return keyFactory(left).some((key) => rightKeys.has(key))
+}
+
+function transcriptEntriesExternalExactIdentityConflict(
+  left: TranscriptLineageEntry,
+  right: TranscriptLineageEntry,
+): boolean {
+  if (
+    !sessionHistoryEntryIsExternalProviderObserved(left)
+    || !sessionHistoryEntryIsExternalProviderObserved(right)
+  ) {
+    return false
+  }
+  return externalProviderObservedExactIdentityConflicts(left, right)
 }
 
 function transcriptLineageSource(entry: TranscriptLineageEntry): string {
