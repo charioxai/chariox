@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>42 allowlisted files remain after initial splits</td>
+              <td>41 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>a28a24736</code> <span class="muted">Split v1 spec capability details</span></td>
+              <td>The main v1 specification now keeps product definition, runtime components, interaction lanes, node/agent/session/provider/workflow contracts, and provider adapter requirements, while the capability catalog, scheduling, memory/context transfer, git/file operations, data/storage boundaries, failure rules, entity list, and summary notes live in a sibling spec detail document.</td>
+              <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference checks for existing <code>docs/spec-v1.md</code> links.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>bca6e949d</code> <span class="muted">Split architecture kernel runtime details</span></td>
