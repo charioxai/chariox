@@ -11,7 +11,14 @@ import { createKernelSessionSnapshotController } from "./kernel-session-snapshot
 test("kernel session snapshot refreshes changed provider run and panes after turn completion", async () => {
   const nextRun = providerRun("run-2")
   const harness = createHarness({
-    session: session({ active_prompt: activePrompt() }),
+    session: session({
+      prompt_states: {
+        "agent-1": {
+          active_prompt: activePrompt(),
+          queued_prompts: [],
+        },
+      },
+    }),
     providerRun: providerRun("run-1"),
     shouldRefreshAgentPanesForSessionChange: () => false,
   })
@@ -72,7 +79,14 @@ test("kernel session snapshot clears missing provider run and recovers polling t
     supportsKernelEventStream: false,
   })
 
-  await harness.controller.apply(session({ active_prompt: activePrompt() }), null)
+  await harness.controller.apply(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: activePrompt(),
+        queued_prompts: [],
+      },
+    },
+  }), null)
 
   assert.equal(harness.providerRun, null)
   assert.deepEqual(harness.calls, [

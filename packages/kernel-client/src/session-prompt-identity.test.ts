@@ -405,7 +405,7 @@ test("sessionPromptStateForAgent ignores legacy prompts once activity projection
   assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
 })
 
-test("sessionPromptStateForAgent scopes legacy top-level prompts by agent", () => {
+test("sessionPromptStateForAgent ignores legacy top-level prompts without projection", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
     active_prompt: {
@@ -430,23 +430,8 @@ test("sessionPromptStateForAgent scopes legacy top-level prompts by agent", () =
     }],
   })
 
-  assert.deepEqual(sessionPromptStateForAgent(session, "agent-1"), {
-    active_prompt: {
-      id: "prompt-1",
-      source_attachment_id: "attach-1",
-      target_agent_id: "agent-1",
-      prompt: "running",
-      status: "Running",
-    },
-    queued_prompts: [{
-      id: "queued-1",
-      source_attachment_id: "attach-1",
-      target_agent_id: "agent-1",
-      prompt: "queued",
-      status: "Queued",
-    }],
-  })
-  assert.equal(sessionPromptStateForAgent(session, "agent-2")?.active_prompt, null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-1"), null)
+  assert.equal(sessionPromptStateForAgent(session, "agent-2"), null)
   assert.equal(sessionPromptStateForAgent(session, null), null)
 })
 

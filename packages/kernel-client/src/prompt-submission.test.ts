@@ -433,20 +433,28 @@ test("formatPromptSubmissionStatusLine describes queued and submitted outcomes",
 test("promptSubmissionRuntimeState follows session work for queued submissions", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-active" }), makeAgent({ id: "agent-queued" })],
-    active_prompt: {
-      id: "prompt-active",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-active",
-      prompt: "running",
-      status: "running",
+    prompt_states: {
+      "agent-active": {
+        active_prompt: {
+          id: "prompt-active",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-active",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+      "agent-queued": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-queued",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-queued",
+          prompt: "queued",
+          status: "queued",
+        }],
+      },
     },
-    queued_prompts: [{
-      id: "prompt-queued",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-queued",
-      prompt: "queued",
-      status: "queued",
-    }],
   })
 
   assert.deepEqual(promptSubmissionRuntimeState({
@@ -462,20 +470,28 @@ test("promptSubmissionRuntimeState follows session work for queued submissions",
 test("promptSubmissionSuccessTransition projects queued prompt metadata", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-active" }), makeAgent({ id: "agent-queued" })],
-    active_prompt: {
-      id: "prompt-active",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-active",
-      prompt: "running",
-      status: "running",
+    prompt_states: {
+      "agent-active": {
+        active_prompt: {
+          id: "prompt-active",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-active",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+      "agent-queued": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-queued",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-queued",
+          prompt: "queued",
+          status: "queued",
+        }],
+      },
     },
-    queued_prompts: [{
-      id: "prompt-queued",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-queued",
-      prompt: "queued",
-      status: "queued",
-    }],
   })
 
   assert.deepEqual(promptSubmissionSuccessTransition({
@@ -551,12 +567,17 @@ test("promptSubmissionRuntimeState allows optimistic streaming only for started 
 test("promptSubmissionFailureRuntimeState follows current session work", () => {
   const activeSession = makeSession({
     agents: [makeAgent({ id: "agent-active" })],
-    active_prompt: {
-      id: "prompt-active",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-active",
-      prompt: "running",
-      status: "running",
+    prompt_states: {
+      "agent-active": {
+        active_prompt: {
+          id: "prompt-active",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-active",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
     },
   })
 
@@ -576,12 +597,17 @@ test("promptSubmissionFailureRuntimeState follows current session work", () => {
 test("promptSubmissionFailureTransition resets submitting while preserving session runtime work", () => {
   const activeSession = makeSession({
     agents: [makeAgent({ id: "agent-active" })],
-    active_prompt: {
-      id: "prompt-active",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-active",
-      prompt: "running",
-      status: "running",
+    prompt_states: {
+      "agent-active": {
+        active_prompt: {
+          id: "prompt-active",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-active",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
     },
   })
 

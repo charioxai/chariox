@@ -40,7 +40,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   const promptStateByAgent = new Map<string, AgentPromptState>(promptStateEntries)
   const queued = hasPromptStates
     ? promptStateEntries.reduce((count, [, state]) => count + (state?.queued_prompts?.length ?? 0), 0)
-    : session.queued_prompts.length
+    : 0
 
   if (sessionHasAgentActivityProjection(session)) {
     const activities = sessionProjectedPromptActivityEntriesForSessionAgents(session)
@@ -68,7 +68,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   }
 
   return {
-    active: session.active_prompt ? 1 : 0,
+    active: 0,
     queued,
     busyAgents: legacyBusyAgentCount(session),
   }
@@ -100,10 +100,7 @@ export function sessionQueuedPromptCount(
   if (promptState !== undefined) {
     return promptState?.queued_prompts?.length ?? 0
   }
-  if (sessionHasAgentActivityProjection(session)) {
-    return 0
-  }
-  return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId).length
+  return 0
 }
 
 export function sessionAgentIsBusy(
@@ -124,8 +121,7 @@ export function sessionAgentIsBusy(
   if (promptState !== undefined) {
     return Boolean(promptState?.active_prompt)
   }
-  return legacyTopLevelSessionHasActivePrompt(session, agentId)
-    || session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
+  return session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
 }
 
 export function sessionAgentHasTurnWork(
@@ -146,8 +142,7 @@ export function sessionAgentHasTurnWork(
   if (promptState !== undefined) {
     return Boolean(promptState?.active_prompt)
   }
-  return legacyTopLevelSessionHasActivePrompt(session, agentId)
-    || session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
+  return session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
 }
 
 export function sessionAgentBusyForProviderRunRecovery(
@@ -199,11 +194,7 @@ export function sessionProjectedStreamingAgentId(session: RuntimeSession): strin
       .map(([agentId]) => agentId)
     return activeAgents.length === 1 ? activeAgents[0] ?? null : null
   }
-  return session.active_prompt?.target_agent_id ?? null
-}
-
-function legacyTopLevelSessionHasActivePrompt(session: RuntimeSession, agentId: string): boolean {
-  return Boolean(session.active_prompt?.target_agent_id === agentId)
+  return null
 }
 
 function agentRuntimeActivityHasActivePrompt(

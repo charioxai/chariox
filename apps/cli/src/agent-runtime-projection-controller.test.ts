@@ -12,8 +12,12 @@ import type {
 test("agent runtime projection resolves focused agent, prompt work, and tool activity", () => {
   const session = runtimeSession({
     focused_agent_id: "agent-a",
-    active_prompt: prompt({ id: "prompt-1", target_agent_id: "agent-a" }),
-    queued_prompts: [prompt({ id: "prompt-2", target_agent_id: "agent-a" })],
+    prompt_states: {
+      "agent-a": {
+        active_prompt: prompt({ id: "prompt-1", target_agent_id: "agent-a" }),
+        queued_prompts: [prompt({ id: "prompt-2", target_agent_id: "agent-a" })],
+      },
+    },
     agents: [
       agent("agent-a", { provider: "opencode" }),
       agent("agent-b", { provider: "claude" }),

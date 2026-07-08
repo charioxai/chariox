@@ -33,12 +33,17 @@ test("authoritative idle controller leaves local state alone while active turn w
   const harness = idleHarness()
 
   const cleared = harness.controller.clear(session({
-    active_prompt: {
-      id: "prompt-1",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-1",
-      prompt: "run",
-      status: "Active",
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "run",
+          status: "Active",
+        },
+        queued_prompts: [],
+      },
     },
   }))
 

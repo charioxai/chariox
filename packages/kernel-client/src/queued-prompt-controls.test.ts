@@ -744,17 +744,17 @@ test("queued prompts for agent preserve existing transcript when explicit queue 
   })
 })
 
-test("queued prompts for agent falls back to legacy top-level queues without projections", () => {
+test("queued prompts for agent ignores legacy top-level queues without projections", () => {
   const queuedForAgent = prompt("queued-agent")
   const queuedForOther = prompt("queued-other", "agent-2")
   const session = sessionWith({
     queued_prompts: [queuedForOther, queuedForAgent],
   })
 
-  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
 })
 
-test("queued prompts for agent ignore targetless legacy top-level queues", () => {
+test("queued prompts for agent ignore all legacy top-level queues", () => {
   const queuedForAgent = prompt("queued-agent")
   const queuedTargetless = {
     id: "queued-targetless",
@@ -766,7 +766,7 @@ test("queued prompts for agent ignore targetless legacy top-level queues", () =>
     queued_prompts: [queuedTargetless, queuedForAgent],
   })
 
-  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [queuedForAgent])
+  assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
   assert.deepEqual(queuedPromptsForAgent(session, "agent-2"), [])
 })
 

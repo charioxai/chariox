@@ -131,20 +131,28 @@ test("normal prompt submit projects queued runtime state from active session wor
         outcome: {},
         session: runtimeSession("session-submitted", null, {
           agents: [agent("agent-active"), agent("agent-queued")],
-          active_prompt: {
-            id: "prompt-active",
-            source_attachment_id: "attachment-1",
-            target_agent_id: "agent-active",
-            prompt: "running",
-            status: "running",
+          prompt_states: {
+            "agent-active": {
+              active_prompt: {
+                id: "prompt-active",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-active",
+                prompt: "running",
+                status: "running",
+              },
+              queued_prompts: [],
+            },
+            "agent-queued": {
+              active_prompt: null,
+              queued_prompts: [{
+                id: "prompt-queued",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-queued",
+                prompt: "hello",
+                status: "queued",
+              }],
+            },
           },
-          queued_prompts: [{
-            id: "prompt-queued",
-            source_attachment_id: "attachment-1",
-            target_agent_id: "agent-queued",
-            prompt: "hello",
-            status: "queued",
-          }],
         }),
         agent_activity: {},
         agent_activity_revision: 1,
@@ -261,12 +269,17 @@ test("normal prompt submit failure preserves active session runtime state", asyn
   const harness = createHarness({
     session: runtimeSession("session-1", null, {
       agents: [agent("agent-active")],
-      active_prompt: {
-        id: "prompt-active",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-active",
-        prompt: "running",
-        status: "running",
+      prompt_states: {
+        "agent-active": {
+          active_prompt: {
+            id: "prompt-active",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-active",
+            prompt: "running",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     submitPrompt: async () => {
@@ -485,16 +498,22 @@ function runtimeSession(
     status: "Created",
     active_provider_run_id: null,
     attachment_ids: [],
-    active_prompt: activePromptId
-      ? {
-        id: activePromptId,
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: "running",
-      }
-      : null,
+    active_prompt: null,
     queued_prompts: [],
+    ...(activePromptId
+      ? { prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: activePromptId,
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
+      } }
+      : {}),
     focused_agent_id: null,
     max_agents: 1,
     agents: [],

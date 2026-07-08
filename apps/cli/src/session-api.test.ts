@@ -112,12 +112,17 @@ test("getSessionState merges projected agent activity into the returned session"
   const client = {
     send: async () => ({
       SessionState: {
-        session: runtimeSession(),
+        session: runtimeSession({
+          agents: [{
+            id: "agent-1",
+          } as RuntimeSession["agents"][number]],
+        }),
         agent_activity: {
           "agent-1": {
             status: "working",
             prompt_status: "running",
             busy: true,
+            unread_idle_output: false,
           },
         },
         agent_activity_revision: 9,
@@ -128,12 +133,13 @@ test("getSessionState merges projected agent activity into the returned session"
   const session = await getSessionState(client, "session-1")
 
   assert.deepEqual(session.agent_activity, {
-    "agent-1": {
-      status: "working",
-      prompt_status: "running",
-      busy: true,
-    },
-  })
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    })
   assert.equal(session.agent_activity_revision, 9)
 })
 

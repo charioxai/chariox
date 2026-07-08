@@ -472,7 +472,7 @@ test("sessionProjectedStreamingAgentId resolves exactly one prompt-state active 
   })), null)
 })
 
-test("sessionProjectedStreamingAgentId falls back to legacy active prompt without projections", () => {
+test("sessionProjectedStreamingAgentId ignores legacy active prompt without projections", () => {
   assert.equal(sessionProjectedStreamingAgentId(makeSession({
     active_prompt: {
       id: "prompt-legacy",
@@ -482,7 +482,7 @@ test("sessionProjectedStreamingAgentId falls back to legacy active prompt withou
       status: "Running",
     },
     agents: [makeAgent({ id: "agent-1" })],
-  })), "agent-1")
+  })), null)
 })
 
 test("resolveSessionStreamingAgentId prefers processing, active prompt, then previous streaming agent", () => {
@@ -519,12 +519,17 @@ test("sessionRuntimeTransitionState preserves active labels and clears idle labe
       makeAgent({ id: "agent-1", state: "Idle", is_processing: false }),
       makeAgent({ id: "agent-2", state: "Working", is_processing: true }),
     ],
-    active_prompt: {
-      id: "prompt-2",
-      source_attachment_id: "attach-1",
-      target_agent_id: "agent-2",
-      prompt: "run",
-      status: "Running",
+    prompt_states: {
+      "agent-2": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attach-1",
+          target_agent_id: "agent-2",
+          prompt: "run",
+          status: "Running",
+        },
+        queued_prompts: [],
+      },
     },
     focused_agent_id: "agent-2",
   })

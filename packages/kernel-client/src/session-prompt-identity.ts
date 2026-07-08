@@ -7,7 +7,6 @@ import {
   sessionActivePromptLifecycleRecords,
 } from "./session-prompt-lifecycle.js"
 import {
-  sessionAgentActivityRecordForAgent,
   sessionHasAgent,
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
@@ -23,17 +22,6 @@ export function sessionPromptStateForAgent(
   const projectedPromptState = sessionPromptStateRecordForAgent(session, agentId)
   if (projectedPromptState !== undefined) {
     return projectedPromptState
-  }
-  if (sessionAgentActivityRecordForAgent(session, agentId) !== undefined) {
-    return null
-  }
-  const activePrompt = session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
-  const queuedPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
-  if (activePrompt || queuedPrompts.length > 0) {
-    return {
-      active_prompt: activePrompt,
-      queued_prompts: queuedPrompts,
-    }
   }
   return null
 }
@@ -74,11 +62,7 @@ export function sessionHasPendingPrompt(session: RuntimeSession, agentId: string
     return promptMatchesId(promptState?.active_prompt, promptId)
       || Boolean(promptState?.queued_prompts?.some((prompt) => promptMatchesId(prompt, promptId)))
   }
-  if (projected) {
-    return false
-  }
-  return legacySessionHasPrompt(session, agentId, promptId)
-    || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId && promptMatchesId(prompt, promptId))
+  return false
 }
 
 export function sessionPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
@@ -129,7 +113,7 @@ function legacySessionHasPrompt(session: RuntimeSession, agentId: string, prompt
   if (promptState !== undefined) {
     return promptMatchesId(promptState?.active_prompt, promptId)
   }
-  return Boolean(session.active_prompt?.target_agent_id === agentId && promptMatchesId(session.active_prompt, promptId))
+  return false
 }
 
 function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
@@ -137,7 +121,7 @@ function legacyPromptForAgent(session: RuntimeSession, agentId: string): PromptQ
   if (promptState !== undefined) {
     return promptState?.active_prompt ?? null
   }
-  return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
+  return null
 }
 
 function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
@@ -145,10 +129,7 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
   if (promptState !== undefined) {
     return promptState?.active_prompt ?? null
   }
-  if (sessionAgentActivityRecordForAgent(session, agentId) !== undefined) {
-    return null
-  }
-  return session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null
+  return null
 }
 
 function promptMatchesId(prompt: PromptQueueItem | null | undefined, promptId: string): boolean {

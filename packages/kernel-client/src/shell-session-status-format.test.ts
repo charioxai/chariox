@@ -36,8 +36,24 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
     workspace_live_sync_mode: "tracked",
     attachment_ids: ["cli-1", "web-1"],
     active_provider_run_id: "run-session",
-    active_prompt: { id: "prompt-1" } as never,
-    queued_prompts: [{ id: "prompt-2" } as never],
+    prompt_states: {
+      [remoteAgent.id]: {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: remoteAgent.id,
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [{
+          id: "prompt-2",
+          source_attachment_id: "attachment-1",
+          target_agent_id: remoteAgent.id,
+          prompt: "queued",
+          status: "queued",
+        }],
+      },
+    },
     focused_agent_id: remoteAgent.id,
     agents: [localAgent, remoteAgent],
     collaboration_agent_counts: {

@@ -170,7 +170,7 @@ export function queuedPromptsForAgent(
   if (projectedActivity) {
     return null
   }
-  return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+  return []
 }
 
 export function queuedPromptProjectionForAgent(

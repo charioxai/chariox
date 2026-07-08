@@ -66,9 +66,7 @@ export function sessionActivePromptLifecycleRecords(session: RuntimeSession): Ac
       .filter((prompt): prompt is ActivePromptLifecycleRecord => Boolean(prompt))
       .sort(compareActivePromptLifecycleRecords)
   }
-  return session.active_prompt
-    ? [activePromptLifecycleRecordFromPrompt(session.active_prompt)]
-    : []
+  return []
 }
 
 export function sessionPromptLifecycleTransition(

@@ -12,20 +12,36 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 
 test("kernel event dispatch applies normalized session snapshots with agent activity", async () => {
   const run = providerRun("run-1")
-  const nextSession = session()
+  const nextSession = session({
+    agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
+  })
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
     event: "session_snapshot",
     session: nextSession as unknown as Record<string, unknown>,
     provider_run: run as unknown as Record<string, unknown>,
-    agent_activity: { "agent-1": { working: true } },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
     agent_activity_revision: 7,
   })
 
   assert.equal(harness.snapshots.length, 1)
   assert.equal(harness.snapshots[0]?.session.id, "session-1")
-  assert.deepEqual(harness.snapshots[0]?.session.agent_activity, { "agent-1": { working: true } })
+  assert.deepEqual(harness.snapshots[0]?.session.agent_activity, {
+    "agent-1": {
+      status: "working",
+      prompt_status: "running",
+      busy: true,
+      unread_idle_output: false,
+    },
+  })
   assert.equal(harness.snapshots[0]?.session.agent_activity_revision, 7)
   assert.equal(harness.snapshots[0]?.providerRun?.id, "run-1")
   assert.deepEqual(harness.calls, [

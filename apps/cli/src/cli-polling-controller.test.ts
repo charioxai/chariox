@@ -118,10 +118,16 @@ test("cli polling controller refreshes session state and provider run metadata",
   const refreshedRun = providerRun("run-2", { model: "next-model" })
   const nextSession = session({
     active_provider_run_id: refreshedRun.id,
-    active_prompt: null,
   })
   const harness = createHarness({
-    sessionState: session({ active_prompt: activePrompt() }),
+    sessionState: session({
+      prompt_states: {
+        "agent-1": {
+          active_prompt: activePrompt(),
+          queued_prompts: [],
+        },
+      },
+    }),
     nextSession,
     providerRun: providerRun("run-1"),
     shouldRefreshAgentPanesForSessionChange: () => false,
@@ -145,10 +151,17 @@ test("cli polling controller refreshes session state and provider run metadata",
 })
 
 test("cli polling controller refreshes workspace live sync footer state after a turn completes", async () => {
-  const nextSession = session({ active_prompt: null })
+  const nextSession = session()
   const status = workspaceLiveSyncStatus("conflict")
   const harness = createHarness({
-    sessionState: session({ active_prompt: activePrompt() }),
+    sessionState: session({
+      prompt_states: {
+        "agent-1": {
+          active_prompt: activePrompt(),
+          queued_prompts: [],
+        },
+      },
+    }),
     nextSession,
     getWorkspaceLiveSyncStatus: async () => status,
   })

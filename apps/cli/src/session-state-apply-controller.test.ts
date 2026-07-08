@@ -56,7 +56,12 @@ test("session state apply controller resets prompt state when active prompt chan
   const nextPrompt = prompt("prompt-2", "agent-a")
   const harness = createHarness({
     session: session({
-      active_prompt: previousPrompt,
+      prompt_states: {
+        "agent-a": {
+          active_prompt: previousPrompt,
+          queued_prompts: [],
+        },
+      },
       agents: [agent("agent-a")],
     }),
     submitting: true,
@@ -64,7 +69,12 @@ test("session state apply controller resets prompt state when active prompt chan
   })
 
   harness.controller.apply(session({
-    active_prompt: nextPrompt,
+    prompt_states: {
+      "agent-a": {
+        active_prompt: nextPrompt,
+        queued_prompts: [],
+      },
+    },
     agents: [agent("agent-a")],
   }))
 
@@ -82,7 +92,12 @@ test("session state apply controller clears cancelled prompt residue when cancel
   const cancelledPrompt = prompt("prompt-1", "agent-a", "cancelling")
   const harness = createHarness({
     session: session({
-      active_prompt: cancelledPrompt,
+      prompt_states: {
+        "agent-a": {
+          active_prompt: cancelledPrompt,
+          queued_prompts: [],
+        },
+      },
       agents: [agent("agent-a")],
     }),
     working: true,
@@ -98,7 +113,7 @@ test("session state apply controller clears cancelled prompt residue when cancel
   })
 
   harness.controller.apply(session({
-    active_prompt: null,
+    prompt_states: {},
     agents: [agent("agent-a")],
   }))
 

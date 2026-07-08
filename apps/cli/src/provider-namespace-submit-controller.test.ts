@@ -90,20 +90,28 @@ test("provider namespace submit projects queued runtime state from active sessio
         outcome: {},
         session: runtimeSession("session-submitted", {
           agents: [agent("agent-active"), agent("agent-queued")],
-          active_prompt: {
-            id: "prompt-active",
-            source_attachment_id: "attachment-1",
-            target_agent_id: "agent-active",
-            prompt: "running",
-            status: "running",
+          prompt_states: {
+            "agent-active": {
+              active_prompt: {
+                id: "prompt-active",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-active",
+                prompt: "running",
+                status: "running",
+              },
+              queued_prompts: [],
+            },
+            "agent-queued": {
+              active_prompt: null,
+              queued_prompts: [{
+                id: "prompt-queued",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-queued",
+                prompt: "/session list",
+                status: "queued",
+              }],
+            },
           },
-          queued_prompts: [{
-            id: "prompt-queued",
-            source_attachment_id: "attachment-1",
-            target_agent_id: "agent-queued",
-            prompt: "/session list",
-            status: "queued",
-          }],
         }),
         agent_activity: {},
         agent_activity_revision: 1,
@@ -159,12 +167,17 @@ test("provider namespace submit failure preserves active session runtime state",
   const harness = createHarness({
     session: runtimeSession("session-1", {
       agents: [agent("agent-active")],
-      active_prompt: {
-        id: "prompt-active",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-active",
-        prompt: "running",
-        status: "running",
+      prompt_states: {
+        "agent-active": {
+          active_prompt: {
+            id: "prompt-active",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-active",
+            prompt: "running",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     submitProviderNamespacePrompt: async () => {

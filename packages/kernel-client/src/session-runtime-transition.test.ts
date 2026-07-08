@@ -492,12 +492,17 @@ test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn
 
 test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or processing snapshots", () => {
   const activePromptSession = makeSession({
-    active_prompt: {
-      id: "prompt-1",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-1",
-      prompt: "hello",
-      status: "running",
+    prompt_states: {
+      "agent-1": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "hello",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
     },
     agents: [makeAgent({ id: "agent-1", is_processing: false, state: "Focused" })],
   })

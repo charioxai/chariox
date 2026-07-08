@@ -449,14 +449,19 @@ function session(overrides: Record<string, unknown> = {}): RuntimeSession {
     id: "session-1",
     alias: "session",
     agents: [{ id: "agent-1" }],
-    queued_prompts: [{
-      id: "prompt-1",
-      source_attachment_id: "attachment-1",
-      target_agent_id: "agent-1",
-      prompt: "queued prompt\n",
-      attachments: [{ kind: "file" }, { kind: "image" }],
-      status: "queued",
-    }],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-1",
+          prompt: "queued prompt\n",
+          attachments: [{ kind: "file" }, { kind: "image" }],
+          status: "queued",
+        }],
+      },
+    },
     ...overrides,
   } as unknown as RuntimeSession
 }

@@ -74,12 +74,17 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
 test("deriveAttachedCliTransitionState resets transient UI state and keeps active turn work", () => {
   const attached = deriveAttachedCliTransitionState({
     session: session({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-a",
-        prompt: "hello",
-        status: "running",
+      prompt_states: {
+        "agent-a": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-a",
+            prompt: "hello",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
       },
       agents: [agent("agent-a", { is_processing: true, state: "Working" })],
     }),

@@ -121,7 +121,7 @@ test("sessionActivePromptLifecycleRecords treats projected idle as authoritative
   assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
 })
 
-test("sessionActivePromptLifecycleRecords falls back to legacy active prompt without projections", () => {
+test("sessionActivePromptLifecycleRecords ignores legacy active prompt without projections", () => {
   const session = makeSession({
     active_prompt: {
       id: "prompt-legacy",
@@ -133,26 +133,23 @@ test("sessionActivePromptLifecycleRecords falls back to legacy active prompt wit
     },
   })
 
-  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [{
-    id: "prompt-legacy",
-    source_attachment_id: "attach-1",
-    target_agent_id: "agent-1",
-    prompt: "legacy",
-    status: "running",
-    prompt_origin: " External ",
-    promptOrigin: "external",
-  }])
+  assert.deepEqual(sessionActivePromptLifecycleRecords(session), [])
 })
 
 test("sessionPromptLifecycleTransition detects when a cancelling prompt settles", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: "cancelling",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: "cancelling",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     makeSession(),
@@ -166,12 +163,17 @@ test("sessionPromptLifecycleTransition detects when a cancelling prompt settles"
 test("sessionPromptLifecycleTransition normalizes cancelling prompt status", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: " Cancelling ",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: " Cancelling ",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     makeSession(),
@@ -185,21 +187,31 @@ test("sessionPromptLifecycleTransition normalizes cancelling prompt status", () 
 test("sessionPromptLifecycleTransition treats projected idle activity as prompt settlement", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: "cancelling",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: "cancelling",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     makeSession({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "stale",
-        status: "cancelling",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "stale",
+            status: "cancelling",
+          },
+          queued_prompts: [],
+        },
       },
       agent_activity: {},
     }),
@@ -238,21 +250,31 @@ test("sessionPromptLifecycleTransition ignores already-settled projected active 
 test("sessionPromptLifecycleTransition detects normal prompt replacement", () => {
   const transition = sessionPromptLifecycleTransition(
     makeSession({
-      active_prompt: {
-        id: "prompt-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "hello",
-        status: "running",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-1",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "hello",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
       },
     }),
     makeSession({
-      active_prompt: {
-        id: "prompt-2",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "next",
-        status: "running",
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            id: "prompt-2",
+            source_attachment_id: "attachment-1",
+            target_agent_id: "agent-1",
+            prompt: "next",
+            status: "running",
+          },
+          queued_prompts: [],
+        },
       },
     }),
   )
