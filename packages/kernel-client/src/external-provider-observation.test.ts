@@ -873,6 +873,38 @@ test("external provider observed transcript metadata application shares live and
   })
 })
 
+test("external provider observed transcript metadata application preserves richer identity", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+  } = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 1_000,
+  }
+
+  applyExternalProviderObservedTranscriptMetadata(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+    observedAtMs: null,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 1_000,
+  })
+})
+
 test("external provider observed turn metadata keeps external source authoritative", () => {
   const target = {
     source: "provider_output",

@@ -174,6 +174,34 @@ test("session history transcript hydration does not merge conflicting external o
   assert.deepEqual(entries.map((entry) => entry.externalProviderTurnId), ["turn-1", "turn-2"])
 })
 
+test("session history transcript hydration preserves external identity across sparse merged chunks", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(7, "provider_output", "native ", {
+      merge_key: "assistant",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      observed_at_ms: 1_000,
+    }),
+    pageEntry(8, "provider_output", "reply", {
+      merge_key: "assistant",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: null,
+      external_provider_session_id: null,
+      external_provider_turn_id: null,
+      observed_at_ms: null,
+    }),
+  ])
+
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0]?.text, "native reply")
+  assert.equal(entries[0]?.externalProvider, "codex")
+  assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(entries[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(entries[0]?.observedAtMs, 1_000)
+})
+
 test("session history transcript hydration treats merge keys as opaque metadata", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(7, "provider_output", "native reply", {

@@ -418,16 +418,22 @@ export function applyExternalProviderObservedTranscriptMetadata<
       target.source = source
     }
   }
-  if (metadata.externalProvider !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.externalProvider) && metadata.externalProvider !== undefined) {
     target.externalProvider = metadata.externalProvider
   }
-  if (metadata.externalProviderSessionId !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderSessionId)
+    && metadata.externalProviderSessionId !== undefined
+  ) {
     target.externalProviderSessionId = metadata.externalProviderSessionId
   }
-  if (metadata.externalProviderTurnId !== undefined) {
+  if (
+    fieldCanAcceptExternalProviderMetadata(target.externalProviderTurnId)
+    && metadata.externalProviderTurnId !== undefined
+  ) {
     target.externalProviderTurnId = metadata.externalProviderTurnId
   }
-  if (metadata.observedAtMs !== undefined) {
+  if (fieldCanAcceptExternalProviderMetadata(target.observedAtMs) && metadata.observedAtMs !== undefined) {
     target.observedAtMs = metadata.observedAtMs
   }
   if (metadata.externalObservation !== undefined) {
