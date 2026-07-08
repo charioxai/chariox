@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>20 allowlisted files remain after initial splits</td>
+              <td>19 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>fc4de6518</code> <span class="muted">Split drill matrix report aggregate helpers</span></td>
+              <td>The drill matrix report facade now keeps report loading, per-report validation, per-report summary, and compatibility exports, while aggregate formatting/validation lives in an aggregate module and reusable validation/counting primitives live in a shared report helper module.</td>
+              <td><code>node --check</code> for the facade, aggregate module, and shared helper module; <code>node --test apps/cli/scripts/lib/drill-matrix-report.test.mjs</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (19 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>2e6d4096d</code> <span class="muted">Split external provider live parity drill</span></td>
