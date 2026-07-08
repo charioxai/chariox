@@ -3,6 +3,13 @@ import type {
   PromptQueueItem,
   RuntimeSession,
 } from "./kernel-types.js"
+import type {
+  AgentRuntimeActivityProjection,
+} from "./agent-activity.js"
+import {
+  externalProviderObservedExactIdentityConflicts,
+  type ExternalProviderObservedIdentityFields,
+} from "./external-provider-observation.js"
 import {
   sessionActivePromptLifecycleRecords,
 } from "./session-prompt-lifecycle.js"
@@ -36,7 +43,7 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
       return true
     }
     const prompt = activePromptForAgent(session, agentId)
-    return promptMatchesId(prompt, projected.activeTurnPromptId)
+    return promptMatchesProjectedActiveTurn(prompt, projected)
       && promptMatchesId(prompt, promptId)
   }
   return legacySessionHasPrompt(session, agentId, promptId)
@@ -72,7 +79,7 @@ export function sessionPromptForAgent(session: RuntimeSession, agentId: string):
   }
   if (projected?.activeTurnPromptId) {
     const prompt = legacyPromptForAgent(session, agentId)
-    return promptMatchesId(prompt, projected.activeTurnPromptId) ? prompt : null
+    return promptMatchesProjectedActiveTurn(prompt, projected) ? prompt : null
   }
   return legacyPromptForAgent(session, agentId)
 }
@@ -84,7 +91,7 @@ export function sessionActivePromptForAgent(session: RuntimeSession, agentId: st
   }
   if (projected?.activeTurnPromptId) {
     const prompt = activePromptForAgent(session, agentId)
-    return promptMatchesId(prompt, projected.activeTurnPromptId) ? prompt : null
+    return promptMatchesProjectedActiveTurn(prompt, projected) ? prompt : null
   }
   return activePromptForAgent(session, agentId)
 }
@@ -134,4 +141,47 @@ function activePromptForAgent(session: RuntimeSession, agentId: string): PromptQ
 
 function promptMatchesId(prompt: PromptQueueItem | null | undefined, promptId: string): boolean {
   return prompt?.id === promptId || prompt?.pending_prompt_id === promptId
+}
+
+function promptMatchesProjectedActiveTurn(
+  prompt: PromptQueueItem | null | undefined,
+  projection: AgentRuntimeActivityProjection,
+): boolean {
+  if (!projection.activeTurnPromptId || !promptMatchesId(prompt, projection.activeTurnPromptId)) {
+    return false
+  }
+  return !externalProviderObservedExactIdentityConflicts(
+    promptExternalIdentityFields(prompt),
+    projectedActiveTurnExternalIdentityFields(projection),
+  )
+}
+
+function promptExternalIdentityFields(
+  prompt: PromptQueueItem | null | undefined,
+): ExternalProviderObservedIdentityFields {
+  return {
+    ...(prompt?.external_provider !== undefined ? { externalProvider: prompt.external_provider } : {}),
+    ...(prompt?.external_provider_session_id !== undefined
+      ? { externalProviderSessionId: prompt.external_provider_session_id }
+      : {}),
+    ...(prompt?.external_provider_turn_id !== undefined
+      ? { externalProviderTurnId: prompt.external_provider_turn_id }
+      : {}),
+  }
+}
+
+function projectedActiveTurnExternalIdentityFields(
+  projection: AgentRuntimeActivityProjection,
+): ExternalProviderObservedIdentityFields {
+  return {
+    ...(projection.activeTurnExternalProvider !== undefined
+      ? { externalProvider: projection.activeTurnExternalProvider }
+      : {}),
+    ...(projection.activeTurnExternalProviderSessionId !== undefined
+      ? { externalProviderSessionId: projection.activeTurnExternalProviderSessionId }
+      : {}),
+    ...(projection.activeTurnExternalProviderTurnId !== undefined
+      ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
+      : {}),
+  }
 }
