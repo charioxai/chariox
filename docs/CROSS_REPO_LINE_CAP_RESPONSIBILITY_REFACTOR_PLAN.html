@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>28 allowlisted files remain after initial splits</td>
+              <td>27 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>e641e3d06</code> <span class="muted">Split metaagent command catalog</span></td>
+              <td>The metaagent command registry now keeps tokenization, search/list/docs projection, execution-policy routing, documented workflow policy lookup, search scoring, and JSON rendering in the parent module, while static command documentation is split into agent/session, workflow/guide, MCP/skill/extension, and system/credential catalog modules; registry tests live in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, catalog, catalog section, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml metaagent_command_registry -- --nocapture</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (27 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>900411a7c</code> <span class="muted">Split skill registry responsibilities</span></td>
