@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>14 allowlisted files remain after initial splits</td>
+              <td>13 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>21f1ec27f</code> <span class="muted">Split provider thread transfer drill</span></td>
+              <td><code>live-provider-thread-transfer-drill.mjs</code> now owns CLI orchestration, worker-resume matrix setup, and artifact lifecycle, while shared runtime helpers, provider-state Docker transfer helpers, local/worker scenarios, and slice migration scenarios live in focused drill library modules.</td>
+              <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/live-provider-thread-transfer-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (13 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>731f3519b</code> <span class="muted">Split local API protocol envelopes</span></td>
