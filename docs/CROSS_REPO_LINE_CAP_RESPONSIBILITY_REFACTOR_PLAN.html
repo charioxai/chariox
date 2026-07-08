@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>50 allowlisted files remain after initial splits</td>
+              <td>49 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>13bb96f1e</code> <span class="muted">Extract provider context injection drill helpers</span></td>
+              <td>The provider context injection drill now keeps provider-specific drill flows in the executable script, while shared runtime setup, JSON-RPC/OpenCode polling, probe construction, prompt visibility checks, and headless history readers live in a focused helper module.</td>
+              <td><code>node --check apps/cli/scripts/live-provider-context-injection-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-provider-context-injection-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>2596871ce</code> <span class="muted">Extract cloud publication deployment transport helpers</span></td>
