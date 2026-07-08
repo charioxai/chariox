@@ -50,7 +50,6 @@ apps/kernel/src/local/api/tests/workspace_capabilities.rs
 apps/cli/scripts/live-cloud-publication-deployment-drill.mjs
 apps/kernel/tests/kernel_websocket_runtime_integration.rs
 packages/kernel-client/src/shell-executor-agents-remote.test.ts
-apps/cli/scripts/drill-artifact-index-summary.test.mjs
 apps/kernel/src/local/ipc.rs
 apps/cli/scripts/live-provider-context-injection-drill.mjs
 docs/KERNEL_WEB_TERMINAL_PERFORMANCE_PLAN.html
