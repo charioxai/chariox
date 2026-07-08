@@ -2,6 +2,10 @@ import {
   queuedPromptProjectionForAgent,
   type ProjectedQueuedPrompt,
 } from "./queued-prompt-controls.js"
+import {
+  externalProviderObservedCoalescedTranscriptIdentityFields,
+  externalProviderObservedTranscriptIdentityFields,
+} from "./external-provider-observation.js"
 import type { RuntimeSession, TranscriptEntry } from "./kernel-types.js"
 import type { SessionHistoryTranscriptEntry } from "./session-history-transcript.js"
 import { formatTranscriptPreview } from "./session-history-preview.js"
@@ -142,18 +146,12 @@ export function queuedPromptStripItemToTranscriptEntry(
     promptId: item.promptId,
     sourceAttachmentId: item.sourceAttachmentId,
     promptOrigin: item.promptOrigin,
-    ...(item.externalProvider !== undefined ? { externalProvider: item.externalProvider } : {}),
-    ...(item.externalProviderSessionId !== undefined ? { externalProviderSessionId: item.externalProviderSessionId } : {}),
-    ...(item.externalProviderTurnId !== undefined ? { externalProviderTurnId: item.externalProviderTurnId } : {}),
+    ...externalProviderObservedTranscriptIdentityFields(item),
     queuedPrompt: {
       promptId: item.promptId,
       agentId: item.agentId,
       promptOrigin: item.promptOrigin,
-      ...(item.externalProvider !== undefined ? { externalProvider: item.externalProvider } : {}),
-      ...(item.externalProviderSessionId !== undefined
-        ? { externalProviderSessionId: item.externalProviderSessionId }
-        : {}),
-      ...(item.externalProviderTurnId !== undefined ? { externalProviderTurnId: item.externalProviderTurnId } : {}),
+      ...externalProviderObservedTranscriptIdentityFields(item),
       status: item.status,
       attachmentCount: item.attachmentCount,
       steerDisabled: item.steerDisabled,
@@ -253,21 +251,7 @@ function queuedPromptItemsFromEntries(
       sourceAttachmentId: entry.sourceAttachmentId ?? null,
       prompt: trimSingleTrailingNewline(entry.text),
       promptOrigin: queuedPrompt.promptOrigin ?? entry.promptOrigin ?? null,
-      ...(queuedPrompt.externalProvider !== undefined
-        ? { externalProvider: queuedPrompt.externalProvider }
-        : entry.externalProvider !== undefined
-          ? { externalProvider: entry.externalProvider }
-          : {}),
-      ...(queuedPrompt.externalProviderSessionId !== undefined
-        ? { externalProviderSessionId: queuedPrompt.externalProviderSessionId }
-        : entry.externalProviderSessionId !== undefined
-          ? { externalProviderSessionId: entry.externalProviderSessionId }
-          : {}),
-      ...(queuedPrompt.externalProviderTurnId !== undefined
-        ? { externalProviderTurnId: queuedPrompt.externalProviderTurnId }
-        : entry.externalProviderTurnId !== undefined
-          ? { externalProviderTurnId: entry.externalProviderTurnId }
-          : {}),
+      ...externalProviderObservedCoalescedTranscriptIdentityFields(queuedPrompt, entry),
       status: queuedPrompt.status,
       attachmentCount: queuedPrompt.attachmentCount,
       steerDisabled: queuedPrompt.steerDisabled,
@@ -305,11 +289,7 @@ function queuedPromptItemFromProjection(
       agentId,
       prompt: trimSingleTrailingNewline(prompt.prompt),
       promptOrigin: prompt.promptOrigin,
-      ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
-      ...(prompt.externalProviderSessionId !== undefined
-        ? { externalProviderSessionId: prompt.externalProviderSessionId }
-        : {}),
-      ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
+      ...externalProviderObservedTranscriptIdentityFields(prompt),
       sourceAttachmentId: prompt.sourceAttachmentId,
       status: prompt.status,
       attachmentCount: prompt.attachmentCount,
@@ -326,11 +306,7 @@ function queuedPromptItemFromProjection(
     sourceAttachmentId: prompt.sourceAttachmentId,
     prompt: trimSingleTrailingNewline(prompt.prompt),
     promptOrigin: prompt.promptOrigin,
-    ...(prompt.externalProvider !== undefined ? { externalProvider: prompt.externalProvider } : {}),
-    ...(prompt.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: prompt.externalProviderSessionId }
-      : {}),
-    ...(prompt.externalProviderTurnId !== undefined ? { externalProviderTurnId: prompt.externalProviderTurnId } : {}),
+    ...externalProviderObservedTranscriptIdentityFields(prompt),
     status: prompt.status,
     attachmentCount: prompt.attachmentCount,
     steerDisabled: prompt.steerDisabled,

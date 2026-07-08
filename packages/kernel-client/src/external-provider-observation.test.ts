@@ -7,6 +7,7 @@ import {
   applyExternalProviderObservedTranscriptMetadata,
   applyExternalProviderObservedTurnMetadata,
   externalProviderObservedCompletionAtMs,
+  externalProviderObservedCoalescedTranscriptIdentityFields,
   externalProviderObservedEntryIsPassiveTelemetry,
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityKey,
@@ -20,6 +21,7 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
   externalProviderObservedTranscriptExactIdentityConflicts,
+  externalProviderObservedTranscriptIdentityFields,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservedSource,
@@ -340,6 +342,33 @@ test("external provider observed metadata derives identity from durable external
   assert.deepEqual(externalProviderObservedIdentityFields({
     prompt_id: "external:codex",
   }), {})
+})
+
+test("external provider observed transcript identity fields preserve explicit nulls", () => {
+  assert.deepEqual(externalProviderObservedTranscriptIdentityFields({
+    externalProvider: null,
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  }), {
+    externalProvider: null,
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  })
+})
+
+test("external provider observed coalesced transcript identity fields prefer primary fields", () => {
+  assert.deepEqual(externalProviderObservedCoalescedTranscriptIdentityFields({
+    externalProvider: null,
+    externalProviderSessionId: "thread-primary",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-fallback",
+    externalProviderTurnId: "turn-fallback",
+  }), {
+    externalProvider: null,
+    externalProviderSessionId: "thread-primary",
+    externalProviderTurnId: "turn-fallback",
+  })
 })
 
 test("external provider observed metadata projects transcript turn fields", () => {

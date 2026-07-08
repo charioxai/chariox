@@ -139,8 +139,8 @@ export function externalProviderObservedTranscriptExactIdentityConflicts(
     return false
   }
   return externalProviderObservedExactIdentityConflicts(
-    transcriptExternalProviderIdentityFields(left),
-    transcriptExternalProviderIdentityFields(right),
+    externalProviderObservedTranscriptIdentityFields(left),
+    externalProviderObservedTranscriptIdentityFields(right),
   )
 }
 
@@ -375,7 +375,7 @@ function historyExternalProviderIdentityFields(
   }
 }
 
-function transcriptExternalProviderIdentityFields(
+export function externalProviderObservedTranscriptIdentityFields(
   entry: ExternalProviderObservedTranscriptFields,
 ): ExternalProviderObservedIdentityFields {
   return {
@@ -384,6 +384,31 @@ function transcriptExternalProviderIdentityFields(
       ? { externalProviderSessionId: entry.externalProviderSessionId }
       : {}),
     ...(entry.externalProviderTurnId !== undefined ? { externalProviderTurnId: entry.externalProviderTurnId } : {}),
+  }
+}
+
+export function externalProviderObservedCoalescedTranscriptIdentityFields(
+  primary: ExternalProviderObservedTranscriptIdentityFields,
+  fallback: ExternalProviderObservedTranscriptIdentityFields = {},
+): ExternalProviderObservedIdentityFields {
+  const primaryFields = externalProviderObservedTranscriptIdentityFields(primary)
+  const fallbackFields = externalProviderObservedTranscriptIdentityFields(fallback)
+  return {
+    ...(primaryFields.externalProvider !== undefined
+      ? { externalProvider: primaryFields.externalProvider }
+      : fallbackFields.externalProvider !== undefined
+        ? { externalProvider: fallbackFields.externalProvider }
+        : {}),
+    ...(primaryFields.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: primaryFields.externalProviderSessionId }
+      : fallbackFields.externalProviderSessionId !== undefined
+        ? { externalProviderSessionId: fallbackFields.externalProviderSessionId }
+        : {}),
+    ...(primaryFields.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: primaryFields.externalProviderTurnId }
+      : fallbackFields.externalProviderTurnId !== undefined
+        ? { externalProviderTurnId: fallbackFields.externalProviderTurnId }
+        : {}),
   }
 }
 
