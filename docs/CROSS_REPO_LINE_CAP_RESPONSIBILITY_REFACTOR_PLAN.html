@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>74 allowlisted files remain after initial splits</td>
+              <td>73 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>1da07ee1d</code> <span class="muted">Split prompt command execution tests</span></td>
+              <td>Agent-actor prompt command execution coverage now keeps the original test module as a responsibility index, while completion/cancel behavior, single prompt submit and Meta slash handling, batch submission, and queued-prompt controls live in bounded Rust child modules.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::agent_actor::tests::prompt_command_execution -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>be204d134</code> <span class="muted">Split kernel websocket runtime integration tests</span></td>
