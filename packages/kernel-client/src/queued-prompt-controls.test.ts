@@ -63,6 +63,41 @@ test("queued prompt actionability prefers kernel projected controls", () => {
   })
 })
 
+test("queued prompt projection does not infer steering controls from external prompt origin", () => {
+  const projected = projectQueuedPrompt({
+    ...prompt("prompt-external"),
+    prompt_origin: "external",
+    status: "queued",
+  })
+
+  assert.equal(projected?.promptOrigin, "external")
+  assert.equal(projected?.canSteer, true)
+  assert.equal(projected?.steerDisabled, false)
+  assert.equal(projected?.steerDisabledReason, null)
+})
+
+test("queued prompt projection uses kernel controls to disable external steering", () => {
+  const projected = projectQueuedPrompt({
+    ...prompt("prompt-external"),
+    prompt_origin: "external",
+    status: "queued",
+  }, {
+    control: {
+      prompt_id: "prompt-external",
+      status: "queued",
+      can_steer: false,
+      can_cancel: true,
+      steer_disabled_reason: "Kernel projected external turn reason.",
+    },
+  })
+
+  assert.equal(projected?.promptOrigin, "external")
+  assert.equal(projected?.canSteer, false)
+  assert.equal(projected?.steerDisabled, true)
+  assert.equal(projected?.steerDisabledReason, "Kernel projected external turn reason.")
+  assert.equal(projected?.canCancel, true)
+})
+
 test("queued prompt actionability comparison includes status and controls", () => {
   const current = queuedPromptActionability("queued")
   assert.equal(queuedPromptActionabilityMatches(current, {
