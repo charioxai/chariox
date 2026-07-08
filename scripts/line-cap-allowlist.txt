@@ -38,7 +38,6 @@ apps/kernel/src/skill/mod.rs
 apps/kernel/src/config.rs
 apps/cli/scripts/lib/drill-matrix-report.mjs
 apps/kernel/src/app/provider_runtime.rs
-apps/cli/scripts/lib/drill-validation-gate-aggregate.test.mjs
 apps/kernel/src/app/provider_output.rs
 apps/kernel/src/slice/local_docker.rs
 docs/ops/PROGRESS_LOG.md
