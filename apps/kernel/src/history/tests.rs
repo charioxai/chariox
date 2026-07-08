@@ -1,3 +1,5 @@
+mod legacy_import;
+
 use std::sync::atomic::Ordering;
 
 use base64::Engine;

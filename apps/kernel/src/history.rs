@@ -7,12 +7,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
 mod operational_archive;
+mod operational_legacy_import;
 mod operational_query;
 mod operational_retention;
 mod operational_session;
@@ -21,12 +22,12 @@ mod session_log;
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
-    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS, ExternalProviderObservedId, SessionHistoryEntry,
-    SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryExternalObservation,
-    SessionHistoryPromptAttachment, SessionHistoryStore, external_provider_observed_merge_key,
-    external_provider_observed_merge_key_prefix, external_provider_observed_state_merge_key,
-    parse_external_provider_observed_id,
+    external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
+    external_provider_observed_state_merge_key, parse_external_provider_observed_id,
+    ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
+    SessionHistoryStore, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
