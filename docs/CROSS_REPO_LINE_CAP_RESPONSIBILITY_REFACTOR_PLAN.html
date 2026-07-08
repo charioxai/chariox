@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>38 allowlisted files remain after initial splits</td>
+              <td>37 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6aebf686b</code> <span class="muted">Extract slice display endpoint handling</span></td>
+              <td>Slice lifecycle now owns create/start/stop/delete, state save/reset, backup, worker discovery, relay selection, and lifecycle audit transitions, while display endpoint tunneling, hosted relay URL rewriting, tunnel registration, and tunnel revocation live in a dedicated display endpoint module.</td>
+              <td><code>rustfmt --edition 2024</code> for the dispatcher, lifecycle module, and display endpoint module; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::slice_command_executor::display_endpoint::tests -- --nocapture</code> (3 passed); <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::slice_command_executor::lifecycle::tests -- --nocapture</code> (6 passed); <code>node scripts/check-line-cap.mjs</code>; path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8a8662545</code> <span class="muted">Split kernel protocol tests</span></td>
