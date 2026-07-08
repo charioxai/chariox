@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>72 allowlisted files remain after initial splits</td>
+              <td>71 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>4df167f91</code> <span class="muted">Split session outline tests</span></td>
+              <td>Session outline production logic now stays below the cap with tests extracted to sibling modules; shared outline test imports live in the test parent, while turn lifecycle/scoped external-history behavior and pagination/promptless/attachment behavior live in bounded Rust child modules.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::history_requests::session_outline::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>683919cfc</code> <span class="muted">Split provider prompt runtime tests</span></td>
