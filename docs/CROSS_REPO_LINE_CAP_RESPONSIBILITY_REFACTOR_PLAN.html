@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>13 allowlisted files remain after initial splits</td>
+              <td>12 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>a8a1a83d0</code> <span class="muted">Split iOS app model responsibilities</span></td>
+              <td><code>ArrobaAppModel.swift</code> now keeps observable state, initialization, persisted selection, and the public model surface, while command routing, kernel event/transcript runtime handling, and formatting/state mutation helpers live in focused <code>ArrobaAppModel</code> extension files.</td>
+              <td><code>swift format --in-place</code> for the touched Swift model files; <code>swift build --package-path apps/ios/ArrobaPackage</code>; <code>swift test --package-path apps/ios/ArrobaPackage</code> (65 Swift Testing tests passed); <code>node scripts/check-line-cap.mjs</code> (12 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>21f1ec27f</code> <span class="muted">Split provider thread transfer drill</span></td>
