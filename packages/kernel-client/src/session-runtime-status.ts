@@ -290,6 +290,9 @@ export function agentRuntimeStateFromProjection(
       ? "Working"
       : "Idle"
   }
+  if (context.promptStates) {
+    return agent.state === "Error" ? "Error" : "Idle"
+  }
   return legacyAgentRuntimeState(agent)
 }
 

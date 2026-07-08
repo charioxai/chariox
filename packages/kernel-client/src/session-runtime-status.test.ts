@@ -132,6 +132,17 @@ test("sessionAgentIsBusy treats missing projected agent activity as idle", () =>
   })
 })
 
+test("agent runtime projection treats missing prompt state entries as idle", () => {
+  assert.equal(agentRuntimeStateFromProjection(
+    makeAgent({ id: "agent-1", state: "Working", is_processing: true }),
+    { promptStates: {} },
+  ), "Idle")
+  assert.equal(agentRuntimeStateFromProjection(
+    makeAgent({ id: "agent-1", state: "Error", is_processing: true }),
+    { promptStates: {} },
+  ), "Error")
+})
+
 test("sessionAgentRuntimeActivityProjection returns normalized activity with idle fallback", () => {
   const session = makeSession({
     agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2" })],
