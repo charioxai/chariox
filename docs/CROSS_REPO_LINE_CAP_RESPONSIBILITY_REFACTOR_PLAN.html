@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>48 allowlisted files remain after initial splits</td>
+              <td>47 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>3dad4c186</code> <span class="muted">Extract validation gate preset data</span></td>
+              <td>Validation gate preset definitions now live in a declarative data module, while <code>drill-validation-gate-presets.mjs</code> keeps the public exports plus preset description, expansion, validation, and normalization behavior.</td>
+              <td><code>node --check apps/cli/scripts/lib/drill-validation-gate-presets.mjs</code>, <code>node --check apps/cli/scripts/lib/drill-validation-gate-preset-data.mjs</code>, helper import smoke check preserving public exports, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>53efae858</code> <span class="muted">Extract remote native TUI scenario helpers</span></td>
