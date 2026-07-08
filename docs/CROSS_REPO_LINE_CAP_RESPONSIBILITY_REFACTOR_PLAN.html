@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>100 allowlisted files remain after initial splits</td>
+              <td>99 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>e8ffb5987</code> <span class="muted">Split metaagent runtime tool tests</span></td>
+              <td>Metaagent runtime tool coverage now keeps shared helpers and the visibility smoke in the parent module, while workflow-code, trace/projection, task/scope, command docs, run-command, event, subscription, scoped request, and runtime-interaction scenarios live in bounded sibling test modules.</td>
+              <td>Focused <code>runtime::router::tests::m23_metaagent_runtime_tools</code> kernel test compile with <code>cargo test --no-run</code>, targeted <code>rustfmt --edition 2024</code> check, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>5492901e5</code> <span class="muted">Extract workflow runtime request builders</span></td>
