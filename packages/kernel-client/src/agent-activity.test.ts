@@ -587,6 +587,50 @@ test("completed turn reconciliation keeps incoming snapshots unless current is a
   assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, null), current)
 })
 
+test("completed turn reconciliation preserves same-turn prompt ownership when incoming snapshot is sparse", () => {
+  const current = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    completedAtMs: 100,
+    undoAvailable: false,
+    undoUnavailableReason: "not latest turn",
+  })
+  const incoming = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.deepEqual(reconcileAgentRuntimeLastCompletedTurn(current, incoming), {
+    ...incoming,
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+})
+
+test("completed turn reconciliation does not preserve prompt ownership across different turns", () => {
+  const current = completedTurnAction({
+    turnId: "turn-1",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+  const incoming = completedTurnAction({
+    turnId: "turn-2",
+    promptId: "prompt-2",
+    providerRunId: "run-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, incoming), incoming)
+})
+
 test("completed turn helpers compare freshness and undo restoration eligibility", () => {
   const current = completedTurnAction({
     completedAtMs: 100,

@@ -361,7 +361,35 @@ export function reconcileAgentRuntimeLastCompletedTurn(
   ) {
     return existing
   }
+  if (existing && incoming && agentRuntimeCompletedTurnMatches(existing, incoming)) {
+    return mergeAgentRuntimeCompletedTurnOwnership(existing, incoming)
+  }
   return incoming ?? existing
+}
+
+function mergeAgentRuntimeCompletedTurnOwnership(
+  current: AgentRuntimeCompletedTurnActionProjection,
+  incoming: AgentRuntimeCompletedTurnActionProjection,
+): AgentRuntimeCompletedTurnActionProjection {
+  const preservesOwnership =
+    (incoming.promptOrigin === undefined && current.promptOrigin !== undefined)
+    || (incoming.externalProvider === undefined && current.externalProvider !== undefined)
+    || (incoming.externalProviderSessionId === undefined && current.externalProviderSessionId !== undefined)
+    || (incoming.externalProviderTurnId === undefined && current.externalProviderTurnId !== undefined)
+  if (!preservesOwnership) {
+    return incoming
+  }
+  const promptOrigin = incoming.promptOrigin ?? current.promptOrigin
+  const externalProvider = incoming.externalProvider ?? current.externalProvider
+  const externalProviderSessionId = incoming.externalProviderSessionId ?? current.externalProviderSessionId
+  const externalProviderTurnId = incoming.externalProviderTurnId ?? current.externalProviderTurnId
+  return {
+    ...incoming,
+    ...(promptOrigin !== undefined ? { promptOrigin } : {}),
+    ...(externalProvider !== undefined ? { externalProvider } : {}),
+    ...(externalProviderSessionId !== undefined ? { externalProviderSessionId } : {}),
+    ...(externalProviderTurnId !== undefined ? { externalProviderTurnId } : {}),
+  }
 }
 
 export function agentRuntimeCompletedTurnIsNewer(
