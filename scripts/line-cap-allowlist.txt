@@ -18,5 +18,4 @@ apps/relay/src/server/connection.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/cli/src/cli-app-root.tsx
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
-apps/cli/scripts/lib/drill-matrix-report.mjs
 apps/kernel/src/local/api/types.rs
