@@ -287,6 +287,45 @@ test("stitchPrependedTranscriptHistory ignores stray external metadata without o
   assert.equal(stitched[0]?.externalObservation, undefined)
 })
 
+test("stitchPrependedTranscriptHistory does not merge conflicting external turn fragments", () => {
+  const stitched = stitchPrependedTranscriptHistory(
+    [entry(1, "assistant", "native ", {
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 7,
+      historyTotalChars: 12,
+    })],
+    [entry(2, "assistant", "reply", {
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-2",
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+      historyEntryIndex: 8,
+      historyFragmentStart: 7,
+      historyFragmentEnd: 12,
+      historyTotalChars: 12,
+    })],
+  )
+
+  assert.equal(stitched.length, 2)
+  assert.equal(stitched[0]?.text, "native ")
+  assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(stitched[1]?.text, "reply")
+  assert.equal(stitched[1]?.externalProviderTurnId, "turn-2")
+  assert.deepEqual(stitched[1]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
 test("stitchPrependedTranscriptHistory rebuilds structured tool fragments", () => {
   const toolPayload = JSON.stringify({
     id: "tool-1",

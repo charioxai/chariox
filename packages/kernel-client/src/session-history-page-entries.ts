@@ -1,5 +1,8 @@
 import type { SessionHistoryEntry, SessionHistoryPageEntry } from "./kernel-types.js"
-import { mergeExternalProviderObservedHistoryFields } from "./external-provider-observation.js"
+import {
+  externalProviderObservedHistoryExactIdentityConflicts,
+  mergeExternalProviderObservedHistoryFields,
+} from "./external-provider-observation.js"
 import {
   cloneSessionHistoryPromptAttachments,
   mergeSessionHistoryPromptAttachments,
@@ -17,6 +20,7 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
       previous
       && sessionHistoryFragmentsAreAdjacent(previous, entry)
       && previous.entry.kind === entry.entry.kind
+      && !externalProviderObservedHistoryExactIdentityConflicts(previous.entry, entry.entry)
     ) {
       previous.fragment_end = entry.fragment_end
       previous.entry.text += entry.entry.text

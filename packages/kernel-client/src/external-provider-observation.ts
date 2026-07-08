@@ -112,6 +112,38 @@ export function externalProviderObservedExactIdentityConflicts(
     || candidateKey.providerTurnId !== expectedKey.providerTurnId
 }
 
+export function externalProviderObservedHistoryExactIdentityConflicts(
+  left: ExternalProviderObservedKernelFields,
+  right: ExternalProviderObservedKernelFields,
+): boolean {
+  if (
+    !sessionHistoryEntryIsExternalProviderObserved(left)
+    && !sessionHistoryEntryIsExternalProviderObserved(right)
+  ) {
+    return false
+  }
+  return externalProviderObservedExactIdentityConflicts(
+    historyExternalProviderIdentityFields(left),
+    historyExternalProviderIdentityFields(right),
+  )
+}
+
+export function externalProviderObservedTranscriptExactIdentityConflicts(
+  left: ExternalProviderObservedTranscriptFields,
+  right: ExternalProviderObservedTranscriptFields,
+): boolean {
+  if (
+    !sessionHistoryEntryIsExternalProviderObserved(left)
+    && !sessionHistoryEntryIsExternalProviderObserved(right)
+  ) {
+    return false
+  }
+  return externalProviderObservedExactIdentityConflicts(
+    transcriptExternalProviderIdentityFields(left),
+    transcriptExternalProviderIdentityFields(right),
+  )
+}
+
 export function externalProviderObservedIdentityMatches(
   candidate: ExternalProviderObservedIdentityFields,
   expected: ExternalProviderObservedIdentityFields,
@@ -303,6 +335,32 @@ function hasExternalProviderObservedHistoryMetadata(incoming: ExternalProviderOb
     || incoming.external_provider_turn_id !== undefined
     || incoming.observed_at_ms !== undefined
     || incoming.external_observation !== undefined
+}
+
+function historyExternalProviderIdentityFields(
+  entry: ExternalProviderObservedKernelFields,
+): ExternalProviderObservedIdentityFields {
+  return {
+    ...(entry.external_provider !== undefined ? { externalProvider: entry.external_provider } : {}),
+    ...(entry.external_provider_session_id !== undefined
+      ? { externalProviderSessionId: entry.external_provider_session_id }
+      : {}),
+    ...(entry.external_provider_turn_id !== undefined
+      ? { externalProviderTurnId: entry.external_provider_turn_id }
+      : {}),
+  }
+}
+
+function transcriptExternalProviderIdentityFields(
+  entry: ExternalProviderObservedTranscriptFields,
+): ExternalProviderObservedIdentityFields {
+  return {
+    ...(entry.externalProvider !== undefined ? { externalProvider: entry.externalProvider } : {}),
+    ...(entry.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: entry.externalProviderSessionId }
+      : {}),
+    ...(entry.externalProviderTurnId !== undefined ? { externalProviderTurnId: entry.externalProviderTurnId } : {}),
+  }
 }
 
 export function mergeExternalProviderObservedTranscriptFields<T extends ExternalProviderObservedMutableTranscriptFields>(

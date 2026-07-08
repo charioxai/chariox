@@ -213,6 +213,37 @@ test("adjacent session history page entries recover external observation identit
   })
 })
 
+test("adjacent session history page entries do not merge conflicting external turn fragments", () => {
+  const merged = mergeAdjacentSessionHistoryPageEntries([
+    pageEntry(5, 0, 4, {
+      kind: "provider_output",
+      text: "work",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+    }),
+    pageEntry(5, 4, 8, {
+      kind: "provider_output",
+      text: " done",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-2",
+      external_observation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
+    }),
+  ])
+
+  assert.equal(merged.length, 2)
+  assert.equal(merged[0]?.entry.text, "work")
+  assert.equal(merged[0]?.entry.external_provider_turn_id, "turn-1")
+  assert.equal(merged[1]?.entry.text, " done")
+  assert.equal(merged[1]?.entry.external_provider_turn_id, "turn-2")
+})
+
 test("session history entry clone does not reuse attachment objects", () => {
   const attachment = {
     url: "file:///tmp/a.txt",

@@ -11,12 +11,14 @@ import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityKey,
   externalProviderObservedExactIdentityMatches,
+  externalProviderObservedHistoryExactIdentityConflicts,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedIdentityIsPresent,
   externalProviderObservedIdentityKey,
   externalProviderObservedIdentityMatches,
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
+  externalProviderObservedTranscriptExactIdentityConflicts,
   historyEntryExternalProviderObservedMetadata,
   mergeExternalProviderObservedHistoryFields,
   mergeExternalProviderObservedSource,
@@ -91,6 +93,37 @@ test("external provider observed identity matching normalizes provider and trims
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "user-1",
   }), false)
+  assert.equal(externalProviderObservedHistoryExactIdentityConflicts({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-2",
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedHistoryExactIdentityConflicts({
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-2",
+  }, {
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedTranscriptExactIdentityConflicts({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
   assert.equal(externalProviderObservedIdentityMatches({
     externalProvider: " CODEX ",
     externalProviderSessionId: " thread-1 ",

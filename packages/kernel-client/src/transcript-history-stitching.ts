@@ -4,6 +4,7 @@ import {
   parseToolTranscriptUpdate,
 } from "@arroba/tool-display"
 import {
+  externalProviderObservedTranscriptExactIdentityConflicts,
   mergeExternalProviderObservedTranscriptFields,
   mergeExternalProviderObservedSource,
   type ExternalProviderObservedMutableTranscriptMetadataFields,
@@ -95,6 +96,9 @@ export function stitchPrependedTranscriptHistory<TEntry extends TranscriptHistor
     return markDeferredTranscriptHistoryEntries([...olderEntries, ...currentEntries])
   }
   if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
+    return markDeferredTranscriptHistoryEntries([...olderEntries, ...currentEntries])
+  }
+  if (externalProviderObservedTranscriptExactIdentityConflicts(tail, head)) {
     return markDeferredTranscriptHistoryEntries([...olderEntries, ...currentEntries])
   }
 
