@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>98 allowlisted files remain after initial splits</td>
+              <td>97 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>76056de4c</code> <span class="muted">Split provider output runtime tests</span></td>
+              <td>Provider-output runtime coverage now keeps shared owned-runtime helpers in the parent module, while external queue settlement, history/projection, pump selection, completion settlement, structured output, quiet-drain workflow behavior, diagnostics/timeouts, and cleanup/liveness scenarios live in bounded sibling test modules.</td>
+              <td>Focused <code>runtime::state::provider_output_runtime_tests</code> kernel test compile with <code>cargo test --no-run</code> before a parallel provider module rename blocked later cargo runs, targeted <code>rustfmt --edition 2024</code> check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>0e13c3b13</code> <span class="muted">Split server publication gateway tests</span></td>
