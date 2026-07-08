@@ -789,7 +789,7 @@ test("sessionActivePromptForAgent returns only the active prompt under projected
   assert.equal(sessionHasActivePrompt(conflictingExternalSession, "agent-1", "pending-stale"), false)
 })
 
-test("sessionActivePromptForAgent detects projected conflicts from external prompt ids", () => {
+test("sessionActivePromptForAgent does not infer projected conflicts from external prompt ids", () => {
   const session = makeSession({
     prompt_states: {
       "agent-1": {
@@ -821,7 +821,7 @@ test("sessionActivePromptForAgent detects projected conflicts from external prom
     },
   })
 
-  assert.equal(sessionActivePromptForAgent(session, "agent-1"), null)
+  assert.equal(sessionActivePromptForAgent(session, "agent-1")?.id, "external:codex:thread-1:user-1")
   assert.equal(sessionHasActivePrompt(session, "agent-1", "external:codex:thread-1:user-1"), true)
 })
 

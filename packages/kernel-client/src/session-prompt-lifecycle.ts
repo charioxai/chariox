@@ -10,7 +10,7 @@ import {
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
-  externalProviderObservedIdentityFields,
+  externalProviderObservedExplicitIdentityFields,
   externalProviderObservedIdentityKey,
   type ExternalProviderObservedIdentityFields,
   type ExternalProviderObservedTranscriptIdentityFields,
@@ -142,7 +142,7 @@ function activePromptLifecycleRecordFromProjectedTurn(
 function activePromptLifecycleExternalIdentity(
   prompt: PromptQueueItem,
 ): ExternalProviderObservedTranscriptIdentityFields {
-  const externalIdentity = externalProviderObservedIdentityFields(prompt)
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
   return {
     ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
     ...(externalIdentity.externalProviderSessionId

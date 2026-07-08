@@ -343,7 +343,7 @@ test("sessionActivePromptLifecycleRecords preserves provider identity without in
   }])
 })
 
-test("sessionActivePromptLifecycleRecords derives provider identity from external prompt ids", () => {
+test("sessionActivePromptLifecycleRecords treats external prompt ids as opaque without explicit ownership", () => {
   assert.deepEqual(sessionActivePromptLifecycleRecords(makeSession({
     prompt_states: {
       "agent-1": {
@@ -364,9 +364,6 @@ test("sessionActivePromptLifecycleRecords derives provider identity from externa
     prompt: "hello",
     status: "running",
     promptOrigin: null,
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: "user-1",
   }])
 })
 

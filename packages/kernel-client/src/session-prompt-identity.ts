@@ -8,7 +8,7 @@ import type {
 } from "./agent-activity.js"
 import {
   externalProviderObservedExactIdentityConflicts,
-  externalProviderObservedIdentityFields,
+  externalProviderObservedExplicitIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 import {
@@ -163,7 +163,7 @@ function promptExternalIdentityFields(
   if (!prompt) {
     return {}
   }
-  const externalIdentity = externalProviderObservedIdentityFields(prompt)
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
   return {
     ...(externalIdentity.externalProvider !== undefined
       ? { externalProvider: externalIdentity.externalProvider }

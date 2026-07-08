@@ -362,9 +362,6 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
     promptId: "external:codex:thread-1:turn-1",
     sourceAttachmentId: "attachment-external",
     promptOrigin: "external",
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: "turn-1",
   })
 
   assert.deepEqual(promptSubmissionTranscriptMetadata({

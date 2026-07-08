@@ -1,7 +1,7 @@
 import type { PromptAttachmentPart, PromptQueueItem, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
 import type { TranscriptPromptMetadata } from "./transcript-entry-state.js"
 import {
-  externalProviderObservedIdentityFields,
+  externalProviderObservedExplicitIdentityFields,
 } from "./external-provider-observation.js"
 import {
   promptOriginFromRecord,
@@ -183,7 +183,7 @@ export function promptSubmissionTranscriptMetadata(
     return {}
   }
   const promptOrigin = promptOriginFromRecord(prompt)
-  const externalIdentity = externalProviderObservedIdentityFields(prompt)
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
   return {
     promptId: prompt.id,
     sourceAttachmentId: prompt.source_attachment_id,
