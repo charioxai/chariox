@@ -83,7 +83,6 @@ apps/kernel/src/runtime/state/workflow_tool.rs
 apps/cli/scripts/live-cloud-relay-drill.mjs
 apps/cli/scripts/drill-artifact-index-summary.mjs
 apps/kernel/tests/support/runtime_integration.rs
-apps/cli/src/command-actions-agent.test.ts
 apps/kernel/src/runtime_transport/command_cache.rs
 apps/kernel/src/local/api/tests/terminal_output.rs
 apps/kernel/src/session/service/tests/workflow_runs.rs
