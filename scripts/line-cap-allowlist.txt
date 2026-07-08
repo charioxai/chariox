@@ -16,7 +16,6 @@ apps/kernel/src/transport/runtime_tools.rs
 apps/cli/scripts/lib/drill-validation-gate-aggregate.mjs
 apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
-apps/kernel/src/mcp/mod.rs
 apps/kernel/src/runtime/terminal_command_catalog/catalog.json
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/kernel/src/app/provider_output_claude_native.rs
