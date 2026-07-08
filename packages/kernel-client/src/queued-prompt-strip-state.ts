@@ -110,7 +110,7 @@ export function queuedPromptStripItemsForAgent(
     agentStatusOverrides,
   )
   const projection = queuedPromptProjectionForAgent(session, agentId)
-  if (projection.action === "preserve") {
+  if (projection.action === "ignore" || projection.action === "preserve") {
     return optimisticByPromptId
   }
   return projection.prompts.map((prompt) => {
@@ -151,7 +151,7 @@ export function syncQueuedPromptTranscriptEntriesForAgent<TEntry extends QueuedP
   agentId: string,
 ): QueuedPromptTranscriptSyncResult<TEntry> {
   const projection = queuedPromptProjectionForAgent(session, agentId)
-  if (projection.action === "preserve") {
+  if (projection.action === "ignore" || projection.action === "preserve") {
     return { entries: entries.map((entry) => ({ ...entry })) as TEntry[], changed: false }
   }
   let changed = false

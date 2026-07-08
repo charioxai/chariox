@@ -6,6 +6,8 @@ import {
 } from "./external-provider-observation.js"
 import {
   sessionAgentActivityRecordForAgent,
+  sessionHasAgentActivityProjection,
+  sessionHasPromptStateProjection,
   sessionPromptStateRecordForAgent,
   sessionProjectedPromptActivityForAgent,
 } from "./session-agent-prompt-state.js"
@@ -51,6 +53,7 @@ export type ProjectedQueuedPrompt = QueuedPromptActionability & {
 }
 
 export type QueuedPromptProjection =
+  | { readonly action: "ignore" }
   | { readonly action: "preserve" }
   | { readonly action: "replace"; readonly prompts: readonly ProjectedQueuedPrompt[] }
 
@@ -180,6 +183,9 @@ export function queuedPromptProjectionForAgent(
   session: RuntimeSession,
   agentId: string,
 ): QueuedPromptProjection {
+  if (!sessionHasAgentActivityProjection(session) && !sessionHasPromptStateProjection(session)) {
+    return { action: "ignore" }
+  }
   const prompts = queuedPromptsForAgent(session, agentId)
   if (prompts === null) {
     return { action: "preserve" }

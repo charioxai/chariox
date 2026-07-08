@@ -761,6 +761,9 @@ test("queued prompts for agent ignores legacy top-level queues without projectio
   })
 
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "ignore",
+  })
 })
 
 test("queued prompts for agent ignore all legacy top-level queues", () => {
@@ -777,6 +780,9 @@ test("queued prompts for agent ignore all legacy top-level queues", () => {
 
   assert.deepEqual(queuedPromptsForAgent(session, "agent-1"), [])
   assert.deepEqual(queuedPromptsForAgent(session, "agent-2"), [])
+  assert.deepEqual(queuedPromptProjectionForAgent(session, "agent-1"), {
+    action: "ignore",
+  })
 })
 
 test("queued prompts for agent ignore queues outside session agents", () => {
