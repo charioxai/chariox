@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>15 allowlisted files remain after initial splits</td>
+              <td>14 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>731f3519b</code> <span class="muted">Split local API protocol envelopes</span></td>
+              <td><code>types.rs</code> now acts as the local API protocol facade with the version constant and re-exports, while daemon/common DTOs, terminal command catalog DTOs, metaagent request DTOs, the request envelope, and the response envelope live in focused modules. Waiting-room request markers moved beside the waiting-room projection DTOs.</td>
+              <td><code>rustfmt --edition 2024</code> for touched local API type modules; <code>cargo test -p arroba-kernel local::api::tests::protocol_shapes --lib</code> (47 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (14 allowlisted files remain, no new offenders); staged <code>git diff --check</code>. Broader <code>cargo test -p arroba-kernel local::api --lib</code> currently repeats a stack overflow in <code>waiting_room_agent_workspace_update_drill_updates_public_projection</code>, outside this DTO split.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>5a368bb91</code> <span class="muted">Split runtime tool catalogs</span></td>
