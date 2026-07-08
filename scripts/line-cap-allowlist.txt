@@ -37,7 +37,6 @@ apps/kernel/src/local/api/types.rs
 apps/kernel/src/session/runtime_session.rs
 apps/kernel/src/transport/relay_client/connector.rs
 apps/kernel/src/session/service/turns.rs
-docs/PROTOCOL.md
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
 apps/kernel/src/runtime/slice_command_executor/lifecycle.rs
 apps/kernel/src/transport/kernel_protocol.rs
