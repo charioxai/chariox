@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>96 allowlisted files remain after initial splits</td>
+              <td>95 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>2ccb34270</code> <span class="muted">Split validation gate aggregate tests</span></td>
+              <td>Validation-gate aggregate coverage now keeps shared report fixtures in a support module, while summary/label validation and requirement/generated-evidence scenarios live in bounded sibling test modules behind the existing test entrypoint.</td>
+              <td><code>node --test apps/cli/scripts/lib/drill-validation-gate-aggregate.test.mjs</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>5318a89d8</code> <span class="muted">Split drill artifact tests</span></td>
