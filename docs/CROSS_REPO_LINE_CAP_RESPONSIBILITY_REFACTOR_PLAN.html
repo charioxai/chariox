@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>34 allowlisted files remain after initial splits</td>
+              <td>33 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>7bf9ee1b9</code> <span class="muted">Split iOS kernel protocol models and requests</span></td>
+              <td>The iOS kernel protocol transport file now owns subscribe/unsubscribe/request frames, response frames, response payload decoding, event frame decoding, shared dynamic coding keys, and codec entry points, while decoded runtime/provider/MCP/skill/history model DTOs live in a model file and local daemon request cases plus request-only payload encoding live in a request file.</td>
+              <td><code>swift test --package-path apps/ios/ArrobaPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for all three Swift protocol files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>390f6593b</code> <span class="muted">Extract relay connector writer helpers</span></td>
