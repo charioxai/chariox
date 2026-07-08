@@ -580,6 +580,7 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
         provider_session_id: None,
         prompt_id: "prompt-1".to_string(),
         turn_id: "prompt-1".to_string(),
+        source_attachment_id: Some("attachment-1".to_string()),
         prompt_origin: Some(crate::session::PromptOrigin::Arroba),
         external_provider: None,
         external_provider_session_id: None,

@@ -189,6 +189,7 @@ impl KernelRuntimeOwnedState {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: prompt.id().to_string(),
             turn_id: prompt.id().to_string(),
+            source_attachment_id: Some(prompt.source_attachment_id().to_string()),
             prompt_origin: Some(prompt.prompt_origin()),
             external_provider: prompt.external_provider().map(str::to_string),
             external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),

@@ -58,6 +58,7 @@ impl KernelRuntimeState {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: prompt_id.to_string(),
             turn_id: prompt_id.to_string(),
+            source_attachment_id: active_prompt.map(|prompt| prompt.source_attachment_id().to_string()),
             prompt_origin: active_prompt.map(|prompt| prompt.prompt_origin()),
             external_provider: active_prompt
                 .and_then(|prompt| prompt.external_provider().map(str::to_string)),

@@ -76,7 +76,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 235);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 236);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -155,7 +155,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 235);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 236);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -178,6 +178,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             home_agent_id: "agent-1".to_string(),
             home_prompt_id: "prompt-1".to_string(),
             home_turn_id: "prompt-1".to_string(),
+            source_attachment_id: Some("attachment-1".to_string()),
             workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
             prompt_origin: Some(PromptOrigin::External),
             external_provider: Some("codex".to_string()),
@@ -221,7 +222,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 5);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 6);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
@@ -283,7 +284,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 235);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 236);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

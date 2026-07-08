@@ -29,6 +29,7 @@ pub(crate) struct GitTurnContext {
     pub provider_session_id: Option<String>,
     pub prompt_id: String,
     pub turn_id: String,
+    pub source_attachment_id: Option<String>,
     pub prompt_origin: Option<PromptOrigin>,
     pub external_provider: Option<String>,
     pub external_provider_session_id: Option<String>,
@@ -50,6 +51,8 @@ pub(crate) struct GitTurnSnapshot {
     pub provider_session_id: Option<String>,
     pub prompt_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +105,8 @@ pub struct CompletedGitTurnActionProjection {
     pub prompt_id: String,
     pub provider_run_id: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,6 +239,7 @@ impl CompletedGitTurnSnapshot {
             prompt_id: self.before.prompt_id.clone(),
             provider_run_id: self.before.provider_run_id.clone(),
             agent_id: self.before.agent_id.clone(),
+            source_attachment_id: self.before.source_attachment_id.clone(),
             prompt_origin: self.before.prompt_origin,
             external_provider: self.before.external_provider.clone(),
             external_provider_session_id: self.before.external_provider_session_id.clone(),
@@ -444,6 +450,7 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         provider_session_id: context.provider_session_id,
         prompt_id: context.prompt_id,
         turn_id: context.turn_id,
+        source_attachment_id: context.source_attachment_id,
         prompt_origin: context.prompt_origin,
         external_provider: context.external_provider,
         external_provider_session_id: context.external_provider_session_id,

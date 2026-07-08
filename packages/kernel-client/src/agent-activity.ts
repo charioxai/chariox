@@ -61,6 +61,7 @@ export type AgentRuntimeCompletedTurnActionProjection = {
   readonly promptId: string
   readonly providerRunId: string
   readonly agentId: string
+  readonly sourceAttachmentId?: string | null
   readonly promptOrigin?: string
   readonly externalProvider?: string
   readonly externalProviderSessionId?: string
@@ -314,6 +315,7 @@ export function readAgentRuntimeCompletedTurn(
     promptId,
     providerRunId,
     agentId,
+    ...projectAgentRuntimeCompletedTurnSourceAttachment(turn),
     ...projectAgentRuntimeCompletedTurnOwnership(turn),
     completedAtMs,
     durationMs: readNumberField(turn, "duration_ms"),
@@ -321,6 +323,13 @@ export function readAgentRuntimeCompletedTurn(
     undoAvailable: readBooleanField(turn, "undo_available") === true,
     undoUnavailableReason: readStringField(turn, "undo_unavailable_reason"),
   }
+}
+
+function projectAgentRuntimeCompletedTurnSourceAttachment(
+  turn: Record<string, unknown>,
+): Pick<AgentRuntimeCompletedTurnActionProjection, "sourceAttachmentId"> {
+  const sourceAttachmentId = readNullableStringField(turn, "source_attachment_id")
+  return sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}
 }
 
 function projectAgentRuntimeCompletedTurnOwnership(
@@ -380,7 +389,8 @@ function mergeAgentRuntimeCompletedTurnOwnership(
   incoming: AgentRuntimeCompletedTurnActionProjection,
 ): AgentRuntimeCompletedTurnActionProjection {
   const preservesOwnership =
-    (incoming.promptOrigin === undefined && current.promptOrigin !== undefined)
+    (incoming.sourceAttachmentId === undefined && current.sourceAttachmentId !== undefined)
+    || (incoming.promptOrigin === undefined && current.promptOrigin !== undefined)
     || (incoming.externalProvider === undefined && current.externalProvider !== undefined)
     || (incoming.externalProviderSessionId === undefined && current.externalProviderSessionId !== undefined)
     || (incoming.externalProviderTurnId === undefined && current.externalProviderTurnId !== undefined)
@@ -388,11 +398,13 @@ function mergeAgentRuntimeCompletedTurnOwnership(
     return incoming
   }
   const promptOrigin = incoming.promptOrigin ?? current.promptOrigin
+  const sourceAttachmentId = incoming.sourceAttachmentId ?? current.sourceAttachmentId
   const externalProvider = incoming.externalProvider ?? current.externalProvider
   const externalProviderSessionId = incoming.externalProviderSessionId ?? current.externalProviderSessionId
   const externalProviderTurnId = incoming.externalProviderTurnId ?? current.externalProviderTurnId
   return {
     ...incoming,
+    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
     ...(promptOrigin !== undefined ? { promptOrigin } : {}),
     ...(externalProvider !== undefined ? { externalProvider } : {}),
     ...(externalProviderSessionId !== undefined ? { externalProviderSessionId } : {}),

@@ -335,6 +335,7 @@ async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
             provider_session_id: None,
             prompt_id: "prompt-1".to_string(),
             turn_id: "prompt-1".to_string(),
+            source_attachment_id: Some("attachment-1".to_string()),
             prompt_origin: Some(crate::session::PromptOrigin::Arroba),
             external_provider: None,
             external_provider_session_id: None,

@@ -36,6 +36,7 @@ fn remote_git_turn_context(
         home_agent_id: dispatch.agent_id.clone(),
         home_prompt_id: dispatch.prompt_id.clone(),
         home_turn_id: dispatch.prompt_id.clone(),
+        source_attachment_id: Some(dispatch.source_attachment_id.clone()),
         workspace_live_sync_mode: dispatch.workspace_live_sync_mode,
         prompt_origin: Some(dispatch.prompt_origin),
         external_provider: dispatch.external_provider.clone(),
@@ -72,6 +73,7 @@ fn remote_git_turn_context_for_prompt(
         home_agent_id: agent_id.to_string(),
         home_prompt_id: prompt.id().to_string(),
         home_turn_id: prompt.id().to_string(),
+        source_attachment_id: Some(prompt.source_attachment_id().to_string()),
         workspace_live_sync_mode: remote_workspace_live_sync_mode_for_agent(
             app, session_id, agent_id,
         ),

@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 5;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -104,6 +104,8 @@ pub struct RemoteGitTurnContext {
     pub home_agent_id: String,
     pub home_prompt_id: String,
     pub home_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

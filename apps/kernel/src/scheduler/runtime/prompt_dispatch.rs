@@ -65,6 +65,7 @@ pub(super) fn dispatch_workflow_prompt(
                         home_agent_id: target_agent_id.to_string(),
                         home_prompt_id: prompt.id().to_string(),
                         home_turn_id: prompt.id().to_string(),
+                        source_attachment_id: Some(prompt.source_attachment_id().to_string()),
                         workspace_live_sync_mode: Some(workspace_live_sync_mode),
                         prompt_origin: Some(prompt.prompt_origin()),
                         external_provider: prompt.external_provider().map(str::to_string),
