@@ -8,6 +8,5 @@ apps/cli/scripts/live-workspace-live-sync-drill.mjs
 apps/cli/scripts/workflow-code-artifact-drill.mjs
 apps/kernel/src/runtime/state/tool_dispatch/meta.rs
 apps/kernel/src/app/kernel_session.rs
-apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
 apps/cli/src/cli-app-root.tsx
