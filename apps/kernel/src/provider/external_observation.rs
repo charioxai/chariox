@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
-use std::hash::{Hash, Hasher};
 
 use crate::history::SessionHistoryExternalObservation;
 use crate::provider::ProviderRunTokenUsage;
@@ -16,11 +14,11 @@ pub(crate) struct ObservedExternalProviderTurn {
 
 impl ObservedExternalProviderTurn {
     pub(crate) fn stable_fallback_id(&self) -> String {
-        let mut hasher = DefaultHasher::new();
-        self.role.hash(&mut hasher);
-        self.text.hash(&mut hasher);
-        self.observed_at_ms.hash(&mut hasher);
-        format!("observed-{}-{:016x}", role_text(self.role), hasher.finish())
+        format!(
+            "observed-v1-{}-{:016x}",
+            role_text(self.role),
+            stable_observed_turn_hash(self.role, &self.text, self.observed_at_ms)
+        )
     }
 
     pub(crate) fn provider_turn_id_or_fallback(&self) -> String {
@@ -35,6 +33,33 @@ impl ObservedExternalProviderTurn {
             provider_session_id,
             &self.provider_turn_id_or_fallback(),
         )
+    }
+}
+
+fn stable_observed_turn_hash(
+    role: ObservedExternalProviderTurnRole,
+    text: &str,
+    observed_at_ms: Option<u64>,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    stable_observed_turn_hash_bytes(&mut hash, role_text(role).as_bytes());
+    stable_observed_turn_hash_bytes(&mut hash, &[0]);
+    stable_observed_turn_hash_bytes(&mut hash, text.as_bytes());
+    stable_observed_turn_hash_bytes(&mut hash, &[0]);
+    match observed_at_ms {
+        Some(value) => {
+            stable_observed_turn_hash_bytes(&mut hash, &[1]);
+            stable_observed_turn_hash_bytes(&mut hash, &value.to_be_bytes());
+        }
+        None => stable_observed_turn_hash_bytes(&mut hash, &[0]),
+    }
+    hash
+}
+
+fn stable_observed_turn_hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
 

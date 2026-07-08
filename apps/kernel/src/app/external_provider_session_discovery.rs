@@ -2812,7 +2812,7 @@ mod tests {
             SessionHistoryEntryKind::ProviderTool
         );
         let fallback_id = tool.provider_turn_id_or_fallback();
-        assert!(fallback_id.starts_with("observed-tool-"));
+        assert_eq!(fallback_id, "observed-v1-tool-d4be485e4ccf6617");
         assert_eq!(
             tool.external_merge_key("claude", "thread-2"),
             format!("external:claude:thread-2:{fallback_id}")

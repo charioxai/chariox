@@ -1183,17 +1183,26 @@ fn append_observed_external_turns_for_attached_target_with_options(
         );
         entry.external_observation =
             ExternalProviderObservationPolicy::for_provider(&provider).observation_for_turn(turn);
-        let has_observable_change = {
-            existing_entries_by_merge_key
-                .get(&merge_key)
-                .is_none_or(|existing| !external_observed_history_entry_matches(existing, &entry))
-        };
+        let existing_entry_match_key = external_observed_history_entry_match_key(
+            &existing_entries_by_merge_key,
+            &merge_key,
+            &entry,
+        );
+        let has_observable_change = existing_entry_match_key
+            .as_deref()
+            .and_then(|existing_merge_key| existing_entries_by_merge_key.get(existing_merge_key))
+            .is_none_or(|existing| !external_observed_history_entry_matches(existing, &entry));
         if has_observable_change {
+            let replacement_merge_key =
+                existing_entry_match_key.unwrap_or_else(|| merge_key.clone());
             app.replace_history_entry_by_merge_key_or_append(
                 &read.target.session_id,
-                &merge_key,
+                &replacement_merge_key,
                 entry.clone(),
             );
+            if replacement_merge_key != merge_key {
+                existing_entries_by_merge_key.remove(&replacement_merge_key);
+            }
             existing_entries_by_merge_key.insert(
                 merge_key.clone(),
                 ExternalImportHistoryEntry {
@@ -1396,6 +1405,64 @@ fn external_observed_history_entry_matches(
         && existing.external_provider_turn_id == next.external_provider_turn_id
         && existing.observed_at_ms == next.observed_at_ms
         && existing.external_observation == next.external_observation
+}
+
+fn external_observed_history_entry_match_key(
+    existing_entries_by_merge_key: &BTreeMap<String, ExternalImportHistoryEntry>,
+    merge_key: &str,
+    next: &SessionHistoryEntry,
+) -> Option<String> {
+    if existing_entries_by_merge_key.contains_key(merge_key) {
+        return Some(merge_key.to_string());
+    }
+    existing_entries_by_merge_key
+        .iter()
+        .find(|(_, existing)| {
+            external_observed_history_entry_matches_fallback_migration(existing, next)
+        })
+        .map(|(existing_merge_key, _)| existing_merge_key.clone())
+}
+
+fn external_observed_history_entry_matches_fallback_migration(
+    existing: &ExternalImportHistoryEntry,
+    next: &SessionHistoryEntry,
+) -> bool {
+    existing.kind == next.kind
+        && existing.text == next.text
+        && existing.external_provider == next.external_provider
+        && existing.external_provider_session_id == next.external_provider_session_id
+        && existing.observed_at_ms == next.observed_at_ms
+        && existing.external_observation == next.external_observation
+        && existing
+            .external_provider_turn_id
+            .as_deref()
+            .is_some_and(is_legacy_external_observed_fallback_turn_id)
+        && next
+            .external_provider_turn_id
+            .as_deref()
+            .is_some_and(is_v1_external_observed_fallback_turn_id)
+}
+
+fn is_legacy_external_observed_fallback_turn_id(value: &str) -> bool {
+    const ROLES: [&str; 5] = [
+        "observed-user-",
+        "observed-assistant-",
+        "observed-reasoning-",
+        "observed-tool-",
+        "observed-status-",
+    ];
+    ROLES.iter().any(|prefix| value.starts_with(prefix))
+}
+
+fn is_v1_external_observed_fallback_turn_id(value: &str) -> bool {
+    const ROLES: [&str; 5] = [
+        "observed-v1-user-",
+        "observed-v1-assistant-",
+        "observed-v1-reasoning-",
+        "observed-v1-tool-",
+        "observed-v1-status-",
+    ];
+    ROLES.iter().any(|prefix| value.starts_with(prefix))
 }
 
 fn observed_arroba_owned_user_turn_ids_in_window(
@@ -5057,6 +5124,7 @@ mod tests {
             observed_at_ms: Some(42),
         };
         let prompt_turn_id = prompt.stable_fallback_id();
+        assert_eq!(prompt_turn_id, "observed-v1-user-b59a18f45f005eef");
         let reasoning = ObservedExternalProviderTurn {
             provider_turn_id: Some("reasoning-1".to_string()),
             role: ObservedExternalProviderTurnRole::Reasoning,
@@ -5211,6 +5279,76 @@ mod tests {
                 .expect("active prompt should load")
                 .is_none(),
             "Codex task_complete should clear the external active marker"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_turns_upgrades_legacy_fallback_merge_key_without_duplicate() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import,
+        );
+        let legacy_turn_id = "observed-user-legacydefault";
+        let legacy_merge_key = format!("external:codex:thread-observed:{legacy_turn_id}");
+        app.append_history_entry(
+            session.id(),
+            SessionHistoryEntry::external_provider_observed_with_merge_key(
+                session.id(),
+                None,
+                agent.id(),
+                SessionHistoryEntryKind::UserPrompt,
+                "external prompt without provider item id",
+                "codex",
+                "thread-observed",
+                Some(legacy_merge_key),
+                Some(legacy_turn_id.to_string()),
+                Some(42),
+            ),
+        );
+        let prompt = ObservedExternalProviderTurn {
+            provider_turn_id: None,
+            role: ObservedExternalProviderTurnRole::User,
+            text: "external prompt without provider item id".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let stable_turn_id = prompt.stable_fallback_id();
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![prompt],
+            },
+        )
+        .expect("legacy fallback history should upgrade in place");
+
+        assert_eq!(outcome.changed_count, 1);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].external_provider_turn_id.as_deref(),
+            Some(stable_turn_id.as_str())
+        );
+        let expected_merge_key = format!("external:codex:thread-observed:{stable_turn_id}");
+        assert_eq!(
+            entries[0].merge_key.as_deref(),
+            Some(expected_merge_key.as_str())
         );
     }
 
