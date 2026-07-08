@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>51 allowlisted files remain after initial splits</td>
+              <td>50 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>2596871ce</code> <span class="muted">Extract cloud publication deployment transport helpers</span></td>
+              <td>The Cloud publication deployment drill now keeps prompt/package construction and scenario orchestration in the executable script, while transport validation, browser/CDP assertions, deployment waiters, process control, and network helpers live in a focused helper module.</td>
+              <td><code>node --check apps/cli/scripts/live-cloud-publication-deployment-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-cloud-publication-deployment-drill-transport.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>618e88737</code> + <code>0e2a469de</code> <span class="muted">Extract hosted cloud relay drill helpers</span></td>
