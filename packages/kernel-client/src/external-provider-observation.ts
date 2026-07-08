@@ -276,6 +276,22 @@ export function externalProviderObservedIdentityFields(
   return externalProviderObservedIdFields(record.prompt_id ?? record.id) ?? {}
 }
 
+export function externalProviderObservedExplicitIdentityFields(
+  record: ExternalProviderObservedPromptOriginFields,
+): ExternalProviderObservedTranscriptIdentityFields {
+  return {
+    ...(hasOwn(record, "external_provider")
+      ? { externalProvider: normalizeExternalProviderId(record.external_provider) }
+      : {}),
+    ...(hasOwn(record, "external_provider_session_id")
+      ? { externalProviderSessionId: nonBlankString(record.external_provider_session_id) }
+      : {}),
+    ...(hasOwn(record, "external_provider_turn_id")
+      ? { externalProviderTurnId: nonBlankString(record.external_provider_turn_id) }
+      : {}),
+  }
+}
+
 export function mergeExternalProviderObservation(
   existing: SessionHistoryExternalObservation | null | undefined,
   incoming: SessionHistoryExternalObservation | null | undefined,

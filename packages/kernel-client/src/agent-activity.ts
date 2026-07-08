@@ -4,6 +4,7 @@ import {
 } from "./prompt-origin.js"
 import {
   externalProviderObservedExactIdentityConflicts,
+  externalProviderObservedExplicitIdentityFields,
   externalProviderObservedIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
@@ -486,7 +487,7 @@ function projectExternalProviderObservedIdentity(
   const externalProvider = readStringField(record, "external_provider")
   const externalProviderSessionId = readStringField(record, "external_provider_session_id")
   const externalProviderTurnId = readStringField(record, "external_provider_turn_id")
-  const externalIdentity = externalProviderObservedIdentityFields({
+  const externalIdentity = externalProviderObservedExplicitIdentityFields({
     ...(id !== null ? { id } : {}),
     ...(promptId !== null ? { prompt_id: promptId } : {}),
     ...(externalProvider !== null ? { external_provider: externalProvider } : {}),
