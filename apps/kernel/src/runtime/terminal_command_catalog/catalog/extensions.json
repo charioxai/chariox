@@ -1,0 +1,409 @@
+[
+  {
+    "id": "mcp",
+    "label": "/mcp",
+    "description": "Manage Arroba MCP registry and agent grants",
+    "value": "/mcp ",
+    "children": [
+      {
+        "id": "mcp-list",
+        "label": "list",
+        "description": "List Arroba-managed MCPs",
+        "value": "/mcp list"
+      },
+      {
+        "id": "mcp-install",
+        "label": "install",
+        "description": "Install an MCP into Arroba",
+        "value": "/mcp install "
+      },
+      {
+        "id": "mcp-import",
+        "label": "import",
+        "description": "Import provider MCPs into Arroba",
+        "value": "/mcp import "
+      },
+      {
+        "id": "mcp-grant",
+        "label": "grant",
+        "description": "Grant an MCP to an agent",
+        "value": "/mcp grant "
+      },
+      {
+        "id": "mcp-revoke",
+        "label": "revoke",
+        "description": "Revoke an MCP from an agent",
+        "value": "/mcp revoke "
+      },
+      {
+        "id": "mcp-grants",
+        "label": "grants",
+        "description": "Show an agent's MCP grants",
+        "value": "/mcp grants "
+      },
+      {
+        "id": "mcp-show",
+        "label": "show",
+        "description": "Show MCP config",
+        "value": "/mcp show "
+      }
+    ]
+  },
+  {
+    "id": "skill",
+    "label": "/skill",
+    "description": "Manage Arroba skills and agent grants",
+    "value": "/skill ",
+    "children": [
+      {
+        "id": "skill-list",
+        "label": "list",
+        "description": "List Arroba-managed skills",
+        "value": "/skill list"
+      },
+      {
+        "id": "skill-install",
+        "label": "install",
+        "description": "Install a skill into Arroba",
+        "value": "/skill install "
+      },
+      {
+        "id": "skill-import",
+        "label": "import",
+        "description": "Import provider skills into Arroba",
+        "value": "/skill import "
+      },
+      {
+        "id": "skill-grant",
+        "label": "grant",
+        "description": "Grant a skill to an agent",
+        "value": "/skill grant "
+      },
+      {
+        "id": "skill-revoke",
+        "label": "revoke",
+        "description": "Revoke a skill from an agent",
+        "value": "/skill revoke "
+      },
+      {
+        "id": "skill-grants",
+        "label": "grants",
+        "description": "Show an agent's skill grants",
+        "value": "/skill grants "
+      },
+      {
+        "id": "skill-show",
+        "label": "show",
+        "description": "Show skill metadata",
+        "value": "/skill show "
+      }
+    ]
+  },
+  {
+    "id": "env",
+    "label": "/env",
+    "description": "Manage external script environments",
+    "value": "/env ",
+    "children": [
+      {
+        "id": "env-list",
+        "label": "list",
+        "description": "List script environments",
+        "value": "/env list"
+      },
+      {
+        "id": "env-register",
+        "label": "register",
+        "description": "Register Python or Node environment",
+        "value": "/env register "
+      },
+      {
+        "id": "env-remove",
+        "label": "remove",
+        "description": "Remove an environment",
+        "value": "/env remove "
+      },
+      {
+        "id": "env-show",
+        "label": "show",
+        "description": "Show environment config",
+        "value": "/env show "
+      }
+    ]
+  },
+  {
+    "id": "script",
+    "label": "/script",
+    "description": "Manage script extensions",
+    "value": "/script ",
+    "children": [
+      {
+        "id": "script-list",
+        "label": "list",
+        "description": "List script extensions",
+        "value": "/script list"
+      },
+      {
+        "id": "script-validate",
+        "label": "validate",
+        "description": "Validate a script with test_run",
+        "value": "/script validate "
+      },
+      {
+        "id": "script-register",
+        "label": "register",
+        "description": "Register a script extension",
+        "value": "/script register "
+      },
+      {
+        "id": "script-grant",
+        "label": "grant",
+        "description": "Grant a script to an agent",
+        "value": "/script grant "
+      },
+      {
+        "id": "script-revoke",
+        "label": "revoke",
+        "description": "Revoke a script from an agent",
+        "value": "/script revoke "
+      },
+      {
+        "id": "script-grants",
+        "label": "grants",
+        "description": "Show an agent's script grants",
+        "value": "/script grants "
+      },
+      {
+        "id": "script-show",
+        "label": "show",
+        "description": "Show script metadata",
+        "value": "/script show "
+      }
+    ]
+  },
+  {
+    "id": "credential",
+    "label": "/credential",
+    "description": "Manage connector credentials",
+    "value": "/credential ",
+    "children": [
+      {
+        "id": "credential-list",
+        "label": "list",
+        "description": "List credentials",
+        "value": "/credential list"
+      },
+      {
+        "id": "credential-set",
+        "label": "set",
+        "description": "Store a vault secret",
+        "value": "/credential set "
+      },
+      {
+        "id": "credential-register",
+        "label": "register",
+        "description": "Register credential YAML",
+        "value": "/credential register "
+      },
+      {
+        "id": "credential-remove",
+        "label": "remove",
+        "description": "Remove a credential",
+        "value": "/credential remove "
+      },
+      {
+        "id": "credential-show",
+        "label": "show",
+        "description": "Show credential metadata",
+        "value": "/credential show "
+      }
+    ]
+  },
+  {
+    "id": "connector",
+    "label": "/connector",
+    "description": "Manage API connector extensions",
+    "value": "/connector ",
+    "children": [
+      {
+        "id": "connector-list",
+        "label": "list",
+        "description": "List connectors",
+        "value": "/connector list"
+      },
+      {
+        "id": "connector-register",
+        "label": "register",
+        "description": "Register connector YAML",
+        "value": "/connector register "
+      },
+      {
+        "id": "connector-doctor",
+        "label": "doctor",
+        "description": "Check connector metadata and credential policy",
+        "value": "/connector doctor "
+      },
+      {
+        "id": "connector-test",
+        "label": "test",
+        "description": "Test a connector operation",
+        "value": "/connector test "
+      },
+      {
+        "id": "connector-grant",
+        "label": "grant",
+        "description": "Grant a connector to an agent",
+        "value": "/connector grant "
+      },
+      {
+        "id": "connector-revoke",
+        "label": "revoke",
+        "description": "Revoke a connector from an agent",
+        "value": "/connector revoke "
+      },
+      {
+        "id": "connector-grants",
+        "label": "grants",
+        "description": "Show connector grants",
+        "value": "/connector grants "
+      },
+      {
+        "id": "connector-show",
+        "label": "show",
+        "description": "Show connector metadata",
+        "value": "/connector show "
+      }
+    ]
+  },
+  {
+    "id": "extension",
+    "label": "/extension",
+    "description": "Inspect worker-local, home-proxy, and skill snapshot extension state",
+    "value": "/extension ",
+    "children": [
+      {
+        "id": "extension-import-providers",
+        "label": "import providers",
+        "description": "Import MCPs and skills from provider configs into Arroba",
+        "value": "/extension import providers ",
+        "searchAliases": [
+          "extension import",
+          "import provider extensions",
+          "import provider mcp",
+          "import provider skill",
+          "import mcp",
+          "import skill",
+          "provider mcp import",
+          "provider skill import"
+        ]
+      },
+      {
+        "id": "extension-grant",
+        "label": "grant",
+        "description": "Grant an extension to an agent",
+        "value": "/extension grant "
+      },
+      {
+        "id": "extension-revoke",
+        "label": "revoke",
+        "description": "Revoke an extension from an agent",
+        "value": "/extension revoke "
+      },
+      {
+        "id": "extension-grants",
+        "label": "grants",
+        "description": "Show extension grants by extension kind",
+        "value": "/extension grants ",
+        "children": [
+          {
+            "id": "extension-grants-mcp",
+            "label": "mcp",
+            "description": "Show MCP extension grants for an agent or session",
+            "value": "/extension grants mcp "
+          },
+          {
+            "id": "extension-grants-skill",
+            "label": "skill",
+            "description": "Show skill snapshot extension grants for an agent or session",
+            "value": "/extension grants skill "
+          },
+          {
+            "id": "extension-grants-script",
+            "label": "script",
+            "description": "Show script extension grants for an agent or session",
+            "value": "/extension grants script "
+          },
+          {
+            "id": "extension-grants-connector",
+            "label": "connector",
+            "description": "Show connector extension grants for an agent or session",
+            "value": "/extension grants connector "
+          }
+        ]
+      },
+      {
+        "id": "extension-sync-status",
+        "label": "sync-status",
+        "description": "Show home-authoritative manifest sync, worker projection, and recovery for an agent",
+        "value": "/extension sync-status ",
+        "searchAliases": [
+          "home proxy manifest",
+          "home-proxy manifest",
+          "home-proxy status",
+          "remote extension sync",
+          "manifest status",
+          "manifest attention",
+          "manifest stale",
+          "manifest failed",
+          "manifest unknown",
+          "revoke pending",
+          "sync manifest stale",
+          "sync manifest failed",
+          "sync revoke pending"
+        ]
+      },
+      {
+        "id": "extension-sync-retry",
+        "label": "sync-retry",
+        "description": "Retry worker projection of a home-authoritative extension manifest",
+        "value": "/extension sync-retry ",
+        "searchAliases": [
+          "home proxy retry",
+          "home-proxy retry",
+          "manifest retry",
+          "manifest attention retry",
+          "remote extension retry",
+          "manifest stale",
+          "manifest failed",
+          "revoke pending",
+          "sync manifest stale",
+          "sync manifest failed",
+          "sync revoke pending"
+        ]
+      },
+      {
+        "id": "extension-audit",
+        "label": "audit",
+        "description": "Show home extension audit events, denials, and authority boundary",
+        "value": "/extension audit ",
+        "children": [
+          {
+            "id": "extension-audit-limit",
+            "label": "--limit",
+            "description": "Show a bounded audit history; append count and agent ref",
+            "value": "/extension audit --limit ",
+            "searchAliases": [
+              "home extension audit",
+              "remote extension audit",
+              "home proxy audit"
+            ]
+          }
+        ],
+        "searchAliases": [
+          "worker mismatch",
+          "denial authority"
+        ]
+      }
+    ]
+  }
+]

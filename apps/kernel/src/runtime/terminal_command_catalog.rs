@@ -7,7 +7,28 @@ use crate::local::{
     TerminalCommandCatalogNode, TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
-const CATALOG_JSON: &str = include_str!("terminal_command_catalog/catalog.json");
+const CATALOG_JSON_FRAGMENTS: &[(&str, &str)] = &[
+    (
+        "core",
+        include_str!("terminal_command_catalog/catalog/core.json"),
+    ),
+    (
+        "extensions",
+        include_str!("terminal_command_catalog/catalog/extensions.json"),
+    ),
+    (
+        "workflow",
+        include_str!("terminal_command_catalog/catalog/workflow.json"),
+    ),
+    (
+        "workspace",
+        include_str!("terminal_command_catalog/catalog/workspace.json"),
+    ),
+    (
+        "provider",
+        include_str!("terminal_command_catalog/catalog/provider.json"),
+    ),
+];
 
 #[derive(Debug, Deserialize)]
 struct RawCommandNode {
@@ -40,12 +61,17 @@ pub(crate) fn terminal_command_catalog_response() -> Result<LocalDaemonResponse,
 }
 
 pub(crate) fn terminal_command_catalog() -> Result<TerminalCommandCatalog, DaemonError> {
-    let raw = serde_json::from_str::<Vec<RawCommandNode>>(CATALOG_JSON).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "terminal_command_catalog.parse",
-            message: error.to_string(),
-        }
-    })?;
+    let mut raw = Vec::new();
+    for (name, source) in CATALOG_JSON_FRAGMENTS {
+        let mut fragment =
+            serde_json::from_str::<Vec<RawCommandNode>>(source).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "terminal_command_catalog.parse",
+                    message: format!("{name}: {error}"),
+                }
+            })?;
+        raw.append(&mut fragment);
+    }
     let nodes = raw.into_iter().map(enrich_node).collect::<Vec<_>>();
     let revision = catalog_revision(&nodes)?;
     Ok(TerminalCommandCatalog { revision, nodes })

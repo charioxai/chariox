@@ -1,0 +1,529 @@
+[
+  {
+    "id": "slice",
+    "label": "/slice",
+    "description": "Inspect slices and provider auth",
+    "value": "/slice ",
+    "children": [
+      {
+        "id": "slice-list",
+        "label": "list",
+        "description": "List slices owned by this kernel",
+        "value": "/slice list"
+      },
+      {
+        "id": "slice-create",
+        "label": "create",
+        "description": "Create a slice for the selected worktree",
+        "value": "/slice create ",
+        "children": [
+          {
+            "id": "slice-create-headless",
+            "label": "headless",
+            "description": "Create a hidden Linux slice; append a slice name",
+            "value": "/slice create --headless "
+          },
+          {
+            "id": "slice-create-headed",
+            "label": "headed",
+            "description": "Create a visible Linux slice; append a slice name",
+            "value": "/slice create --headed "
+          },
+          {
+            "id": "slice-create-clean",
+            "label": "clean",
+            "description": "Create a clean slice base; append a slice name",
+            "value": "/slice create --clean "
+          },
+          {
+            "id": "slice-create-from-state",
+            "label": "from-state",
+            "description": "Create a slice from saved state; append state ref and slice name",
+            "value": "/slice create --from-state "
+          }
+        ]
+      },
+      {
+        "id": "slice-status",
+        "label": "status",
+        "description": "Show a slice",
+        "value": "/slice status "
+      },
+      {
+        "id": "slice-doctor",
+        "label": "doctor",
+        "description": "Check slice worker, display, scope, operation, and provider account health",
+        "value": "/slice doctor ",
+        "searchAliases": [
+          "slice readiness",
+          "slice provider auth",
+          "slice account",
+          "slice placement",
+          "slice auth missing",
+          "auth missing",
+          "provider account missing",
+          "provider login missing"
+        ]
+      },
+      {
+        "id": "slice-logs",
+        "label": "logs",
+        "description": "Show slice worker and lifecycle logs",
+        "value": "/slice logs "
+      },
+      {
+        "id": "slice-audit",
+        "label": "audit",
+        "description": "Show recent slice audit events",
+        "value": "/slice audit ",
+        "children": [
+          {
+            "id": "slice-audit-limit",
+            "label": "--limit",
+            "description": "Show a bounded slice audit history; append count and slice ref",
+            "value": "/slice audit --limit "
+          }
+        ]
+      },
+      {
+        "id": "slice-state",
+        "label": "state",
+        "description": "Show saved slice state and restart requirements",
+        "value": "/slice state ",
+        "searchAliases": [
+          "slice state",
+          "slice snapshot",
+          "saved slice state",
+          "slice restart requirements"
+        ]
+      },
+      {
+        "id": "slice-save-state",
+        "label": "save-state",
+        "description": "Save reusable slice state and choose what happens to attached agents",
+        "value": "/slice save-state ",
+        "children": [
+          {
+            "id": "slice-save-state-restart-agents",
+            "label": "--restart-agents",
+            "description": "Save state, then restart attached agents from the saved state; append a slice ref",
+            "value": "/slice save-state --restart-agents "
+          },
+          {
+            "id": "slice-save-state-shutdown",
+            "label": "--shutdown",
+            "description": "Save state, then shut the slice down; append a slice ref",
+            "value": "/slice save-state --shutdown "
+          },
+          {
+            "id": "slice-save-state-this-slice",
+            "label": "--this-slice",
+            "description": "Save state for this slice only; combine with restart or shutdown and append a slice ref",
+            "value": "/slice save-state --this-slice "
+          },
+          {
+            "id": "slice-save-state-future-slices",
+            "label": "--future-slices",
+            "description": "Save state as the default for future new slices; combine with restart or shutdown and append a slice ref",
+            "value": "/slice save-state --future-slices "
+          }
+        ],
+        "searchAliases": [
+          "slice snapshot",
+          "snapshot slice",
+          "save slice state"
+        ]
+      },
+      {
+        "id": "slice-backup",
+        "label": "backup",
+        "description": "Create a backup copy of saved slice state",
+        "value": "/slice backup ",
+        "children": [
+          {
+            "id": "slice-backup-name",
+            "label": "--name",
+            "description": "Create a named backup; append backup name and slice ref",
+            "value": "/slice backup --name "
+          }
+        ],
+        "searchAliases": [
+          "recover state",
+          "slice state recovery",
+          "backup slice state"
+        ]
+      },
+      {
+        "id": "slice-reset-state",
+        "label": "reset-state",
+        "description": "Reset saved slice state after agents are detached",
+        "value": "/slice reset-state ",
+        "searchAliases": [
+          "reset slice state",
+          "clear slice state",
+          "discard slice state",
+          "fresh slice state"
+        ]
+      },
+      {
+        "id": "slice-start",
+        "label": "start",
+        "description": "Start a slice",
+        "value": "/slice start "
+      },
+      {
+        "id": "slice-stop",
+        "label": "stop",
+        "description": "Stop a slice",
+        "value": "/slice stop "
+      },
+      {
+        "id": "slice-delete",
+        "label": "delete",
+        "description": "Delete a slice",
+        "value": "/slice delete "
+      },
+      {
+        "id": "slice-screen",
+        "label": "screen",
+        "description": "Open or show the slice screen URL",
+        "value": "/slice screen ",
+        "searchAliases": [
+          "headed slice",
+          "slice display",
+          "slice browser",
+          "open screen",
+          "show screen"
+        ]
+      },
+      {
+        "id": "slice-ls",
+        "label": "ls",
+        "description": "Alias for /slice list",
+        "value": "/slice ls"
+      },
+      {
+        "id": "slice-show",
+        "label": "show",
+        "description": "Alias for /slice status",
+        "value": "/slice show "
+      },
+      {
+        "id": "slice-auth",
+        "label": "auth",
+        "description": "Manage provider accounts inside a slice",
+        "value": "/slice auth ",
+        "children": [
+          {
+            "id": "slice-auth-login",
+            "label": "login",
+            "description": "Start provider login inside the slice for a different account",
+            "value": "/slice auth login ",
+            "searchAliases": [
+              "slice account login",
+              "provider account login",
+              "different account",
+              "auth missing",
+              "provider account missing",
+              "provider login missing"
+            ]
+          },
+          {
+            "id": "slice-auth-import",
+            "label": "import",
+            "description": "Copy this machine's provider credentials into the slice; credentials stay slice-scoped",
+            "value": "/slice auth import ",
+            "searchAliases": [
+              "slice account import",
+              "copy credentials",
+              "provider credentials"
+            ]
+          },
+          {
+            "id": "slice-auth-remove",
+            "label": "remove",
+            "description": "Remove slice-local provider credentials and account summary",
+            "value": "/slice auth remove ",
+            "searchAliases": [
+              "slice account remove",
+              "remove credentials",
+              "provider account remove"
+            ]
+          },
+          {
+            "id": "slice-auth-alias",
+            "label": "alias",
+            "description": "Set an Arroba display alias when the provider account label is unclear",
+            "value": "/slice auth alias ",
+            "searchAliases": [
+              "slice account alias",
+              "provider account alias",
+              "account label"
+            ]
+          }
+        ],
+        "searchAliases": [
+          "slice auth login",
+          "slice provider account",
+          "provider account missing"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "workspace",
+    "label": "/workspace",
+    "description": "Manage workspace state for the current session",
+    "value": "/workspace ",
+    "children": [
+      {
+        "id": "workspace-set",
+        "label": "set",
+        "description": "Set the next-session workspace path",
+        "value": "/workspace "
+      },
+      {
+        "id": "workspace-link-create",
+        "label": "link create",
+        "description": "Create a session workspace link",
+        "value": "/workspace link create "
+      },
+      {
+        "id": "workspace-link-list",
+        "label": "link list",
+        "description": "List session workspace links",
+        "value": "/workspace link list"
+      },
+      {
+        "id": "workspace-link-show",
+        "label": "link show",
+        "description": "Show workspace link attachments",
+        "value": "/workspace link show "
+      },
+      {
+        "id": "workspace-link-attach",
+        "label": "link attach",
+        "description": "Attach the current worktree to a link",
+        "value": "/workspace link attach "
+      },
+      {
+        "id": "workspace-link-detach",
+        "label": "link detach",
+        "description": "Detach the current worktree from a link",
+        "value": "/workspace link detach "
+      },
+      {
+        "id": "workspace-sync-doctor",
+        "label": "sync doctor",
+        "description": "Diagnose workspace live sync health, blockers, and recovery commands",
+        "value": "/workspace sync doctor",
+        "searchAliases": [
+          "live sync health",
+          "workspace sync health",
+          "workspace sync blockers",
+          "sync recovery",
+          "sync doctor"
+        ]
+      },
+      {
+        "id": "workspace-sync-link",
+        "label": "sync link",
+        "description": "Attach this worktree to a sync link",
+        "value": "/workspace sync link ",
+        "searchAliases": [
+          "link worktree",
+          "attach worktree",
+          "bind worktree",
+          "sync another repo",
+          "sync target worktree"
+        ]
+      },
+      {
+        "id": "workspace-sync",
+        "label": "sync",
+        "description": "Inspect or set Workspace Live Sync for the current session",
+        "value": "/workspace sync ",
+        "children": [
+          {
+            "id": "workspace-sync-status",
+            "label": "sync status",
+            "description": "Open Workspace Live Sync status",
+            "value": "/workspace sync status",
+            "searchAliases": [
+              "live sync status",
+              "workspace sync status",
+              "sync readiness",
+              "sync tracked",
+              "sync managed",
+              "workspace-live-sync",
+              "external changes"
+            ]
+          },
+          {
+            "id": "workspace-sync-targets",
+            "label": "sync targets",
+            "description": "Open Workspace Live Sync targets",
+            "value": "/workspace sync targets",
+            "searchAliases": [
+              "sync target",
+              "workspace sync target",
+              "synced worktree"
+            ]
+          },
+          {
+            "id": "workspace-sync-conflicts",
+            "label": "sync conflicts",
+            "description": "Open Workspace Live Sync conflicts",
+            "value": "/workspace sync conflicts",
+            "searchAliases": [
+              "live sync collision",
+              "workspace collision",
+              "collisions",
+              "conflict"
+            ]
+          },
+          {
+            "id": "workspace-sync-ignore",
+            "label": "sync ignore",
+            "description": "Open Workspace Live Sync ignore rules",
+            "value": "/workspace sync ignore",
+            "searchAliases": [
+              "arrobaignore",
+              ".arrobaignore",
+              "sync ignore",
+              "ignored paths"
+            ]
+          },
+          {
+            "id": "workspace-sync-audit",
+            "label": "sync audit",
+            "description": "Open Workspace Live Sync mode audit",
+            "value": "/workspace sync audit",
+            "searchAliases": [
+              "sync history",
+              "sync mode history",
+              "mode audit",
+              "live sync audit"
+            ]
+          },
+          {
+            "id": "workspace-sync-off",
+            "label": "sync off",
+            "description": "Turn Workspace Live Sync off; other repositories stay unrestricted",
+            "value": "/workspace sync off",
+            "searchAliases": [
+              "disable live sync",
+              "turn live sync off",
+              "no live sync",
+              "sync off by default",
+              "other repositories unrestricted"
+            ]
+          },
+          {
+            "id": "workspace-sync-managed",
+            "label": "sync managed",
+            "description": "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted",
+            "value": "/workspace sync managed",
+            "searchAliases": [
+              "managed live sync",
+              "workspace managed sync",
+              "managed write fencing"
+            ]
+          },
+          {
+            "id": "workspace-sync-tracked",
+            "label": "sync tracked",
+            "description": "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted",
+            "value": "/workspace sync tracked",
+            "searchAliases": [
+              "tracked live sync",
+              "turn end sync",
+              "workspace tracked sync",
+              "turn-end sync"
+            ]
+          },
+          {
+            "id": "workspace-sync-default",
+            "label": "sync default",
+            "description": "Set default live sync for new sessions without changing the current session",
+            "value": "/workspace sync default ",
+            "searchAliases": [
+              "default live sync",
+              "new session live sync",
+              "sync off by default",
+              "global live sync default"
+            ],
+            "children": [
+              {
+                "id": "workspace-sync-default-off",
+                "label": "off",
+                "description": "Default new sessions to Workspace Live Sync off; other repositories stay unrestricted",
+                "value": "/workspace sync default off"
+              },
+              {
+                "id": "workspace-sync-default-managed",
+                "label": "managed",
+                "description": "Default new sessions to managed sync for the selected workspace/worktree; other repositories stay unrestricted",
+                "value": "/workspace sync default managed"
+              },
+              {
+                "id": "workspace-sync-default-tracked",
+                "label": "tracked",
+                "description": "Default new sessions to tracked turn-end sync for the selected workspace/worktree; other repositories stay unrestricted",
+                "value": "/workspace sync default tracked"
+              }
+            ]
+          },
+          {
+            "id": "workspace-sync-doctor",
+            "label": "doctor",
+            "description": "Diagnose workspace live sync health, blockers, and recovery commands",
+            "value": "/workspace sync doctor",
+            "searchAliases": [
+              "workspace sync health",
+              "sync health",
+              "sync blockers",
+              "sync recovery"
+            ]
+          },
+          {
+            "id": "workspace-sync-link",
+            "label": "link",
+            "description": "Attach this worktree to a sync link",
+            "value": "/workspace sync link ",
+            "searchAliases": [
+              "sync another repo",
+              "another repo"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "worktree",
+    "label": "/worktree",
+    "description": "Set, create, or name the next-session worktree",
+    "value": "/worktree ",
+    "children": [
+      {
+        "id": "worktree-set",
+        "label": "set",
+        "description": "Set the next-session worktree path",
+        "value": "/worktree "
+      },
+      {
+        "id": "worktree-create",
+        "label": "create",
+        "description": "Create a new git worktree for a branch",
+        "value": "/worktree create "
+      },
+      {
+        "id": "worktree-name",
+        "label": "name",
+        "description": "Assign a user-facing alias to the selected worktree",
+        "value": "/worktree name "
+      }
+    ]
+  }
+]

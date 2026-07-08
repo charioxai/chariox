@@ -1,0 +1,418 @@
+[
+  {
+    "id": "workflow",
+    "label": "/workflow",
+    "description": "Create, export, and inspect workflows",
+    "value": "/workflow ",
+    "children": [
+      {
+        "id": "workflow-open",
+        "label": "open",
+        "description": "Open the workflow outline",
+        "value": "/workflow"
+      },
+      {
+        "id": "workflow-list",
+        "label": "list",
+        "description": "List workflows in the workspace",
+        "value": "/workflow list"
+      },
+      {
+        "id": "workflow-show",
+        "label": "show",
+        "description": "Show a workflow by id or alias",
+        "value": "/workflow show "
+      },
+      {
+        "id": "workflow-new",
+        "label": "new",
+        "description": "Create a new workflow",
+        "value": "/workflow new "
+      },
+      {
+        "id": "workflow-run",
+        "label": "run",
+        "description": "Invoke a workflow endpoint",
+        "value": "/workflow run "
+      },
+      {
+        "id": "workflow-start",
+        "label": "start",
+        "description": "Alias for /workflow run",
+        "value": "/workflow start "
+      },
+      {
+        "id": "workflow-flush-context",
+        "label": "flush-context",
+        "description": "Set whether workflow runs start with fresh provider sessions",
+        "value": "/workflow flush-context "
+      },
+      {
+        "id": "workflow-run-output-schema",
+        "label": "run-output-schema",
+        "description": "Set the workflow final output schema",
+        "value": "/workflow run-output-schema "
+      },
+      {
+        "id": "workflow-max-turns",
+        "label": "max-turns",
+        "description": "Set max workflow turns across all agents",
+        "value": "/workflow max-turns "
+      },
+      {
+        "id": "workflow-runs",
+        "label": "runs",
+        "description": "List workflow runs in the session",
+        "value": "/workflow runs "
+      },
+      {
+        "id": "workflow-add-node-all",
+        "label": "add node all",
+        "description": "Add every session agent that is not already a workflow node",
+        "value": "/workflow add node all"
+      },
+      {
+        "id": "workflow-queue",
+        "label": "queue",
+        "description": "Inspect and manage workflow prompt queues",
+        "value": "/workflow queue ",
+        "children": [
+          {
+            "id": "workflow-queue-list",
+            "label": "list",
+            "description": "List workflow prompt queues and queued prompts",
+            "value": "/workflow queue"
+          },
+          {
+            "id": "workflow-queue-create",
+            "label": "create",
+            "description": "Create a workflow prompt queue",
+            "value": "/workflow queue create "
+          },
+          {
+            "id": "workflow-queue-edit",
+            "label": "edit",
+            "description": "Edit a queued workflow prompt",
+            "value": "/workflow queue edit "
+          },
+          {
+            "id": "workflow-queue-move",
+            "label": "move",
+            "description": "Move a queued prompt to another queue",
+            "value": "/workflow queue move "
+          },
+          {
+            "id": "workflow-queue-clear",
+            "label": "clear",
+            "description": "Clear a workflow prompt queue",
+            "value": "/workflow queue clear "
+          },
+          {
+            "id": "workflow-queue-remove",
+            "label": "remove",
+            "description": "Remove one queued workflow prompt",
+            "value": "/workflow queue remove "
+          }
+        ]
+      },
+      {
+        "id": "workflow-cancel",
+        "label": "cancel",
+        "description": "Cancel a workflow run",
+        "value": "/workflow cancel "
+      },
+      {
+        "id": "workflow-resume",
+        "label": "resume",
+        "description": "Resume a stopped workflow run",
+        "value": "/workflow resume "
+      },
+      {
+        "id": "workflow-pane",
+        "label": "pane",
+        "description": "Switch workflow detail pane",
+        "value": "/workflow pane ",
+        "children": [
+          {
+            "id": "workflow-pane-logs",
+            "label": "logs",
+            "description": "Show workflow logs",
+            "value": "/workflow pane logs "
+          },
+          {
+            "id": "workflow-pane-trace",
+            "label": "trace",
+            "description": "Show selected agent trace",
+            "value": "/workflow pane trace "
+          },
+          {
+            "id": "workflow-pane-edit",
+            "label": "edit",
+            "description": "Show workflow component editor",
+            "value": "/workflow pane edit "
+          }
+        ]
+      },
+      {
+        "id": "workflow-schedule",
+        "label": "schedule",
+        "description": "Manage workflow schedules",
+        "value": "/workflow schedule ",
+        "children": [
+          {
+            "id": "workflow-schedule-add",
+            "label": "add",
+            "description": "Create a workflow schedule",
+            "value": "/workflow schedule add "
+          },
+          {
+            "id": "workflow-schedule-list",
+            "label": "list",
+            "description": "List workflow schedules",
+            "value": "/workflow schedule list "
+          },
+          {
+            "id": "workflow-schedule-enable",
+            "label": "enable",
+            "description": "Enable a schedule",
+            "value": "/workflow schedule enable "
+          },
+          {
+            "id": "workflow-schedule-disable",
+            "label": "disable",
+            "description": "Disable a schedule",
+            "value": "/workflow schedule disable "
+          },
+          {
+            "id": "workflow-schedule-remove",
+            "label": "remove",
+            "description": "Remove a schedule",
+            "value": "/workflow schedule remove "
+          },
+          {
+            "id": "workflow-schedule-preview",
+            "label": "preview",
+            "description": "Preview schedule run times",
+            "value": "/workflow schedule preview "
+          }
+        ]
+      },
+      {
+        "id": "workflow-alias",
+        "label": "alias",
+        "description": "Assign an alias to an existing workflow",
+        "value": "/workflow "
+      },
+      {
+        "id": "workflow-node",
+        "label": "node",
+        "description": "Manage workflow nodes",
+        "value": "/workflow node ",
+        "children": [
+          {
+            "id": "workflow-node-add",
+            "label": "add",
+            "description": "Add a workflow node for an agent",
+            "value": "/workflow node add "
+          },
+          {
+            "id": "workflow-node-add-all",
+            "label": "add all",
+            "description": "Add every session agent that is not already a workflow node",
+            "value": "/workflow node add all"
+          },
+          {
+            "id": "workflow-node-remove",
+            "label": "remove",
+            "description": "Remove a workflow node",
+            "value": "/workflow node remove "
+          },
+          {
+            "id": "workflow-node-can-complete-run",
+            "label": "can-complete-run",
+            "description": "Allow a node to complete the workflow run",
+            "value": "/workflow node can-complete-run "
+          },
+          {
+            "id": "workflow-node-wait-for-all-inputs",
+            "label": "wait-for-all-inputs",
+            "description": "Wait until every incoming edge has a same-iteration input",
+            "value": "/workflow node wait-for-all-inputs "
+          },
+          {
+            "id": "workflow-node-max-turns",
+            "label": "max-turns",
+            "description": "Set the node turn budget for one workflow run",
+            "value": "/workflow node max-turns "
+          },
+          {
+            "id": "workflow-node-instructions",
+            "label": "instructions",
+            "description": "Manage workflow node instructions",
+            "value": "/workflow node instructions ",
+            "children": [
+              {
+                "id": "workflow-node-instructions-show",
+                "label": "show",
+                "description": "Show workflow node instructions in the I/O panel",
+                "value": "/workflow node instructions show "
+              },
+              {
+                "id": "workflow-node-instructions-set",
+                "label": "set",
+                "description": "Set workflow node instructions (optional file)",
+                "value": "/workflow node instructions set "
+              },
+              {
+                "id": "workflow-node-instructions-save",
+                "label": "save",
+                "description": "Save the current workflow node instructions draft",
+                "value": "/workflow node instructions save"
+              },
+              {
+                "id": "workflow-node-instructions-close",
+                "label": "close",
+                "description": "Close the workflow node instructions panel",
+                "value": "/workflow node instructions close"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "workflow-edge",
+        "label": "edge",
+        "description": "Manage workflow edges",
+        "value": "/workflow edge ",
+        "children": [
+          {
+            "id": "workflow-edge-shorthand",
+            "label": "connect",
+            "description": "Add a directed edge between two workflow nodes",
+            "value": "/workflow "
+          },
+          {
+            "id": "workflow-edge-add",
+            "label": "add",
+            "description": "Add a directed edge between workflow nodes",
+            "value": "/workflow edge add "
+          },
+          {
+            "id": "workflow-edge-remove",
+            "label": "remove",
+            "description": "Remove a workflow edge",
+            "value": "/workflow edge remove "
+          }
+        ]
+      },
+      {
+        "id": "workflow-endpoint",
+        "label": "endpoint",
+        "description": "Manage workflow endpoints",
+        "value": "/workflow endpoint ",
+        "children": [
+          {
+            "id": "workflow-endpoint-new",
+            "label": "new",
+            "description": "Create a workflow endpoint",
+            "value": "/workflow endpoint new "
+          },
+          {
+            "id": "workflow-endpoint-alias",
+            "label": "alias",
+            "description": "Assign an alias to a workflow endpoint",
+            "value": "/workflow endpoint alias "
+          },
+          {
+            "id": "workflow-endpoint-bind",
+            "label": "bind",
+            "description": "Bind an endpoint to a workflow node",
+            "value": "/workflow endpoint bind "
+          }
+        ]
+      },
+      {
+        "id": "workflow-code",
+        "label": "code",
+        "description": "Validate, save, apply, run, import, or export workflow-code artifacts",
+        "value": "/workflow code ",
+        "searchAliases": [
+          "workflow code",
+          "workflow-code",
+          "workflow script",
+          "export workflow as code"
+        ],
+        "children": [
+          {
+            "id": "workflow-code-package-export",
+            "label": "package export",
+            "description": "Download a saved workflow-code artifact as a portable package JSON; append artifact name and --out file",
+            "value": "/workflow code package export "
+          },
+          {
+            "id": "workflow-code-source-export",
+            "label": "source export",
+            "description": "Download a workflow or artifact as a JavaScript source file; append ref and --out file",
+            "value": "/workflow code source export "
+          },
+          {
+            "id": "workflow-code-source-export-directory",
+            "label": "source export-directory",
+            "description": "Download a workflow or artifact as a source-directory zip with external JSON schemas; append ref and --out directory",
+            "value": "/workflow code source export-directory "
+          }
+        ]
+      },
+      {
+        "id": "workflow-registry",
+        "label": "registry",
+        "description": "List, register, load, run, or delete reusable workflows",
+        "value": "/workflow registry ",
+        "searchAliases": [
+          "registered workflow",
+          "builtin workflow",
+          "standard workflow",
+          "workflow load"
+        ],
+        "children": [
+          {
+            "id": "workflow-registry-list",
+            "label": "list",
+            "description": "Show registered builtin, user, and workspace workflows",
+            "value": "/workflow registry list"
+          },
+          {
+            "id": "workflow-registry-get",
+            "label": "get",
+            "description": "Show a registered workflow's metadata; append the workflow name",
+            "value": "/workflow registry get "
+          },
+          {
+            "id": "workflow-registry-add-from-workflow",
+            "label": "add from workflow",
+            "description": "Register a canvas workflow by name; append name and workflow ref",
+            "value": "/workflow registry add-from-workflow "
+          },
+          {
+            "id": "workflow-registry-load",
+            "label": "load",
+            "description": "Create a workflow from a registered entry; append the workflow name",
+            "value": "/workflow load "
+          },
+          {
+            "id": "workflow-registry-run",
+            "label": "run",
+            "description": "Create and run a registered workflow; append name, --endpoint, and --prompt",
+            "value": "/workflow run "
+          },
+          {
+            "id": "workflow-registry-delete",
+            "label": "delete",
+            "description": "Delete a user or workspace registry entry; append the workflow name",
+            "value": "/workflow registry delete "
+          }
+        ]
+      }
+    ]
+  }
+]

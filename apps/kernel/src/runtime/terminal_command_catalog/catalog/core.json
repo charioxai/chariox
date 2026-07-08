@@ -1,0 +1,549 @@
+[
+  {
+    "id": "meta",
+    "label": "/meta",
+    "description": "Start a temporary Meta mode task on the focused agent",
+    "value": "/meta ",
+    "searchAliases": [
+      "meta mode",
+      "metaagent",
+      "planner",
+      "delegate",
+      "supervise",
+      "task"
+    ]
+  },
+  {
+    "id": "loop",
+    "label": "/loop",
+    "description": "Run the iterate-until-done workflow immediately with a prompt",
+    "value": "/loop ",
+    "searchAliases": [
+      "workflow",
+      "iterate until done",
+      "loop until done",
+      "auto run",
+      "agent workflow"
+    ]
+  },
+  {
+    "id": "goal",
+    "label": "/goal",
+    "description": "Run the planner-worker-reviewer workflow immediately with a prompt",
+    "value": "/goal ",
+    "searchAliases": [
+      "workflow",
+      "planner worker reviewer",
+      "implementation goal",
+      "review loop",
+      "auto run"
+    ]
+  },
+  {
+    "id": "session",
+    "label": "/session",
+    "description": "Create, attach, list, or delete sessions",
+    "value": "/session ",
+    "children": [
+      {
+        "id": "session-new",
+        "label": "new",
+        "description": "Create and attach a new session, optionally in a directory/worktree",
+        "value": "/session new "
+      },
+      {
+        "id": "session-attach",
+        "label": "attach",
+        "description": "Attach to an existing session",
+        "value": "/session attach "
+      },
+      {
+        "id": "session-list",
+        "label": "list",
+        "description": "List available sessions",
+        "value": "/session list",
+        "searchAliases": [
+          "active sessions",
+          "join existing session",
+          "remote sessions",
+          "remote/slice sessions",
+          "remote slice sessions",
+          "slice sessions",
+          "worker run gaps",
+          "session blockers"
+        ]
+      },
+      {
+        "id": "session-status",
+        "label": "status",
+        "description": "Show current session owner, runtime placement, live sync, and blockers",
+        "value": "/session status",
+        "searchAliases": [
+          "session info",
+          "session inspect",
+          "home kernel",
+          "runtime placement",
+          "live sync",
+          "what is blocked",
+          "runtime blockers",
+          "where agents run",
+          "remote runtime",
+          "remote/slice agents",
+          "worker run gap"
+        ]
+      },
+      {
+        "id": "session-delete",
+        "label": "delete",
+        "description": "Delete the current or referenced session",
+        "value": "/session delete "
+      }
+    ]
+  },
+  {
+    "id": "agent",
+    "label": "/agent",
+    "description": "Manage agents in the current session",
+    "value": "/agent ",
+    "children": [
+      {
+        "id": "agent-spawn",
+        "label": "spawn",
+        "description": "Spawn local, remote, or slice agents; choose slice off, new, or reuse existing in the dialog",
+        "value": "/agent spawn",
+        "searchAliases": [
+          "new agent",
+          "remote agent",
+          "slice agent",
+          "spawn in slice",
+          "spawn on machine",
+          "different account",
+          "provider account",
+          "reuse slice"
+        ]
+      },
+      {
+        "id": "agent-delete",
+        "label": "delete",
+        "description": "Delete the focused or named agent",
+        "value": "/agent delete "
+      },
+      {
+        "id": "agent-destroy",
+        "label": "destroy",
+        "description": "Alias for /agent delete",
+        "value": "/agent destroy "
+      },
+      {
+        "id": "agent-focus",
+        "label": "focus",
+        "description": "Focus on a specific agent",
+        "value": "/agent focus "
+      },
+      {
+        "id": "agent-alias",
+        "label": "alias",
+        "description": "Set or clear an agent alias",
+        "value": "/agent alias "
+      },
+      {
+        "id": "agent-provider",
+        "label": "provider",
+        "description": "Set the focused or named agent provider",
+        "value": "/agent provider "
+      },
+      {
+        "id": "agent-model",
+        "label": "model",
+        "description": "Set the focused or named agent model",
+        "value": "/agent model "
+      },
+      {
+        "id": "agent-variant",
+        "label": "variant",
+        "description": "Set or clear the focused or named agent variant",
+        "value": "/agent variant "
+      },
+      {
+        "id": "agent-list",
+        "label": "list",
+        "description": "List all agents in the session",
+        "value": "/agent list",
+        "searchAliases": [
+          "where agents run",
+          "agent placement",
+          "session agents",
+          "home kernel",
+          "worktree",
+          "live sync",
+          "provider run"
+        ]
+      },
+      {
+        "id": "agent-inspect",
+        "label": "inspect",
+        "description": "Show agent placement, grants, and sync state; aliases /agent info and /agent show",
+        "value": "/agent inspect ",
+        "searchAliases": [
+          "where does this run",
+          "where agent runs",
+          "agent placement",
+          "agent worktree",
+          "agent slice",
+          "agent extensions",
+          "home proxy grants",
+          "home-proxy grants",
+          "provider run",
+          "live sync scope"
+        ]
+      },
+      {
+        "id": "agent-cycle",
+        "label": "cycle",
+        "description": "Cycle to next agent",
+        "value": "/agent cycle"
+      },
+      {
+        "id": "agent-task",
+        "label": "task",
+        "description": "View or control the focused agent's Meta mode task",
+        "value": "/agent task ",
+        "searchAliases": [
+          "meta mode task",
+          "metaagent task",
+          "planner task",
+          "pause meta mode",
+          "abort meta mode"
+        ],
+        "children": [
+          {
+            "id": "agent-task-show",
+            "label": "show",
+            "description": "Show the Meta mode task and plan",
+            "value": "/agent task show "
+          },
+          {
+            "id": "agent-task-edit",
+            "label": "edit",
+            "description": "Edit the Meta mode task prompt",
+            "value": "/agent task edit "
+          },
+          {
+            "id": "agent-task-plan",
+            "label": "plan",
+            "description": "Edit the Meta mode plan document",
+            "value": "/agent task plan "
+          },
+          {
+            "id": "agent-task-pause",
+            "label": "pause",
+            "description": "Pause the Meta mode task",
+            "value": "/agent task pause "
+          },
+          {
+            "id": "agent-task-resume",
+            "label": "resume",
+            "description": "Resume a paused Meta mode task",
+            "value": "/agent task resume "
+          },
+          {
+            "id": "agent-task-abort",
+            "label": "abort",
+            "description": "Abort the Meta mode task",
+            "value": "/agent task abort "
+          }
+        ]
+      },
+      {
+        "id": "agent-substitute",
+        "label": "substitute",
+        "description": "Manage fallback provider profiles for the focused agent",
+        "value": "/agent substitute ",
+        "children": [
+          {
+            "id": "agent-substitute-list",
+            "label": "list",
+            "description": "List agent substitutes",
+            "value": "/agent substitute list"
+          },
+          {
+            "id": "agent-substitute-add",
+            "label": "add",
+            "description": "Add a substitute provider/model",
+            "value": "/agent substitute add "
+          },
+          {
+            "id": "agent-substitute-activate",
+            "label": "activate",
+            "description": "Manually activate a substitute",
+            "value": "/agent substitute activate "
+          },
+          {
+            "id": "agent-substitute-primary",
+            "label": "primary",
+            "description": "Return to primary provider profile",
+            "value": "/agent substitute primary"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "cloud",
+    "label": "/cloud",
+    "description": "Open Arroba Cloud and manage collaboration",
+    "value": "/cloud ",
+    "children": [
+      {
+        "id": "cloud-open",
+        "label": "open",
+        "description": "Open the Arroba Cloud browser terminal",
+        "value": "/cloud open"
+      },
+      {
+        "id": "cloud-link",
+        "label": "link",
+        "description": "Pair this machine with Arroba Cloud",
+        "value": "/cloud link"
+      },
+      {
+        "id": "cloud-status",
+        "label": "status",
+        "description": "Show Cloud pairing and relay status",
+        "value": "/cloud status"
+      },
+      {
+        "id": "cloud-invite-create",
+        "label": "invite create",
+        "description": "Create a cloud-backed session invite with a collaboration level",
+        "value": "/cloud invite create --level "
+      },
+      {
+        "id": "cloud-invite-accept",
+        "label": "invite accept",
+        "description": "Accept a cloud-backed session invite",
+        "value": "/cloud invite accept "
+      },
+      {
+        "id": "cloud-members",
+        "label": "members",
+        "description": "List cloud members for the current session",
+        "value": "/cloud members"
+      },
+      {
+        "id": "cloud-collaborators",
+        "label": "collaborators",
+        "description": "List recent cloud collaborators",
+        "value": "/cloud collaborators"
+      }
+    ]
+  },
+  {
+    "id": "relay",
+    "label": "/relay",
+    "description": "Manage relay connection and self-hosted collaboration",
+    "value": "/relay ",
+    "children": [
+      {
+        "id": "relay-status",
+        "label": "status",
+        "description": "Show relay configuration and connection status",
+        "value": "/relay status"
+      },
+      {
+        "id": "relay-use",
+        "label": "use",
+        "description": "Configure a self-hosted relay URL and token",
+        "value": "/relay use "
+      },
+      {
+        "id": "relay-disable",
+        "label": "disable",
+        "description": "Disable relay configuration",
+        "value": "/relay disable"
+      },
+      {
+        "id": "relay-invite-create",
+        "label": "invite create",
+        "description": "Create a same-relay session invite with a collaboration level",
+        "value": "/relay invite create --level "
+      },
+      {
+        "id": "relay-invite-accept",
+        "label": "invite accept",
+        "description": "Accept a same-relay session invite",
+        "value": "/relay invite accept "
+      },
+      {
+        "id": "relay-members",
+        "label": "members",
+        "description": "List same-relay members for the current session",
+        "value": "/relay members"
+      }
+    ]
+  },
+  {
+    "id": "collab",
+    "label": "/collab",
+    "description": "Manage collaboration using the configured backend",
+    "value": "/collab ",
+    "children": [
+      {
+        "id": "collab-invite-create",
+        "label": "invite create",
+        "description": "Create a collaboration invite with a collaboration level",
+        "value": "/collab invite create --level "
+      },
+      {
+        "id": "collab-invite-accept",
+        "label": "invite accept",
+        "description": "Accept a collaboration invite",
+        "value": "/collab invite accept "
+      },
+      {
+        "id": "collab-members",
+        "label": "members",
+        "description": "List members for the current session",
+        "value": "/collab members"
+      },
+      {
+        "id": "collab-invites",
+        "label": "invites",
+        "description": "List active collaboration invites",
+        "value": "/collab invites"
+      }
+    ]
+  },
+  {
+    "id": "kernel",
+    "label": "/kernel",
+    "description": "Inspect kernel runtime health and remote readiness",
+    "value": "/kernel ",
+    "children": [
+      {
+        "id": "kernel-health",
+        "label": "health",
+        "description": "Open runtime health, remote readiness, and invariants",
+        "value": "/kernel health"
+      },
+      {
+        "id": "kernel-remote-runtime",
+        "label": "remote-runtime",
+        "description": "Open home authority, worker runs, slices, home-proxy tools, and live sync readiness",
+        "value": "/kernel remote-runtime",
+        "searchAliases": [
+          "remote runtime",
+          "remote readiness",
+          "home proxy",
+          "home-proxy",
+          "home-proxy summary",
+          "manifest attention",
+          "provider runs",
+          "worker runs",
+          "worker provider run",
+          "worker run missing",
+          "run missing",
+          "slice readiness",
+          "manifest settling",
+          "home proxy blocked",
+          "worker run gap"
+        ]
+      },
+      {
+        "id": "kernel-debug-bundle",
+        "label": "debug-bundle",
+        "description": "Export a session debug bundle on the kernel machine",
+        "value": "/kernel debug-bundle "
+      },
+      {
+        "id": "kernel-delete",
+        "label": "delete",
+        "description": "Delete this kernel and its sessions",
+        "value": "/kernel delete"
+      },
+      {
+        "id": "kernel-runtime",
+        "label": "runtime",
+        "description": "Alias for /kernel remote-runtime",
+        "value": "/kernel runtime",
+        "searchAliases": [
+          "remote runtime",
+          "remote readiness",
+          "home proxy",
+          "home-proxy",
+          "manifest attention",
+          "worker runs",
+          "worker provider run",
+          "worker run missing",
+          "run missing"
+        ]
+      },
+      {
+        "id": "kernel-status",
+        "label": "status",
+        "description": "Alias for /kernel health",
+        "value": "/kernel status"
+      }
+    ]
+  },
+  {
+    "id": "machine",
+    "label": "/machine",
+    "description": "Inspect remote worker machines",
+    "value": "/machine ",
+    "children": [
+      {
+        "id": "machine-list",
+        "label": "list",
+        "description": "List remote machines visible through the relay",
+        "value": "/machine list"
+      },
+      {
+        "id": "machine-kernels",
+        "label": "kernels",
+        "description": "List live kernels and worker readiness for a machine",
+        "value": "/machine kernels ",
+        "searchAliases": [
+          "worker readiness",
+          "remote readiness",
+          "provider cli missing",
+          "provider account missing",
+          "remote kernel",
+          "which worker",
+          "remote worker",
+          "machine kernels"
+        ]
+      },
+      {
+        "id": "machine-approve",
+        "label": "approve",
+        "description": "Approve a pending remote worker machine",
+        "value": "/machine approve "
+      },
+      {
+        "id": "machine-forget",
+        "label": "forget",
+        "description": "Forget a remote worker machine",
+        "value": "/machine forget "
+      },
+      {
+        "id": "machine-rename",
+        "label": "rename",
+        "description": "Assign a display alias to a remote worker machine",
+        "value": "/machine rename "
+      },
+      {
+        "id": "machine-ls",
+        "label": "ls",
+        "description": "Alias for /machine list",
+        "value": "/machine ls"
+      },
+      {
+        "id": "machine-revoke",
+        "label": "revoke",
+        "description": "Alias for /machine forget; revoke this worker machine from future use",
+        "value": "/machine revoke "
+      }
+    ]
+  }
+]
