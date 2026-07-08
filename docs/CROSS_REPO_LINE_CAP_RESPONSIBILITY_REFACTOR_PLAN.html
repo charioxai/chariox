@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>31 allowlisted files remain after initial splits</td>
+              <td>30 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>e847c1c67</code> <span class="muted">Split provider output responsibility modules</span></td>
+              <td>Provider output now keeps the main pump orchestration, liveness reconciliation, structured-poll application, Claude bridge calls, prompt settlement, tracing, and fanout in the parent module, while background pump run selection, structured-output pending record storage, timeout reaping/candidate selection, and provider-output tests live in focused sibling modules. The newly over-cap external-observation provider policy file also moved its inline tests to a sibling test module so the guard remains clean after concurrent fallback-id work.</td>
+              <td><code>rustfmt --edition 2024</code> for all parent and child modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml app::provider_output -- --nocapture</code> (19 passed); <code>cargo test --manifest-path apps/kernel/Cargo.toml provider::external_observation -- --nocapture</code> (20 passed); <code>node scripts/check-line-cap.mjs</code> (30 allowlisted files remain, no new offenders); path-scoped and staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>4458ff510</code> <span class="muted">Extract local Docker slice state handling</span></td>
