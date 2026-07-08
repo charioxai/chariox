@@ -44,6 +44,9 @@ test("applyTranscriptPromptMetadata writes prompt identity fields", () => {
     promptId?: string | null
     promptOrigin?: string | null
     sourceAttachmentId?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
   } = {
     promptId: "old-prompt",
   }
@@ -52,11 +55,17 @@ test("applyTranscriptPromptMetadata writes prompt identity fields", () => {
     promptId: "prompt-1",
     promptOrigin: "external",
     sourceAttachmentId: "attachment-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
   }), item)
   assert.deepEqual(item, {
     promptId: "prompt-1",
     promptOrigin: "external",
     sourceAttachmentId: "attachment-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
   })
 })
 
@@ -65,18 +74,27 @@ test("applyTranscriptPromptMetadata can preserve existing prompt identity fields
     promptId: "prompt-existing",
     promptOrigin: undefined as string | null | undefined,
     sourceAttachmentId: null as string | null | undefined,
+    externalProvider: undefined as string | null | undefined,
+    externalProviderSessionId: null as string | null | undefined,
+    externalProviderTurnId: undefined as string | null | undefined,
   }
 
   applyTranscriptPromptMetadata(item, {
     promptId: "prompt-next",
     promptOrigin: "external",
     sourceAttachmentId: "attachment-next",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
   }, { preserveExisting: true })
 
   assert.deepEqual(item, {
     promptId: "prompt-existing",
     promptOrigin: "external",
     sourceAttachmentId: null,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
   })
 })
 

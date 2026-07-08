@@ -168,7 +168,9 @@ export function hydrateSessionHistoryTranscriptEntries(
       return
     }
     if (options.emphasis !== undefined) updatedEntry.emphasis = options.emphasis
-    applySessionHistoryTranscriptMetadata(updatedEntry, options)
+    applySessionHistoryTranscriptMetadata(updatedEntry, options, {
+      preserveExisting: result.kind === "merged",
+    })
   }
 
   for (const pageEntry of mergedHistoryEntries) {
@@ -188,8 +190,8 @@ export function hydrateSessionHistoryTranscriptEntries(
         currentTurnId = Math.max(currentTurnId + 1, (pageEntry.entry_index ?? 0) + 1)
         appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), {
           ...entryOptions,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
           turnId: currentTurnId,
         })
@@ -197,8 +199,8 @@ export function hydrateSessionHistoryTranscriptEntries(
       case "reasoning":
         appendTranscriptEntry("reasoning", pageEntry.entry.text, {
           ...entryOptions,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
         })
         break
@@ -208,8 +210,8 @@ export function hydrateSessionHistoryTranscriptEntries(
           appendTranscriptEntry("tool", pageEntry.entry.text, {
             ...entryOptions,
             sourceText: pageEntry.entry.text,
-            ...observedOptions,
             ...identityOptions,
+            ...observedOptions,
           })
           break
         }
@@ -219,16 +221,16 @@ export function hydrateSessionHistoryTranscriptEntries(
           ...entryOptions,
           mergeKey: parsed.id,
           sourceText: pageEntry.entry.text,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
         })
         break
       }
       case "error":
         appendTranscriptEntry("error", pageEntry.entry.text, {
           ...entryOptions,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
           emphasis: "error",
         })
         break
@@ -236,23 +238,23 @@ export function hydrateSessionHistoryTranscriptEntries(
         if (externalProviderObservedProviderStatusShouldRender(pageEntry.entry)) {
           appendTranscriptEntry("status", pageEntry.entry.text, {
             ...entryOptions,
-            ...observedOptions,
             ...identityOptions,
+            ...observedOptions,
           })
         }
         break
       case "notice":
         appendTranscriptEntry("notice", pageEntry.entry.text, {
           ...entryOptions,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
         })
         break
       case "assistant":
         appendTranscriptEntry("assistant", pageEntry.entry.text, {
           ...entryOptions,
-          ...observedOptions,
           ...identityOptions,
+          ...observedOptions,
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
         })
         break
@@ -414,10 +416,11 @@ export function previewLineForHistoryTranscriptEntry(entry: SessionHistoryEntry)
 function applySessionHistoryTranscriptMetadata(
   entry: SessionHistoryTranscriptEntry,
   options: SessionHistoryTranscriptMetadataOptions,
+  applyOptions: { readonly preserveExisting?: boolean } = {},
 ) {
   if (options.providerRunId !== undefined) entry.providerRunId = options.providerRunId
   applyExternalProviderObservedTranscriptMetadata(entry, options)
-  applyTranscriptPromptMetadata(entry, options)
+  applyTranscriptPromptMetadata(entry, options, applyOptions)
   if (options.attachments !== undefined) {
     entry.attachments = mergeSessionHistoryPromptAttachments(entry.attachments, options.attachments)
   }

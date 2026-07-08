@@ -68,12 +68,18 @@ export type TranscriptPromptMetadata = {
   readonly promptId?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
+  readonly externalProvider?: string | null | undefined
+  readonly externalProviderSessionId?: string | null | undefined
+  readonly externalProviderTurnId?: string | null | undefined
 }
 
 export type TranscriptPromptMetadataTarget = {
   promptId?: string | null | undefined
   promptOrigin?: string | null | undefined
   sourceAttachmentId?: string | null | undefined
+  externalProvider?: string | null | undefined
+  externalProviderSessionId?: string | null | undefined
+  externalProviderTurnId?: string | null | undefined
 }
 
 export function applyTranscriptPromptMetadata<TEntry extends object>(
@@ -93,6 +99,21 @@ export function applyTranscriptPromptMetadata<TEntry extends object>(
     && (!options.preserveExisting || target.sourceAttachmentId === undefined)
   ) {
     target.sourceAttachmentId = metadata.sourceAttachmentId
+  }
+  if (metadata.externalProvider !== undefined && (!options.preserveExisting || target.externalProvider == null)) {
+    target.externalProvider = metadata.externalProvider
+  }
+  if (
+    metadata.externalProviderSessionId !== undefined
+    && (!options.preserveExisting || target.externalProviderSessionId == null)
+  ) {
+    target.externalProviderSessionId = metadata.externalProviderSessionId
+  }
+  if (
+    metadata.externalProviderTurnId !== undefined
+    && (!options.preserveExisting || target.externalProviderTurnId == null)
+  ) {
+    target.externalProviderTurnId = metadata.externalProviderTurnId
   }
   return entry
 }

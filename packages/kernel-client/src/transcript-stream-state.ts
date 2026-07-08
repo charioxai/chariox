@@ -275,7 +275,7 @@ function mergeProviderChunk(
         continue
       }
       applyMergedChunk(candidate, role, normalized, normalizedSource)
-      applyStreamMetadata(candidate, metadata)
+      applyStreamMetadata(candidate, metadata, { preserveExisting: true })
       return candidate
     }
   }
@@ -288,7 +288,7 @@ function mergeProviderChunk(
     && mergeAdjacentUnkeyedRoles.includes(role)
   ) {
     last.text += normalized
-    applyStreamMetadata(last, metadata)
+    applyStreamMetadata(last, metadata, { preserveExisting: true })
     return last
   }
 
@@ -372,9 +372,13 @@ function createTranscriptEntry(
   return nextEntry
 }
 
-function applyStreamMetadata(entry: MutableTranscriptStreamEntry, metadata: TranscriptStreamMetadata): void {
+function applyStreamMetadata(
+  entry: MutableTranscriptStreamEntry,
+  metadata: TranscriptStreamMetadata,
+  options: { readonly preserveExisting?: boolean } = {},
+): void {
   applyExternalProviderObservedTranscriptMetadata(entry, metadata)
-  applyTranscriptPromptMetadata(entry, metadata)
+  applyTranscriptPromptMetadata(entry, metadata, options)
 }
 
 function cloneEntries<TEntry extends TranscriptStreamEntry>(entries: readonly TEntry[]): TEntry[] {
