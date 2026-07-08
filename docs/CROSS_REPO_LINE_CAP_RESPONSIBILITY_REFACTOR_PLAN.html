@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>60 allowlisted files remain after initial splits</td>
+              <td>59 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>6b4987c70</code> <span class="muted">Split command cache tests</span></td>
+              <td>Runtime command-cache production code now stays under the cap, with persistent cache recovery, compaction, oversized-record, noisy-read, malformed-line, and fingerprint-hash coverage moved into a sibling Rust test module.</td>
+              <td><code>rustfmt --edition 2024 --config skip_children=true apps/kernel/src/runtime_transport/command_cache.rs apps/kernel/src/runtime_transport/command_cache/tests.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime_transport::command_cache::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8905e57d7</code> <span class="muted">Extract script execution helpers</span></td>

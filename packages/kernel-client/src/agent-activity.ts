@@ -1,4 +1,8 @@
 import {
+  promptOriginExternalProviderObservedMetadata,
+} from "./external-provider-observation.js"
+import {
+  EXTERNAL_PROMPT_ORIGIN,
   promptOriginFromRecord,
   promptOriginIsExternal,
 } from "./prompt-origin.js"
@@ -364,9 +368,10 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnPromptId = readStringField(activeTurn, "prompt_id") ?? undefined
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
   const activeTurnSourceAttachmentId = readNullableStringField(activeTurn, "source_attachment_id")
+  const activeTurnExternalMetadata = promptOriginExternalProviderObservedMetadata(activeTurn)
   const activeTurnPromptOrigin = promptOriginFromRecord({
     prompt_origin: readStringField(activeTurn, "prompt_origin"),
-  }) ?? undefined
+  }) ?? (activeTurnExternalMetadata ? EXTERNAL_PROMPT_ORIGIN : undefined)
   const activeTurnExternalProvider = normalizeAgentRuntimeProviderId(
     readNonBlankStringField(activeTurn, "external_provider"),
   ) ?? undefined
