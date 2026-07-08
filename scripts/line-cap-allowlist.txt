@@ -12,7 +12,6 @@ apps/kernel/src/terminal/stream.rs
 apps/kernel/src/app/kernel_session.rs
 apps/cli/scripts/live-provider-thread-transfer-drill.mjs
 apps/kernel/src/transport/runtime_tools.rs
-apps/cli/scripts/lib/drill-validation-gate-aggregate.mjs
 apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
