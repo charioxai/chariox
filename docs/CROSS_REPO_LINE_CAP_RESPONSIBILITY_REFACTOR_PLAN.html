@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>41 allowlisted files remain after initial splits</td>
+              <td>40 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>73433967c</code> <span class="muted">Split protocol capability session details</span></td>
+              <td>The main protocol document now keeps scope, lanes, native provider behavior, envelope shape, current transport baseline, command-dispatch direction, and workflow message direction, while capability API details, session/attachment semantics, workflow contracts, security semantics, compatibility, versioning, and terminal conformance live in a sibling protocol detail document.</td>
+              <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference check preserving the main-file Native TUI section referenced by <code>AGENTS.md</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>a28a24736</code> <span class="muted">Split v1 spec capability details</span></td>
