@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>5 allowlisted files remain after initial splits</td>
+              <td>4 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>150406481</code> <span class="muted">Split workflow code responsibility modules</span></td>
+              <td><code>workflow_code.rs</code> now preserves the public facade, constants, pattern catalog, and canvas contract. Compiler runtime, compiler bridge, model DTOs, workflow definitions, validation, artifact registry, workflow registry, source export/JavaScript writer, rebinding helpers, common hashing/IO helpers, and focused compiler/registry/validation tests live in child modules under <code>apps/kernel/src/workflow_code/</code>.</td>
+              <td><code>rustfmt --edition 2024</code> for the workflow-code parent and child modules; <code>node scripts/check-line-cap.mjs</code> (4 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files. A broad <code>cargo test --manifest-path apps/kernel/Cargo.toml workflow_code -- --nocapture</code> compiled the split and passed the workflow-code module tests, then failed one unrelated local API workflow-code run assertion in the dirty worktree. A later focused test/check run was blocked before execution by an unrelated dirty <code>relay_peer_bridge.rs</code> reference to <code>try_pump_relay_leased_runtime_projections</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>f4b83a981</code> <span class="muted">Split relay connection routing support</span></td>
