@@ -79,7 +79,6 @@ apps/cli/scripts/live-cloud-relay-drill.mjs
 apps/cli/scripts/drill-artifact-index-summary.mjs
 apps/kernel/tests/support/runtime_integration.rs
 apps/kernel/src/runtime_transport/command_cache.rs
-apps/kernel/src/session/service/tests/workflow_runs.rs
 apps/kernel/src/runtime/state/tool_dispatch/home_extension_execution_policy.rs
 apps/kernel/src/provider/registry/dev_stub_adapter.rs
 apps/kernel/src/runtime/projection/session_snapshot_projection.rs
