@@ -189,7 +189,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "attachments",
                     vec![
                         evidence(
-                            "apps/kernel/src/local/api/tests/workspace_capabilities.rs",
+                            "apps/kernel/src/local/api/tests/workspace_capabilities/shell_and_files.rs",
                             &[
                                 "local_request_api_rejects_file_capability_for_unauthorized_attachment",
                             ],
@@ -274,7 +274,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "protocol_snapshots",
                     vec![evidence(
-                        "apps/kernel/tests/kernel_websocket_integration.rs",
+                        "apps/kernel/tests/kernel_websocket_integration/replay_resume.rs",
                         &[
                             "AttachToSessionRequest",
                             "resume_from_event_id",
@@ -310,7 +310,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "attachments",
                     vec![evidence(
-                        "apps/kernel/tests/kernel_websocket_runtime_integration.rs",
+                        "apps/kernel/tests/kernel_websocket_runtime_integration/structured_io.rs",
                         &[
                             "AttachToSessionRequest",
                             "SubmitPromptRequest",
