@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>33 allowlisted files remain after initial splits</td>
+              <td>32 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>7bd658a9d</code> <span class="muted">Extract runtime session workflow state</span></td>
+              <td>Runtime session core now keeps identity, membership, agents, prompt runtime, metaagent tasks, runtime interactions, workspace links, attachments, provider focus, config changes, and session status transitions, while workflow definitions, publications, runs, restart reconciliation, workflow queues, schedules/watchdogs, node-run lookup, and workflow consoles live in a sibling workflow-state module; the runtime-session unit test lives in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent and child modules, <code>cargo test --manifest-path apps/kernel/Cargo.toml session::runtime_session -- --nocapture</code> (1 passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>7bf9ee1b9</code> <span class="muted">Split iOS kernel protocol models and requests</span></td>
