@@ -18,7 +18,6 @@ apps/kernel/src/runtime/router/meta_runtime_command.rs
 apps/relay/src/server/connection.rs
 apps/kernel/src/mcp/mod.rs
 apps/kernel/src/runtime/metaagent_command_registry.rs
-apps/kernel/src/runtime/router/tests/session_actor_projection.rs
 apps/kernel/src/runtime/terminal_command_catalog/catalog.json
 apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/kernel/src/app/provider_output_claude_native.rs
