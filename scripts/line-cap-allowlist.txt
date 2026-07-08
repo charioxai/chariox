@@ -28,5 +28,4 @@ apps/kernel/src/session/service/core.rs
 apps/cli/scripts/live-external-provider-live-parity-drill.mjs
 apps/kernel/src/skill/mod.rs
 apps/cli/scripts/lib/drill-matrix-report.mjs
-apps/kernel/src/app/provider_runtime.rs
 apps/kernel/src/local/api/types.rs
