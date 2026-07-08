@@ -158,11 +158,13 @@ impl SessionStateProjectionStore {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (active_prompts, queued_prompts) =
+            projected_session_prompt_counts(state.session_states.values());
         SessionProjectionHealthSnapshot {
             projected_sessions: state.session_states.len(),
             projected_session_list_entries: state.session_list.as_ref().map(Vec::len),
-            active_prompts: 0,
-            queued_prompts: 0,
+            active_prompts,
+            queued_prompts,
         }
     }
 
@@ -302,9 +304,28 @@ fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: Runti
     }
 }
 
+fn projected_session_prompt_counts<'a>(
+    sessions: impl IntoIterator<Item = &'a RuntimeSession>,
+) -> (usize, usize) {
+    sessions
+        .into_iter()
+        .flat_map(|session| session.prompt_states().values())
+        .fold((0, 0), |(active_count, queued_count), prompt_state| {
+            (
+                active_count + usize::from(prompt_state.active_prompt().is_some()),
+                queued_count + prompt_state.queued_prompts().len(),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::runtime::projection::test_support::{
+        attach_cli, launch_dev_stub_provider, submit_prompt,
+    };
+    use crate::{DaemonApp, DaemonConfig};
 
     fn session(id: &str) -> RuntimeSession {
         RuntimeSession::new(id, None, "workspace", "worktree", "machine", "daemon")
@@ -388,6 +409,36 @@ mod tests {
             store.change_sequence() > global_sequence,
             "warming the session list changes projection availability"
         );
+    }
+
+    #[test]
+    fn health_snapshot_counts_projected_prompt_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attach_cli(&mut app, &session_id, "cli-health-counts");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(&mut app, &session_id, &attachment_id, &agent_id, "active");
+        submit_prompt(&mut app, &session_id, &attachment_id, &agent_id, "queued 1");
+        submit_prompt(&mut app, &session_id, &attachment_id, &agent_id, "queued 2");
+        submit_prompt(&mut app, &session_id, &attachment_id, &agent_id, "queued 3");
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let store = SessionStateProjectionStore::default();
+        store.update(session);
+
+        let snapshot = store.health_snapshot();
+
+        assert_eq!(snapshot.projected_sessions, 1);
+        assert_eq!(snapshot.active_prompts, 1);
+        assert_eq!(snapshot.queued_prompts, 3);
     }
 
     #[tokio::test]
