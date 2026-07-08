@@ -23,7 +23,6 @@ apps/ios/ArrobaPackage/Sources/ArrobaFeature/State/ArrobaAppModel.swift
 apps/kernel/src/app/provider_output_claude_native.rs
 apps/cli/src/cli-app-root.tsx
 apps/kernel/src/git_observer.rs
-apps/kernel/src/local/api/tests/provider_prompt_runtime.rs
 apps/kernel/src/runtime/state/workflow_request_runtime_state.rs
 apps/kernel/src/session/service/core.rs
 apps/kernel/src/runtime/history_requests/session_outline.rs
