@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>93 allowlisted files remain after initial splits</td>
+              <td>92 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>3fb764c42</code> <span class="muted">Split artifact index summary tests</span></td>
+              <td>Artifact-index summary CLI coverage now keeps process helpers, artifact-index writers, and matrix-report fixture mutation in a support module, while summary/staleness, generated-evidence, coverage-requirement, and input/integrity scenarios live in bounded sibling modules behind the existing test entrypoint.</td>
+              <td><code>node --test apps/cli/scripts/drill-artifact-index-summary.test.mjs</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>8158e3aa1</code> <span class="muted">Split validation gate tests by responsibility</span></td>
