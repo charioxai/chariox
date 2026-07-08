@@ -215,7 +215,7 @@
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
               <td>42</td>
-              <td>2 allowlisted files remain after initial splits</td>
+              <td>1 allowlisted file remains after initial splits</td>
               <td>Browser terminal app, terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills</td>
             </tr>
           </tbody>
@@ -347,6 +347,12 @@
               <td><code>96b8aa4f4</code> <span class="muted">Split shell executor workflow code tests</span></td>
               <td>Shell executor workflow command coverage now keeps workflow list, registry, graph, publication, and queue scenarios in the parent file, while workflow-code package/source/artifact command scenarios live in a dedicated test module.</td>
               <td><code>pnpm --filter @arroba/kernel-client run build</code>, focused compiled shell-executor workflow tests, <code>node scripts/check-line-cap.mjs</code>.</td>
+            </tr>
+            <tr>
+              <td><code>arroba-cloud</code></td>
+              <td><code>ca0bd46b</code> <span class="muted">Split browser drill script</span></td>
+              <td>The browser drill entrypoint now owns process setup, branch selection, and the remaining default publication/waiting-room orchestration, while CDP/runtime helpers, mobile flows, freeform flows, attachments, side panels, workflow canvas interaction, and product-terminal assertions live in bounded helper modules.</td>
+              <td><code>node --check</code> for the entrypoint and extracted helper modules, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>. A cheap import smoke reached Chrome launch and then failed on the intentionally invalid <code>CHROME_PATH</code>, confirming module loading without running the full browser drill.</td>
             </tr>
             <tr>
               <td><code>arroba-cloud</code></td>
