@@ -151,6 +151,29 @@ test("session history transcript hydration preserves external observed metadata"
   })
 })
 
+test("session history transcript hydration does not merge conflicting external observed turns", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(7, "provider_output", "first turn\n", {
+      merge_key: "assistant",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+    }),
+    pageEntry(8, "provider_output", "second turn\n", {
+      merge_key: "assistant",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-2",
+    }),
+  ])
+
+  assert.equal(entries.length, 2)
+  assert.deepEqual(entries.map((entry) => entry.text), ["first turn\n", "second turn\n"])
+  assert.deepEqual(entries.map((entry) => entry.externalProviderTurnId), ["turn-1", "turn-2"])
+})
+
 test("session history transcript hydration treats merge keys as opaque metadata", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(7, "provider_output", "native reply", {

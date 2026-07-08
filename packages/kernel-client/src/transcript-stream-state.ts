@@ -9,6 +9,11 @@ import {
   computeCurrentTranscriptTurnId,
   computeNextTranscriptEntryId,
 } from "./transcript-entry-state.js"
+import {
+  applyExternalProviderObservedTranscriptMetadata,
+  externalProviderObservedTranscriptExactIdentityConflicts,
+  type ExternalProviderObservedMutableTranscriptMetadataFields,
+} from "./external-provider-observation.js"
 import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 
 export {
@@ -33,9 +38,9 @@ export type TranscriptStreamEntry = {
   readonly promptId?: string | null
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
-}
+} & ExternalProviderObservedMutableTranscriptMetadataFields
 
-export type TranscriptStreamMetadata = {
+export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -84,7 +89,17 @@ export type TranscriptStreamRuntimeOptions = {
 }
 
 type MutableTranscriptStreamEntry =
-  Omit<TranscriptStreamEntry, "text" | "turnId" | "providerRunId" | "mergeKey" | "sourceText" | "promptId" | "promptOrigin" | "sourceAttachmentId"> & {
+  Omit<
+    TranscriptStreamEntry,
+    | "text"
+    | "turnId"
+    | "providerRunId"
+    | "mergeKey"
+    | "sourceText"
+    | "promptId"
+    | "promptOrigin"
+    | "sourceAttachmentId"
+  > & {
     text: string
     turnId?: number | null
     providerRunId?: string | null
@@ -255,7 +270,7 @@ function mergeProviderChunk(
       if (
         candidate?.role !== role
         || candidate.mergeKey !== mergeKey
-        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId })
+        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId, metadata })
       ) {
         continue
       }
@@ -269,7 +284,7 @@ function mergeProviderChunk(
   if (
     !mergeKey
     && last?.role === role
-    && sameStreamingMergeIdentity(last, { currentTurnId, providerRunId })
+    && sameStreamingMergeIdentity(last, { currentTurnId, providerRunId, metadata })
     && mergeAdjacentUnkeyedRoles.includes(role)
   ) {
     last.text += normalized
@@ -282,12 +297,22 @@ function mergeProviderChunk(
 
 function sameStreamingMergeIdentity(
   entry: TranscriptStreamEntry,
-  options: { currentTurnId: number | null; providerRunId: string | null | undefined },
+  options: {
+    currentTurnId: number | null
+    providerRunId: string | null | undefined
+    metadata?: TranscriptStreamMetadata | null | undefined
+  },
 ): boolean {
   if (options.currentTurnId !== null && entry.turnId !== options.currentTurnId) {
     return false
   }
   if (options.providerRunId !== undefined && entry.providerRunId !== options.providerRunId) {
+    return false
+  }
+  if (
+    options.metadata
+    && externalProviderObservedTranscriptExactIdentityConflicts(entry, options.metadata)
+  ) {
     return false
   }
   return true
@@ -348,6 +373,7 @@ function createTranscriptEntry(
 }
 
 function applyStreamMetadata(entry: MutableTranscriptStreamEntry, metadata: TranscriptStreamMetadata): void {
+  applyExternalProviderObservedTranscriptMetadata(entry, metadata)
   applyTranscriptPromptMetadata(entry, metadata)
 }
 

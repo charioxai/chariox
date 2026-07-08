@@ -12,6 +12,9 @@ import {
   type TranscriptStreamEntry,
 } from "./transcript-stream-state.js"
 import type { ToolTranscriptUpdate } from "@arroba/tool-display"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "./external-provider-observation.js"
 
 test("transcript stream state appends provider chunks to the current turn", () => {
   const result = applyTranscriptProviderChunk([
@@ -82,6 +85,46 @@ test("transcript stream state scopes merge keys by provider run when supplied", 
   assert.deepEqual(result.entries, [
     entry(1, "assistant", "first", { mergeKey: "reply", providerRunId: "run-1" }),
     entry(2, "assistant", "second", { mergeKey: "reply", providerRunId: "run-2" }),
+  ])
+})
+
+test("transcript stream state scopes merge keys by exact external observed identity", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "first", {
+      mergeKey: "reply",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+    }),
+  ], {
+    role: "assistant",
+    chunk: "second",
+    mergeKey: "reply",
+    metadata: {
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-2",
+    },
+  })
+
+  assert.equal(result.kind, "appended")
+  assert.deepEqual(result.entries, [
+    entry(1, "assistant", "first", {
+      mergeKey: "reply",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+    }),
+    entry(2, "assistant", "second", {
+      mergeKey: "reply",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-2",
+    }),
   ])
 })
 

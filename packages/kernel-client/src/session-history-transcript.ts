@@ -142,6 +142,12 @@ export function hydrateSessionHistoryTranscriptEntries(
       providerRunId: options.providerRunId,
       mergeAdjacentUnkeyedRoles: ["reasoning"],
       metadata: {
+        source: options.source,
+        externalProvider: options.externalProvider,
+        externalProviderSessionId: options.externalProviderSessionId,
+        externalProviderTurnId: options.externalProviderTurnId,
+        observedAtMs: options.observedAtMs,
+        externalObservation: options.externalObservation,
         promptId: options.promptId,
         promptOrigin: options.promptOrigin,
         sourceAttachmentId: options.sourceAttachmentId,
