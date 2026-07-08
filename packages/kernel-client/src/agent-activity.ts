@@ -2,6 +2,10 @@ import {
   promptOriginFromRecord,
   promptOriginIsExternal,
 } from "./prompt-origin.js"
+import {
+  externalProviderObservedExactIdentityConflicts,
+  type ExternalProviderObservedIdentityFields,
+} from "./external-provider-observation.js"
 
 export type AgentRuntimeActivityBusyInput = {
   readonly busy?: boolean | null
@@ -346,6 +350,10 @@ export function agentRuntimeCompletedTurnMatches(
   incoming: AgentRuntimeCompletedTurnActionProjection,
 ): boolean {
   return current.turnId === incoming.turnId
+    && !externalProviderObservedExactIdentityConflicts(
+      completedTurnExternalIdentityFields(current),
+      completedTurnExternalIdentityFields(incoming),
+    )
 }
 
 export function reconcileAgentRuntimeLastCompletedTurn(
@@ -389,6 +397,18 @@ function mergeAgentRuntimeCompletedTurnOwnership(
     ...(externalProvider !== undefined ? { externalProvider } : {}),
     ...(externalProviderSessionId !== undefined ? { externalProviderSessionId } : {}),
     ...(externalProviderTurnId !== undefined ? { externalProviderTurnId } : {}),
+  }
+}
+
+function completedTurnExternalIdentityFields(
+  turn: AgentRuntimeCompletedTurnActionProjection,
+): ExternalProviderObservedIdentityFields {
+  return {
+    ...(turn.externalProvider !== undefined ? { externalProvider: turn.externalProvider } : {}),
+    ...(turn.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: turn.externalProviderSessionId }
+      : {}),
+    ...(turn.externalProviderTurnId !== undefined ? { externalProviderTurnId: turn.externalProviderTurnId } : {}),
   }
 }
 

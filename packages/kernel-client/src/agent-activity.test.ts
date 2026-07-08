@@ -570,6 +570,28 @@ test("completed turn reconciliation preserves local already-undone state for the
   assert.equal(reconcileAgentRuntimeLastCompletedTurn(alreadyUndone, incoming), alreadyUndone)
 })
 
+test("completed turn reconciliation does not preserve already-undone state across conflicting external turns", () => {
+  const alreadyUndone = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  const incoming = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(alreadyUndone, incoming), incoming)
+})
+
 test("completed turn reconciliation keeps incoming snapshots unless current is already undone", () => {
   const current = completedTurnAction({
     completedAtMs: 100,
