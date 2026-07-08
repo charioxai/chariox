@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>32 allowlisted files remain after initial splits</td>
+              <td>31 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>4458ff510</code> <span class="muted">Extract local Docker slice state handling</span></td>
+              <td>Local Docker slice runtime now keeps provisioner process execution, provider login, log collection, host runtime inspection, command environment projection, private relay wiring, port checks, Docker readiness, and action-log paths, while saved-state/default-state manifests, backup creation, snapshot quiesce/resume, Docker image commits, and home-volume archiving live in a sibling state module; local-Docker tests live in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, state, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml slice::local_docker -- --nocapture</code> (5 passed); path-scoped <code>git diff --check</code>; line-count checks for all split files. The live working-tree <code>node scripts/check-line-cap.mjs</code> run was blocked by an unrelated dirty provider file over the cap; the committed baseline removes <code>local_docker.rs</code> from the allowlist and leaves 31 remaining entries.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>7bd658a9d</code> <span class="muted">Extract runtime session workflow state</span></td>
