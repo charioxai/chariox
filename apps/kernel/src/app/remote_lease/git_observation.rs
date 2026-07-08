@@ -50,10 +50,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: git_context.home_prompt_id,
             turn_id: git_context.home_turn_id,
-            prompt_origin: None,
-            external_provider: None,
-            external_provider_session_id: None,
-            external_provider_turn_id: None,
+            prompt_origin: git_context.prompt_origin,
+            external_provider: git_context.external_provider,
+            external_provider_session_id: git_context.external_provider_session_id,
+            external_provider_turn_id: git_context.external_provider_turn_id,
             started_at_ms: None,
             worktree_path,
             workspace_live_sync_tracked,
@@ -251,12 +251,33 @@ mod tests {
             home_prompt_id: "home-prompt".to_string(),
             home_turn_id: "home-turn".to_string(),
             workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            prompt_origin: Some(crate::session::PromptOrigin::External),
+            external_provider: Some("codex".to_string()),
+            external_provider_session_id: Some("codex-thread-1".to_string()),
+            external_provider_turn_id: Some("codex-turn-1".to_string()),
             prompt_summary: "edit the file".to_string(),
         };
         RemoteLeaseRuntime::new(&mut app).observe_leased_git_before(
             &leased_agent,
             &provider_run_id,
             git_context,
+        );
+        let snapshot = app
+            .remote_git_turn_snapshots
+            .get_for_provider_run(&provider_run_id)
+            .expect("remote git snapshot should be recorded");
+        assert_eq!(
+            snapshot.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
+        assert_eq!(snapshot.external_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            snapshot.external_provider_session_id.as_deref(),
+            Some("codex-thread-1")
+        );
+        assert_eq!(
+            snapshot.external_provider_turn_id.as_deref(),
+            Some("codex-turn-1")
         );
 
         let (_observations, no_change) = RemoteLeaseRuntime::new(&mut app)

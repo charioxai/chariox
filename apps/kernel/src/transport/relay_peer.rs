@@ -5,11 +5,11 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnCont
 use crate::history::{HistoryAttributionConfidence, HistoryEventKind, HistoryEventTurnContext};
 use crate::io::WorkspaceIdentity;
 use crate::mcp::ArrobaMcpServerConfig;
-use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
+use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptSubmissionOutcome};
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 4;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -106,6 +106,14 @@ pub struct RemoteGitTurnContext {
     pub home_turn_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_turn_id: Option<String>,
     pub prompt_summary: String,
 }
 

@@ -344,6 +344,10 @@ fn remote_git_turn_context_for_prompt(
         home_prompt_id: prompt.id().to_string(),
         home_turn_id: prompt.id().to_string(),
         workspace_live_sync_mode,
+        prompt_origin: Some(prompt.prompt_origin()),
+        external_provider: prompt.external_provider().map(str::to_string),
+        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+        external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             prompt.prompt(),
             prompt.attachments(),

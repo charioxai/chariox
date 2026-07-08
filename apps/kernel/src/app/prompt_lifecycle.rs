@@ -221,6 +221,10 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) prompt: String,
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    pub(crate) prompt_origin: PromptOrigin,
+    pub(crate) external_provider: Option<String>,
+    pub(crate) external_provider_session_id: Option<String>,
+    pub(crate) external_provider_turn_id: Option<String>,
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
 }
 

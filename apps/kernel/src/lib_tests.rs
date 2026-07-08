@@ -11,7 +11,9 @@ use super::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
     RuntimeProviderRun,
 };
-use super::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus};
+use super::session::{
+    CreateSessionRequest, PromptOrigin, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+};
 use super::terminal::TerminalOutputKind;
 use super::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
@@ -177,6 +179,10 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             home_prompt_id: "prompt-1".to_string(),
             home_turn_id: "prompt-1".to_string(),
             workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            prompt_origin: Some(PromptOrigin::External),
+            external_provider: Some("codex".to_string()),
+            external_provider_session_id: Some("codex-thread-1".to_string()),
+            external_provider_turn_id: Some("codex-turn-1".to_string()),
             prompt_summary: "edit a file".to_string(),
         }),
         required_mcps: Vec::new(),
@@ -195,11 +201,27 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         snapshot.pointer("/1/git_context/workspace_live_sync_mode"),
         Some(&serde_json::json!("tracked"))
     );
+    assert_eq!(
+        snapshot.pointer("/1/git_context/prompt_origin"),
+        Some(&serde_json::json!("external"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/git_context/external_provider"),
+        Some(&serde_json::json!("codex"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/git_context/external_provider_session_id"),
+        Some(&serde_json::json!("codex-thread-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/git_context/external_provider_turn_id"),
+        Some(&serde_json::json!("codex-turn-1"))
+    );
 }
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 4);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 5);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")

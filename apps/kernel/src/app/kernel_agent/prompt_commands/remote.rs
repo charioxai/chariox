@@ -37,6 +37,10 @@ fn remote_git_turn_context(
         home_prompt_id: dispatch.prompt_id.clone(),
         home_turn_id: dispatch.prompt_id.clone(),
         workspace_live_sync_mode: dispatch.workspace_live_sync_mode,
+        prompt_origin: Some(dispatch.prompt_origin),
+        external_provider: dispatch.external_provider.clone(),
+        external_provider_session_id: dispatch.external_provider_session_id.clone(),
+        external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             &dispatch.prompt,
             &dispatch.attachments,
@@ -71,6 +75,10 @@ fn remote_git_turn_context_for_prompt(
         workspace_live_sync_mode: remote_workspace_live_sync_mode_for_agent(
             app, session_id, agent_id,
         ),
+        prompt_origin: Some(prompt.prompt_origin()),
+        external_provider: prompt.external_provider().map(str::to_string),
+        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+        external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             prompt.prompt(),
             prompt.attachments(),

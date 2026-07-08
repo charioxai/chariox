@@ -320,6 +320,12 @@ impl<'a> KernelAgentService<'a> {
                     &submitted.admission.session_id,
                     &submitted.admission.target_agent_id,
                 ),
+                prompt_origin: prompt.prompt_origin(),
+                external_provider: prompt.external_provider().map(str::to_string),
+                external_provider_session_id: prompt
+                    .external_provider_session_id()
+                    .map(str::to_string),
+                external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
                 workflow_context: None,
             });
         }

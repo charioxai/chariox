@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{PromptQueueItem, PromptSubmissionOutcome};
 use crate::transport::relay_client::{
-    send_peer_request_via_temporary_connection_with_timeout, LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+    LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, send_peer_request_via_temporary_connection_with_timeout,
 };
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
@@ -66,6 +66,14 @@ pub(super) fn dispatch_workflow_prompt(
                         home_prompt_id: prompt.id().to_string(),
                         home_turn_id: prompt.id().to_string(),
                         workspace_live_sync_mode: Some(workspace_live_sync_mode),
+                        prompt_origin: Some(prompt.prompt_origin()),
+                        external_provider: prompt.external_provider().map(str::to_string),
+                        external_provider_session_id: prompt
+                            .external_provider_session_id()
+                            .map(str::to_string),
+                        external_provider_turn_id: prompt
+                            .external_provider_turn_id()
+                            .map(str::to_string),
                         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
                             prompt.prompt(),
                             prompt.attachments(),

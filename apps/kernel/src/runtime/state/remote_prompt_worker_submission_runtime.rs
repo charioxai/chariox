@@ -133,6 +133,10 @@ fn remote_git_turn_context(
         home_prompt_id: dispatch.prompt_id.clone(),
         home_turn_id: dispatch.prompt_id.clone(),
         workspace_live_sync_mode: dispatch.workspace_live_sync_mode,
+        prompt_origin: Some(dispatch.prompt_origin),
+        external_provider: dispatch.external_provider.clone(),
+        external_provider_session_id: dispatch.external_provider_session_id.clone(),
+        external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             &dispatch.prompt,
             &dispatch.attachments,

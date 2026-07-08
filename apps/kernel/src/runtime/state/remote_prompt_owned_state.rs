@@ -85,6 +85,12 @@ impl KernelRuntimeOwnedState {
                             Some(&session),
                         ),
                     ),
+                    prompt_origin: prompt.prompt_origin(),
+                    external_provider: prompt.external_provider().map(str::to_string),
+                    external_provider_session_id: prompt
+                        .external_provider_session_id()
+                        .map(str::to_string),
+                    external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
                     workflow_context: None,
                 })
             } else {
