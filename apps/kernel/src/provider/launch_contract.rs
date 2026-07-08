@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -271,6 +271,8 @@ pub struct ExternalProviderObservedCursor {
     pub last_observed_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_observed_merge_key: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub arroba_owned_observed_prompt_turn_ids: BTreeSet<String>,
 }
 
 impl ExternalProviderObservedCursor {
@@ -283,6 +285,7 @@ impl ExternalProviderObservedCursor {
             last_observed_turn_id,
             last_observed_at_ms,
             last_observed_merge_key,
+            arroba_owned_observed_prompt_turn_ids: BTreeSet::new(),
         }
     }
 
@@ -290,6 +293,7 @@ impl ExternalProviderObservedCursor {
         self.last_observed_turn_id.is_none()
             && self.last_observed_at_ms.is_none()
             && self.last_observed_merge_key.is_none()
+            && self.arroba_owned_observed_prompt_turn_ids.is_empty()
     }
 }
 
@@ -751,6 +755,7 @@ mod tests {
                 last_observed_turn_id: Some("turn-2".to_string()),
                 last_observed_at_ms: Some(2),
                 last_observed_merge_key: Some("merge-2".to_string()),
+                arroba_owned_observed_prompt_turn_ids: std::collections::BTreeSet::new(),
             });
         second.imported_at_ms = 2;
         let different =

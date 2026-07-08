@@ -107,6 +107,7 @@ test("same provider run compares identity and projected runtime metadata", () =>
         last_observed_turn_id: "turn-1",
         last_observed_at_ms: 1_500,
         last_observed_merge_key: "merge-1",
+        arroba_owned_observed_prompt_turn_ids: ["user-owned-1"],
       },
       last_observed_turn_id: "turn-1",
       last_observed_at_ms: 1_500,
@@ -140,6 +141,16 @@ test("same provider run compares identity and projected runtime metadata", () =>
       observed_cursor: {
         ...run.external_provider_import!.observed_cursor,
         last_observed_turn_id: "turn-2",
+      },
+    },
+  }), false)
+  assert.equal(sameProviderRun(run, {
+    ...run,
+    external_provider_import: {
+      ...run.external_provider_import!,
+      observed_cursor: {
+        ...run.external_provider_import!.observed_cursor,
+        arroba_owned_observed_prompt_turn_ids: ["user-owned-2"],
       },
     },
   }), false)

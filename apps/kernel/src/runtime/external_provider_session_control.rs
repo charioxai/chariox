@@ -1123,9 +1123,18 @@ fn append_observed_external_turns_for_attached_target_with_options(
     let mut last_cursor = read.target.observed_cursor.clone();
     let mut visible_provider_turn_id = None;
     let mut current_observed_turn_is_arroba_owned = false;
-    let mut arroba_owned_provider_turn_ids = BTreeSet::new();
+    let mut arroba_owned_provider_turn_ids = read
+        .target
+        .observed_cursor
+        .arroba_owned_observed_prompt_turn_ids
+        .clone();
     let candidate_turns =
         latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
+    let candidate_user_turn_ids = candidate_turns
+        .iter()
+        .filter(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)
+        .map(crate::app::ObservedExternalProviderTurn::provider_turn_id_or_fallback)
+        .collect::<BTreeSet<_>>();
     for turn in &candidate_turns {
         let kind = turn.role.session_history_kind();
         let merge_turn_id = turn.provider_turn_id_or_fallback();
@@ -1137,10 +1146,12 @@ fn append_observed_external_turns_for_attached_target_with_options(
             .unwrap_or_else(|| merge_turn_id.clone());
         let merge_key = turn.external_merge_key(&provider, &provider_session_id);
         if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
-            current_observed_turn_is_arroba_owned = consume_arroba_owned_prompt_text_match(
-                &mut arroba_owned_prompt_text_counts,
-                &turn.text,
-            );
+            current_observed_turn_is_arroba_owned = arroba_owned_provider_turn_ids
+                .contains(&merge_turn_id)
+                || consume_arroba_owned_prompt_text_match(
+                    &mut arroba_owned_prompt_text_counts,
+                    &turn.text,
+                );
             if current_observed_turn_is_arroba_owned {
                 arroba_owned_provider_turn_ids.insert(merge_turn_id.clone());
             }
@@ -1150,6 +1161,11 @@ fn append_observed_external_turns_for_attached_target_with_options(
             last_cursor.last_observed_turn_id = Some(merge_turn_id);
             last_cursor.last_observed_at_ms =
                 turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
+            last_cursor.arroba_owned_observed_prompt_turn_ids =
+                observed_arroba_owned_user_turn_ids_in_window(
+                    &arroba_owned_provider_turn_ids,
+                    &candidate_user_turn_ids,
+                );
             continue;
         }
         let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
@@ -1211,6 +1227,11 @@ fn append_observed_external_turns_for_attached_target_with_options(
         last_cursor.last_observed_merge_key = Some(merge_key);
         last_cursor.last_observed_turn_id = Some(merge_turn_id);
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
+        last_cursor.arroba_owned_observed_prompt_turn_ids =
+            observed_arroba_owned_user_turn_ids_in_window(
+                &arroba_owned_provider_turn_ids,
+                &candidate_user_turn_ids,
+            );
     }
     let changed = appended;
     outcome.changed_count = changed;
@@ -1374,6 +1395,16 @@ fn external_observed_history_entry_matches(
         && existing.external_provider_turn_id == next.external_provider_turn_id
         && existing.observed_at_ms == next.observed_at_ms
         && existing.external_observation == next.external_observation
+}
+
+fn observed_arroba_owned_user_turn_ids_in_window(
+    arroba_owned_provider_turn_ids: &BTreeSet<String>,
+    candidate_user_turn_ids: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    arroba_owned_provider_turn_ids
+        .intersection(candidate_user_turn_ids)
+        .cloned()
+        .collect()
 }
 
 fn consume_arroba_owned_prompt_text_match(
@@ -3224,6 +3255,70 @@ mod tests {
             cursor.last_observed_turn_id.as_deref(),
             Some("assistant-owned")
         );
+        assert!(cursor
+            .arroba_owned_observed_prompt_turn_ids
+            .contains("user-owned"));
+    }
+
+    #[test]
+    fn append_observed_arroba_owned_prompt_cursor_prevents_reimport_after_reload() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        )
+        .with_cursor(crate::provider::ExternalProviderObservedCursor {
+            last_observed_turn_id: Some("assistant-owned".to_string()),
+            last_observed_at_ms: Some(84),
+            last_observed_merge_key: Some(
+                "external:codex:thread-observed:assistant-owned".to_string(),
+            ),
+            arroba_owned_observed_prompt_turn_ids: std::collections::BTreeSet::from([
+                "user-owned".to_string()
+            ]),
+        });
+        let target = attached_external_observer_target_from_import(
+            session.id().to_string(),
+            agent.id().to_string(),
+            None,
+            import,
+        );
+
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "previously classified Arroba prompt".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-owned".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "reply to previously classified Arroba prompt".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("cursor-classified Arroba-owned prompt should stay skipped");
+
+        assert_eq!(outcome.changed_count, 0);
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .is_none());
+        assert!(app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load")
+            .is_empty());
     }
 
     #[tokio::test]

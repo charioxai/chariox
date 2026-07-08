@@ -94,4 +94,16 @@ function sameProviderRunExternalImport(
     && left.observed_cursor.last_observed_turn_id === right.observed_cursor.last_observed_turn_id
     && left.observed_cursor.last_observed_at_ms === right.observed_cursor.last_observed_at_ms
     && left.observed_cursor.last_observed_merge_key === right.observed_cursor.last_observed_merge_key
+    && sameStringArray(
+      left.observed_cursor.arroba_owned_observed_prompt_turn_ids,
+      right.observed_cursor.arroba_owned_observed_prompt_turn_ids,
+    )
+}
+
+function sameStringArray(left?: readonly string[], right?: readonly string[]): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+  return left.length === right.length
+    && left.every((value, index) => value === right[index])
 }

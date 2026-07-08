@@ -138,14 +138,16 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
             BTreeMap::from([
                 (
                     "protocol_snapshots",
-                    vec![evidence(
-                        "apps/kernel/src/local/api/tests/protocol_shapes.rs",
-                        &[
-                            "LOCAL_DAEMON_PROTOCOL_VERSION",
-                            "RequestNativeProviderInteraction",
-                            "ApplyWorkflowDesignOp",
-                        ],
-                    )],
+                    vec![
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "RequestNativeProviderInteraction"],
+                        ),
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/provider_usage_activity.rs",
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "ApplyWorkflowDesignOp"],
+                        ),
+                    ],
                 ),
                 (
                     "version_rules",
@@ -339,7 +341,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &["Native TUI permissions:", "Native TUI Agents"],
                         ),
                         evidence(
-                            "apps/kernel/src/local/api/tests/protocol_shapes.rs",
+                            "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
                             &["RequestNativeProviderInteraction"],
                         ),
                     ],

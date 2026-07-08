@@ -196,6 +196,7 @@ export type ExternalProviderObservedCursor = {
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
   last_observed_merge_key?: string | null
+  arroba_owned_observed_prompt_turn_ids?: string[]
 }
 
 export type ExternalProviderImportMetadata = {
@@ -1524,7 +1525,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 233
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 234
 
 export type TerminalCommandCatalogNodeKind =
   | "group"
