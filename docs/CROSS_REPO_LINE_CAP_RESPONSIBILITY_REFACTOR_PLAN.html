@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>43 allowlisted files remain after initial splits</td>
+              <td>42 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>bca6e949d</code> <span class="muted">Split architecture kernel runtime details</span></td>
+              <td>The main architecture document now keeps top-level component boundaries, ownership rules, interaction lanes, security, memory, failure, deployment, and implementation choices, while target-kernel runtime model, workflow semantics, publication runtime, agent binding, and observability details live in a sibling architecture detail document.</td>
+              <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference check preserving the main-file Native TUI section referenced by <code>AGENTS.md</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>396352cc5</code> <span class="muted">Split kernel web terminal performance slice doc</span></td>
