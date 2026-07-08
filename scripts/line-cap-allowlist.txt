@@ -39,7 +39,6 @@ apps/ios/ArrobaPackage/Sources/ArrobaFeature/Kernel/KernelProtocol.swift
 apps/kernel/src/local/api/types.rs
 apps/cli/scripts/live-remote-native-tui-drill.mjs
 apps/cli/scripts/live-cloud-publication-deployment-drill.mjs
-apps/kernel/src/local/ipc.rs
 apps/cli/scripts/live-provider-context-injection-drill.mjs
 docs/KERNEL_WEB_TERMINAL_PERFORMANCE_PLAN.html
 apps/kernel/src/session/runtime_session.rs
