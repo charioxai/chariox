@@ -331,8 +331,9 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
         let external_prompt = PromptQueueItem::external_observed_running(
-            "external:codex:thread-1:user-1",
             "codex",
+            "thread-1",
+            "user-1",
             agent.id(),
             "external prompt",
         );

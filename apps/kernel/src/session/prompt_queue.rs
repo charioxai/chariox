@@ -183,26 +183,31 @@ impl PromptQueueItem {
     }
 
     pub fn external_observed_running(
-        id: impl Into<String>,
-        provider: impl AsRef<str>,
+        provider: impl Into<String>,
+        provider_session_id: impl Into<String>,
+        provider_turn_id: impl Into<String>,
         target_agent_id: impl Into<String>,
         prompt: impl Into<String>,
     ) -> Self {
-        let id = id.into();
-        let external_observed_id = crate::history::parse_external_provider_observed_id(&id);
+        let external_observed_id = crate::history::ExternalProviderObservedId {
+            provider: provider.into(),
+            provider_session_id: provider_session_id.into(),
+            provider_turn_id: provider_turn_id.into(),
+        };
+        let id = crate::history::external_provider_observed_merge_key(
+            &external_observed_id.provider,
+            &external_observed_id.provider_session_id,
+            &external_observed_id.provider_turn_id,
+        );
         let prompt = Self::new(
             id,
-            format!("external:{}", provider.as_ref()),
+            format!("external:{}", external_observed_id.provider),
             target_agent_id,
             prompt,
             PromptStatus::Running,
         )
         .with_prompt_origin(PromptOrigin::External);
-        if let Some(external_observed_id) = external_observed_id {
-            prompt.with_external_observed_id(external_observed_id)
-        } else {
-            prompt
-        }
+        prompt.with_external_observed_id(external_observed_id)
     }
 
     pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
@@ -468,10 +473,7 @@ mod tests {
     #[test]
     fn prompt_queue_item_external_observed_running_sets_runtime_identity() {
         let prompt = PromptQueueItem::external_observed_running(
-            "external:codex:thread-1:user-1",
-            "codex",
-            "agent-1",
-            "run this",
+            "codex", "thread-1", "user-1", "agent-1", "run this",
         );
 
         assert_eq!(prompt.id(), "external:codex:thread-1:user-1");
@@ -511,10 +513,7 @@ mod tests {
     #[test]
     fn prompt_queue_item_pending_conversion_preserves_external_metadata() {
         let prompt = PromptQueueItem::external_observed_running(
-            "external:codex:thread-1:user-1",
-            "codex",
-            "agent-1",
-            "run this",
+            "codex", "thread-1", "user-1", "agent-1", "run this",
         );
 
         let pending = prompt.into_pending_queue_item("pending-1");

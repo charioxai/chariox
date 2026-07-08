@@ -120,8 +120,9 @@ fn session_snapshot_projection_preserves_projected_active_run_with_active_prompt
         .expect("focused agent should be set");
     for agent in [&first_agent, &focused_agent] {
         let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-            format!("external:codex:session-1:{}-turn", agent.id()),
             "codex",
+            "session-1",
+            format!("{}-turn", agent.id()),
             agent.id(),
             format!("external prompt for {}", agent.id()),
         );
@@ -367,8 +368,9 @@ fn session_snapshot_projection_projects_external_active_turn_origin() {
         .expect("session should be created");
     let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:session-1:user-1",
         "codex",
+        "session-1",
+        "user-1",
         agent.id(),
         "external prompt",
     );
@@ -474,8 +476,9 @@ fn session_snapshot_projection_keeps_external_active_turn_origin_without_active_
         .expect("session should be created");
     let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:session-1:user-1",
         "codex",
+        "session-1",
+        "user-1",
         agent.id(),
         "external prompt",
     );
@@ -626,8 +629,9 @@ fn session_snapshot_projection_projects_active_turn_when_provider_run_lookup_is_
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should be created");
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:session-1:user-1",
         "codex",
+        "session-1",
+        "user-1",
         agent.id(),
         "external prompt",
     );
@@ -791,8 +795,9 @@ fn session_snapshot_projection_disables_queued_prompt_steering_for_external_acti
     let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
     let attachment_id = attach_cli(&mut app, session.id(), "cli-external-queued-controls");
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:session-1:user-1",
         "codex",
+        "session-1",
+        "user-1",
         agent.id(),
         "external prompt",
     );

@@ -911,8 +911,9 @@ mod tests {
             "daemon-1",
         );
         let external_prompt = PromptQueueItem::external_observed_running(
-            "external:codex:thread-1:user-1",
             "codex",
+            "thread-1",
+            "user-1",
             "agent-2",
             "external prompt",
         );

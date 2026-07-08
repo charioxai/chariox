@@ -63,16 +63,12 @@ impl ActiveTurnState {
         provider_run_id: String,
     ) -> Self {
         let trace_id = prompt_id.clone();
-        let external_observed_id = crate::history::parse_external_provider_observed_id(&prompt_id);
-        let prompt_origin = external_observed_id
-            .as_ref()
-            .map(|_| PromptOrigin::External);
         Self {
             session_id,
             agent_id,
             prompt_id,
-            prompt_origin,
-            external_observed_id,
+            prompt_origin: None,
+            external_observed_id: None,
             provider_run_id,
             trace_id,
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -379,7 +375,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_turn_start_classifies_external_observed_prompt_ids() {
+    fn active_turn_start_does_not_infer_external_metadata_from_prompt_ids() {
         let turn = ActiveTurnState::new(
             "session-1".to_string(),
             "agent-1".to_string(),
@@ -387,13 +383,8 @@ mod tests {
             "run-1".to_string(),
         );
 
-        assert_eq!(turn.prompt_origin, Some(PromptOrigin::External));
-        let external = turn
-            .external_observed_id
-            .expect("external observed id should be parsed");
-        assert_eq!(external.provider, "codex");
-        assert_eq!(external.provider_session_id, "thread-1");
-        assert_eq!(external.provider_turn_id, "user-1");
+        assert_eq!(turn.prompt_origin, None);
+        assert_eq!(turn.external_observed_id, None);
     }
 
     #[test]
@@ -464,8 +455,9 @@ mod tests {
     fn active_turn_restart_preserves_prompt_metadata() {
         let store = ActiveTurnStore::default();
         let external_prompt = PromptQueueItem::external_observed_running(
-            "external:codex:session-1:user-1",
             "codex",
+            "session-1",
+            "user-1",
             "agent-1",
             "external prompt",
         );
@@ -503,8 +495,9 @@ mod tests {
     fn active_turn_restart_for_new_prompt_does_not_preserve_old_turn_state() {
         let store = ActiveTurnStore::default();
         let external_prompt = PromptQueueItem::external_observed_running(
-            "external:codex:session-1:user-1",
             "codex",
+            "session-1",
+            "user-1",
             "agent-1",
             "external prompt",
         );

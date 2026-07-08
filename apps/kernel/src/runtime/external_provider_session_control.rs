@@ -1433,14 +1433,10 @@ fn external_active_prompt_from_turn(
     latest: &ObservedExternalProviderTurn,
 ) -> PromptQueueItem {
     let provider_turn_id = latest.provider_turn_id_or_fallback();
-    let external_prompt_id = crate::history::external_provider_observed_merge_key(
-        &target.provider,
-        &target.provider_session_id,
-        &provider_turn_id,
-    );
     PromptQueueItem::external_observed_running(
-        external_prompt_id,
-        &target.provider,
+        target.provider.clone(),
+        target.provider_session_id.clone(),
+        provider_turn_id,
         target.agent_id.clone(),
         latest.text.clone(),
     )

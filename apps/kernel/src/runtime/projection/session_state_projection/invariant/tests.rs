@@ -446,8 +446,9 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
     let agent_id = agent.id().to_string();
     let provider_run = launch_dev_stub_provider(&mut app, &session_id, &agent_id);
     let external_prompt = PromptQueueItem::external_observed_running(
-        "external:codex:thread-1:user-1",
         "codex",
+        "thread-1",
+        "user-1",
         &agent_id,
         "external prompt",
     );

@@ -15,8 +15,9 @@ async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:thread-owned:user-1",
         "codex",
+        "thread-owned",
+        "user-1",
         agent_id.clone(),
         "external owned projection prompt",
     );

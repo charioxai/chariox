@@ -221,8 +221,9 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
     );
 
     let external_prompt = crate::session::PromptQueueItem::external_observed_running(
-        "external:codex:thread-1:user-1",
         "codex",
+        "thread-1",
+        "user-1",
         "agent-1",
         "external text",
     );
