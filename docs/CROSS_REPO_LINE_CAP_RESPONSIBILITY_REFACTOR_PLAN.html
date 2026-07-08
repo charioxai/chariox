@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>39 allowlisted files remain after initial splits</td>
+              <td>38 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>8a8662545</code> <span class="muted">Split kernel protocol tests</span></td>
+              <td>Kernel protocol production types, event construction, frame serialization, and error mapping now stay in the transport protocol module, while terminal-output batching, waiting-room delta, workflow-run delta, provider-run delta, agent-activity, metadata, and runtime-interaction coverage lives in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent and child module, <code>cargo test --manifest-path apps/kernel/Cargo.toml transport::kernel_protocol::tests -- --nocapture</code> (9 passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>0c871774b</code> <span class="muted">Split progress log milestone archive</span></td>
