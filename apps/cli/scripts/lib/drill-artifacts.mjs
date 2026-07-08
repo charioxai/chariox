@@ -2,21 +2,28 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
+import { validateKnownArtifactContents } from "./drill-artifact-content-validation.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import {
+  DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS,
+  metadataListFromMetadata,
+  runtimeSignalOwnersFromRuntimeSignals,
+  runtimeSignalsFromMetadata,
+  validateDrillArtifactIndexEvidenceRepoMetadata,
+  validateDrillArtifactIndexGeneratedEvidenceMetadata,
+  validateDrillArtifactIndexKindMetadata,
+  validateDrillArtifactIndexProviderAccountAliasMetadata,
+  validateDrillArtifactIndexRuntimeSignalOwnerMetadata,
+  validateGeneratedEvidencePathText,
+  validateProviderAccountAliasEntry,
+} from "./drill-artifact-metadata-validation.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
-import {
-  validateDrillFailureClassification,
-  validateDrillFailureTaxonomyManifest,
-} from "./drill-failure-taxonomy.mjs"
-import {
-  validateDrillGeneratedEvidenceKind,
-  validateDrillGeneratedEvidencePath,
-} from "./drill-generated-evidence-metadata.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { validateDrillGeneratedEvidenceKind } from "./drill-generated-evidence-metadata.mjs"
 import {
   validateDrillGeneratedMatrixName,
   validateDrillGeneratedMatrixNameRepoCounts,
-  validateDrillGeneratedMatrixNameRepoMetadata,
 } from "./drill-generated-matrix-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
@@ -24,25 +31,13 @@ import {
   redactDrillSecretText,
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
-import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
-import { validateDrillFocusedRuntimeGateReport } from "./drill-focused-runtime-gate-report.mjs"
-import {
-  parseProviderAccountAlias,
-  validateDrillProvider,
-} from "./drill-provider-profiles.mjs"
-import { validateDrillValidationResultStatus } from "./drill-validation-statuses.mjs"
 import { validateDrillArtifactValidationPreset } from "./drill-validation-gate-presets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
   validateDrillRuntimeSignal,
-  validateDrillRuntimeSignals,
-  validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
-import {
-  validateDrillRuntimeAuthorityInvariant,
-  validateDrillRuntimeAuthorityManifest,
-} from "./drill-runtime-authority-invariants.mjs"
+import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -145,17 +140,6 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   evidenceRepos: "evidence_repos",
   artifactCoverageInputSources: "artifact_coverage_input_sources",
 })
-const DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS = Object.freeze([
-  "generatedMatrixArtifactIndexes",
-  "generatedValidationSuiteArtifactIndexes",
-  "generatedValidationSuiteFailureRoots",
-  "requiredGeneratedMatrixArtifactIndexes",
-  "missingGeneratedMatrixArtifactIndexes",
-  "requiredGeneratedValidationSuiteArtifactIndexes",
-  "missingGeneratedValidationSuiteArtifactIndexes",
-  "requiredGeneratedValidationSuiteFailureRoots",
-  "missingGeneratedValidationSuiteFailureRoots",
-])
 
 export async function prepareDrillArtifacts(rootDir) {
   const resolvedRootDir = resolvedDrillRootDir(rootDir)
@@ -954,385 +938,12 @@ function schemaForArtifact(contents) {
   }
 }
 
-function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
-  let parsed
-  try {
-    parsed = JSON.parse(contents.toString("utf8"))
-  } catch {
-    return
-  }
-  const requiresRuntimeSignalManifest = metadataHasAnyList(metadata, [
-    "runtimeSignals",
-    "requiredRuntimeSignals",
-    "missingRuntimeSignals",
-  ])
-  const requiresFailureTaxonomyManifest = requiresRuntimeSignalManifest
-    || metadataHasAnyList(metadata, [
-      "classifications",
-      "requiredFailureClassifications",
-      "missingFailureClassifications",
-    ])
-  const requiresRuntimeAuthorityManifest = metadataHasAnyList(metadata, [
-    "runtimeAuthorityInvariants",
-    "requiredRuntimeAuthorityInvariants",
-    "missingRuntimeAuthorityInvariants",
-  ])
-  if (parsed?.schema === "arroba.drill.validation_suite.v1") {
-    validateValidationSuiteManifestArtifact(parsed, artifactPath)
-    validateValidationSuiteArtifactMetadata({
-      artifactPath,
-      expectedKind: "validation-suite",
-      metadata,
-      testCount: parsed.testCount,
-    })
-    if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
-    }
-    if (requiresFailureTaxonomyManifest && parsed.failureTaxonomyManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing failureTaxonomyManifest`)
-    }
-    if (requiresRuntimeAuthorityManifest && parsed.runtimeAuthorityManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing runtimeAuthorityManifest`)
-    }
-    if (parsed.failureTaxonomyManifest !== undefined) {
-      validateDrillFailureTaxonomyManifest(parsed.failureTaxonomyManifest, `${artifactPath}.failureTaxonomyManifest`)
-    }
-    if (parsed.runtimeSignalsManifest !== undefined) {
-      validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
-    }
-    if (parsed.runtimeAuthorityManifest !== undefined) {
-      validateDrillRuntimeAuthorityManifest(parsed.runtimeAuthorityManifest, `${artifactPath}.runtimeAuthorityManifest`)
-    }
-  }
-  if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
-    validateValidationSuiteRunArtifact(parsed, artifactPath)
-    validateValidationSuiteArtifactMetadata({
-      artifactPath,
-      expectedKind: "validation-suite-run",
-      metadata,
-      status: parsed.status,
-      testCount: parsed.manifest.testCount,
-    })
-    if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
-    }
-    if (requiresFailureTaxonomyManifest && parsed.manifest?.failureTaxonomyManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing manifest.failureTaxonomyManifest`)
-    }
-    if (requiresRuntimeAuthorityManifest && parsed.manifest?.runtimeAuthorityManifest === undefined) {
-      throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeAuthorityManifest`)
-    }
-    if (parsed.manifest?.failureTaxonomyManifest !== undefined) {
-      validateDrillFailureTaxonomyManifest(parsed.manifest.failureTaxonomyManifest, `${artifactPath}.manifest.failureTaxonomyManifest`)
-    }
-    if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
-      validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
-    }
-    if (parsed.manifest?.runtimeAuthorityManifest !== undefined) {
-      validateDrillRuntimeAuthorityManifest(parsed.manifest.runtimeAuthorityManifest, `${artifactPath}.manifest.runtimeAuthorityManifest`)
-    }
-  }
-  if (parsed?.schema === "arroba.drill.matrix.v1") {
-    validateDrillMatrixReport(parsed, artifactPath)
-    validateMatrixArtifactMetadata(parsed, artifactPath, metadata)
-  }
-  if (parsed?.schema === "arroba.drill.focused_runtime_gate.v1") {
-    validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
-    validateFocusedRuntimeGateArtifactMetadata(parsed, artifactPath, metadata)
-  }
-}
-
-function validateFocusedRuntimeGateArtifactMetadata(report, artifactPath, metadata) {
-  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
-  if (artifactKinds.length > 0 && !artifactKinds.includes("focused-runtime-gate")) {
-    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include focused-runtime-gate`)
-  }
-  if (metadata?.status !== undefined && metadata.status !== report.status) {
-    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
-  }
-}
-
-function validateMatrixArtifactMetadata(report, artifactPath, metadata) {
-  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
-  if (artifactKinds.length > 0 && !artifactKinds.includes("matrix-report")) {
-    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include matrix-report`)
-  }
-  if (metadata?.matrix !== undefined && metadata.matrix !== report.matrix) {
-    throw new Error(`drill artifact ${artifactPath} metadata.matrix must match artifact matrix`)
-  }
-  if (metadata?.status !== undefined && metadata.status !== report.status) {
-    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
-  }
-  if (metadata?.dryRun !== undefined && metadata.dryRun !== report.dryRun) {
-    throw new Error(`drill artifact ${artifactPath} metadata.dryRun must match artifact dryRun`)
-  }
-  if (metadata?.scenarios !== undefined && metadata.scenarios !== report.scenarios.length) {
-    throw new Error(`drill artifact ${artifactPath} metadata.scenarios must match artifact scenarios`)
-  }
-  validateMatrixPlannedMetadata(report, artifactPath, metadata)
-}
-
-function validateMatrixPlannedMetadata(report, artifactPath, metadata) {
-  const expectedPlannedOwners = plannedMetadataForReport(report, "plannedOwner")
-  const expectedPlannedClassifications = plannedMetadataForReport(report, "plannedClassification")
-  validateOptionalMetadataListMatches({
-    artifactPath,
-    field: "plannedOwners",
-    actual: metadataListFromMetadata(metadata, "plannedOwners"),
-    expected: expectedPlannedOwners,
-  })
-  validateOptionalMetadataListMatches({
-    artifactPath,
-    field: "plannedClassifications",
-    actual: metadataListFromMetadata(metadata, "plannedClassifications"),
-    expected: expectedPlannedClassifications,
-  })
-}
-
-function plannedMetadataForReport(report, key) {
-  return [...new Set((report.scenarios ?? [])
-    .map((scenario) => scenario?.[key])
-    .filter(nonEmptyString))]
-    .sort()
-}
-
-function validateOptionalMetadataListMatches({ artifactPath, field, actual, expected }) {
-  if (actual.length === 0) return
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`drill artifact ${artifactPath} metadata.${field} must match artifact planned diagnostics`)
-  }
-}
-
-function validateValidationSuiteArtifactMetadata({
-  artifactPath,
-  expectedKind,
-  metadata,
-  status = null,
-  testCount,
-}) {
-  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
-  if (artifactKinds.length > 0 && !artifactKinds.includes(expectedKind)) {
-    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include ${expectedKind}`)
-  }
-  if (metadata?.status !== undefined && metadata.status !== status) {
-    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
-  }
-  if (metadata?.tests !== undefined && metadata.tests !== testCount) {
-    throw new Error(`drill artifact ${artifactPath} metadata.tests must match artifact testCount`)
-  }
-}
-
-function validateValidationSuiteRunArtifact(run, source) {
-  validateDrillValidationResultStatus(run.status, `drill artifact ${source}`, {
-    message: () => `drill artifact ${source} has invalid status`,
-  })
-  if (typeof run.ok !== "boolean") {
-    throw new Error(`drill artifact ${source} is missing ok`)
-  }
-  if (run.ok !== (run.status === "passed")) {
-    throw new Error(`drill artifact ${source} ok does not match status`)
-  }
-  const startedMs = parseDrillIsoTimestamp(run.startedAt, `drill artifact ${source}.startedAt`)
-  const completedMs = parseDrillIsoTimestamp(run.completedAt, `drill artifact ${source}.completedAt`)
-  if (completedMs < startedMs) {
-    throw new Error(`drill artifact ${source}.completedAt must not be before startedAt`)
-  }
-  if (!Number.isSafeInteger(run.durationMs) || run.durationMs < 0) {
-    throw new Error(`drill artifact ${source} has invalid durationMs`)
-  }
-  if (run.durationMs !== completedMs - startedMs) {
-    throw new Error(`drill artifact ${source}.durationMs must match completedAt - startedAt`)
-  }
-  if (run.exitCode !== null && (!Number.isSafeInteger(run.exitCode) || run.exitCode < 0)) {
-    throw new Error(`drill artifact ${source} has invalid exitCode`)
-  }
-  if (run.signal !== null && !nonEmptyString(run.signal)) {
-    throw new Error(`drill artifact ${source} has invalid signal`)
-  }
-  if (run.error !== null && typeof run.error !== "string") {
-    throw new Error(`drill artifact ${source} has invalid error`)
-  }
-  if (run.status === "passed" && (run.exitCode !== 0 || run.signal !== null || run.error !== null)) {
-    throw new Error(`drill artifact ${source} passed run has failure fields`)
-  }
-  validateValidationSuiteManifestArtifact(run.manifest, `${source}.manifest`)
-  if (!nonEmptyString(run.command) || run.command !== run.manifest.command) {
-    throw new Error(`drill artifact ${source}.command must match manifest.command`)
-  }
-  if (run.testCount !== run.manifest.testCount) {
-    throw new Error(`drill artifact ${source}.testCount must match manifest.testCount`)
-  }
-  if (!Array.isArray(run.testPaths) || JSON.stringify(run.testPaths) !== JSON.stringify(run.manifest.testPaths)) {
-    throw new Error(`drill artifact ${source}.testPaths must match manifest.testPaths`)
-  }
-}
-
-function validateValidationSuiteManifestArtifact(manifest, source) {
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new Error(`drill artifact ${source} is not an object`)
-  }
-  if (manifest.schema !== "arroba.drill.validation_suite.v1") {
-    throw new Error(`drill artifact ${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
-  }
-  if (!nonEmptyString(manifest.command)) {
-    throw new Error(`drill artifact ${source} is missing command`)
-  }
-  if (!Number.isSafeInteger(manifest.testCount) || manifest.testCount <= 0) {
-    throw new Error(`drill artifact ${source} has invalid testCount`)
-  }
-  if (!Array.isArray(manifest.testPaths) || manifest.testPaths.length !== manifest.testCount) {
-    throw new Error(`drill artifact ${source}.testPaths must match testCount`)
-  }
-  for (const [index, testPath] of manifest.testPaths.entries()) {
-    if (!nonEmptyString(testPath)) {
-      throw new Error(`drill artifact ${source}.testPaths[${index}] has invalid path`)
-    }
-  }
-}
-
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
 }
 
 function sortedCountObject(counts) {
   return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
-}
-
-function runtimeSignalsFromMetadata(metadata) {
-  return metadataListFromMetadata(metadata, "runtimeSignals")
-}
-
-function metadataHasAnyList(metadata, keys) {
-  return keys.some((key) => metadataListFromMetadata(metadata, key).length > 0)
-}
-
-function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
-  return drillRuntimeSignalOwnersFor(runtimeSignals)
-}
-
-function validateDrillArtifactIndexRuntimeSignalOwnerMetadata(metadata, source) {
-  const runtimeSignals = runtimeSignalsFromMetadata(metadata)
-  const runtimeSignalOwners = metadataListFromMetadata(metadata, "runtimeSignalOwners")
-  const requiredRuntimeSignals = metadataListFromMetadata(metadata, "requiredRuntimeSignals")
-  const requiredRuntimeSignalOwners = metadataListFromMetadata(metadata, "requiredRuntimeSignalOwners")
-  const missingRuntimeSignals = metadataListFromMetadata(metadata, "missingRuntimeSignals")
-  const missingRuntimeSignalOwners = metadataListFromMetadata(metadata, "missingRuntimeSignalOwners")
-  validateDrillRuntimeSignals(requiredRuntimeSignals, `${source}.requiredRuntimeSignals`)
-  validateDrillRuntimeSignals(missingRuntimeSignals, `${source}.missingRuntimeSignals`)
-  if (runtimeSignals.length > 0 || runtimeSignalOwners.length > 0) {
-    const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
-    if (runtimeSignals.length === 0) {
-      throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
-    }
-    if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
-      throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
-    }
-  }
-  validateOptionalRuntimeSignalOwners(
-    requiredRuntimeSignals,
-    requiredRuntimeSignalOwners,
-    `${source}.requiredRuntimeSignalOwners`,
-    "requiredRuntimeSignals",
-  )
-  validateOptionalRuntimeSignalOwners(
-    missingRuntimeSignals,
-    missingRuntimeSignalOwners,
-    `${source}.missingRuntimeSignalOwners`,
-    "missingRuntimeSignals",
-  )
-}
-
-function validateOptionalRuntimeSignalOwners(runtimeSignals, runtimeSignalOwners, source, signalKey) {
-  if (runtimeSignals.length === 0 && runtimeSignalOwners.length === 0) return
-  if (runtimeSignals.length === 0) {
-    throw new Error(`${source} requires ${signalKey}`)
-  }
-  const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
-  if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
-    throw new Error(`${source} must match ${signalKey}`)
-  }
-}
-
-function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
-  for (const key of ["evidenceRepos", "generatedEvidenceRepos"]) {
-    for (const repo of metadataListFromMetadata(metadata, key)) {
-      validateDrillArtifactEvidenceRepo(repo, `${source}.${key}`)
-    }
-  }
-}
-
-function validateDrillArtifactIndexProviderAccountAliasMetadata(metadata, source) {
-  for (const accountAlias of metadataListFromMetadata(metadata, "providerAccountAliases")) {
-    validateProviderAccountAliasEntry(accountAlias, `${source}.providerAccountAliases`)
-  }
-}
-
-function validateProviderAccountAliasEntry(accountAlias, source) {
-  const { provider } = parseProviderAccountAlias(accountAlias)
-  validateDrillProvider(provider, source, {
-    label: "provider account alias provider",
-  })
-}
-
-function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
-  for (const key of [
-    "generatedEvidenceKinds",
-    "requiredGeneratedEvidenceKinds",
-    "missingGeneratedEvidenceKinds",
-  ]) {
-    for (const kind of metadataListFromMetadata(metadata, key)) {
-      validateDrillGeneratedEvidenceKind(kind, `${source}.${key}`)
-    }
-  }
-  for (const limitation of metadataListFromMetadata(metadata, "generatedMatrixLimitations")) {
-    validateDrillGeneratedMatrixLimitation(limitation, `${source}.generatedMatrixLimitations`)
-  }
-  for (const key of ["requiredGeneratedMatrixLimitations", "missingGeneratedMatrixLimitations"]) {
-    for (const limitation of metadataListFromMetadata(metadata, key)) {
-      validateDrillGeneratedMatrixLimitation(limitation, `${source}.${key}`)
-    }
-  }
-  for (const key of DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS) {
-    for (const [index, value] of metadataListFromMetadata(metadata, key).entries()) {
-      validateGeneratedEvidencePathText(value, `${source}.${key}[${index}]`)
-    }
-  }
-  for (const key of ["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"]) {
-    for (const repo of metadataListFromMetadata(metadata, key)) {
-      validateDrillArtifactEvidenceRepo(repo, `${source}.${key}`)
-    }
-  }
-  for (const key of ["generatedMatrixNames", "requiredGeneratedMatrixNames", "missingGeneratedMatrixNames"]) {
-    for (const [index, matrixName] of metadataListFromMetadata(metadata, key).entries()) {
-      validateDrillGeneratedMatrixName(matrixName, {
-        secretSource: `${source}.${key}[${index}]`,
-        unknownSource: `${source}.${key}`,
-      })
-    }
-  }
-  validateGeneratedMatrixNameRepoMetadata(metadata, source)
-}
-
-function validateGeneratedMatrixNameRepoMetadata(metadata, source) {
-  const matrixNames = metadataListFromMetadata(metadata, "generatedMatrixNames")
-  const matrixRepos = new Set(metadataListFromMetadata(metadata, "generatedMatrixRepos"))
-  validateDrillGeneratedMatrixNameRepoMetadata(matrixNames, matrixRepos, `${source}.generatedMatrixNames`)
-}
-
-function validateGeneratedEvidencePathText(value, source) {
-  validateDrillGeneratedEvidencePath(value, source)
-}
-
-function validateDrillArtifactIndexKindMetadata(metadata, source) {
-  for (const kind of metadataListFromMetadata(metadata, "artifactKinds")) {
-    validateDrillArtifactKind(kind, `${source}.artifactKinds`)
-  }
-}
-
-function metadataListFromMetadata(metadata, key) {
-  const value = metadata?.[key]
-  if (typeof value !== "string") return []
-  return [...new Set(value.split(",").map((item) => item.trim()).filter(nonEmptyString))].sort()
 }
 
 function countValues(values, target = new Map()) {
