@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>95 allowlisted files remain after initial splits</td>
+              <td>94 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>dc3186cc6</code> <span class="muted">Split distributed runtime gate tests</span></td>
+              <td>Distributed-runtime gate coverage now keeps CLI helpers, fixture writers, registry generators, and script paths in a support module, while artifact evidence, Cloud/failure/parity, and validation-error scenarios live in bounded sibling test modules behind the existing test entrypoint.</td>
+              <td><code>node --test apps/cli/scripts/drill-distributed-runtime-gate.test.mjs</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>2ccb34270</code> <span class="muted">Split validation gate aggregate tests</span></td>
