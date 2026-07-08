@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>52 allowlisted files remain after initial splits</td>
+              <td>51 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>618e88737</code> + <code>0e2a469de</code> <span class="muted">Extract hosted cloud relay drill helpers</span></td>
+              <td>The hosted Cloud relay drill now keeps hosted environment flags, service setup, and scenario selection in the executable script, while SSH/process helpers, retry/wait loops, hosted Cloud auth/token helpers, and command dependency shims live in a focused helper module.</td>
+              <td><code>node --check apps/cli/scripts/live-hosted-cloud-relay-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-hosted-cloud-relay-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>5484c0251</code> <span class="muted">Extract live cloud relay drill helpers</span></td>
