@@ -54,7 +54,6 @@ apps/kernel/src/agent/service.rs
 apps/kernel/src/session/service/turns.rs
 docs/PROTOCOL.md
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
-apps/relay/src/auth.rs
 apps/server/scripts/live-publication-trace-drill.mjs
 docs/ARCHITECTURE.md
 apps/cli/scripts/lib/drill-validation-gate-presets.mjs
