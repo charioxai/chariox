@@ -58,4 +58,3 @@ apps/kernel/src/runtime/state/workflow_tool.rs
 apps/cli/scripts/live-cloud-relay-drill.mjs
 apps/cli/scripts/drill-artifact-index-summary.mjs
 apps/kernel/src/runtime/state/tool_dispatch/home_extension_execution_policy.rs
-apps/kernel/src/provider/registry/dev_stub_adapter.rs
