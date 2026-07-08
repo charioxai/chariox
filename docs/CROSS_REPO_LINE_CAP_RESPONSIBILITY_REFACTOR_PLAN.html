@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>65 allowlisted files remain after initial splits</td>
+              <td>64 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>d869685d3</code> <span class="muted">Split operational history tests</span></td>
+              <td>Operational history store and event model code now stays below the cap, with canonical event, attachment preview, import index, retention-budget, and idempotent append coverage moved to a bounded sibling Rust test module.</td>
+              <td><code>cargo test --manifest-path apps/kernel/Cargo.toml history::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>3a4ac1408</code> <span class="muted">Split prompt git observer runtime tests</span></td>
