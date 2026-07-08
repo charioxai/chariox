@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>80 allowlisted files remain after initial splits</td>
+              <td>79 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>c0b15aa7a</code> <span class="muted">Split workflow code apply tests</span></td>
+              <td>Workflow-code apply coverage now keeps shared definition builders in the parent module, while core definition application, routed handoff behavior, queue and watchdog defaults, and validation/canonical pattern coverage live in bounded Rust child modules.</td>
+              <td><code>rustfmt --edition 2024 apps/kernel/src/session/service/tests/workflow_code_apply.rs apps/kernel/src/session/service/tests/workflow_code_apply/*.rs</code>, <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service::tests::workflow_code_apply -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>9618f2a1b</code> <span class="muted">Split runtime integration test support</span></td>
