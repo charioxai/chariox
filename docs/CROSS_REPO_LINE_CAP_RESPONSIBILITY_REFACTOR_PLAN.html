@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>69 allowlisted files remain after initial splits</td>
+              <td>68 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>72bd58038</code> <span class="muted">Split relay auth tests</span></td>
+              <td>Relay authentication production logic now stays below the cap, with scoped-token, JWT, revocation, and verifier behavior tests moved to a bounded sibling Rust test module.</td>
+              <td><code>cargo test --manifest-path apps/relay/Cargo.toml auth::tests -- --nocapture</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>c35c243b1</code> <span class="muted">Split daemon health model tests</span></td>
