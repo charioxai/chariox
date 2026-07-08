@@ -1,7 +1,7 @@
 import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import {
-  externalProviderObservedIdentityFields,
+  externalProviderObservedExplicitIdentityFields,
 } from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
@@ -244,7 +244,7 @@ function queuedPromptExternalIdentity(
   prompt: PromptQueueItem,
   pendingPromptId: string | null,
 ): Pick<ProjectedQueuedPrompt, "externalProvider" | "externalProviderSessionId" | "externalProviderTurnId"> {
-  const externalIdentity = externalProviderObservedIdentityFields({
+  const externalIdentity = externalProviderObservedExplicitIdentityFields({
     ...prompt,
     ...(pendingPromptId !== null ? { prompt_id: pendingPromptId } : {}),
   })

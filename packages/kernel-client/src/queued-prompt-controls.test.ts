@@ -690,9 +690,6 @@ test("project queued prompt normalizes prompt ownership", () => {
     targetAgentId: "agent-1",
     prompt: "external queued",
     promptOrigin: null,
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: "turn-1",
     attachmentCount: 0,
     status: "queued",
     steerDisabled: false,
@@ -709,7 +706,7 @@ test("project queued prompt normalizes prompt ownership", () => {
     target_agent_id: "agent-1",
     prompt: "external queued",
     status: "queued",
-  })?.externalProviderTurnId, "turn-2")
+  })?.externalProviderTurnId, undefined)
 
   assert.equal(projectQueuedPrompt({
     id: "queued-external-provider",

@@ -143,9 +143,9 @@ test("queuedPromptStripItemsForAgent uses projected queue controls and pending p
   }, {
     promptId: "external:codex:thread-1:turn-1",
     promptOrigin: "external",
-    externalProvider: "codex",
-    externalProviderSessionId: "thread-1",
-    externalProviderTurnId: "turn-1",
+    externalProvider: undefined,
+    externalProviderSessionId: undefined,
+    externalProviderTurnId: undefined,
     status: "dispatching",
     canSteer: false,
     canCancel: false,
