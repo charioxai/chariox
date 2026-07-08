@@ -209,8 +209,8 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>2 allowlisted files remain after initial splits</td>
-              <td>Kernel external-provider session control and discovery remain the active oversized targets; relay, workflow-code, meta tool-dispatch, drill, and CLI-root splits have already removed their current allowlist entries</td>
+              <td>1 allowlisted file remains after initial splits</td>
+              <td>Kernel external-provider session control remains the active oversized target; relay, workflow-code, meta tool-dispatch, external-provider discovery, drill, and CLI-root splits have already removed their current allowlist entries</td>
             </tr>
             <tr>
               <td><code>/Users/miguel/arroba-cloud</code></td>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>a3b153b1a</code> <span class="muted">Split external-provider session discovery</span></td>
+              <td><code>external_provider_session_discovery.rs</code> is now below the 1000-line cap and keeps the public discovery facade, provider normalization, root resolution, and signature DTOs. Cache/index management moved to <code>external_provider_session_discovery/cache.rs</code>, candidate path discovery to <code>paths.rs</code>, provider parsers to <code>codex.rs</code>, <code>claude.rs</code>, and <code>opencode.rs</code>, shared JSONL readers to <code>jsonl.rs</code>, metadata/record helpers to <code>common.rs</code>, and provider-focused tests to the <code>tests/</code> subtree.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, child modules, and split tests; <code>cargo test --manifest-path apps/kernel/Cargo.toml app::external_provider_session_discovery --lib -- --nocapture</code> (30 passed; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (1 allowlisted file remains, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>c2f8aa636</code> <span class="muted">Split meta tool-dispatch modules</span></td>
