@@ -36,7 +36,6 @@ apps/ios/ArrobaPackage/Sources/ArrobaFeature/Kernel/KernelProtocol.swift
 apps/kernel/src/local/api/types.rs
 docs/KERNEL_WEB_TERMINAL_PERFORMANCE_PLAN.html
 apps/kernel/src/session/runtime_session.rs
-apps/cli/scripts/live-workflow-runtime-drill.mjs
 apps/kernel/src/transport/relay_client/connector.rs
 docs/spec-v1.md
 apps/kernel/src/session/service/turns.rs
