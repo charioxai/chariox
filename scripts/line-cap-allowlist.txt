@@ -70,7 +70,6 @@ docs/PROTOCOL.md
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
 apps/relay/src/auth.rs
 apps/server/scripts/live-publication-trace-drill.mjs
-apps/cli/src/command-actions-workflow.test.ts
 docs/ARCHITECTURE.md
 apps/cli/scripts/lib/drill-validation-gate-presets.mjs
 apps/kernel/src/script.rs
