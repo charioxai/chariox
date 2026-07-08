@@ -1,3 +1,4 @@
+mod display_endpoint;
 mod lifecycle;
 mod provider_auth;
 
@@ -13,10 +14,10 @@ use crate::transport::relay_client::RelayClientState;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use display_endpoint::execute_get_slice_display_endpoint_request;
 use lifecycle::{
     execute_create_slice_backup_request, execute_create_slice_request,
-    execute_delete_slice_request, execute_get_slice_display_endpoint_request,
-    execute_get_slice_logs_request, execute_get_slice_request,
+    execute_delete_slice_request, execute_get_slice_logs_request, execute_get_slice_request,
     execute_get_slice_state_status_request, execute_list_slice_audit_request,
     execute_list_slices_request, execute_reset_slice_state_request,
     execute_save_slice_state_request, execute_start_slice_request, execute_stop_slice_request,
