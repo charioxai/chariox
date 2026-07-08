@@ -44,7 +44,6 @@ apps/cli/scripts/lib/drill-artifacts.mjs
 apps/cli/scripts/live-workflow-runtime-drill.mjs
 apps/kernel/src/transport/relay_client/connector.rs
 docs/spec-v1.md
-apps/kernel/src/agent/service.rs
 apps/kernel/src/session/service/turns.rs
 docs/PROTOCOL.md
 apps/ios/ArrobaPackage/Tests/ArrobaFeatureTests/KernelProtocolTests.swift
