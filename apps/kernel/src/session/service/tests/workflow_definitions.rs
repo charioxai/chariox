@@ -402,6 +402,130 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
 }
 
 #[test]
+fn workflow_design_node_update_keeps_output_modes_exclusive_and_clears_stale_exit() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("node should be added");
+
+    service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node completion setting should update");
+    service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 10,
+                y: 20,
+            }],
+        )
+        .expect("exit position should update");
+
+    let intermediate = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: Some(true),
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("intermediate node update should apply");
+    let updated_node = intermediate
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(!updated_node.can_complete_workflow_run());
+    assert!(intermediate
+        .canvas_layout()
+        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
+
+    service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 11,
+                y: 21,
+            }],
+        )
+        .expect("exit position should update");
+    let completion = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: Some(true),
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("completion node update should apply");
+    let updated_node = completion
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(!updated_node.can_emit_intermediate_run_output());
+    assert!(completion
+        .canvas_layout()
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
+
+    let both = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: Some(true),
+                    can_emit_intermediate_run_output: Some(true),
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("combined node update should apply");
+    let updated_node = both
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(!updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(both
+        .canvas_layout()
+        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
+}
+
+#[test]
 fn workflow_design_edge_update_applies_handoff_schema_patch() {
     let mut service = SessionService::new(&test_config());
     let session = service

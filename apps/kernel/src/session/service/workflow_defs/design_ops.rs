@@ -307,10 +307,17 @@ impl SessionService {
                     }
                     if let Some(value) = patch.can_complete_workflow_run {
                         node.set_can_complete_workflow_run(value);
+                        if value {
+                            node.set_can_emit_intermediate_run_output(false);
+                        }
                         clear_exit_position |= !value;
                     }
                     if let Some(value) = patch.can_emit_intermediate_run_output {
                         node.set_can_emit_intermediate_run_output(value);
+                        if value {
+                            node.set_can_complete_workflow_run(false);
+                            clear_exit_position = true;
+                        }
                     }
                     if let Some(value) = patch.wait_for_all_inputs {
                         node.set_wait_for_all_inputs(value);
