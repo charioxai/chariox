@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>29 allowlisted files remain after initial splits</td>
+              <td>28 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>900411a7c</code> <span class="muted">Split skill registry responsibilities</span></td>
+              <td>The skill registry now keeps registry roots, install/update/upsert/uninstall/list/get, granted-context rendering, metadata parsing, URL upsert, and prompt matching in the parent module, while package hashing/materialization/file collection live in a package module, provider root discovery/import/OpenCode config parsing live in a provider-import module, and skill unit coverage lives in a sibling test module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent, package, provider-import, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml skill -- --nocapture</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (28 allowlisted files remain, no new offenders); path-scoped <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>2945cd95e</code> <span class="muted">Split provider runtime tests</span></td>
