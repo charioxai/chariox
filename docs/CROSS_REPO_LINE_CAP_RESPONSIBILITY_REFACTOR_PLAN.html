@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>24 allowlisted files remain after initial splits</td>
+              <td>23 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,18 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>8f20dc1c9</code> <span class="muted">Split external provider observation tests</span></td>
+              <td>The kernel-client external provider observation test suite now keeps identity matching, history metadata projection, status policy, merge behavior, and source-field policy in the original file, while transcript metadata application, turn metadata application, transcript footer marker resolution, and ordinary-history rejection coverage live in a sibling test file.</td>
+              <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (794 passed); <code>node scripts/check-line-cap.mjs</code> (23 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for both split files.</td>
+            </tr>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>ec8b456f9</code> <span class="muted">Extract session publication core</span></td>
+              <td>Session service core now keeps session lifecycle, workspace links, workflow definition lookup, workflow run lookup, and prompt queue lookup, while workflow publication creation, validation, alias resolution, runtime status/error updates, publication observability projection, and publication transport/parser policy live in a focused child module.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent and publication module; <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service -- --nocapture</code> (78 passed); path-scoped staged <code>git diff --check</code>; line-count checks for both split files. A same-window kernel-client test growth briefly blocked the live line-cap guard after this commit; <code>8f20dc1c9</code> split that test and restored <code>node scripts/check-line-cap.mjs</code> to 23 allowlisted files with no new offenders.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>78a84b11f</code> <span class="muted">Split git observer tests</span></td>
