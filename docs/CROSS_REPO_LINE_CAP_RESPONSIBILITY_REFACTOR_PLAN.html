@@ -209,7 +209,7 @@
             <tr>
               <td><code>/Users/miguel/arroba</code></td>
               <td>126</td>
-              <td>25 allowlisted files remain after initial splits</td>
+              <td>24 allowlisted files remain after initial splits</td>
               <td>Kernel workflow/provider/runtime files, relay connection/auth, CLI roots, protocol types, iOS model/protocol views, tests, and drills</td>
             </tr>
             <tr>
@@ -234,6 +234,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>arroba</code></td>
+              <td><code>78a84b11f</code> <span class="muted">Split git observer tests</span></td>
+              <td>The git observer production module now keeps snapshot capture, commit observation, attribution, live-sync change detection, target application, journal integration, and git metadata helpers, while observation indexing, tracked live-sync change capture, target apply/conflict behavior, journal restore/sequence behavior, snapshot-store lookup behavior, and shared git-observer test fixtures live in focused sibling test modules.</td>
+              <td><code>rustfmt --edition 2024</code> for the parent and new test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml git_observer -- --nocapture</code> (31 passed); <code>node scripts/check-line-cap.mjs</code> (24 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+            </tr>
             <tr>
               <td><code>arroba</code></td>
               <td><code>6f79d0015</code> <span class="muted">Split Claude native output helpers</span></td>
