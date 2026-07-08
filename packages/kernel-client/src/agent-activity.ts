@@ -5,7 +5,6 @@ import {
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExplicitIdentityFields,
-  externalProviderObservedIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 
@@ -482,18 +481,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
 function projectExternalProviderObservedIdentity(
   record: Record<string, unknown>,
 ): AgentRuntimeExternalIdentityProjection {
-  const id = readStringField(record, "id")
-  const promptId = readStringField(record, "prompt_id")
-  const externalProvider = readStringField(record, "external_provider")
-  const externalProviderSessionId = readStringField(record, "external_provider_session_id")
-  const externalProviderTurnId = readStringField(record, "external_provider_turn_id")
-  const externalIdentity = externalProviderObservedExplicitIdentityFields({
-    ...(id !== null ? { id } : {}),
-    ...(promptId !== null ? { prompt_id: promptId } : {}),
-    ...(externalProvider !== null ? { external_provider: externalProvider } : {}),
-    ...(externalProviderSessionId !== null ? { external_provider_session_id: externalProviderSessionId } : {}),
-    ...(externalProviderTurnId !== null ? { external_provider_turn_id: externalProviderTurnId } : {}),
-  })
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(record)
   return {
     ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
     ...(externalIdentity.externalProviderSessionId
