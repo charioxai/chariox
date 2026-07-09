@@ -223,7 +223,12 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         "second workflow node prompt should become active after provider launch",
         |session| session.active_prompt_for_agent(second_agent.id()).is_some(),
     );
-    let routed = harness.get_workflow_test_run(session.id(), workflow_run.id());
+    let routed = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        workflow_run.id(),
+        "second workflow node run should become active after first completion",
+        |workflow_run| workflow_run.active_node_run_id().is_some(),
+    );
     let first_completed = routed
         .node_runs()
         .iter()
@@ -509,7 +514,12 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         "second node should become active after warning handoff",
         |session| session.active_prompt_for_agent(second_agent.id()).is_some(),
     );
-    let after_warning = harness.get_workflow_test_run(session.id(), workflow_run.id());
+    let after_warning = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        workflow_run.id(),
+        "second workflow node run should become active after warning handoff",
+        |workflow_run| workflow_run.active_node_run_id().is_some(),
+    );
     assert!(after_warning.failure_events().iter().any(|event| {
         matches!(
             event.kind(),
