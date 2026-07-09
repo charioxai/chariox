@@ -207,6 +207,92 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
 }
 
 #[tokio::test]
+async fn active_turn_trace_metadata_uses_prompt_owner_when_session_mirror_is_stale() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-stale-active-turn",
+            "worktree-stale-active-turn",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-test",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "codex-thread-stale-active-turn",
+        "codex-turn-stale-active-turn",
+        agent.id(),
+        "external prompt with owner-only metadata",
+    );
+    let external_prompt_id = external_prompt.id().to_string();
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(external_prompt))
+        .expect("external active prompt should sync");
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            None,
+            std::collections::VecDeque::new(),
+        )
+        .expect("test drift should clear stale session prompt mirror");
+    assert!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should load")
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "session mirror should not expose the active prompt"
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.start_active_turn_with_trace_id(
+        session.id(),
+        agent.id(),
+        &external_prompt_id,
+        run.id(),
+        "trace-stale-active-turn",
+    );
+
+    let active_turn = runtime
+        .owned
+        .active_turns
+        .get(run.id())
+        .expect("active turn should be tracked");
+    assert_eq!(
+        active_turn.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
+    assert_eq!(
+        active_turn.prompt_origin,
+        Some(crate::session::PromptOrigin::External)
+    );
+    let external_observed_id = active_turn
+        .external_observed_id
+        .expect("external observed id should come from prompt owner");
+    assert_eq!(external_observed_id.provider, "codex");
+    assert_eq!(
+        external_observed_id.provider_session_id,
+        "codex-thread-stale-active-turn"
+    );
+    assert_eq!(
+        external_observed_id.provider_turn_id,
+        "codex-turn-stale-active-turn"
+    );
+}
+
+#[tokio::test]
 async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

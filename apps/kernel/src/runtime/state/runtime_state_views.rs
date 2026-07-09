@@ -19,10 +19,10 @@ impl KernelRuntimeState {
             .get_session(session_id)
             .ok()
             .and_then(|session| {
-                session
-                    .active_prompt_for_agent(agent_id)
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
                     .filter(|prompt| prompt_matches_active_turn_id(prompt, prompt_id))
-                    .cloned()
             });
         let mut active_turn = ActiveTurnState::new(
             session_id.to_string(),
