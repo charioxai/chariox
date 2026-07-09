@@ -245,6 +245,7 @@ impl DaemonApp {
         Ok(active)
     }
 
+    #[cfg(test)]
     pub(crate) fn prompt_owner_sync_external_active_prompt(
         &mut self,
         session_id: &str,

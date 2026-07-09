@@ -152,26 +152,6 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) async fn dispatch_next_queued_prompt_after_external_settlement(
-        &self,
-        session_id: &str,
-        target_agent_id: &str,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let dispatch = {
-            self.owned.advance_next_queued_prompt_dispatch(
-                session_id,
-                target_agent_id,
-                provider_run_id,
-            )?
-        };
-        let Some(dispatch) = dispatch else {
-            return Ok(false);
-        };
-        self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        Ok(true)
-    }
-
     pub(crate) async fn cancel_queued_prompt(
         &self,
         session_id: &str,

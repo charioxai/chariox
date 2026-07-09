@@ -46,18 +46,6 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     app: &mut DaemonApp,
     read: AttachedExternalObserverRead,
 ) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
-    append_observed_external_turns_for_attached_target_with_options(
-        app,
-        read,
-        AttachedExternalObserverAppendOptions::default(),
-    )
-}
-
-pub(super) fn append_observed_external_turns_for_attached_target_with_options(
-    app: &mut DaemonApp,
-    read: AttachedExternalObserverRead,
-    options: AttachedExternalObserverAppendOptions,
-) -> Result<AttachedExternalObserverAppendOutcome, DaemonError> {
     let mut outcome = AttachedExternalObserverAppendOutcome {
         session_id: read.target.session_id.clone(),
         agent_id: read.target.agent_id.clone(),
@@ -71,7 +59,6 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
     let agent = app.agents.get_agent(&read.target.agent_id)?;
     let (active_prompt, queued_prompts) =
         app.prompt_state_owner().state_parts(&session, agent.id());
-    let queued_prompt_waiting = !queued_prompts.is_empty();
     let provider_run_id = read.target.provider_run_id.clone().or_else(|| {
         app.providers()
             .get_latest_run_for_agent(session.id(), agent.id())
@@ -168,67 +155,12 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
     let changed = appended;
     outcome.changed_count = changed;
     outcome.active_relevant_changed_count = active_relevant_appended;
-    let observation_policy = ExternalProviderObservationPolicy::for_provider(&provider);
-    let active_prompt_sync = observation_policy.active_prompt_sync(
-        &candidate_turns,
-        changed,
-        active_relevant_appended,
-        options.allow_external_active_prompt_settlement,
-        import_state.arroba_owned_provider_turn_ids(),
-    );
-    let latest_active_prompt = active_prompt_sync
-        .active_prompt_turn
-        .map(|turn| external_active_prompt_from_turn(&read.target, turn));
-    let active_prompt_changed = if active_prompt_sync.should_sync_active_prompt {
-        app.prompt_owner_sync_external_active_prompt(
-            &read.target.session_id,
-            &read.target.agent_id,
-            latest_active_prompt.clone(),
-        )?
-    } else {
-        false
-    };
-    outcome.external_active_prompt_settled = active_prompt_sync.should_sync_active_prompt
-        && latest_active_prompt.is_none()
-        && (active_prompt_changed || queued_prompt_waiting);
     let last_cursor = import_state.cursor().clone();
     let cursor_changed = last_cursor != read.target.observed_cursor;
-    let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
-    let state_signal_observed_at_ms = last_cursor.last_observed_at_ms;
-    let persisted_hidden_settlement_signal =
-        outcome.external_active_prompt_settled && !active_prompt_sync.latest_observation_settles;
-    if persisted_hidden_settlement_signal {
-        persist_observed_external_settlement_history_signal(
-            app,
-            &read.target,
-            provider_run_id.as_deref(),
-            state_signal_merge_key.as_deref(),
-            import_state.visible_provider_turn_id(),
-            last_cursor.last_observed_at_ms,
-        );
-    }
     if changed > 0 || cursor_changed {
         persist_attached_external_observer_cursor(app, &read.target, last_cursor)?;
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
-    } else if active_prompt_changed {
-        let _ = crate::app::KernelSessionReadService::new(app)
-            .session_snapshot(&read.target.session_id);
-    }
-    if active_prompt_changed || persisted_hidden_settlement_signal {
-        emit_observed_external_state_signal(
-            app,
-            &read.target,
-            provider_run_id.as_deref(),
-            state_signal_merge_key.as_deref(),
-            import_state.visible_provider_turn_id(),
-            state_signal_observed_at_ms,
-            if latest_active_prompt.is_some() {
-                EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON
-            } else {
-                EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON
-            },
-        );
     }
     Ok(outcome)
 }
@@ -315,14 +247,6 @@ impl ObservedExternalTurnImportState {
     fn cursor(&self) -> &ExternalProviderObservedCursor {
         &self.cursor
     }
-
-    fn visible_provider_turn_id(&self) -> Option<&str> {
-        self.visible_provider_turn_id.as_deref()
-    }
-
-    fn arroba_owned_provider_turn_ids(&self) -> &BTreeSet<String> {
-        &self.arroba_owned_provider_turn_ids
-    }
 }
 
 fn arroba_owned_prompt_text_counts(
@@ -387,37 +311,6 @@ pub(super) fn update_provider_run_usage_from_external_observation(
             }),
         ),
     }
-}
-
-pub(super) fn persist_observed_external_settlement_history_signal(
-    app: &DaemonApp,
-    target: &AttachedExternalObserverTarget,
-    provider_run_id: Option<&str>,
-    latest_merge_key: Option<&str>,
-    provider_turn_id: Option<&str>,
-    observed_at_ms: Option<u64>,
-) {
-    let Some(latest_merge_key) = latest_merge_key else {
-        return;
-    };
-    let Some(provider_turn_id) = provider_turn_id else {
-        return;
-    };
-    let entry = SessionHistoryEntry::external_provider_observed_state_signal(
-        &target.session_id,
-        provider_run_id,
-        &target.agent_id,
-        &target.provider,
-        &target.provider_session_id,
-        EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-        latest_merge_key,
-        provider_turn_id.to_string(),
-        observed_at_ms.or_else(|| Some(crate::session::unix_epoch_ms())),
-    );
-    let Some(merge_key) = entry.merge_key.clone() else {
-        return;
-    };
-    app.replace_history_entry_by_merge_key_or_append(&target.session_id, &merge_key, entry);
 }
 
 pub(super) fn latest_observed_external_turns_by_merge_key(
@@ -485,20 +378,6 @@ pub(super) fn consume_arroba_owned_prompt_text_match(
     true
 }
 
-pub(super) fn external_active_prompt_from_turn(
-    target: &AttachedExternalObserverTarget,
-    latest: &ObservedExternalProviderTurn,
-) -> PromptQueueItem {
-    let provider_turn_id = latest.provider_turn_id_or_fallback();
-    PromptQueueItem::external_observed_running(
-        target.provider.clone(),
-        target.provider_session_id.clone(),
-        provider_turn_id,
-        target.agent_id.clone(),
-        latest.text.clone(),
-    )
-}
-
 pub(super) fn emit_observed_external_history_signal(
     app: &DaemonApp,
     target: &AttachedExternalObserverTarget,
@@ -535,59 +414,5 @@ pub(super) fn emit_observed_external_history_signal(
             EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             external_observation_metadata,
             entry.source_attachment_id.clone(),
-        );
-}
-
-pub(super) fn emit_observed_external_state_signal(
-    app: &DaemonApp,
-    target: &AttachedExternalObserverTarget,
-    provider_run_id: Option<&str>,
-    latest_merge_key: Option<&str>,
-    provider_turn_id: Option<&str>,
-    observed_at_ms: Option<u64>,
-    reason: &str,
-) {
-    let Ok(agent) = app.agents().get_agent(&target.agent_id) else {
-        return;
-    };
-    let recipient_attachment_ids = app
-        .attachments
-        .list_session_attachment_ids_for_user(&target.session_id, agent.owner_user_id());
-    if recipient_attachment_ids.is_empty() {
-        return;
-    }
-    let provider_run_id = provider_run_id
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
-    let latest_merge_key = latest_merge_key.unwrap_or("none");
-    let state_entry = SessionHistoryEntry::external_provider_observed_state_signal(
-        &target.session_id,
-        Some(&provider_run_id),
-        &target.agent_id,
-        &target.provider,
-        &target.provider_session_id,
-        reason,
-        latest_merge_key,
-        provider_turn_id.unwrap_or(reason).to_string(),
-        observed_at_ms,
-    );
-    let Some(external_observation_metadata) =
-        crate::terminal::TerminalOutputExternalObservationMetadata::from_session_history_entry(
-            &state_entry,
-        )
-    else {
-        return;
-    };
-    app.terminal_stream_store()
-        .fan_out_external_observed_output(
-            &target.session_id,
-            &provider_run_id,
-            Some(&target.agent_id),
-            crate::terminal::TerminalOutputKind::ProviderStatus,
-            state_entry.merge_key,
-            recipient_attachment_ids,
-            EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
-            external_observation_metadata,
-            state_entry.source_attachment_id.clone(),
         );
 }

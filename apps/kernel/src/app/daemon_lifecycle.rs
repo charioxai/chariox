@@ -140,13 +140,10 @@ impl DaemonApp {
                 shutdown_rx.clone(),
             ),
         );
-        let attached_provider_transcript_observer_task = tokio::spawn(
-            crate::runtime::external_provider_session_control::run_attached_provider_transcript_observer(
-                Arc::clone(&app),
-                runtime_state,
-                shutdown_rx,
-            ),
-        );
+        // Attached external provider transcript observation intentionally does not run.
+        // Discovery may list/import external sessions, but provider transcript history
+        // must not mutate kernel-owned active prompt state.
+        let _ = runtime_state;
 
         let result =
             crate::runtime_transport::run_kernel_websocket_server_with_router(router, async {
@@ -158,7 +155,6 @@ impl DaemonApp {
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
         let _ = external_provider_session_discovery_task.await;
-        let _ = attached_provider_transcript_observer_task.await;
         result
     }
 }

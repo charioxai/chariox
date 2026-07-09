@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::DaemonConfig;
-use crate::history::{SessionHistoryEntryKind, SessionHistoryEntrySource};
+use crate::history::SessionHistoryEntryKind;
 use crate::local::{
     ExternalProviderSessionCapabilities, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest,
@@ -11,11 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod alias;
-mod history_merge;
-mod history_persistence;
-mod history_prompt;
-mod history_settlement;
-mod history_signal;
+mod history_authority;
 mod import;
 mod poller;
 

@@ -12,9 +12,7 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::history::{
-    ExternalImportHistoryEntry, SessionHistoryEntry,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
-    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+    ExternalImportHistoryEntry, SessionHistoryEntry, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
@@ -29,9 +27,9 @@ use crate::provider::{
     ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
 #[cfg(test)]
-use crate::session::{PromptOrigin, PromptStatus};
+use crate::session::PromptStatus;
+use crate::session::{CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionAgentDefaults};
 
 mod alias;
 mod history;
@@ -52,12 +50,6 @@ pub(crate) use self::poller::{
 use self::targets::*;
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
-const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
-const EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL: Duration = Duration::from_secs(20);
-const EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
-const EXTERNAL_PROVIDER_ATTACHED_SETTLE_GRACE: Duration = Duration::from_secs(4);
-const EXTERNAL_PROVIDER_ATTACHED_MAX_POLLS_PER_TICK: usize = 2;
-const EXTERNAL_PROVIDER_ATTACHED_SLOW_TICK: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
@@ -125,77 +117,11 @@ struct AttachedExternalObserverRead {
     turns: Vec<ObservedExternalProviderTurn>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AttachedExternalObserverAppendOptions {
-    allow_external_active_prompt_settlement: bool,
-}
-
-impl Default for AttachedExternalObserverAppendOptions {
-    fn default() -> Self {
-        Self {
-            allow_external_active_prompt_settlement: true,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AttachedExternalObserverAppendOutcome {
     changed_count: usize,
     active_relevant_changed_count: usize,
-    external_active_prompt_settled: bool,
     session_id: String,
     agent_id: String,
     provider_run_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct AttachedExternalObserverSchedule {
-    next_due_at: tokio::time::Instant,
-    active_until: Option<tokio::time::Instant>,
-    last_changed_at: Option<tokio::time::Instant>,
-    consecutive_errors: u32,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct AttachedExternalObserverPollOutcome {
-    target_count: usize,
-    due_count: usize,
-}
-
-impl AttachedExternalObserverSchedule {
-    fn due_now(now: tokio::time::Instant) -> Self {
-        Self {
-            next_due_at: now,
-            active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
-            last_changed_at: None,
-            consecutive_errors: 0,
-        }
-    }
-}
-
-pub(crate) async fn run_attached_provider_transcript_observer(
-    app: Arc<Mutex<DaemonApp>>,
-    runtime_state: crate::runtime::state::KernelRuntimeState,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    let mut schedule: BTreeMap<String, AttachedExternalObserverSchedule> = BTreeMap::new();
-    let mut idle = false;
-    loop {
-        let delay = if idle {
-            EXTERNAL_PROVIDER_ATTACHED_IDLE_INTERVAL
-        } else {
-            EXTERNAL_PROVIDER_ATTACHED_ACTIVE_INTERVAL
-        };
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-            }
-            _ = tokio::time::sleep(delay) => {
-                let outcome = poll_attached_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
-                idle = outcome.target_count == 0;
-            }
-        }
-    }
 }

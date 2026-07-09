@@ -65,7 +65,7 @@ fn external_provider_discovery_poller_is_not_demand_gated() {
 }
 
 #[test]
-fn daemon_run_starts_external_provider_background_tasks() {
+fn daemon_run_starts_discovery_but_not_attached_transcript_observation() {
     let source = fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/app/daemon_lifecycle.rs"),
     )
@@ -80,57 +80,27 @@ fn daemon_run_starts_external_provider_background_tasks() {
         "daemon run should start external provider session discovery"
     );
     assert!(
-        run_source.contains("run_attached_provider_transcript_observer"),
-        "daemon run should start attached provider transcript observation"
+        run_source.contains(
+            "Attached external provider transcript observation intentionally does not run"
+        ),
+        "daemon run should document why attached provider transcript observation is absent"
     );
     assert!(
-        !run_source.contains("Temporarily disabled"),
-        "external provider background tasks must not be disabled in daemon run"
+        !run_source.contains("run_attached_provider_transcript_observer"),
+        "daemon run must not start attached provider transcript observation"
     );
 }
 
 #[test]
-fn due_attached_external_observer_targets_prioritizes_overdue_targets() {
-    let now = tokio::time::Instant::now();
-    let mut schedule = BTreeMap::new();
-    for agent in ["a", "b"] {
-        schedule.insert(
-            attached_observer_target_key(&observer_target(agent)),
-            AttachedExternalObserverSchedule {
-                next_due_at: now,
-                active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
-                last_changed_at: None,
-                consecutive_errors: 0,
-            },
-        );
-    }
-    for agent in ["c", "d"] {
-        schedule.insert(
-            attached_observer_target_key(&observer_target(agent)),
-            AttachedExternalObserverSchedule {
-                next_due_at: now - Duration::from_secs(10),
-                active_until: Some(now + EXTERNAL_PROVIDER_ATTACHED_ACTIVE_WINDOW),
-                last_changed_at: None,
-                consecutive_errors: 0,
-            },
-        );
-    }
-
-    let due = due_attached_external_observer_targets(
-        ["a", "b", "c", "d"]
-            .into_iter()
-            .map(observer_target)
-            .collect(),
-        &mut schedule,
-        now,
-        2,
-    );
-
-    assert_eq!(
-        due.iter()
-            .map(|target| target.agent_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["c", "d"]
+fn attached_provider_transcript_observation_runtime_loop_is_removed() {
+    let source = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/runtime/external_provider_session_control.rs"),
+    )
+    .expect("source should be readable");
+    assert!(
+        !source.contains("run_attached_provider_transcript_observer"),
+        "attached transcript observation must not have a daemon polling loop"
     );
 }
 
@@ -197,7 +167,7 @@ fn attached_resume_state_is_observed() {
 }
 
 #[test]
-fn session_bounded_refresh_catches_up_after_attach() {
+fn session_bounded_refresh_imports_history_without_runtime_activity() {
     let _guard = crate::env_lock::lock();
     let codex_home = temp_root("codex-attach-catchup");
     let previous_codex_home = env::var_os("CODEX_HOME");
@@ -259,6 +229,20 @@ fn session_bounded_refresh_catches_up_after_attach() {
             .iter()
             .any(|entry| entry.text == "catch up this attached thread"));
         assert!(entries.iter().any(|entry| entry.text == "caught up"));
+        let agent = app
+            .agents()
+            .get_agent(&agent_id)
+            .expect("agent should load");
+        let (active_prompt, queued_prompts) =
+            app.prompt_state_owner().state_parts(&session, agent.id());
+        assert!(
+            active_prompt.is_none(),
+            "history catch-up must not create active prompt state"
+        );
+        assert!(
+            queued_prompts.is_empty(),
+            "history catch-up must not create queued prompt state"
+        );
     });
 
     restore_env_var("CODEX_HOME", previous_codex_home);

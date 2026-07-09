@@ -204,50 +204,6 @@ async fn queued_prompt_steer_rejects_external_active_prompt() {
 }
 
 #[tokio::test]
-async fn external_settlement_dispatches_next_queued_prompt() {
-    let fixture =
-        queued_prompt_router_fixture_with_origin("external-settle", PromptOrigin::External);
-
-    fixture
-        .router
-        .runtime_state()
-        .complete_agent_prompt(&fixture.session_id, &fixture.agent_id, None)
-        .await
-        .expect("external prompt settlement should complete active prompt");
-    let dispatched = fixture
-        .router
-        .runtime_state()
-        .dispatch_next_queued_prompt_after_external_settlement(
-            &fixture.session_id,
-            &fixture.agent_id,
-            &fixture.provider_run_id,
-        )
-        .await
-        .expect("external settlement should dispatch queued prompt");
-
-    assert!(dispatched);
-    let session = fixture
-        .router
-        .runtime_state()
-        .session_snapshot(&fixture.session_id)
-        .await
-        .expect("session should snapshot");
-    let active_prompt = session
-        .active_prompt_for_agent(&fixture.agent_id)
-        .expect("queued prompt should be promoted after external settlement");
-    assert_ne!(active_prompt.id(), fixture.queued_prompt_id);
-    assert_eq!(active_prompt.prompt(), "queued prompt");
-    assert_eq!(active_prompt.prompt_origin(), PromptOrigin::Arroba);
-    assert!(
-        session
-            .queued_prompts_for_agent(&fixture.agent_id)
-            .map(|queued| queued.is_empty())
-            .unwrap_or(true),
-        "settled external turn should advance the queued Arroba prompt"
-    );
-}
-
-#[tokio::test]
 async fn rejects_session_commands_when_bounded_lane_is_full() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
@@ -331,7 +287,6 @@ struct QueuedPromptRouterFixture {
     session_id: String,
     agent_id: String,
     attachment_id: String,
-    provider_run_id: String,
     active_prompt_id: String,
     queued_prompt_id: String,
 }
@@ -358,7 +313,7 @@ fn queued_prompt_router_fixture_with_origin(
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let provider_run = launch_test_provider(
+    let _provider_run = launch_test_provider(
         &mut app,
         session.id(),
         agent.id(),
@@ -400,7 +355,6 @@ fn queued_prompt_router_fixture_with_origin(
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
-    let provider_run_id = provider_run.id().to_string();
     let active_prompt_id = active_prompt.id().to_string();
     let queued_prompt_id = queued_prompt.id().to_string();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
@@ -410,7 +364,6 @@ fn queued_prompt_router_fixture_with_origin(
         session_id,
         agent_id,
         attachment_id,
-        provider_run_id,
         active_prompt_id,
         queued_prompt_id,
     }

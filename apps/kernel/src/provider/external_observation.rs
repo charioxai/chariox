@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::history::SessionHistoryExternalObservation;
 use crate::provider::ProviderRunTokenUsage;
 use serde_json::Value;
@@ -180,13 +178,6 @@ pub(crate) struct ExternalProviderObservationPolicy<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ExternalProviderActivePromptSync<'turn> {
-    pub(crate) active_prompt_turn: Option<&'turn ObservedExternalProviderTurn>,
-    pub(crate) latest_observation_settles: bool,
-    pub(crate) should_sync_active_prompt: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct ExternalProviderObservationSpec {
     provider: &'static str,
     requires_explicit_completion: bool,
@@ -334,95 +325,6 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             | ObservedExternalProviderTurnRole::User
             | ObservedExternalProviderTurnRole::Reasoning
             | ObservedExternalProviderTurnRole::Tool => false,
-        }
-    }
-
-    pub(crate) fn active_external_prompt_turn<'turn>(
-        self,
-        turns: &'turn [ObservedExternalProviderTurn],
-        has_new_observations: bool,
-        arroba_owned_provider_turn_ids: &BTreeSet<String>,
-    ) -> Option<&'turn ObservedExternalProviderTurn> {
-        if self.latest_effective_turn_settles(turns) {
-            return None;
-        }
-        let latest = if has_new_observations {
-            turns
-                .iter()
-                .rev()
-                .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?
-        } else {
-            let latest = turns
-                .iter()
-                .rev()
-                .find(|turn| !self.turn_is_passive_telemetry(turn))
-                .or_else(|| turns.last())?;
-            match latest.role {
-                ObservedExternalProviderTurnRole::Assistant if !self.uses_explicit_completion() => {
-                    return None;
-                }
-                ObservedExternalProviderTurnRole::Status if self.status_settles(&latest.text) => {
-                    return None;
-                }
-                ObservedExternalProviderTurnRole::User => latest,
-                ObservedExternalProviderTurnRole::Assistant
-                | ObservedExternalProviderTurnRole::Reasoning
-                | ObservedExternalProviderTurnRole::Tool
-                | ObservedExternalProviderTurnRole::Status => turns
-                    .iter()
-                    .rev()
-                    .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?,
-            }
-        };
-        if arroba_owned_provider_turn_ids.contains(&latest.provider_turn_id_or_fallback()) {
-            return None;
-        }
-        Some(latest)
-    }
-
-    fn latest_prompt_scope_is_arroba_owned(
-        self,
-        turns: &[ObservedExternalProviderTurn],
-        arroba_owned_provider_turn_ids: &BTreeSet<String>,
-    ) -> bool {
-        turns
-            .iter()
-            .rev()
-            .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)
-            .is_some_and(|turn| {
-                arroba_owned_provider_turn_ids.contains(&turn.provider_turn_id_or_fallback())
-            })
-    }
-
-    pub(crate) fn active_prompt_sync<'turn>(
-        self,
-        turns: &'turn [ObservedExternalProviderTurn],
-        changed_count: usize,
-        active_relevant_changed_count: usize,
-        allow_stable_settlement: bool,
-        arroba_owned_provider_turn_ids: &BTreeSet<String>,
-    ) -> ExternalProviderActivePromptSync<'turn> {
-        let active_prompt_turn = self.active_external_prompt_turn(
-            turns,
-            active_relevant_changed_count > 0,
-            arroba_owned_provider_turn_ids,
-        );
-        let latest_observation_settles = self.latest_effective_turn_settles(turns);
-        let has_active_relevant_observation = turns
-            .iter()
-            .any(|turn| !self.turn_is_passive_telemetry(turn));
-        let latest_prompt_scope_is_arroba_owned =
-            self.latest_prompt_scope_is_arroba_owned(turns, arroba_owned_provider_turn_ids);
-        let should_sync_active_prompt = active_prompt_turn.is_some()
-            || latest_observation_settles
-            || (allow_stable_settlement
-                && has_active_relevant_observation
-                && !latest_prompt_scope_is_arroba_owned
-                && (changed_count == 0 || active_relevant_changed_count == 0));
-        ExternalProviderActivePromptSync {
-            active_prompt_turn,
-            latest_observation_settles,
-            should_sync_active_prompt,
         }
     }
 
