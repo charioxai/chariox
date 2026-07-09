@@ -23,9 +23,6 @@ impl KernelRuntimeOwnedState {
             }
             prompt.id() == dispatch.prompt_id
         };
-        if let Some(active_prompt) = session.active_prompt_for_agent(&dispatch.agent_id) {
-            return Ok(prompt_is_dispatch_prompt(active_prompt));
-        }
         Ok(self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &dispatch.agent_id)
@@ -240,6 +237,47 @@ mod tests {
             .owned
             .prompt_dispatch_matches_active_prompt(&steering_dispatch)
             .expect("dispatch match should evaluate"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_match_uses_prompt_owner_when_session_mirror_is_stale() {
+        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
+            runtime_with_active_prompt().await;
+        runtime
+            .owned
+            .session_store
+            .mirror_agent_prompt_state(
+                &session_id,
+                &agent_id,
+                None,
+                std::collections::VecDeque::new(),
+            )
+            .expect("test drift should clear stale session prompt mirror");
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should load")
+                .active_prompt_for_agent(&agent_id)
+                .is_none(),
+            "session mirror should not expose the active prompt"
+        );
+        let steering_dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            &provider_run_id,
+            "queued-steering-prompt",
+            "steer now",
+            Some(active_prompt_id),
+            true,
+        );
+
+        assert!(runtime
+            .owned
+            .prompt_dispatch_matches_active_prompt(&steering_dispatch)
+            .expect("dispatch match should use prompt owner"));
     }
 
     #[tokio::test]
