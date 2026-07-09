@@ -63,7 +63,10 @@ impl KernelRuntimeOwnedState {
             .unwrap_or(false);
         let started_next = if self
             .prompt_state_owner
-            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+            .active_prompt_for_agent_or_restore(
+                &self.session_store.get_session(session_id)?,
+                agent_id,
+            )
             .is_none()
         {
             let next_prompt = self
@@ -226,7 +229,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let active_prompt = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, target_agent_id)
+            .active_prompt_for_agent_or_restore(&session, target_agent_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;

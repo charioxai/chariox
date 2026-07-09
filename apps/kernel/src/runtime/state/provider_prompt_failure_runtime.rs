@@ -28,7 +28,7 @@ impl KernelRuntimeState {
         let session = owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
+            .active_prompt_for_agent_or_restore(&session, &agent_id)
         else {
             return Ok(());
         };

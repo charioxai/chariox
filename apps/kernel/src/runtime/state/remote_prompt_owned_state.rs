@@ -29,7 +29,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(&session_id)?;
         let queued_while_active = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &target_agent_id)
+            .active_prompt_for_agent_or_restore(&session, &target_agent_id)
             .is_some();
         let will_queue = prepared.force_queue || queued_while_active;
         let prompt = if will_queue {
@@ -206,7 +206,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let active_prompt = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, target_agent_id)
+            .active_prompt_for_agent_or_restore(&session, target_agent_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;

@@ -206,7 +206,7 @@ impl KernelRuntimeOwnedState {
             .ok()
             .and_then(|session| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent(&session, agent_id)
+                    .active_prompt_for_agent_or_restore(&session, agent_id)
             })
             .map(|prompt| prompt.prompt_origin())
     }
@@ -224,7 +224,7 @@ impl KernelRuntimeOwnedState {
             .ok()
             .and_then(|session| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent(&session, agent_id)
+                    .active_prompt_for_agent_or_restore(&session, agent_id)
             })
             .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string));
         let Some(workflow_node_run_id) = workflow_node_run_id else {
@@ -381,7 +381,7 @@ impl KernelRuntimeOwnedState {
         let active_prompt = session.as_ref().and_then(|session| {
             agent_id.as_deref().and_then(|agent_id| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent(session, agent_id)
+                    .active_prompt_for_agent_or_restore(session, agent_id)
             })
         });
         let active_turn = entry
@@ -473,7 +473,7 @@ impl KernelRuntimeOwnedState {
             let active_prompt = session.as_ref().and_then(|session| {
                 agent_id.as_deref().and_then(|agent_id| {
                     self.prompt_state_owner
-                        .active_prompt_for_agent(session, agent_id)
+                        .active_prompt_for_agent_or_restore(session, agent_id)
                 })
             });
             let active_turn = entry
@@ -774,7 +774,7 @@ impl KernelRuntimeOwnedState {
                 .ok()
                 .and_then(|session| {
                     self.prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
+                        .active_prompt_for_agent_or_restore(&session, agent_id)
                 })
                 .filter(|prompt| prompt.id() == prompt_id)
                 .map(|prompt| prompt.prompt_origin())

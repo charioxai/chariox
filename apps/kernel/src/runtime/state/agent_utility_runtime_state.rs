@@ -36,7 +36,7 @@ impl KernelRuntimeState {
         if self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
+            .active_prompt_for_agent_or_restore(&session, agent_id)
             .is_some()
         {
             return Err(DaemonError::LocalTransport {

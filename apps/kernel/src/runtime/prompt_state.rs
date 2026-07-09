@@ -52,7 +52,7 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
-    pub(crate) fn active_prompt_for_agent(
+    pub(crate) fn active_prompt_for_agent_or_restore(
         &self,
         session: &RuntimeSession,
         agent_id: &str,

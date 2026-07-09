@@ -379,7 +379,7 @@ impl<'a> KernelAgentService<'a> {
         if self
             .app
             .prompt_state_owner
-            .active_prompt_for_agent(&session, metaagent.id())
+            .active_prompt_for_agent_or_restore(&session, metaagent.id())
             .is_some()
         {
             return Ok(());
@@ -509,7 +509,7 @@ impl<'a> KernelAgentService<'a> {
                     || self
                         .app
                         .prompt_state_owner
-                        .active_prompt_for_agent(session, agent.id())
+                        .active_prompt_for_agent_or_restore(session, agent.id())
                         .is_some()
                     || self
                         .app

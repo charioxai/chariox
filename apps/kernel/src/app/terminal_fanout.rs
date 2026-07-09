@@ -337,7 +337,7 @@ impl DaemonApp {
         let active_prompt = session.as_ref().and_then(|session| {
             agent_id.as_deref().and_then(|agent_id| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent(session, agent_id)
+                    .active_prompt_for_agent_or_restore(session, agent_id)
             })
         });
         let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
@@ -522,7 +522,7 @@ impl DaemonApp {
                 .ok()
                 .and_then(|session| {
                     self.prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
+                        .active_prompt_for_agent_or_restore(&session, agent_id)
                 })
                 .filter(|prompt| prompt.id() == prompt_id)
                 .map(|prompt| prompt.prompt_origin())

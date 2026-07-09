@@ -86,7 +86,7 @@ impl KernelRuntimeState {
                 if let Ok(session) = owned.session_store.get_session(started.run.session_id()) {
                     if let Some(active_prompt) = owned
                         .prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
+                        .active_prompt_for_agent_or_restore(&session, agent_id)
                     {
                         let _ = self.inject_metaagent_turn_failure_event(
                             started.run.session_id(),

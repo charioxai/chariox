@@ -133,7 +133,7 @@ pub(in crate::runtime::state::tool_dispatch) fn authorize_remote_home_context(
             if state
                 .owned
                 .prompt_state_owner
-                .active_prompt_for_agent(&session, &context.home_agent_id)
+                .active_prompt_for_agent_or_restore(&session, &context.home_agent_id)
                 .is_none()
             {
                 return Err(DaemonError::LocalTransport {

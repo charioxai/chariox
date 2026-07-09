@@ -481,7 +481,7 @@ impl KernelRuntimeOwnedState {
         for agent_id in candidate_agent_ids {
             if let Some(prompt) = self
                 .prompt_state_owner
-                .active_prompt_for_agent(&session, agent_id)
+                .active_prompt_for_agent_or_restore(&session, agent_id)
             {
                 let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
                     (prompt.workflow_run_id(), prompt.workflow_node_run_id())

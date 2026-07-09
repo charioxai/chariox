@@ -25,7 +25,7 @@ impl KernelRuntimeOwnedState {
         };
         Ok(self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .active_prompt_for_agent_or_restore(&session, &dispatch.agent_id)
             .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
     }
 
@@ -606,7 +606,7 @@ impl KernelRuntimeState {
                 crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                 Some(error.to_string()),
             );
-            let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
+            let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent_or_restore(
                 &owned.session_store.get_session(&dispatch.session_id)?,
                 &dispatch.agent_id,
             );
