@@ -186,7 +186,7 @@ fn append_observed_external_turns_groups_codex_prompt_without_item_id_with_reply
 }
 
 #[test]
-fn append_observed_external_turns_upgrades_legacy_fallback_merge_key_without_duplicate() {
+fn append_observed_external_turns_does_not_rewrite_different_fallback_identity() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -237,20 +237,24 @@ fn append_observed_external_turns_upgrades_legacy_fallback_merge_key_without_dup
             turns: vec![prompt],
         },
     )
-    .expect("legacy fallback history should upgrade in place");
+    .expect("external fallback history should append current identity");
 
     assert_eq!(outcome.changed_count, 1);
     let entries = app
         .load_session_history_entries(&session, Some(agent.id()))
         .expect("history should load");
-    assert_eq!(entries.len(), 1);
+    assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].external_provider_turn_id.as_deref(),
+        Some(legacy_turn_id)
+    );
+    assert_eq!(
+        entries[1].external_provider_turn_id.as_deref(),
         Some(stable_turn_id.as_str())
     );
     let expected_merge_key = format!("external:codex:thread-observed:{stable_turn_id}");
     assert_eq!(
-        entries[0].merge_key.as_deref(),
+        entries[1].merge_key.as_deref(),
         Some(expected_merge_key.as_str())
     );
 }
