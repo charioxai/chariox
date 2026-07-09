@@ -166,7 +166,11 @@ impl KernelRuntimeState {
                     .session_store
                     .get_session(session_id)
                     .ok()
-                    .is_some_and(|session| session.has_any_active_prompt())
+                    .is_some_and(|session| {
+                        self.owned
+                            .prompt_state_owner
+                            .has_any_active_prompt(&session)
+                    })
             });
             let mut teardown_blockers = Vec::new();
             if !attached_session_ids.is_empty() {

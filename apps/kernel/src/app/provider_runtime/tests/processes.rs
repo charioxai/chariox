@@ -7,7 +7,7 @@ use crate::config::{
 };
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
 use crate::session::{
-    CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
 };
 
 #[test]
@@ -219,6 +219,77 @@ fn provider_processes_do_not_teardown_with_per_agent_active_prompt() {
             .expect("run should still exist")
             .state(),
         ProviderRunState::Running,
+    );
+}
+
+#[test]
+fn provider_processes_ignore_stale_session_prompt_mirror_when_owner_is_idle() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session create should succeed");
+    let run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed");
+    let active_prompt = PromptQueueItem::new(
+        "stale-session-prompt",
+        "attachment-1",
+        agent.id(),
+        "stale prompt",
+        PromptStatus::Running,
+    )
+    .with_prompt_origin(PromptOrigin::External);
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(active_prompt))
+        .expect("prompt owner should accept active prompt");
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
+        .expect("prompt owner should become idle");
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            Some(PromptQueueItem::new(
+                "stale-session-prompt",
+                "attachment-1",
+                agent.id(),
+                "stale prompt",
+                PromptStatus::Running,
+            )),
+            std::collections::VecDeque::new(),
+        )
+        .expect("legacy session mirror should be made stale");
+    assert!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should exist")
+            .has_any_active_prompt(),
+        "legacy session prompt mirror should be stale-active"
+    );
+    assert!(
+        !app.prompt_owner_has_any_active_prompt(session.id())
+            .expect("prompt owner should read session"),
+        "prompt owner is authoritative and idle"
+    );
+
+    let processes = app
+        .list_provider_processes(None)
+        .expect("provider processes should list");
+
+    assert_eq!(processes.len(), 1);
+    assert!(processes[0].teardown_safe);
+    assert!(processes[0].teardown_blockers.is_empty());
+    assert_eq!(
+        processes[0].owner_provider_run_ids,
+        vec![run.id().to_string()]
     );
 }
 
