@@ -97,8 +97,17 @@ function log(name, details = null) {
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
-  await assertBinary(binaryPath, manifestPath, binName)
-  return binaryPath
+  try {
+    await assertBinary(binaryPath, manifestPath, binName)
+    return binaryPath
+  } catch (error) {
+    const workspaceBinaryPath = path.join(repoRoot, 'target', 'debug', binName)
+    try {
+      await access(workspaceBinaryPath)
+      return workspaceBinaryPath
+    } catch {}
+    throw error
+  }
 }
 
 async function resolveExecutable(command) {
@@ -134,6 +143,7 @@ function daemonEnv({ rootDir, relayUrl, relayToken, daemonId, daemonAlias, machi
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
     ARROBA_CODEX_PORT: String(kernelPort + 2001),
+    ARROBA_PROVIDER_DEV_STUB: '1',
     ARROBA_RELAY_URL: relayUrl,
     ARROBA_RELAY_TOKEN: relayToken,
     ARROBA_DAEMON_ID: daemonId,

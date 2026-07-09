@@ -202,6 +202,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     ARROBA_MCP_PORT: String(workerMcpPort),
     ARROBA_OPENCODE_PORT: String(workerKernelPort + 2000),
     ARROBA_CODEX_PORT: String(workerKernelPort + 2001),
+    ARROBA_PROVIDER_DEV_STUB: "1",
     ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
     ARROBA_RELAY_TOKEN: workerRelayToken,
     ARROBA_DAEMON_ID: workerDaemonId,

@@ -43,7 +43,7 @@ export async function assertHetznerArrobaBinaries(options) {
   await runHetznerCommand(options, [
     `repo=${shellQuote(options.hetznerRepo)}`,
     "missing=",
-    'test -d "$repo/.git" || missing="$missing repo"',
+    'test -e "$repo/.git" || missing="$missing repo"',
     `test -x ${shellQuote(kernelBinary)} || missing="$missing kernel"`,
     `test -x ${shellQuote(relayBinary)} || missing="$missing relay"`,
     `if test -n "$missing"; then printf '%s\n' ${shellQuote(message)} >&2; exit 17; fi`,

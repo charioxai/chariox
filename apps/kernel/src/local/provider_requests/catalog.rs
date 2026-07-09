@@ -347,8 +347,8 @@ fn remote_only_provider_catalog(
         .iter()
         .filter(|machine| machine.machine_id != local_machine_id)
         .flat_map(|machine| machine.available_providers.iter().cloned())
-        .filter(|provider| provider != "dev-stub")
         .collect::<Vec<_>>();
+    crate::provider::retain_public_inventory_providers(&mut provider_ids);
     provider_ids.sort();
     provider_ids.dedup();
     if provider_ids.is_empty() {
