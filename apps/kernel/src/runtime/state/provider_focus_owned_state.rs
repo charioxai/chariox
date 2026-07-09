@@ -32,8 +32,7 @@ impl KernelRuntimeOwnedState {
             return Ok(false);
         }
 
-        Ok(self.prompt_state_owner.has_any_active_prompt(&session)
-            || session.agents().iter().any(|agent| agent.is_processing()))
+        Ok(self.prompt_state_owner.has_any_active_prompt(&session))
     }
 
     pub(super) fn sync_active_provider_run_for_agent(
@@ -121,8 +120,6 @@ impl KernelRuntimeOwnedState {
                 let active_prompt_agent_id =
                     self.prompt_state_owner.active_prompt_agent_id(&session);
                 let has_active_prompt = self.prompt_state_owner.has_any_active_prompt(&session);
-                let has_processing_agent =
-                    session.agents().iter().any(|agent| agent.is_processing());
                 if !has_active_prompt {
                     let current_active_run_id =
                         session.active_provider_run_id().map(str::to_string);
@@ -157,8 +154,6 @@ impl KernelRuntimeOwnedState {
                     if let Some(projected_agent_id) = active_prompt_agent_id.as_deref() {
                         self.project_active_provider_run_for_agent(session_id, projected_agent_id)?;
                     }
-                } else if has_processing_agent {
-                    self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 } else {
                     self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
                 }
@@ -169,9 +164,7 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
 
-        if self.prompt_state_owner.has_any_active_prompt(&session)
-            || session.agents().iter().any(|agent| agent.is_processing())
-        {
+        if self.prompt_state_owner.has_any_active_prompt(&session) {
             return Ok(());
         }
 

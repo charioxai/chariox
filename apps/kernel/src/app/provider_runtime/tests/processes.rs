@@ -456,6 +456,61 @@ fn detaching_last_attachment_keeps_background_active_prompt_run_running() {
 }
 
 #[test]
+fn focus_change_ignores_stale_processing_without_active_prompt() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session create should succeed");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("second"))
+        .expect("second agent should spawn");
+    let first_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("first provider launch should succeed");
+    let second_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(second_agent.id()),
+        )
+        .expect("second provider launch should succeed");
+    app.focus_agent(session.id(), first_agent.id())
+        .expect("first agent should be focused");
+    app.sessions
+        .set_active_provider_run(session.id(), Some(first_run.id().to_string()))
+        .expect("first run should be active");
+    app.agents_mut()
+        .set_agent_processing(first_agent.id(), true)
+        .expect("stale processing should be set");
+
+    app.focus_agent(session.id(), second_agent.id())
+        .expect("focus should switch");
+
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(second_run.id())
+    );
+}
+
+#[test]
 fn provider_process_projection_invalidates_after_app_prompt_owner_change() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
