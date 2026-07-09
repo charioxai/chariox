@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -85,12 +85,19 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const appBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const workspaceBinary = path.join(repoRoot, 'target/debug/arroba-kernel')
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return binary
+  for (const binary of [appBinary, workspaceBinary]) {
+    try {
+      await access(binary)
+      return binary
+    } catch {}
+  }
+  throw new Error(`kernel build completed but no arroba-kernel binary was found at ${appBinary} or ${workspaceBinary}`)
 }
 
 function startDaemon(binary, env) {

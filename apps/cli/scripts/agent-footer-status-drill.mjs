@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 
 import {
-  buildSplitPaneFooterState,
-} from "../dist/split-pane-footer.js"
+  sessionAgentPaneStatusBadge,
+} from "@arroba/kernel-client/session-runtime-status"
 
 const agent = {
   id: "agent-a",
@@ -16,27 +16,13 @@ const agent = {
 }
 
 function badgeFor(options) {
-  return buildSplitPaneFooterState({
-    mode: options.mode,
-    selection: {
-      primary: options.agent,
-      secondary: null,
-      tertiary: null,
-    },
-    focusedAgentId: options.agent.id,
-    streamingAgentId: options.streaming ? options.agent.id : null,
-    activityLabels: {
-      [options.agent.id]: options.activityLabel ?? null,
-    },
-    hasPromptWorkByAgent: {
-      [options.agent.id]: options.hasPromptWork,
-    },
-    busyLatchesByAgent: {
-      [options.agent.id]: options.busyLatch ?? false,
-    },
-    activeRun: null,
-    fallbackModel: "gpt-5.4",
-  }).primary.badge
+  return sessionAgentPaneStatusBadge({
+    agent: options.agent,
+    activeLabel: options.activityLabel ?? null,
+    hasPromptWork: options.hasPromptWork,
+    isStreaming: options.streaming ?? false,
+    busyLatch: options.busyLatch ?? false,
+  })
 }
 
 const beginningOfTurn = badgeFor({

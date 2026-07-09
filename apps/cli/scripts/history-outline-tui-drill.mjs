@@ -2,10 +2,10 @@
 import assert from "node:assert/strict"
 
 import {
-  hydrateOutlineAgentEntries,
-  markHistoryBlobLoading,
-  replaceHistoryBlobPlaceholder,
-} from "../dist/session-history-outline.js"
+  hydrateSessionHistoryOutlineAgentEntries,
+  markSessionHistoryBlobLoading,
+  replaceSessionHistoryBlobPlaceholder,
+} from "@arroba/kernel-client/session-history-transcript"
 
 const outlineAgent = {
   agent_id: "agent-history-drill",
@@ -31,7 +31,7 @@ const outlineAgent = {
   next_cursor: { before_sequence: 1 },
 }
 
-const entries = hydrateOutlineAgentEntries(outlineAgent)
+const entries = hydrateSessionHistoryOutlineAgentEntries(outlineAgent)
 const placeholder = entries.find((entry) => entry.historyBlobId === "history:3:3")
 
 assert.equal(entries.some((entry) => entry.role === "user" && entry.text === "Summarize the fixture."), true)
@@ -40,11 +40,11 @@ assert.equal(entries.some((entry) => entry.role === "assistant" && entry.text ==
 assert.equal(placeholder?.blobCollapsed, true)
 assert.equal(placeholder?.historyBlobLoaded, false)
 
-const loading = markHistoryBlobLoading(entries, placeholder.id, true)
+const loading = markSessionHistoryBlobLoading(entries, placeholder.id, true)
 assert.equal(loading.find((entry) => entry.id === placeholder.id)?.historyBlobLoading, true)
 assert.equal(loading.find((entry) => entry.id === placeholder.id)?.blobSummary, "loading...")
 
-const expanded = replaceHistoryBlobPlaceholder(entries, placeholder.id, {
+const expanded = replaceSessionHistoryBlobPlaceholder(entries, placeholder.id, {
   blob_id: "history:3:3",
   entries: [historyEntry(3, "provider_tool", "expanded tool body", "agent-history-drill")],
 }, [1])

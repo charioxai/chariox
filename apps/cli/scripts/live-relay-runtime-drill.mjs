@@ -200,7 +200,7 @@ async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
     try {
-      const session = unwrap(await probe.send(createSessionRequest(workspace, worktree)), 'SessionCreated').session
+      const session = unwrap(await probe.send(createSessionRequest(workspace, worktree, undefined, undefined, null, 'off')), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
       await probe.close()
       return
@@ -267,14 +267,16 @@ function spawnProcess(command, args, options) {
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(
-      `missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`,
-    )
+  const workspaceBinaryPath = path.join(repoRoot, 'target', 'debug', binName)
+  for (const candidate of [binaryPath, workspaceBinaryPath]) {
+    try {
+      await access(candidate)
+      return candidate
+    } catch {}
   }
+  throw new Error(
+    `missing built binary ${binaryPath} or ${workspaceBinaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`,
+  )
 }
 
 async function terminateChild(child, signal = 'SIGTERM') {
@@ -363,7 +365,7 @@ async function main() {
     await waitForRelayTarget(relayUrl, envs.relayToken, envs.daemonAlias)
 
     localClient = new LocalIpcClient(kernelUrl)
-    const created = unwrap(await localClient.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated')
+    const created = unwrap(await localClient.send(createSessionRequest(options.workspace, options.worktree, undefined, undefined, null, 'off')), 'SessionCreated')
     sessionId = created.session.id
     const defaultAgentId = created.agent.id
     logStep('local_session_created', { sessionId, defaultAgentId })
