@@ -335,6 +335,14 @@ impl SessionHistoryEntry {
         self
     }
 
+    pub fn with_source_attachment_id(
+        mut self,
+        source_attachment_id: impl Into<Option<String>>,
+    ) -> Self {
+        self.source_attachment_id = source_attachment_id.into();
+        self
+    }
+
     pub fn user_prompt(
         session_id: &str,
         source_attachment_id: &str,

@@ -134,7 +134,7 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
 }
 
 #[test]
-fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
+fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_attachment() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
@@ -189,13 +189,26 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
         arroba_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
             .expect("active prompt should complete");
 
-    assert!(completion.started_next.is_none());
+    let started_next = completion
+        .started_next
+        .expect("queued prompt should promote through the remaining attachment");
+    assert_eq!(started_next.prompt(), "second integration prompt\n");
     let session = app
         .sessions()
         .get_session(session.id())
         .expect("session should still exist");
-    assert!(session.active_prompt().is_none());
+    assert_eq!(
+        session.active_prompt().map(|prompt| prompt.id()),
+        Some(started_next.id())
+    );
     assert!(session.queued_prompts().is_empty());
+    assert!(
+        app.terminal().input_records().iter().any(|record| {
+            record.source_attachment_id == first.id()
+                && String::from_utf8_lossy(&record.bytes).contains("second integration prompt")
+        }),
+        "promoted queued prompt should be echoed through the remaining attachment"
+    );
 }
 
 #[test]

@@ -144,6 +144,7 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
                 .with_structured_endpoint(endpoint),
         )
         .expect("provider run should launch");
+    wait_for_mock_opencode_event_subscription(&mock_server);
 
     let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
@@ -812,7 +813,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
 #[test]
 fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_followup_output() {
     let _guard = opencode_env_guard();
-    let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(1_000));
     mock_server.set_emit_tool_call_before_completion(true);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");

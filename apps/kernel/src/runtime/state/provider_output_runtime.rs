@@ -142,8 +142,8 @@ impl KernelRuntimeState {
             Vec::new()
         } else {
             let agent_id = provider_run.agent_instance_id().map(str::to_string);
-            let prompt_origin =
-                owned.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
+            let prompt_metadata =
+                owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
             let mut history_entries = Vec::with_capacity(chunks.len());
             let terminal_outputs = chunks
                 .into_iter()
@@ -158,7 +158,8 @@ impl KernelRuntimeState {
                             None,
                             history_text.clone(),
                         )
-                        .with_prompt_origin(prompt_origin),
+                        .with_prompt_origin(prompt_metadata.prompt_origin)
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
                     );
                     super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                         provider_run_id: provider_run_id.to_string(),

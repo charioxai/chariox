@@ -79,6 +79,7 @@ pub struct TerminalOutputAppend {
     pub provider_run_id: String,
     pub agent_id: Option<String>,
     pub prompt_origin: Option<PromptOrigin>,
+    pub source_attachment_id: Option<String>,
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,
     pub recipient_attachment_ids: Arc<[String]>,

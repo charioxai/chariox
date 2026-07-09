@@ -32,6 +32,12 @@ pub(crate) struct ProviderOutputFanout {
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ActivePromptTranscriptMetadata {
+    prompt_origin: Option<crate::session::PromptOrigin>,
+    source_attachment_id: Option<String>,
+}
+
 impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
@@ -139,14 +145,16 @@ impl ProviderOutputFanout {
             self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
-        let prompt_origin = self.active_prompt_origin_for_agent(session_id, agent_id);
-        let record = self.terminal.fan_out_output_with_prompt_origin(
+        let prompt_metadata =
+            self.active_prompt_transcript_metadata_for_agent(session_id, agent_id);
+        let record = self.terminal.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
             agent_id,
             kind.clone(),
             merge_key.clone(),
-            prompt_origin,
+            prompt_metadata.prompt_origin,
+            prompt_metadata.source_attachment_id.clone(),
             recipient_attachment_ids,
             &bounded_bytes,
         );
@@ -173,18 +181,21 @@ impl ProviderOutputFanout {
                     merge_key,
                     text,
                 )
-                .with_prompt_origin(prompt_origin),
+                .with_prompt_origin(prompt_metadata.prompt_origin)
+                .with_source_attachment_id(prompt_metadata.source_attachment_id),
             );
         }
         record
     }
 
-    fn active_prompt_origin_for_agent(
+    fn active_prompt_transcript_metadata_for_agent(
         &self,
         session_id: &str,
         agent_id: Option<&str>,
-    ) -> Option<crate::session::PromptOrigin> {
-        let agent_id = agent_id?;
+    ) -> ActivePromptTranscriptMetadata {
+        let Some(agent_id) = agent_id else {
+            return ActivePromptTranscriptMetadata::default();
+        };
         self.session_store
             .get_session(session_id)
             .ok()
@@ -192,7 +203,11 @@ impl ProviderOutputFanout {
                 self.prompt_state_owner
                     .active_prompt_for_agent_or_restore(&session, agent_id)
             })
-            .map(|prompt| prompt.prompt_origin())
+            .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_origin: Some(prompt.prompt_origin()),
+                source_attachment_id: Some(prompt.source_attachment_id().to_string()),
+            })
+            .unwrap_or_default()
     }
 
     fn record_workflow_thinking_trace(

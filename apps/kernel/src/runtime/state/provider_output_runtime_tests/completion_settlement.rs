@@ -327,6 +327,10 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
         records[0].prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
+    assert_eq!(
+        records[0].source_attachment_id.as_deref(),
+        Some("external:claude")
+    );
 
     let history_entries = runtime
         .owned
@@ -340,5 +344,9 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
     assert_eq!(
         output_entry.prompt_origin,
         Some(crate::session::PromptOrigin::External)
+    );
+    assert_eq!(
+        output_entry.source_attachment_id.as_deref(),
+        Some("external:claude")
     );
 }

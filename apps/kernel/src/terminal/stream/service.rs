@@ -134,6 +134,32 @@ impl TerminalStreamService {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_output_with_prompt_metadata(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            prompt_origin,
+            None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_output_with_prompt_metadata(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        prompt_origin: Option<PromptOrigin>,
+        source_attachment_id: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
             timestamp_ms: unix_epoch_ms(),
@@ -142,7 +168,7 @@ impl TerminalStreamService {
             agent_id: agent_id.map(str::to_string),
             prompt_id: None,
             prompt_origin,
-            source_attachment_id: None,
+            source_attachment_id,
             kind,
             merge_key,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
@@ -187,7 +213,7 @@ impl TerminalStreamService {
                 agent_id: output.agent_id,
                 prompt_id: None,
                 prompt_origin: output.prompt_origin,
-                source_attachment_id: None,
+                source_attachment_id: output.source_attachment_id,
                 kind: output.kind,
                 merge_key: output.merge_key,
                 pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
@@ -403,6 +429,10 @@ impl TerminalStreamService {
             || previous.record.session_id != record.session_id
             || previous.record.provider_run_id != record.provider_run_id
             || previous.record.agent_id != record.agent_id
+            || previous.record.prompt_id != record.prompt_id
+            || previous.record.prompt_origin != record.prompt_origin
+            || previous.record.source_attachment_id != record.source_attachment_id
+            || previous.record.external_observation_metadata != record.external_observation_metadata
             || previous.record.kind != record.kind
             || previous.record.merge_key != record.merge_key
             || previous.record.recipient_attachment_ids != record.recipient_attachment_ids

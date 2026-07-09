@@ -135,17 +135,44 @@ impl TerminalStreamStore {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_output_with_prompt_metadata(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            prompt_origin,
+            None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_output_with_prompt_metadata(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        prompt_origin: Option<PromptOrigin>,
+        source_attachment_id: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
         let record = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fan_out_output_with_prompt_origin(
+            .fan_out_output_with_prompt_metadata(
                 session_id,
                 provider_run_id,
                 agent_id,
                 kind,
                 merge_key,
                 prompt_origin,
+                source_attachment_id,
                 recipient_attachment_ids,
                 bytes,
             );

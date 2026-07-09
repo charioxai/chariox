@@ -158,6 +158,7 @@ async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_onc
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("batch-key".to_string()),
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -168,6 +169,7 @@ async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_onc
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("batch-key".to_string()),
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -205,6 +207,7 @@ async fn terminal_stream_store_batch_fanout_coalesces_repeated_multi_recipient_c
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderTool,
             merge_key: Some("batch-key-1".to_string()),
             recipient_attachment_ids: Arc::from(vec![
@@ -218,6 +221,7 @@ async fn terminal_stream_store_batch_fanout_coalesces_repeated_multi_recipient_c
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderTool,
             merge_key: Some("batch-key-2".to_string()),
             recipient_attachment_ids: Arc::from(vec![

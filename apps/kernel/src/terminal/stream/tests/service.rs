@@ -211,6 +211,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-1".to_string()),
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -221,6 +222,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
             prompt_origin: None,
+            source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-2".to_string()),
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
@@ -241,6 +243,47 @@ fn output_polling_drains_single_recipient_batch_records() {
     assert_eq!(drained[1].bytes, b"two");
     assert!(terminal.output_records().is_empty());
     assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+}
+
+#[test]
+fn output_coalescing_is_scoped_by_prompt_metadata() {
+    let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(1024);
+    terminal.fan_out_output_with_prompt_metadata(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("assistant".to_string()),
+        Some(crate::session::PromptOrigin::External),
+        Some("attachment-1".to_string()),
+        vec!["attachment-viewer".to_string()],
+        b"first",
+    );
+    terminal.fan_out_output_with_prompt_metadata(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("assistant".to_string()),
+        Some(crate::session::PromptOrigin::External),
+        Some("attachment-2".to_string()),
+        vec!["attachment-viewer".to_string()],
+        b"second",
+    );
+
+    let drained = terminal.drain_output_records("session-1", "attachment-viewer");
+
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].bytes, b"first");
+    assert_eq!(
+        drained[0].source_attachment_id.as_deref(),
+        Some("attachment-1")
+    );
+    assert_eq!(drained[1].bytes, b"second");
+    assert_eq!(
+        drained[1].source_attachment_id.as_deref(),
+        Some("attachment-2")
+    );
 }
 
 #[test]
@@ -287,6 +330,7 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
                 provider_run_id: format!("provider-run-{index}"),
                 agent_id: Some(format!("agent-{index}")),
                 prompt_origin: None,
+                source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some(format!("chunk-{index}")),
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),

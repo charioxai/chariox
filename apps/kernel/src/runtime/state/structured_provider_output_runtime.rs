@@ -311,7 +311,8 @@ impl KernelRuntimeState {
             owned.provider_run_projection.update(run);
         }
         let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
-        let prompt_origin = owned.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
+        let prompt_metadata =
+            owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let terminal_outputs = poll_result
             .chunks
             .into_iter()
@@ -327,7 +328,8 @@ impl KernelRuntimeState {
                             chunk.merge_key.clone(),
                             history_text.clone(),
                         )
-                        .with_prompt_origin(prompt_origin),
+                        .with_prompt_origin(prompt_metadata.prompt_origin)
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
                     );
                 }
                 super::prompt_transcript_owned_state::TerminalOutputBatchAppend {

@@ -11,6 +11,12 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) history_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct ActivePromptTranscriptMetadata {
+    pub(super) prompt_origin: Option<crate::session::PromptOrigin>,
+    pub(super) source_attachment_id: Option<String>,
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn other_attachment_ids(
         &self,
@@ -78,11 +84,20 @@ impl KernelRuntimeOwnedState {
         let mut trace_agent_ids = std::collections::BTreeSet::new();
         let mut recipient_scope_cache =
             std::collections::BTreeMap::<Option<String>, std::sync::Arc<[String]>>::new();
+        let mut prompt_metadata_cache =
+            std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
         for output in outputs {
             let agent_id = output.agent_id;
-            let prompt_origin =
-                self.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
+            let prompt_metadata = prompt_metadata_cache
+                .entry(agent_id.clone())
+                .or_insert_with(|| {
+                    self.active_prompt_transcript_metadata_for_agent(
+                        session_id,
+                        agent_id.as_deref(),
+                    )
+                })
+                .clone();
             let scoped_recipient_attachment_ids = recipient_scope_cache
                 .entry(agent_id.clone())
                 .or_insert_with(|| {
@@ -120,7 +135,8 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
-                prompt_origin,
+                prompt_origin: prompt_metadata.prompt_origin,
+                source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
                 merge_key: output.merge_key,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
@@ -148,7 +164,8 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let prompt_origin = self.active_prompt_origin_for_agent(session_id, agent_id.as_deref());
+        let prompt_metadata =
+            self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
@@ -156,13 +173,14 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        let record = self.terminal_stream.fan_out_output_with_prompt_origin(
+        let record = self.terminal_stream.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             kind.clone(),
             merge_key.clone(),
-            prompt_origin,
+            prompt_metadata.prompt_origin,
+            prompt_metadata.source_attachment_id.clone(),
             recipient_attachment_ids,
             bytes,
         );
@@ -189,18 +207,21 @@ impl KernelRuntimeOwnedState {
                     merge_key,
                     text,
                 )
-                .with_prompt_origin(prompt_origin),
+                .with_prompt_origin(prompt_metadata.prompt_origin)
+                .with_source_attachment_id(prompt_metadata.source_attachment_id),
             );
         }
         record
     }
 
-    pub(super) fn active_prompt_origin_for_agent(
+    pub(super) fn active_prompt_transcript_metadata_for_agent(
         &self,
         session_id: &str,
         agent_id: Option<&str>,
-    ) -> Option<crate::session::PromptOrigin> {
-        let agent_id = agent_id?;
+    ) -> ActivePromptTranscriptMetadata {
+        let Some(agent_id) = agent_id else {
+            return ActivePromptTranscriptMetadata::default();
+        };
         self.session_store
             .get_session(session_id)
             .ok()
@@ -208,7 +229,11 @@ impl KernelRuntimeOwnedState {
                 self.prompt_state_owner
                     .active_prompt_for_agent_or_restore(&session, agent_id)
             })
-            .map(|prompt| prompt.prompt_origin())
+            .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_origin: Some(prompt.prompt_origin()),
+                source_attachment_id: Some(prompt.source_attachment_id().to_string()),
+            })
+            .unwrap_or_default()
     }
 
     fn record_workflow_thinking_trace(
