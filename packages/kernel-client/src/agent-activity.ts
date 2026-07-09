@@ -1,10 +1,11 @@
+import { promptOriginIsExternal } from "./prompt-origin.js"
 import {
-  promptOriginFromRecord,
-  promptOriginIsExternal,
-} from "./prompt-origin.js"
+  kernelRecordTranscriptMetadata,
+  presentTranscriptPromptMetadataFields,
+  type PresentTranscriptPromptMetadata,
+} from "./transcript-entry-state.js"
 import {
   externalProviderObservedExactIdentityConflicts,
-  externalProviderObservedPresentExplicitIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 
@@ -125,9 +126,7 @@ export function agentRuntimeActivityProjectionHasTurnWork(
 export function agentRuntimeActivityProjectionHasExternalActiveTurn(
   projection: AgentRuntimeActivityProjection,
 ): boolean {
-  return promptOriginIsExternal(promptOriginFromRecord({
-    prompt_origin: projection.activeTurnPromptOrigin,
-  }))
+  return promptOriginIsExternal(projection.activeTurnPromptOrigin)
 }
 
 export function agentRuntimeActivityResolvedStatus(
@@ -328,7 +327,7 @@ export function readAgentRuntimeCompletedTurn(
 function projectAgentRuntimeCompletedTurnSourceAttachment(
   turn: Record<string, unknown>,
 ): Pick<AgentRuntimeCompletedTurnActionProjection, "sourceAttachmentId"> {
-  const sourceAttachmentId = readNullableStringField(turn, "source_attachment_id")
+  const sourceAttachmentId = projectAgentRuntimeTurnPromptMetadata(turn).sourceAttachmentId
   return sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}
 }
 
@@ -340,10 +339,10 @@ function projectAgentRuntimeCompletedTurnOwnership(
   | "externalProviderSessionId"
   | "externalProviderTurnId"
 > {
-  const promptOrigin = promptOriginFromRecord(turn) ?? undefined
-  const externalIdentity = projectExternalProviderObservedIdentity(turn)
+  const metadata = projectAgentRuntimeTurnPromptMetadata(turn)
+  const externalIdentity = projectAgentRuntimeExternalIdentity(metadata)
   return {
-    ...(promptOrigin ? { promptOrigin } : {}),
+    ...(metadata.promptOrigin ? { promptOrigin: metadata.promptOrigin } : {}),
     ...externalIdentity,
   }
 }
@@ -448,13 +447,12 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   if (!activeTurn) {
     return {}
   }
+  const metadata = projectAgentRuntimeTurnPromptMetadata(activeTurn)
   const activeTurnPromptId = readStringField(activeTurn, "prompt_id") ?? undefined
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
-  const activeTurnSourceAttachmentId = readNullableStringField(activeTurn, "source_attachment_id")
-  const activeTurnPromptOrigin = promptOriginFromRecord({
-    prompt_origin: readStringField(activeTurn, "prompt_origin"),
-  }) ?? undefined
-  const activeTurnExternalIdentity = projectExternalProviderObservedIdentity(activeTurn)
+  const activeTurnSourceAttachmentId = metadata.sourceAttachmentId
+  const activeTurnPromptOrigin = metadata.promptOrigin
+  const activeTurnExternalIdentity = projectAgentRuntimeExternalIdentity(metadata)
   const activeTurnStatus = normalizeAgentRuntimePromptProjectionStatus(readStringField(activeTurn, "status")) ?? undefined
   const activeTurnPhase = readStringField(activeTurn, "phase") ?? undefined
   const activeTurnStartedAtMs = readNumberField(activeTurn, "started_at_ms") ?? undefined
@@ -478,10 +476,31 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   }
 }
 
-function projectExternalProviderObservedIdentity(
+function projectAgentRuntimeTurnPromptMetadata(
   record: Record<string, unknown>,
+): PresentTranscriptPromptMetadata {
+  const promptOrigin = readNullableStringField(record, "prompt_origin")
+  const sourceAttachmentId = readNullableStringField(record, "source_attachment_id")
+  const externalProvider = readNullableStringField(record, "external_provider")
+  const externalProviderSessionId = readNullableStringField(record, "external_provider_session_id")
+  const externalProviderTurnId = readNullableStringField(record, "external_provider_turn_id")
+  return presentTranscriptPromptMetadataFields(kernelRecordTranscriptMetadata({
+    ...(promptOrigin !== undefined ? { prompt_origin: promptOrigin } : {}),
+    ...(sourceAttachmentId !== undefined ? { source_attachment_id: sourceAttachmentId } : {}),
+    ...(externalProvider !== undefined ? { external_provider: externalProvider } : {}),
+    ...(externalProviderSessionId !== undefined ? { external_provider_session_id: externalProviderSessionId } : {}),
+    ...(externalProviderTurnId !== undefined ? { external_provider_turn_id: externalProviderTurnId } : {}),
+  }))
+}
+
+function projectAgentRuntimeExternalIdentity(
+  metadata: PresentTranscriptPromptMetadata,
 ): AgentRuntimeExternalIdentityProjection {
-  return externalProviderObservedPresentExplicitIdentityFields(record)
+  return {
+    ...(metadata.externalProvider ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId ? { externalProviderSessionId: metadata.externalProviderSessionId } : {}),
+    ...(metadata.externalProviderTurnId ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
+  }
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
