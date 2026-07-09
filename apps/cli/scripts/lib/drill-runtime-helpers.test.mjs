@@ -2,7 +2,13 @@ import assert from "node:assert/strict"
 import net from "node:net"
 import test from "node:test"
 
-import { formatDrillCommandLine, runLogged, waitForCondition, waitForTcpPort } from "./drill-runtime-helpers.mjs"
+import {
+  findMatchingProcessIdsFromPsOutput,
+  formatDrillCommandLine,
+  runLogged,
+  waitForCondition,
+  waitForTcpPort,
+} from "./drill-runtime-helpers.mjs"
 
 test("formatDrillCommandLine quotes replayable command diagnostics", () => {
   assert.equal(
@@ -94,6 +100,50 @@ test("waitForTcpPort reports the last reachability observation", async () => {
   await assert.rejects(
     () => waitForTcpPort(port, "127.0.0.1", 5),
     /last_observation=/,
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput finds run-owned drill processes", () => {
+  const psOutput = `
+  101 /usr/bin/login -fq user /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js opencode --relay-token remote-native-token-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  102 /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js --client-id arroba-remote-native-observer-opencode-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  103 /Applications/Codex.app/Contents/MacOS/Codex
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "remote-native-token-4242",
+      "/tmp/arb-rnt-opencode-4242.sock",
+    ], 999),
+    [101, 102],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput ignores the current process", () => {
+  const psOutput = `
+  201 node apps/cli/scripts/live-remote-native-tui-drill.mjs --relay-token remote-native-token-4242
+  202 bun /repo/apps/cli/dist/index.js codex --relay-token remote-native-token-4242
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, ["remote-native-token-4242"], 201),
+    [202],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patterns", () => {
+  const psOutput = `
+  301 screen -dmS arroba-rnt-codex-a-4242 -L bun /repo/apps/cli/dist/index.js
+  302 screen -dmS unrelated -L node server.js
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "",
+      null,
+      /arroba-rnt-codex-[ab]-4242/,
+    ], 999),
+    [301],
   )
 })
 

@@ -129,6 +129,46 @@ export async function terminateChild(child, signal = "SIGTERM") {
   }
 }
 
+export function findMatchingProcessIdsFromPsOutput(psOutput, patterns, currentPid = process.pid) {
+  const matchers = processMatchPatterns(patterns)
+  const matches = []
+  const seen = new Set()
+  for (const line of psOutput.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(.*)$/)
+    if (!match) continue
+    const pid = Number(match[1])
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === currentPid) continue
+    const command = match[2]
+    if (!matchers.some((matcher) => matcher(command))) continue
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    matches.push(pid)
+  }
+  return matches
+}
+
+export async function terminateMatchingProcesses(patterns, options = {}) {
+  const currentPid = options.currentPid ?? process.pid
+  const graceMs = options.graceMs ?? 3_000
+  const pollMs = options.pollMs ?? 100
+  const signal = options.signal ?? "SIGTERM"
+  const killSignal = options.killSignal ?? "SIGKILL"
+  const pids = await matchingProcessIds(patterns, currentPid)
+  for (const pid of pids) {
+    sendProcessSignal(pid, signal)
+  }
+  const survivors = await waitForProcessExit(pids, graceMs, pollMs)
+  for (const pid of survivors) {
+    sendProcessSignal(pid, killSignal)
+  }
+  const killed = await waitForProcessExit(survivors, options.killGraceMs ?? 1_000, pollMs)
+  return {
+    signaled: pids,
+    killed: survivors.filter((pid) => !killed.includes(pid)),
+    remaining: killed,
+  }
+}
+
 export async function runLogged(command, args, options = {}) {
   await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -236,6 +276,58 @@ export async function waitForCondition({
 function stringifyDiagnostic(value) {
   if (typeof value === "string") return value
   return JSON.stringify(value, null, 2)
+}
+
+async function matchingProcessIds(patterns, currentPid) {
+  const { stdout } = await execFileAsync("ps", ["-axo", "pid=,command="], {
+    maxBuffer: 16 * 1024 * 1024,
+  })
+  return findMatchingProcessIdsFromPsOutput(stdout, patterns, currentPid)
+}
+
+function processMatchPatterns(patterns) {
+  return patterns
+    .filter((pattern) => pattern !== null && pattern !== undefined && pattern !== "")
+    .map((pattern) => {
+      if (typeof pattern === "string") {
+        return (command) => command.includes(pattern)
+      }
+      if (pattern instanceof RegExp) {
+        return (command) => {
+          pattern.lastIndex = 0
+          return pattern.test(command)
+        }
+      }
+      if (typeof pattern === "function") return pattern
+      throw new TypeError(`unsupported process match pattern: ${String(pattern)}`)
+    })
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === "EPERM"
+  }
+}
+
+function sendProcessSignal(pid, signal) {
+  try {
+    process.kill(pid, signal)
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error
+  }
+}
+
+async function waitForProcessExit(pids, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let survivors = pids.filter(processIsAlive)
+  while (survivors.length > 0 && Date.now() < deadline) {
+    await sleep(pollMs)
+    survivors = pids.filter(processIsAlive)
+  }
+  return survivors
 }
 
 function shellDisplayArg(value) {

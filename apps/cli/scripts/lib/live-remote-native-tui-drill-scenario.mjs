@@ -30,6 +30,7 @@ import {
   screenQuit,
   screenStuff,
   startScreen,
+  terminateMatchingProcesses,
   waitForFileMatch,
   waitForLogOccurrences,
 } from "./drill-runtime-helpers.mjs"
@@ -1013,6 +1014,15 @@ export async function runProviderScenario({
     await screenQuit(screenA)
     await screenQuit(screenB)
     await screenQuit(screenCli)
+    await terminateMatchingProcesses([
+      relayToken,
+      automationSocket,
+      screenA,
+      screenB,
+      screenCli,
+      `remote-native-${provider}-${process.pid}`,
+      `arroba-remote-native-observer-${provider}-${process.pid}`,
+    ])
     await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
