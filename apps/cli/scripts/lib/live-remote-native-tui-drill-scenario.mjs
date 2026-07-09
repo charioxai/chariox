@@ -1,5 +1,6 @@
+import net from "node:net"
 import path from "node:path"
-import { readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
