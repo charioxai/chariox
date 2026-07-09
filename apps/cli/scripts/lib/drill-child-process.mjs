@@ -9,6 +9,8 @@ const PROVIDER_ACCOUNT_PATTERNS = [
   /insufficient_quota/i,
   /rate limit/i,
   /usage limit/i,
+  /model .* is not supported .* account/i,
+  /not supported when using .* account/i,
 ]
 
 const PROVIDER_AUTH_PATTERNS = [
@@ -95,6 +97,12 @@ const RUNTIME_TIMEOUT_PATTERNS = [
   /did not expose runtime MCP binding/i,
   /provider run ended before ready/i,
   /last_observation=/i,
+]
+
+const PROVIDER_RUNTIME_PATTERNS = [
+  /timed out waiting for marker THREAD_TRANSFER_[A-Z0-9_]+/i,
+  /timed out waiting for marker .*; ordered_match=/i,
+  /provider thread transfer drill failed/i,
 ]
 
 const KERNEL_AUTHORITY_PATTERNS = [
@@ -212,6 +220,9 @@ export function classifyDrillChildFailure(text) {
   if (KERNEL_AUTHORITY_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'kernel-authority'
   }
+  if (PROVIDER_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'provider-error'
+  }
   if (RUNTIME_TIMEOUT_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'runtime-timeout'
   }
@@ -257,6 +268,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'runtime-timeout'
       ? 'Runtime state did not converge before the drill timeout.'
+      : null,
+    classification === 'provider-error'
+      ? 'Provider runtime did not complete the drill before validation timeout; inspect preserved provider logs and history.'
       : null,
     classification === 'remote-extension-sync'
       ? 'Remote extension manifest state did not reconcile between home and worker kernels.'

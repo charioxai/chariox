@@ -16,6 +16,15 @@ test('classifies provider account and billing failures', () => {
   )
 })
 
+test('classifies provider account model limitations before provider marker timeouts', () => {
+  const text = [
+    'Error: timed out waiting for marker THREAD_TRANSFER_WORKER_CODEX_28090_1783606899611; ordered_match=false',
+    `{"type":"error","status":400,"error":{"message":"The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account."}}`,
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'provider-account')
+})
+
 test('classifies provider authentication failures', () => {
   const text = 'Token refresh failed: 401'
 
@@ -111,6 +120,22 @@ test('classifies runtime state timeouts', () => {
   assert.match(
     formatDrillChildFailure('runtime drill', 1, null, '', text),
     /Runtime state did not converge/,
+  )
+})
+
+test('classifies provider thread marker timeouts as provider runtime failures', () => {
+  const text = [
+    'Error: timed out waiting for marker THREAD_TRANSFER_WORKER_CODEX_83612_1783605777388; ordered_match=false',
+    'compact:',
+    'fallback_compact:',
+    'raw_compact:',
+    'at waitForHistoryOutputMarker (apps/cli/scripts/lib/live-provider-thread-transfer-runtime.mjs:806:9)',
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'provider-error')
+  assert.match(
+    formatDrillChildFailure('provider thread transfer drill', 1, null, '', text),
+    /Provider runtime did not complete the drill/,
   )
 })
 

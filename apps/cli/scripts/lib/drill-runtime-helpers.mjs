@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import net from "node:net"
 import { access, readFile } from "node:fs/promises"
+import path from "node:path"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -57,6 +58,25 @@ export async function assertBinary(binaryPath, manifestPath, binName) {
     await access(binaryPath)
   } catch {
     throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
+  }
+}
+
+export async function resolveBuiltBinary(binaryPath, manifestPath, binName) {
+  try {
+    await access(binaryPath)
+    return binaryPath
+  } catch (error) {
+    const workspaceBinaryPath = path.join(
+      path.dirname(path.dirname(path.dirname(manifestPath))),
+      "target",
+      "debug",
+      binName,
+    )
+    try {
+      await access(workspaceBinaryPath)
+      return workspaceBinaryPath
+    } catch {}
+    throw error
   }
 }
 
