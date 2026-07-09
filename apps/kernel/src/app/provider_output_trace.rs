@@ -2,12 +2,14 @@ use serde_json::{json, Value};
 
 use crate::app::{ActiveTurnStore, DaemonApp, PromptActivityStore};
 use crate::provider::{ProviderProcessServiceStore, ProviderPromptSignalBatch};
+use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 use crate::terminal::TerminalOutputRecord;
 
 pub(crate) struct ProviderOutputTrace {
     provider_store: ProviderProcessServiceStore,
     session_store: SessionStateStore,
+    prompt_state_owner: PromptStateOwner,
     active_turns: ActiveTurnStore,
     prompt_activity: PromptActivityStore,
 }
@@ -22,6 +24,7 @@ impl ProviderOutputTrace {
         Self {
             provider_store,
             session_store: app.sessions.clone(),
+            prompt_state_owner: app.prompt_state_owner(),
             active_turns,
             prompt_activity,
         }
@@ -118,7 +121,9 @@ impl ProviderOutputTrace {
             .map(str::to_string);
         let session = self.session_store.get_session(session_id).ok();
         let active_prompt = match (session.as_ref(), agent_id.as_deref()) {
-            (Some(session), Some(agent_id)) => session.active_prompt_for_agent(agent_id),
+            (Some(session), Some(agent_id)) => self
+                .prompt_state_owner
+                .active_prompt_for_agent_snapshot(session, agent_id),
             _ => None,
         };
         let active_turn = self.active_turns.get(provider_run_id);
@@ -127,7 +132,7 @@ impl ProviderOutputTrace {
             "agent_id": agent_id,
             "provider_run_state": provider_run.as_ref().map(|run| format!("{:?}", run.state())),
             "session_active_provider_run_id": session.as_ref().and_then(|session| session.active_provider_run_id()).map(str::to_string),
-            "active_prompt": active_prompt.map(|prompt| {
+            "active_prompt": active_prompt.as_ref().map(|prompt| {
                 json!({
                     "id": prompt.id().to_string(),
                     "status": prompt.status(),
@@ -156,5 +161,89 @@ impl ProviderOutputTrace {
                 })
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::KernelSessionService;
+    use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn prompt_state_trace_reads_prompt_owner_when_session_mirror_is_stale() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-trace-owner",
+                "worktree-trace-owner",
+            ))
+            .expect("session should create");
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "codex",
+                    "default",
+                    "gpt-test",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+            "codex",
+            "thread-trace-owner",
+            "turn-trace-owner",
+            agent.id(),
+            "external prompt visible in trace",
+        );
+        let external_prompt_id = external_prompt.id().to_string();
+        app.prompt_owner_sync_external_active_prompt(
+            session.id(),
+            agent.id(),
+            Some(external_prompt),
+        )
+        .expect("external active prompt should sync");
+        app.sessions_mut()
+            .mirror_agent_prompt_state(
+                session.id(),
+                agent.id(),
+                None,
+                std::collections::VecDeque::new(),
+            )
+            .expect("test drift should clear stale session prompt mirror");
+        assert!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should load")
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "session mirror should not expose the active prompt"
+        );
+
+        let trace = ProviderOutputTrace::new(
+            &app,
+            app.providers().clone(),
+            app.active_turn_store(),
+            app.prompt_activity_store(),
+        );
+        let state = trace.prompt_state(session.id(), run.id());
+
+        assert_eq!(
+            state
+                .get("active_prompt")
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str()),
+            Some(external_prompt_id.as_str())
+        );
+        assert_eq!(
+            state
+                .get("active_prompt")
+                .and_then(|value| value.get("target_agent_id"))
+                .and_then(|value| value.as_str()),
+            Some(agent.id())
+        );
     }
 }
