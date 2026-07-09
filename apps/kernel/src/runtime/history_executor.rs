@@ -28,6 +28,11 @@ pub(crate) async fn execute_history_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
+            crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_runtime_session(
+                runtime_state,
+                &request.session_id,
+            )
+            .await;
             let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
             ensure_operational_history_for_outline(
                 &history_store,
@@ -52,6 +57,11 @@ pub(crate) async fn execute_history_request(
             .await
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
+            crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_runtime_session(
+                runtime_state,
+                &request.session_id,
+            )
+            .await;
             let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
             let agent_import = snapshot
                 .agents()

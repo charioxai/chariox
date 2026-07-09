@@ -249,6 +249,419 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
 }
 
 #[test]
+fn discovery_content_change_refreshes_attached_imported_history() {
+    let _guard = crate::env_lock::lock();
+    let root = temp_root("opencode-discovery-content-refresh");
+    let previous_home = env::var_os("HOME");
+    let previous_xdg_data_home = env::var_os("XDG_DATA_HOME");
+    let previous_codex_home = env::var_os("CODEX_HOME");
+    let previous_claude_home = env::var_os("CLAUDE_HOME");
+    let previous_opencode_data_home = env::var_os("OPENCODE_DATA_HOME");
+    env::set_var("HOME", root.join("home"));
+    env::set_var("XDG_DATA_HOME", root.join("xdg-data"));
+    env::set_var("CODEX_HOME", root.join("codex"));
+    env::set_var("CLAUDE_HOME", root.join("claude"));
+    env::set_var("OPENCODE_DATA_HOME", root.join("opencode"));
+    let session_dir = root.join("opencode").join("sessions");
+    fs::create_dir_all(&session_dir).expect("opencode session dir should create");
+    let transcript = session_dir.join("open-content-refresh.json");
+    fs::write(
+        &transcript,
+        r#"{
+          "id": "open-content-refresh",
+          "title": "OpenCode content refresh",
+          "cwd": "/tmp/open-content-refresh",
+          "updatedAt": "2026-03-01T00:00:01.000Z",
+          "messages": [
+            {
+              "id": "opencode-user-1",
+              "role": "user",
+              "content": "OpenCode initial prompt",
+              "createdAt": "2026-03-01T00:00:01.000Z"
+            },
+            {
+              "id": "opencode-assistant-1",
+              "role": "assistant",
+              "content": "OpenCode initial reply",
+              "createdAt": "2026-03-01T00:00:02.000Z"
+            }
+          ]
+        }"#,
+    )
+    .expect("opencode transcript should write");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+    runtime.block_on(async {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+        ));
+        let (session_id, agent_id) = {
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            persist_external_import_metadata(
+                &mut app,
+                session.id(),
+                agent.id(),
+                ExternalProviderImportMetadata::observed_history(
+                    "opencode:open-content-refresh".to_string(),
+                    "opencode".to_string(),
+                    "open-content-refresh".to_string(),
+                ),
+            )
+            .expect("external import metadata should persist");
+            attach_test_session(&app, session.id());
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        let mut cache = ExternalProviderSessionDiscoveryCache::default();
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+        fs::write(
+            &transcript,
+            r#"{
+              "id": "open-content-refresh",
+              "title": "OpenCode content refresh",
+              "cwd": "/tmp/open-content-refresh",
+              "updatedAt": "2026-03-01T00:00:03.000Z",
+              "messages": [
+                {
+                  "id": "opencode-user-1",
+                  "role": "user",
+                  "content": "OpenCode initial prompt",
+                  "createdAt": "2026-03-01T00:00:01.000Z"
+                },
+                {
+                  "id": "opencode-assistant-1",
+                  "role": "assistant",
+                  "content": "OpenCode initial reply",
+                  "createdAt": "2026-03-01T00:00:02.000Z"
+                },
+                {
+                  "info": {
+                    "id": "opencode-user-2",
+                    "sessionID": "open-content-refresh",
+                    "role": "user"
+                  },
+                  "parts": [{
+                    "id": "opencode-user-2-text",
+                    "type": "text",
+                    "text": "OpenCode appended prompt from content refresh"
+                  }]
+                }
+              ]
+            }"#,
+        )
+        .expect("opencode transcript update should write");
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+
+        let app_guard = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
+        let session = app_guard
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should load");
+        let entries = app_guard
+            .load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should load");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "OpenCode appended prompt from content refresh"));
+        drop(app_guard);
+
+        cache.cached_signature_checks = EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS;
+        fs::write(
+            &transcript,
+            r#"{
+              "id": "open-content-refresh",
+              "title": "OpenCode content refresh",
+              "cwd": "/tmp/open-content-refresh",
+              "updatedAt": "2026-03-01T00:00:05.000Z",
+              "messages": [
+                {
+                  "id": "opencode-user-1",
+                  "role": "user",
+                  "content": "OpenCode initial prompt",
+                  "createdAt": "2026-03-01T00:00:01.000Z"
+                },
+                {
+                  "id": "opencode-assistant-1",
+                  "role": "assistant",
+                  "content": "OpenCode initial reply",
+                  "createdAt": "2026-03-01T00:00:02.000Z"
+                },
+                {
+                  "info": {
+                    "id": "opencode-user-2",
+                    "sessionID": "open-content-refresh",
+                    "role": "user"
+                  },
+                  "parts": [{
+                    "id": "opencode-user-2-text",
+                    "type": "text",
+                    "text": "OpenCode appended prompt from content refresh"
+                  }]
+                },
+                {
+                  "info": {
+                    "id": "opencode-assistant-2",
+                    "sessionID": "open-content-refresh",
+                    "role": "assistant",
+                    "finish": "tool-calls"
+                  },
+                  "parts": [{
+                    "id": "opencode-reasoning-2",
+                    "type": "reasoning",
+                    "text": "OpenCode appended reasoning from full scan refresh"
+                  }]
+                }
+              ]
+            }"#,
+        )
+        .expect("opencode transcript update should write");
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+
+        let app_guard = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
+        let session = app_guard
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should load");
+        let entries = app_guard
+            .load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should load");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "OpenCode appended reasoning from full scan refresh"));
+    });
+
+    restore_env_var("HOME", previous_home);
+    restore_env_var("XDG_DATA_HOME", previous_xdg_data_home);
+    restore_env_var("CODEX_HOME", previous_codex_home);
+    restore_env_var("CLAUDE_HOME", previous_claude_home);
+    restore_env_var("OPENCODE_DATA_HOME", previous_opencode_data_home);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn codex_discovery_content_change_refreshes_attached_imported_history() {
+    let _guard = crate::env_lock::lock();
+    let root = temp_root("codex-discovery-content-refresh");
+    let previous_home = env::var_os("HOME");
+    let previous_xdg_data_home = env::var_os("XDG_DATA_HOME");
+    let previous_codex_home = env::var_os("CODEX_HOME");
+    let previous_claude_home = env::var_os("CLAUDE_HOME");
+    let previous_opencode_data_home = env::var_os("OPENCODE_DATA_HOME");
+    env::set_var("HOME", root.join("home"));
+    env::set_var("XDG_DATA_HOME", root.join("xdg-data"));
+    env::set_var("CODEX_HOME", root.join("codex"));
+    env::set_var("CLAUDE_HOME", root.join("claude"));
+    env::set_var("OPENCODE_DATA_HOME", root.join("opencode"));
+    let session_dir = root.join("codex").join("sessions");
+    fs::create_dir_all(&session_dir).expect("codex session dir should create");
+    let transcript = session_dir.join("codex-content-refresh.jsonl");
+    fs::write(
+        &transcript,
+        concat!(
+            "{\"timestamp\":\"2026-06-09T12:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-content-refresh\",\"cwd\":\"/tmp/codex-content-refresh\",\"model_provider\":\"openai\"}}\n",
+            "{\"timestamp\":\"2026-06-09T12:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"codex-user-1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Codex initial prompt\"}]}}\n",
+            "{\"timestamp\":\"2026-06-09T12:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"codex-assistant-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Codex initial reply\"}]}}\n",
+        ),
+    )
+    .expect("codex transcript should write");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+    runtime.block_on(async {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+        ));
+        let (session_id, agent_id) = {
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            persist_external_import_metadata(
+                &mut app,
+                session.id(),
+                agent.id(),
+                ExternalProviderImportMetadata::observed_history(
+                    "codex:codex-content-refresh".to_string(),
+                    "codex".to_string(),
+                    "codex-content-refresh".to_string(),
+                ),
+            )
+            .expect("external import metadata should persist");
+            attach_test_session(&app, session.id());
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        let mut cache = ExternalProviderSessionDiscoveryCache::default();
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("codex transcript should open");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-07-09T20:37:27.547Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"codex-user-2\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"Codex appended prompt from content refresh\"}}]}}}}"
+        )
+        .expect("codex transcript update should write");
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-07-09T20:37:29.547Z\",\"type\":\"response_item\",\"payload\":{{\"id\":\"codex-reasoning-2\",\"type\":\"reasoning\",\"summary\":[{{\"type\":\"summary_text\",\"text\":\"Codex appended reasoning from second content refresh\"}}]}}}}"
+        )
+        .expect("codex reasoning update should write");
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+
+        let app_guard = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
+        let session = app_guard
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should load");
+        let entries = app_guard
+            .load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should load");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "Codex appended prompt from content refresh"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "Codex appended reasoning from second content refresh"));
+    });
+
+    restore_env_var("HOME", previous_home);
+    restore_env_var("XDG_DATA_HOME", previous_xdg_data_home);
+    restore_env_var("CODEX_HOME", previous_codex_home);
+    restore_env_var("CLAUDE_HOME", previous_claude_home);
+    restore_env_var("OPENCODE_DATA_HOME", previous_opencode_data_home);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unchanged_discovery_signature_refreshes_attached_imported_history() {
+    let _guard = crate::env_lock::lock();
+    let root = temp_root("codex-unchanged-signature-attached-refresh");
+    let previous_home = env::var_os("HOME");
+    let previous_xdg_data_home = env::var_os("XDG_DATA_HOME");
+    let previous_codex_home = env::var_os("CODEX_HOME");
+    let previous_claude_home = env::var_os("CLAUDE_HOME");
+    let previous_opencode_data_home = env::var_os("OPENCODE_DATA_HOME");
+    env::set_var("HOME", root.join("home"));
+    env::set_var("XDG_DATA_HOME", root.join("xdg-data"));
+    env::set_var("CODEX_HOME", root.join("codex"));
+    env::set_var("CLAUDE_HOME", root.join("claude"));
+    env::set_var("OPENCODE_DATA_HOME", root.join("opencode"));
+    let session_dir = root.join("codex").join("sessions");
+    fs::create_dir_all(&session_dir).expect("codex session dir should create");
+    let transcript = session_dir.join("codex-hidden-from-signature.jsonl");
+    fs::write(
+        &transcript,
+        concat!(
+            "{\"timestamp\":\"2026-06-09T12:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-hidden-from-signature\",\"cwd\":\"/tmp/codex-hidden-from-signature\",\"model_provider\":\"openai\"}}\n",
+            "{\"timestamp\":\"2026-06-09T12:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"codex-user-1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Codex hidden initial prompt\"}]}}\n",
+        ),
+    )
+    .expect("codex transcript should write");
+    let decoy = root.join("unchanged-signature-decoy.jsonl");
+    fs::write(&decoy, "{}\n").expect("decoy signature file should write");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+    runtime.block_on(async {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+        ));
+        let (session_id, agent_id) = {
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &app,
+                "external_provider_session_control",
+            )
+            .await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            persist_external_import_metadata(
+                &mut app,
+                session.id(),
+                agent.id(),
+                ExternalProviderImportMetadata::observed_history(
+                    "codex:codex-hidden-from-signature".to_string(),
+                    "codex".to_string(),
+                    "codex-hidden-from-signature".to_string(),
+                ),
+            )
+            .expect("external import metadata should persist");
+            attach_test_session(&app, session.id());
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+        let candidate_paths = vec![("codex".to_string(), decoy.clone())];
+        let signature =
+            crate::app::external_provider_session_discovery_signature_for_candidates(
+                &candidate_paths,
+            );
+        let mut cache = ExternalProviderSessionDiscoveryCache {
+            signature: Some(signature),
+            candidate_paths: Some(candidate_paths),
+            cached_signature_checks: 0,
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("codex transcript should open");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-07-09T20:37:27.547Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"codex-user-2\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"Codex appended prompt despite unchanged signature\"}}]}}}}"
+        )
+        .expect("codex transcript update should write");
+
+        refresh_external_provider_session_index(&app, None, Some(&mut cache), false).await;
+
+        let app_guard = crate::runtime::app_lock::lock_app_instrumented(
+            &app,
+            "external_provider_session_control",
+        )
+        .await;
+        let session = app_guard
+            .sessions()
+            .get_session(&session_id)
+            .expect("session should load");
+        let entries = app_guard
+            .load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should load");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "Codex appended prompt despite unchanged signature"));
+    });
+
+    restore_env_var("HOME", previous_home);
+    restore_env_var("XDG_DATA_HOME", previous_xdg_data_home);
+    restore_env_var("CODEX_HOME", previous_codex_home);
+    restore_env_var("CLAUDE_HOME", previous_claude_home);
+    restore_env_var("OPENCODE_DATA_HOME", previous_opencode_data_home);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn running_provider_run_without_attachment_is_observed() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

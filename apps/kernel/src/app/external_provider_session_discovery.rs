@@ -110,6 +110,19 @@ impl ExternalProviderSessionDiscoverySignature {
                 .zip(other.files.iter())
                 .all(|(left, right)| left.provider == right.provider && left.path == right.path)
     }
+
+    pub(crate) fn changed_content_provider_ids(&self, other: &Self) -> BTreeSet<String> {
+        self.files
+            .iter()
+            .zip(other.files.iter())
+            .filter(|(left, right)| {
+                left.provider == right.provider
+                    && left.path == right.path
+                    && (left.len != right.len || left.modified_at_ms != right.modified_at_ms)
+            })
+            .map(|(left, _)| left.provider.clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

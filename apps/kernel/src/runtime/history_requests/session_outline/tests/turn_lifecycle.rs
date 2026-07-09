@@ -208,6 +208,91 @@ fn outline_external_turn_without_settlement_stays_incomplete() {
 }
 
 #[test]
+fn outline_open_external_turn_keeps_notice_and_reasoning_blobs_separate() {
+    let observed_at_ms = crate::session::unix_epoch_ms();
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("external:opencode:thread-1:user-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let external_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "external prompt",
+        "opencode",
+        "thread-1",
+        Some("user-1".to_string()),
+        Some(observed_at_ms),
+    );
+    let notice = SessionHistoryEntry::notice(
+        "session-1",
+        Some("run-1"),
+        Some("agent-1"),
+        "Attachment `attachment-1` queued prompt `pending-1` for agent `agent-1`.",
+    );
+    let reasoning = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderReasoning,
+        "Planning file create, edit, inspect, and delete actions.",
+        "opencode",
+        "thread-1",
+        Some("user-1".to_string()),
+        Some(observed_at_ms + 1),
+    );
+    let status = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderStatus,
+        "opencode message metadata",
+        "opencode",
+        "thread-1",
+        Some("user-1".to_string()),
+        Some(observed_at_ms + 2),
+    );
+    let prompt = HistoryEvent::transcript(10, &external_prompt, context.clone());
+    let notice = HistoryEvent::transcript(11, &notice, context.clone());
+    let reasoning = HistoryEvent::transcript(12, &reasoning, context.clone());
+    let status = HistoryEvent::transcript(13, &status, context);
+
+    let turn = outline_turn_from_events(
+        &prompt,
+        vec![prompt.clone(), notice, reasoning, status],
+        false,
+    )
+    .expect("open external turn should be outlined");
+
+    assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
+    assert_eq!(turn.completed_at_ms, None);
+    assert_eq!(turn.entries.len(), 1);
+    assert_eq!(
+        turn.entries[0].entry.kind,
+        SessionHistoryEntryKind::ProviderStatus
+    );
+    assert_eq!(turn.blobs.len(), 2);
+    assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::Notice);
+    assert_eq!(
+        turn.blobs[0].summary,
+        "Attachment `attachment-1` queued prompt `pending-1` for agent `agent-1`."
+    );
+    assert_eq!(
+        turn.blobs[1].kind,
+        SessionHistoryEntryKind::ProviderReasoning
+    );
+    assert_eq!(
+        turn.blobs[1].summary,
+        "Planning file create, edit, inspect, and delete actions."
+    );
+}
+
+#[test]
 fn outline_stale_external_turn_without_settlement_completes_at_latest_content() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
