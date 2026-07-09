@@ -99,16 +99,40 @@ export function createCodexKernelOutputProjection(options: {
   }
 
   const project = (records: TerminalOutputRecord[]) => {
+    options.debug("projection_batch_received", {
+      agentId: options.agentId,
+      projectedThreadId,
+      count: records.length,
+      records: records.map(summarizeProjectionRecord),
+    })
     for (const record of records) {
-      if (!projectedThreadId) continue
-      if (record.agent_id !== options.agentId) continue
+      if (!projectedThreadId) {
+        debugProjectionSkipped(options.debug, "missing_thread", options.agentId, record)
+        continue
+      }
+      if (record.agent_id !== options.agentId) {
+        debugProjectionSkipped(options.debug, "agent_mismatch", options.agentId, record)
+        continue
+      }
       const delta = Buffer.from(record.bytes).toString("utf8")
-      if (!delta) continue
+      if (!delta) {
+        debugProjectionSkipped(options.debug, "empty_delta", options.agentId, record)
+        continue
+      }
       const recordProjection = terminalRecordTranscriptProjection(record, delta, {
         isProviderIdleStatus,
         shouldRenderProviderStatus: () => false,
       })
-      if (!recordProjection.appendsLiveTranscript) continue
+      if (!recordProjection.appendsLiveTranscript) {
+        debugProjectionSkipped(options.debug, "not_live_transcript", options.agentId, record, {
+          transcriptRole: recordProjection.transcriptRole,
+          historyRefreshSignal: recordProjection.historyRefreshSignal,
+          passiveExternalTelemetry: recordProjection.passiveExternalTelemetry,
+          providerStatusIdle: recordProjection.providerStatusIdle,
+          renderInAgentPane: recordProjection.renderInAgentPane,
+        })
+        continue
+      }
       const timestampMs = recordTimestampMs(record)
 
       if (recordProjection.transcriptRole === "user") {
@@ -148,7 +172,12 @@ export function createCodexKernelOutputProjection(options: {
       }
 
       const itemKind = codexProjectedItemKind(recordProjection)
-      if (!itemKind) continue
+      if (!itemKind) {
+        debugProjectionSkipped(options.debug, "unsupported_item_kind", options.agentId, record, {
+          transcriptRole: recordProjection.transcriptRole,
+        })
+        continue
+      }
       const itemKey = `${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
@@ -206,5 +235,34 @@ function codexProjectedItemKind(
       return "agentMessage"
     default:
       return null
+  }
+}
+
+function debugProjectionSkipped(
+  debug: (label: string, payload: unknown) => void,
+  reason: string,
+  expectedAgentId: string,
+  record: TerminalOutputRecord,
+  details: Record<string, unknown> = {},
+) {
+  debug("projection_record_skipped", {
+    reason,
+    expectedAgentId,
+    ...summarizeProjectionRecord(record),
+    ...details,
+  })
+}
+
+function summarizeProjectionRecord(record: TerminalOutputRecord) {
+  const text = Buffer.from(record.bytes).toString("utf8")
+  return {
+    recordId: record.record_id ?? null,
+    agentId: record.agent_id ?? null,
+    kind: record.kind,
+    promptOrigin: record.prompt_origin ?? null,
+    sourceAttachmentId: record.source_attachment_id ?? null,
+    mergeKey: record.merge_key ?? null,
+    byteLength: record.bytes.length,
+    preview: text.slice(0, 96),
   }
 }

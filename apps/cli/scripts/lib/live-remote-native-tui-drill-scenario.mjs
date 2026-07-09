@@ -293,6 +293,20 @@ async function waitForClaudeProviderRunId(logFile) {
   return (await waitForFileMatch(logFile, /provider run:\s+([^\s]+)/, 90_000)).match[1]
 }
 
+async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const text = await readFile(logFile, "utf8").catch(() => "")
+    if (/Update available!/.test(text) && /Skip/.test(text)) {
+      await screenStuff(screenName, "2\r")
+      await sleep(500)
+      return true
+    }
+    await sleep(250)
+  }
+  return false
+}
+
 async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, matcher, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs
   let lastMatch = null

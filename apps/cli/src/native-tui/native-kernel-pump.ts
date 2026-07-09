@@ -28,7 +28,14 @@ export function startNativeKernelPumpLoop(
         if ("TerminalOutput" in response) {
           const records = (response.TerminalOutput as { records?: unknown[] }).records
           if (Array.isArray(records) && records.length > 0) {
-            options.onTerminalRecords(records as TerminalOutputRecord[])
+            const terminalRecords = records as TerminalOutputRecord[]
+            options.debug?.("pump_terminal_records", {
+              sessionId,
+              attachmentId,
+              count: terminalRecords.length,
+              records: terminalRecords.map(summarizeTerminalRecord),
+            })
+            options.onTerminalRecords(terminalRecords)
           }
         }
       }
@@ -52,5 +59,19 @@ export function startNativeKernelPumpLoop(
       stopped = true
       clearInterval(interval)
     },
+  }
+}
+
+function summarizeTerminalRecord(record: TerminalOutputRecord) {
+  const text = Buffer.from(record.bytes).toString("utf8")
+  return {
+    recordId: record.record_id ?? null,
+    agentId: record.agent_id ?? null,
+    kind: record.kind,
+    promptOrigin: record.prompt_origin ?? null,
+    sourceAttachmentId: record.source_attachment_id ?? null,
+    mergeKey: record.merge_key ?? null,
+    byteLength: record.bytes.length,
+    preview: text.slice(0, 96),
   }
 }
