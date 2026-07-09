@@ -2,9 +2,7 @@ use crate::agent::AgentServiceStore;
 use crate::app::ActiveTurnStore;
 use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
-use crate::history::{
-    HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore,
-};
+use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
 use crate::provider::ProviderProcessServiceStore;
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
@@ -409,58 +407,13 @@ impl ProviderOutputFanout {
                 }),
             );
         }
-        let provider_run = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
-        let agent_id = entry.agent_id.clone().or_else(|| {
-            provider_run
-                .as_ref()
-                .and_then(|run| run.agent_instance_id().map(str::to_string))
-        });
-        let active_prompt = agent_id.as_deref().and_then(|agent_id| {
-            self.prompt_state_owner
-                .active_prompt_for_agent_or_restore(&session, agent_id)
-        });
-        let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-        let active_turn = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
-        let prompt_id = active_turn
-            .as_ref()
-            .map(|turn| turn.prompt_id.clone())
-            .or(prompt_id);
-        let external_turn_id = entry
-            .external_provider_observed_turn_id()
-            .map(str::to_string);
-        let turn_id = external_turn_id
-            .clone()
-            .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
-            .or_else(|| prompt_id.clone());
-        let context = HistoryEventTurnContext {
-            session_id: Some(entry.session_id.clone()),
-            agent_id,
-            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
-            model: provider_run.as_ref().map(|run| run.model().to_string()),
-            turn_id,
-            prompt_id,
-            provider_run_id: entry.provider_run_id.clone(),
-            provider_session_id: provider_run
-                .as_ref()
-                .and_then(|run| run.provider_session_id().map(str::to_string)),
-            workflow_run_id: active_prompt
-                .as_ref()
-                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
-            workflow_node_id: active_prompt
-                .as_ref()
-                .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
-            worktree_path: provider_run.as_ref().and_then(|run| {
-                run.working_directory()
-                    .map(|path| path.display().to_string())
-            }),
-            ..HistoryEventTurnContext::default()
-        };
+        let context = crate::app::HistoryEventContextResolver::new(
+            self.provider_store.clone(),
+            self.session_store.clone(),
+            self.prompt_state_owner.clone(),
+            self.active_turns.clone(),
+        )
+        .resolve(&entry);
         match self
             .operational_history_store
             .append_transcript(&entry, context)

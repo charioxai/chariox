@@ -9,6 +9,7 @@ mod durable_runtime_state;
 mod external_provider_session_discovery;
 mod external_provider_sessions;
 mod history_access;
+mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
@@ -54,6 +55,7 @@ pub(crate) use external_provider_sessions::{
     AttachedProviderTranscriptCursorStore, ExternalProviderSessionAttachmentRef,
     ExternalProviderSessionIndexStore,
 };
+pub(crate) use history_event_context::{HistoryEventContextOverrides, HistoryEventContextResolver};
 pub(crate) use prompt_activity::{
     ActivePromptState, ActiveTurnPhase, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
     PromptWorkspaceClaimStore,

@@ -1,6 +1,6 @@
 use crate::app::provider_output_fanout::ProviderOutputFanout;
-use crate::app::DaemonApp;
-use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
+use crate::app::{DaemonApp, HistoryEventContextResolver};
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::prompt_transcript::render_prompt_transcript;
 use crate::session::PromptAttachment;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
@@ -323,62 +323,17 @@ impl DaemonApp {
         }
     }
 
-    fn history_event_context(&self, entry: &SessionHistoryEntry) -> HistoryEventTurnContext {
-        let provider_run = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.providers.get_run(provider_run_id).ok());
-        let agent_id = entry.agent_id.clone().or_else(|| {
-            provider_run
-                .as_ref()
-                .and_then(|run| run.agent_instance_id().map(str::to_string))
-        });
-        let session = self.sessions.get_session(&entry.session_id).ok();
-        let active_prompt = session.as_ref().and_then(|session| {
-            agent_id.as_deref().and_then(|agent_id| {
-                self.prompt_state_owner
-                    .active_prompt_for_agent_or_restore(session, agent_id)
-            })
-        });
-        let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-        let active_turn = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.active_turns.get(provider_run_id));
-        let prompt_id = active_turn
-            .as_ref()
-            .map(|turn| turn.prompt_id.clone())
-            .or(prompt_id);
-        let external_turn_id = entry
-            .external_provider_observed_turn_id()
-            .map(str::to_string);
-        let turn_id = external_turn_id
-            .clone()
-            .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
-            .or_else(|| prompt_id.clone());
-        HistoryEventTurnContext {
-            session_id: Some(entry.session_id.clone()),
-            agent_id,
-            provider: provider_run.as_ref().map(|run| run.provider().to_string()),
-            model: provider_run.as_ref().map(|run| run.model().to_string()),
-            turn_id,
-            prompt_id,
-            provider_run_id: entry.provider_run_id.clone(),
-            provider_session_id: provider_run
-                .as_ref()
-                .and_then(|run| run.provider_session_id().map(str::to_string)),
-            workflow_run_id: active_prompt
-                .as_ref()
-                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
-            workflow_node_id: active_prompt
-                .as_ref()
-                .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
-            worktree_path: provider_run.as_ref().and_then(|run| {
-                run.working_directory()
-                    .map(|path| path.display().to_string())
-            }),
-            ..HistoryEventTurnContext::default()
-        }
+    fn history_event_context(
+        &self,
+        entry: &SessionHistoryEntry,
+    ) -> crate::history::HistoryEventTurnContext {
+        HistoryEventContextResolver::new(
+            self.providers.clone(),
+            self.sessions.clone(),
+            self.prompt_state_owner.clone(),
+            self.active_turns.clone(),
+        )
+        .resolve(entry)
     }
 
     fn enqueue_history_archive_event(&self, event: &crate::history::HistoryEvent) {
