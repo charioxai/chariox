@@ -189,6 +189,95 @@ fn append_observed_arroba_owned_prompt_cursor_prevents_reimport_after_reload() {
         .is_empty());
 }
 
+#[test]
+fn append_observed_arroba_owned_prompt_echo_uses_prompt_owner_queue_when_mirror_is_stale() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = test_codex_run(
+        session.id(),
+        agent.id(),
+        "run-arroba-owned-stale-queue-mirror",
+        "thread-arroba-stale-queue-mirror",
+    );
+    app.providers_mut().insert_run_for_test(run);
+    let target = single_attached_target(&app);
+    let queued_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "queued Arroba prompt",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, true)
+        .expect("forced queued prompt should queue in prompt owner")
+    else {
+        panic!("forced prompt should queue");
+    };
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            None,
+            std::collections::VecDeque::new(),
+        )
+        .expect("test drift should clear the session prompt mirror");
+    assert!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should load")
+            .queued_prompts_for_agent(agent.id())
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true),
+        "session mirror should not expose the queued prompt"
+    );
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+            .expect("prompt owner should read"),
+        1,
+        "prompt owner remains authoritative for the queued prompt"
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "queued Arroba prompt".to_string(),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "reply to queued Arroba prompt".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed Arroba-owned queued prompt echo should be skipped");
+
+    assert_eq!(outcome.changed_count, 0);
+    assert!(
+        app.load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load")
+            .is_empty(),
+        "Arroba-owned provider echo must not be imported as an external turn"
+    );
+}
+
 #[tokio::test]
 async fn append_observed_arroba_owned_completion_settles_and_advances_queued_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
@@ -413,6 +502,106 @@ async fn observed_external_completion_advances_queue_when_active_prompt_mirror_w
     assert_ne!(active_prompt.id(), queued_prompt_id);
     assert_eq!(active_prompt.pending_prompt_id(), None);
     assert_eq!(active_prompt.prompt(), "queued Arroba prompt");
+}
+
+#[test]
+fn observed_external_completion_uses_prompt_owner_queue_when_session_queue_mirror_was_lost() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = test_codex_run(
+        session.id(),
+        agent.id(),
+        "run-external-lost-queue-mirror",
+        "thread-external-lost-queue-mirror",
+    );
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run);
+    let target = single_attached_target(&app);
+    let user_turn = ObservedExternalProviderTurn {
+        provider_turn_id: Some("user-native".to_string()),
+        role: ObservedExternalProviderTurnRole::User,
+        text: "native prompt outside Arroba".to_string(),
+        observed_at_ms: Some(42),
+    };
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: target.clone(),
+            turns: vec![user_turn.clone()],
+        },
+    )
+    .expect("native user turn should mark active prompt");
+    let queued_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "queued Arroba prompt",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("Arroba prompt should queue behind external active prompt")
+    else {
+        panic!("Arroba prompt should not start while external active prompt is running");
+    };
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
+        .expect("test drift should clear the external active prompt");
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            None,
+            std::collections::VecDeque::new(),
+        )
+        .expect("test drift should clear the session queued prompt mirror");
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+            .expect("prompt owner should read"),
+        1
+    );
+    assert!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should load")
+            .queued_prompts_for_agent(agent.id())
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true),
+        "session mirror should not expose the queued prompt"
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target_with_options(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                user_turn,
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("complete-native".to_string()),
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+        AttachedExternalObserverAppendOptions {
+            allow_external_active_prompt_settlement: true,
+        },
+    )
+    .expect("completion should settle even when the session queue mirror was lost");
+
+    assert!(outcome.external_active_prompt_settled);
 }
 
 #[test]

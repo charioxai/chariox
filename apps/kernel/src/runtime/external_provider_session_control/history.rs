@@ -69,10 +69,9 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
     }
     let session = app.sessions().get_session(&read.target.session_id)?;
     let agent = app.agents.get_agent(&read.target.agent_id)?;
-    let queued_prompt_waiting = session
-        .prompt_states()
-        .get(agent.id())
-        .is_some_and(|state| !state.queued_prompts().is_empty());
+    let (active_prompt, queued_prompts) =
+        app.prompt_state_owner().state_parts(&session, agent.id());
+    let queued_prompt_waiting = !queued_prompts.is_empty();
     let provider_run_id = read.target.provider_run_id.clone().or_else(|| {
         app.providers()
             .get_latest_run_for_agent(session.id(), agent.id())
@@ -101,19 +100,17 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             *counts.entry(text).or_default() += 1;
             counts
         });
-    if let Some(prompt_state) = session.prompt_states().get(agent.id()) {
-        if let Some(active_prompt) = prompt_state.active_prompt() {
-            if active_prompt.is_arroba_owned() {
-                if let Some(text) = normalized_observed_prompt_text(active_prompt.prompt()) {
-                    *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
-                }
+    if let Some(active_prompt) = active_prompt.as_ref() {
+        if active_prompt.is_arroba_owned() {
+            if let Some(text) = normalized_observed_prompt_text(active_prompt.prompt()) {
+                *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
             }
         }
-        for queued_prompt in prompt_state.queued_prompts() {
-            if queued_prompt.is_arroba_owned() {
-                if let Some(text) = normalized_observed_prompt_text(queued_prompt.prompt()) {
-                    *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
-                }
+    }
+    for queued_prompt in &queued_prompts {
+        if queued_prompt.is_arroba_owned() {
+            if let Some(text) = normalized_observed_prompt_text(queued_prompt.prompt()) {
+                *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
             }
         }
     }
