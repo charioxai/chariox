@@ -365,6 +365,71 @@ mod tests {
     }
 
     #[test]
+    fn update_session_projection_projects_prompt_owner_when_session_mirror_is_stale() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let external_prompt = PromptQueueItem::external_observed_running(
+            "codex",
+            "thread-stale-projection",
+            "user-stale-projection",
+            agent.id(),
+            "external prompt from prompt owner",
+        );
+        app.prompt_owner_sync_external_active_prompt(
+            session.id(),
+            agent.id(),
+            Some(external_prompt),
+        )
+        .expect("external prompt should sync");
+        app.sessions_mut()
+            .mirror_agent_prompt_state(
+                session.id(),
+                agent.id(),
+                None,
+                std::collections::VecDeque::new(),
+            )
+            .expect("test drift should clear the session prompt mirror");
+        let mut stale_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should load");
+        stale_session.set_agents(app.agents().get_session_agents(session.id()));
+        assert!(
+            stale_session.active_prompt_for_agent(agent.id()).is_none(),
+            "stale input session should not expose the active prompt"
+        );
+
+        app.update_session_projection(stale_session);
+
+        let projected = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("session projection should exist");
+        let projected_prompt = projected
+            .active_prompt_for_agent(agent.id())
+            .expect("session projection should use prompt owner state");
+        assert_eq!(projected_prompt.prompt_origin(), PromptOrigin::External);
+        assert_eq!(
+            projected_prompt.prompt(),
+            "external prompt from prompt owner"
+        );
+        let activity = app
+            .agent_runtime_projection_store()
+            .get(agent.id())
+            .expect("agent runtime projection should refresh");
+        assert_eq!(
+            activity
+                .active_prompt
+                .as_ref()
+                .map(|prompt| prompt.prompt()),
+            Some("external prompt from prompt owner")
+        );
+    }
+
+    #[test]
     fn prompt_submission_refreshes_projected_prompt_timestamp() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon should boot");

@@ -448,7 +448,7 @@ impl RuntimeSession {
         self.prompt_runtime.queued_prompts_for_agent(agent_id)
     }
 
-    pub(in crate::session) fn mirror_agent_prompt_state(
+    pub(crate) fn mirror_agent_prompt_state(
         &mut self,
         agent_id: &str,
         active_prompt: Option<PromptQueueItem>,
