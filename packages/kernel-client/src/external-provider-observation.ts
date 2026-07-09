@@ -254,8 +254,8 @@ export function promptOriginExternalProviderObservedMetadata(
 
 export function externalProviderObservedIdentityFields(
   record: ExternalProviderObservedPromptOriginFields,
-): ExternalProviderObservedTranscriptIdentityFields {
-  const explicitFields: ExternalProviderObservedTranscriptIdentityFields = {
+): ExternalProviderObservedNormalizedIdentityFields {
+  const explicitFields: ExternalProviderObservedNormalizedIdentityFields = {
     ...(hasOwn(record, "external_provider")
       ? { externalProvider: normalizeExternalProviderId(record.external_provider) }
       : {}),
@@ -278,7 +278,7 @@ export function externalProviderObservedIdentityFields(
 
 export function externalProviderObservedExplicitIdentityFields(
   record: ExternalProviderObservedPromptOriginFields,
-): ExternalProviderObservedTranscriptIdentityFields {
+): ExternalProviderObservedNormalizedIdentityFields {
   return {
     ...(hasOwn(record, "external_provider")
       ? { externalProvider: normalizeExternalProviderId(record.external_provider) }
@@ -289,6 +289,19 @@ export function externalProviderObservedExplicitIdentityFields(
     ...(hasOwn(record, "external_provider_turn_id")
       ? { externalProviderTurnId: nonBlankString(record.external_provider_turn_id) }
       : {}),
+  }
+}
+
+export function externalProviderObservedPresentIdentityFields(
+  value: ExternalProviderObservedIdentityFields,
+): ExternalProviderObservedPresentIdentityFields {
+  const externalProvider = normalizeExternalProviderId(value.externalProvider)
+  const externalProviderSessionId = nonBlankString(value.externalProviderSessionId)
+  const externalProviderTurnId = nonBlankString(value.externalProviderTurnId)
+  return {
+    ...(externalProvider ? { externalProvider } : {}),
+    ...(externalProviderSessionId ? { externalProviderSessionId } : {}),
+    ...(externalProviderTurnId ? { externalProviderTurnId } : {}),
   }
 }
 
@@ -574,6 +587,18 @@ export type ExternalProviderObservedTranscriptIdentityFields = {
   readonly externalProviderTurnId?: string | null | undefined
 }
 
+export type ExternalProviderObservedNormalizedIdentityFields = {
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
+}
+
+export type ExternalProviderObservedPresentIdentityFields = {
+  readonly externalProvider?: string
+  readonly externalProviderSessionId?: string
+  readonly externalProviderTurnId?: string
+}
+
 export type ExternalProviderObservedMutableTranscriptIdentityFields = {
   externalProvider?: string | null | undefined
   externalProviderSessionId?: string | null | undefined
@@ -682,7 +707,7 @@ function normalizeExternalProviderId(value: string | null | undefined): string |
 
 function externalProviderObservedIdFields(
   value: string | null | undefined,
-): ExternalProviderObservedTranscriptIdentityFields | null {
+): ExternalProviderObservedNormalizedIdentityFields | null {
   if (typeof value !== "string") {
     return null
   }

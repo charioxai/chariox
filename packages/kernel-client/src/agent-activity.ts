@@ -5,6 +5,7 @@ import {
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExplicitIdentityFields,
+  externalProviderObservedPresentIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 
@@ -481,14 +482,9 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
 function projectExternalProviderObservedIdentity(
   record: Record<string, unknown>,
 ): AgentRuntimeExternalIdentityProjection {
-  const externalIdentity = externalProviderObservedExplicitIdentityFields(record)
-  return {
-    ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
-    ...(externalIdentity.externalProviderSessionId
-      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
-      : {}),
-    ...(externalIdentity.externalProviderTurnId ? { externalProviderTurnId: externalIdentity.externalProviderTurnId } : {}),
-  }
+  return externalProviderObservedPresentIdentityFields(
+    externalProviderObservedExplicitIdentityFields(record),
+  )
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {

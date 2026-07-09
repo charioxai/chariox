@@ -163,18 +163,7 @@ function promptExternalIdentityFields(
   if (!prompt) {
     return {}
   }
-  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
-  return {
-    ...(externalIdentity.externalProvider !== undefined
-      ? { externalProvider: externalIdentity.externalProvider }
-      : {}),
-    ...(externalIdentity.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
-      : {}),
-    ...(externalIdentity.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
-      : {}),
-  }
+  return externalProviderObservedExplicitIdentityFields(prompt)
 }
 
 function projectedActiveTurnExternalIdentityFields(

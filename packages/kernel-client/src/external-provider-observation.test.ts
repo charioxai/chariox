@@ -18,6 +18,7 @@ import {
   externalProviderObservedIdentityIsPresent,
   externalProviderObservedIdentityKey,
   externalProviderObservedIdentityMatches,
+  externalProviderObservedPresentIdentityFields,
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
   externalProviderObservedTranscriptExactIdentityConflicts,
@@ -169,6 +170,18 @@ test("external provider observed identity matching normalizes provider and trims
   }, {
     externalProvider: "codex",
   }), false)
+  assert.deepEqual(externalProviderObservedPresentIdentityFields({
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  })
+  assert.deepEqual(externalProviderObservedPresentIdentityFields({
+    externalProvider: null,
+    externalProviderTurnId: "",
+  }), {})
 })
 
 test("external provider observed predicate requires kernel observed source", () => {

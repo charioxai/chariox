@@ -232,7 +232,7 @@ export function projectQueuedPrompt(
   }
   const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
   const createdAtMs = finiteNumber(prompt.created_at_ms)
-  const externalIdentity = queuedPromptExternalIdentity(prompt, pendingPromptId)
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
   return {
     id: pendingPromptId ?? promptId,
     pendingPromptId,
@@ -244,27 +244,6 @@ export function projectQueuedPrompt(
     ...(createdAtMs !== null ? { createdAtMs } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
-  }
-}
-
-function queuedPromptExternalIdentity(
-  prompt: PromptQueueItem,
-  pendingPromptId: string | null,
-): Pick<ProjectedQueuedPrompt, "externalProvider" | "externalProviderSessionId" | "externalProviderTurnId"> {
-  const externalIdentity = externalProviderObservedExplicitIdentityFields({
-    ...prompt,
-    ...(pendingPromptId !== null ? { prompt_id: pendingPromptId } : {}),
-  })
-  return {
-    ...(externalIdentity.externalProvider !== undefined
-      ? { externalProvider: externalIdentity.externalProvider }
-      : {}),
-    ...(externalIdentity.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
-      : {}),
-    ...(externalIdentity.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
-      : {}),
   }
 }
 
