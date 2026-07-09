@@ -1,16 +1,13 @@
 import type { AgentRuntimeActivityProjection } from "./agent-activity.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 import {
-  externalProviderObservedExplicitIdentityFields,
-} from "./external-provider-observation.js"
-import { promptOriginFromRecord } from "./prompt-origin.js"
-import {
   sessionAgentActivityRecordForAgent,
   sessionHasAgentActivityProjection,
   sessionHasPromptStateProjection,
   sessionPromptStateRecordForAgent,
   sessionProjectedPromptActivityForAgent,
 } from "./session-agent-prompt-state.js"
+import { promptQueueItemTranscriptMetadata } from "./transcript-entry-state.js"
 
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
 export const QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON =
@@ -232,15 +229,19 @@ export function projectQueuedPrompt(
   }
   const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
   const createdAtMs = finiteNumber(prompt.created_at_ms)
-  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
+  const metadata = promptQueueItemTranscriptMetadata(prompt)
   return {
     id: pendingPromptId ?? promptId,
     pendingPromptId,
-    sourceAttachmentId: nonBlankString(prompt.source_attachment_id) ?? "",
+    sourceAttachmentId: nonBlankString(metadata.sourceAttachmentId) ?? "",
     targetAgentId: nonBlankString(prompt.target_agent_id) ?? nonBlankString(options.fallbackTargetAgentId) ?? null,
     prompt: prompt.prompt,
-    promptOrigin: promptOriginFromRecord(prompt),
-    ...externalIdentity,
+    promptOrigin: metadata.promptOrigin ?? null,
+    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: metadata.externalProviderSessionId }
+      : {}),
+    ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
     ...(createdAtMs !== null ? { createdAtMs } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
