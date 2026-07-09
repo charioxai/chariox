@@ -4,7 +4,9 @@ use crate::app::KernelPreparedPromptSubmission;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::agent_prompt_service::AgentPromptCommandService;
-use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+use crate::runtime::projection::{
+    publish_session_runtime_projection, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
 use crate::session::{PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus};
 
 use super::command_lane::PromptSubmitResponseMode;
@@ -129,9 +131,11 @@ impl AgentRuntimeCommandExecutor {
             }
         }
         if response_mode == PromptSubmitResponseMode::Full {
-            self.session_projection.update(response_session.clone());
-            self.agent_runtime_projection
-                .update_session(&response_session);
+            publish_session_runtime_projection(
+                &self.session_projection,
+                &self.agent_runtime_projection,
+                &response_session,
+            );
         }
 
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
@@ -184,9 +188,11 @@ impl AgentRuntimeCommandExecutor {
                 &request.attachment_id,
             )
             .await?;
-        self.session_projection.update(prepared.session.clone());
-        self.agent_runtime_projection
-            .update_session(&prepared.session);
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &prepared.session,
+        );
 
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_abort(dispatch);
@@ -210,9 +216,11 @@ impl AgentRuntimeCommandExecutor {
                 &request.prompt_id,
             )
             .await?;
-        self.session_projection.update(prepared.session.clone());
-        self.agent_runtime_projection
-            .update_session(&prepared.session);
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &prepared.session,
+        );
 
         let agent_activity = self
             .prompt_commands
@@ -241,9 +249,11 @@ impl AgentRuntimeCommandExecutor {
                 &request.prompt_id,
             )
             .await?;
-        self.session_projection.update(prepared.session.clone());
-        self.agent_runtime_projection
-            .update_session(&prepared.session);
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &prepared.session,
+        );
 
         let agent_activity = self
             .prompt_commands
@@ -271,9 +281,11 @@ impl AgentRuntimeCommandExecutor {
                 &request.prompt,
             )
             .await?;
-        self.session_projection.update(prepared.session.clone());
-        self.agent_runtime_projection
-            .update_session(&prepared.session);
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &prepared.session,
+        );
 
         let agent_activity = self
             .prompt_commands
@@ -305,12 +317,15 @@ impl AgentRuntimeCommandExecutor {
             .prompt_commands
             .session_snapshot(&request.session_id)
             .await?;
-        self.session_projection.update(session.clone());
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &session,
+        );
         debug_assert!(
             completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),
             "agent runtime queue-front preview should match compatibility advancement"
         );
-        self.agent_runtime_projection.update_session(&session);
 
         self.prompt_commands
             .inject_metaagent_turn_completion_event(
@@ -322,8 +337,11 @@ impl AgentRuntimeCommandExecutor {
             .prompt_commands
             .session_snapshot(&request.session_id)
             .await?;
-        self.session_projection.update(session.clone());
-        self.agent_runtime_projection.update_session(&session);
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &session,
+        );
 
         Ok(LocalDaemonResponse::PromptCompleted { completion })
     }

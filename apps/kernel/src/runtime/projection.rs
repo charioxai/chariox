@@ -1,4 +1,4 @@
-use crate::session::unix_epoch_ms;
+use crate::session::{unix_epoch_ms, RuntimeSession};
 use serde::{Deserialize, Serialize};
 
 mod agent_runtime_projection;
@@ -44,6 +44,15 @@ pub use session_snapshot_projection::{
 };
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 pub(crate) use transport_health::{TransportHealthSnapshot, TransportHealthStore};
+
+pub(crate) fn publish_session_runtime_projection(
+    session_projection: &SessionStateProjectionStore,
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    session: &RuntimeSession,
+) {
+    agent_runtime_projection.update_session(session);
+    session_projection.update(session.clone());
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionMetadata {

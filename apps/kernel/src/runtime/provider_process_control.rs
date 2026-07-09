@@ -9,8 +9,8 @@ use crate::local::{
 };
 use crate::provider::ProviderProcessInfo;
 use crate::runtime::projection::{
-    AgentRuntimeProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionStateProjectionStore,
+    publish_session_runtime_projection, AgentRuntimeProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::state::KernelRuntimeState;
 
@@ -206,8 +206,7 @@ pub(crate) async fn execute_teardown_provider_processes_request(
     )
     .await?;
     for session in &teardown.sessions {
-        agent_runtime_projection.update_session(session);
-        session_projection.update(session.clone());
+        publish_session_runtime_projection(session_projection, agent_runtime_projection, session);
     }
     provider_process_projection.update_list(teardown.canonical_processes);
     Ok(LocalDaemonResponse::ProviderProcessesTornDown {

@@ -7,7 +7,8 @@ use crate::local::{
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::runtime::projection::{
-    AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
+    publish_session_runtime_projection, AgentRuntimeProjectionStore, ProviderRunProjectionStore,
+    SessionStateProjectionStore,
 };
 use crate::runtime::session_read_control::projected_session_or_absence;
 use crate::runtime::state::KernelRuntimeState;
@@ -261,8 +262,11 @@ impl TerminalOutputStore {
 
     fn refresh_session_projection(&self, session: Option<crate::session::RuntimeSession>) {
         if let Some(session) = session {
-            self.agent_runtime_projection.update_session(&session);
-            self.session_projection.update(session);
+            publish_session_runtime_projection(
+                &self.session_projection,
+                &self.agent_runtime_projection,
+                &session,
+            );
         }
     }
 }

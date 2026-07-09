@@ -11,7 +11,8 @@ use crate::runtime::command_latency::{
     CommandTrace, LaneCommandTrace,
 };
 use crate::runtime::projection::{
-    ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+    publish_session_runtime_projection, ActorQueueSnapshot, AgentRuntimeProjectionStore,
+    SessionStateProjectionStore,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::DEFAULT_LOCAL_USER_ID;
@@ -293,8 +294,11 @@ impl WorkflowRuntimeCommandExecutor {
             .execute_workflow_request(request, caller_user_id, caller_metaagent_id)
             .await;
         if let Some(session) = projected_session {
-            self.agent_runtime_projection.update_session(&session);
-            self.session_projection.update(session);
+            publish_session_runtime_projection(
+                &self.session_projection,
+                &self.agent_runtime_projection,
+                &session,
+            );
         }
         result
     }

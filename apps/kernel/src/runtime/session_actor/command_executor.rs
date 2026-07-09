@@ -1,6 +1,8 @@
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+use crate::runtime::projection::{
+    publish_session_runtime_projection, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
 use crate::terminal::TerminalStreamStore;
 
 use super::focus_projection::FocusedAgentProjection;
@@ -89,8 +91,11 @@ impl SessionRuntimeCommandExecutor {
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
-                self.agent_runtime_projection.update_session(&session);
-                self.session_projection.update(session.clone());
+                publish_session_runtime_projection(
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    &session,
+                );
                 Some(session)
             }
             Some(SessionProjectionAction::Remove { session_id }) => {

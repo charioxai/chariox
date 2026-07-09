@@ -9,7 +9,9 @@ use crate::local::{BatchOperationFailure, LocalDaemonResponse, PromptBatchSubmis
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_prompt_service::AgentPromptCommandService;
 use crate::runtime::command_latency::CommandTrace;
-use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+use crate::runtime::projection::{
+    publish_session_runtime_projection, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::runtime::state::KernelRuntimeState;
@@ -227,8 +229,11 @@ impl AgentRuntime {
         let mut response_session = None;
         for session_id in prompt_session_ids {
             let session = self.store.session_snapshot(&session_id).await?;
-            self.session_projection.update(session.clone());
-            self.agent_runtime_projection.update_session(&session);
+            publish_session_runtime_projection(
+                &self.session_projection,
+                &self.agent_runtime_projection,
+                &session,
+            );
             if session_id == response_session_id {
                 response_session = Some(session);
             }
@@ -237,8 +242,11 @@ impl AgentRuntime {
             Some(session) => session,
             None => {
                 let session = self.store.session_snapshot(&response_session_id).await?;
-                self.session_projection.update(session.clone());
-                self.agent_runtime_projection.update_session(&session);
+                publish_session_runtime_projection(
+                    &self.session_projection,
+                    &self.agent_runtime_projection,
+                    &session,
+                );
                 session
             }
         };

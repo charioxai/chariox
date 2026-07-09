@@ -7,8 +7,8 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{
-    AgentRuntimeActivity, AgentRuntimeProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, SessionStateProjectionStore,
+    publish_session_runtime_projection, AgentRuntimeActivity, AgentRuntimeProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::session_actor::FocusedAgentProjection;
@@ -178,9 +178,14 @@ pub(crate) async fn apply_session_projection_refresh(
     for session in response_sessions(response) {
         refreshed_session_ids.push(session.id().to_string());
         if should_update_agent_runtime_projection_from_response(response) {
-            context.agent_runtime_projection.update_session(&session);
+            publish_session_runtime_projection(
+                context.session_projection,
+                context.agent_runtime_projection,
+                &session,
+            );
+        } else {
+            context.session_projection.update(session);
         }
-        context.session_projection.update(session);
     }
     if let LocalDaemonResponse::SessionsListed { sessions } = response {
         for session in sessions {
