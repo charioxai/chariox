@@ -8,6 +8,7 @@ import {
   normalizeAgentRuntimePromptStatus,
 } from "./agent-activity.js"
 import {
+  externalProviderObservedCoalescedTranscriptIdentityFields,
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
   externalProviderObservedExplicitIdentityFields,
@@ -182,6 +183,7 @@ function activePromptLifecycleRecordWithPromptState(
     return record
   }
   const stateRecord = activePromptLifecycleRecordFromPrompt(stateActivePrompt)
+  const externalIdentity = externalProviderObservedCoalescedTranscriptIdentityFields(record, stateRecord)
   return {
     ...record,
     ...(record.promptOrigin === undefined || record.promptOrigin === null
@@ -190,14 +192,14 @@ function activePromptLifecycleRecordWithPromptState(
     ...(record.source_attachment_id === undefined && stateRecord.source_attachment_id !== undefined
       ? { source_attachment_id: stateRecord.source_attachment_id }
       : {}),
-    ...(record.externalProvider === undefined && stateRecord.externalProvider !== undefined
-      ? { externalProvider: stateRecord.externalProvider }
+    ...(externalIdentity.externalProvider !== undefined
+      ? { externalProvider: externalIdentity.externalProvider }
       : {}),
-    ...(record.externalProviderSessionId === undefined && stateRecord.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: stateRecord.externalProviderSessionId }
+    ...(externalIdentity.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
       : {}),
-    ...(record.externalProviderTurnId === undefined && stateRecord.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: stateRecord.externalProviderTurnId }
+    ...(externalIdentity.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
       : {}),
   }
 }
