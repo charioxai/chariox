@@ -564,7 +564,6 @@ fn meta_completion_recommendation(
             agent_activity
                 .get(agent.id())
                 .is_some_and(|activity| activity.busy)
-                || agent.is_processing()
         })
         .map(|agent| meta_owned_agent_ref_json(agent))
         .collect::<Vec<_>>();
@@ -634,4 +633,112 @@ fn meta_completion_recommendation(
         "suggested_next_action": suggested_next_action,
         "non_authoritative": true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_recommendation_ignores_stale_legacy_worker_processing_flag() {
+        let mut session = meta_session();
+        let metaagent = metaagent();
+        let mut worker = owned_worker(metaagent.id());
+        worker.set_processing(true);
+        session.ensure_metaagent_task(metaagent.id(), "coordinate the work");
+
+        let recommendation = meta_completion_recommendation(
+            &session,
+            &metaagent,
+            &[&worker],
+            &[],
+            0,
+            &std::collections::BTreeMap::new(),
+        );
+
+        assert_eq!(recommendation["kind"], "can_complete");
+        assert!(
+            recommendation["active_owned_workers"]
+                .as_array()
+                .expect("active workers should be an array")
+                .is_empty(),
+            "stale legacy processing must not make a worker active: {recommendation}"
+        );
+    }
+
+    #[test]
+    fn completion_recommendation_waits_on_runtime_agent_activity() {
+        let mut session = meta_session();
+        let metaagent = metaagent();
+        let worker = owned_worker(metaagent.id());
+        session.ensure_metaagent_task(metaagent.id(), "coordinate the work");
+        let mut activity = std::collections::BTreeMap::new();
+        activity.insert(
+            worker.id().to_string(),
+            crate::runtime::projection::AgentRuntimeActivity {
+                status: crate::runtime::projection::AgentRuntimeStatus::Working,
+                prompt_status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
+                busy: true,
+                active_prompt_count: 1,
+                queued_prompt_count: 0,
+                unread_idle_output: false,
+                queued_prompt_controls: std::collections::BTreeMap::new(),
+                active_turn: None,
+                last_completed_turn: None,
+            },
+        );
+
+        let recommendation =
+            meta_completion_recommendation(&session, &metaagent, &[&worker], &[], 0, &activity);
+
+        assert_eq!(recommendation["kind"], "should_wait");
+        assert_eq!(
+            recommendation["active_owned_workers"]
+                .as_array()
+                .expect("active workers should be an array")
+                .len(),
+            1
+        );
+    }
+
+    fn meta_session() -> crate::session::RuntimeSession {
+        crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        )
+    }
+
+    fn metaagent() -> crate::agent::AgentInstance {
+        crate::agent::AgentInstance::new(
+            "meta-1",
+            "agent-meta-1",
+            "session-1",
+            Some("meta".to_string()),
+            "dev-stub",
+            Some("model".to_string()),
+            None,
+            Some("worktree-1".to_string()),
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    fn owned_worker(metaagent_id: &str) -> crate::agent::AgentInstance {
+        let mut worker = crate::agent::AgentInstance::new(
+            "worker-1",
+            "agent-worker-1",
+            "session-1",
+            Some("worker".to_string()),
+            "dev-stub",
+            Some("model".to_string()),
+            None,
+            Some("worktree-1".to_string()),
+            crate::agent::GridPosition::new(0, 1, 1, 1),
+        );
+        worker.set_controlled_by_metaagent_id(Some(metaagent_id.to_string()));
+        worker
+    }
 }
