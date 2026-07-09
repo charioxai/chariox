@@ -327,7 +327,6 @@ pub(super) fn snapshot(
             }
             if active_turn.source_attachment_id.as_deref()
                 != Some(active_prompt.source_attachment_id())
-                && (active_turn.source_attachment_id.is_some() || active_prompt.is_external())
             {
                 mismatches.push(ProjectionInvariantMismatch {
                     kind: "active_turn_source_attachment_mismatch".to_string(),

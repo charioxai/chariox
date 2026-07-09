@@ -386,7 +386,8 @@ fn projection_invariant_health_reports_active_turn_prompt_identity_drift() {
             agent_id.clone(),
             active_prompt.id().to_string(),
             provider_run.id().to_string(),
-        ),
+        )
+        .with_prompt_metadata(active_prompt),
     );
 
     let clean_snapshot =
@@ -404,7 +405,8 @@ fn projection_invariant_health_reports_active_turn_prompt_identity_drift() {
             agent_id.clone(),
             "different-prompt".to_string(),
             provider_run.id().to_string(),
-        ),
+        )
+        .with_prompt_metadata(active_prompt),
     );
     let drift_snapshot =
         session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
@@ -502,36 +504,32 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
     active_turns.insert(provider_run.id().to_string(), wrong_source_attachment);
     let source_attachment_drift_snapshot =
         session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
-    assert!(
-        source_attachment_drift_snapshot
-            .mismatches
-            .iter()
-            .any(|mismatch| {
-                mismatch.kind == "active_turn_source_attachment_mismatch"
-                    && mismatch.session_id == session_id
-                    && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
-                    && mismatch.details.contains("attachment-wrong")
-                    && mismatch.details.contains("external:codex")
-            })
-    );
+    assert!(source_attachment_drift_snapshot
+        .mismatches
+        .iter()
+        .any(|mismatch| {
+            mismatch.kind == "active_turn_source_attachment_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("attachment-wrong")
+                && mismatch.details.contains("external:codex")
+        }));
 
     let mut missing_source_attachment = active_turn.clone();
     missing_source_attachment.source_attachment_id = None;
     active_turns.insert(provider_run.id().to_string(), missing_source_attachment);
     let missing_source_attachment_snapshot =
         session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
-    assert!(
-        missing_source_attachment_snapshot
-            .mismatches
-            .iter()
-            .any(|mismatch| {
-                mismatch.kind == "active_turn_source_attachment_mismatch"
-                    && mismatch.session_id == session_id
-                    && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
-                    && mismatch.details.contains("none")
-                    && mismatch.details.contains("external:codex")
-            })
-    );
+    assert!(missing_source_attachment_snapshot
+        .mismatches
+        .iter()
+        .any(|mismatch| {
+            mismatch.kind == "active_turn_source_attachment_mismatch"
+                && mismatch.session_id == session_id
+                && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                && mismatch.details.contains("none")
+                && mismatch.details.contains("external:codex")
+        }));
 
     let mut missing_origin = active_turn.clone();
     missing_origin.prompt_origin = None;
@@ -571,6 +569,55 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
             && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
             && mismatch.details.contains("none")
             && mismatch.details.contains("user-1")
+    }));
+}
+
+#[test]
+fn projection_invariant_health_requires_active_turn_source_attachment_for_arroba_prompt() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let provider_run = launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+    let active_prompt = PromptQueueItem::new(
+        "prompt-1",
+        "attachment-1",
+        &agent_id,
+        "arroba prompt",
+        crate::session::PromptStatus::Running,
+    );
+    app.prompt_owner_activate_prompt(&session_id, active_prompt.clone())
+        .expect("active prompt should activate");
+    let session = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(&session_id)
+        .expect("session snapshot should load");
+    let session_store = SessionStateProjectionStore::default();
+    let agent_store = AgentRuntimeProjectionStore::default();
+    session_store.update(session.clone());
+    agent_store.update_session(&session);
+    let provider_runs = vec![provider_run.clone()];
+    let mut active_turns = BTreeMap::new();
+    active_turns.insert(
+        provider_run.id().to_string(),
+        crate::app::ActiveTurnState::new(
+            session_id.clone(),
+            agent_id.clone(),
+            active_prompt.id().to_string(),
+            provider_run.id().to_string(),
+        ),
+    );
+
+    let snapshot =
+        session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+
+    assert!(snapshot.mismatches.iter().any(|mismatch| {
+        mismatch.kind == "active_turn_source_attachment_mismatch"
+            && mismatch.session_id == session_id
+            && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+            && mismatch.details.contains("none")
+            && mismatch.details.contains("attachment-1")
     }));
 }
 
