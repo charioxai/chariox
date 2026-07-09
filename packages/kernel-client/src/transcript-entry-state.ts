@@ -1,9 +1,11 @@
-import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+import type { PromptQueueItem, TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
+  externalProviderObservedExplicitIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
+import { promptOriginFromRecord } from "./prompt-origin.js"
 
 type TranscriptEntryStateKernelFields = Pick<KernelTranscriptEntry, "id" | "text"> & {
   readonly turnId?: KernelTranscriptEntry["turnId"] | null
@@ -116,6 +118,19 @@ export function applyTranscriptPromptMetadata<TEntry extends object>(
     target.externalProviderTurnId = metadata.externalProviderTurnId
   }
   return entry
+}
+
+export function promptQueueItemTranscriptMetadata(prompt: PromptQueueItem): TranscriptPromptMetadata {
+  const promptOrigin = promptOriginFromRecord(prompt)
+  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
+  return {
+    promptId: prompt.id,
+    sourceAttachmentId: prompt.source_attachment_id,
+    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(prompt, "prompt_origin")
+      ? { promptOrigin }
+      : {}),
+    ...externalIdentity,
+  }
 }
 
 export type TranscriptUserPromptTurn = {

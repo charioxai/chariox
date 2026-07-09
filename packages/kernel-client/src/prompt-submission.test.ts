@@ -12,7 +12,6 @@ import {
   promptSubmissionFailureTransition,
   promptSubmissionOutcomeName,
   promptSubmissionPrompt,
-  promptQueueItemTranscriptMetadata,
   promptSubmissionTranscriptMetadata,
   promptSubmissionRuntimeState,
   promptSubmitPreparationDecision,
@@ -21,6 +20,7 @@ import {
   promptSubmissionTargetAgentId,
   resolvePromptSubmissionTargetAgentId,
 } from "./prompt-submission.js"
+import { promptQueueItemTranscriptMetadata } from "./transcript-entry-state.js"
 import {
   makeAgent,
   makeSession,

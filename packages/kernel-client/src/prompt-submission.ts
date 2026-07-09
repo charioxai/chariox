@@ -1,11 +1,5 @@
 import type { PromptAttachmentPart, PromptQueueItem, PromptSubmittedPayload, RuntimeSession } from "./kernel-types.js"
-import type { TranscriptPromptMetadata } from "./transcript-entry-state.js"
-import {
-  externalProviderObservedExplicitIdentityFields,
-} from "./external-provider-observation.js"
-import {
-  promptOriginFromRecord,
-} from "./prompt-origin.js"
+import { promptQueueItemTranscriptMetadata, type TranscriptPromptMetadata } from "./transcript-entry-state.js"
 import {
   normalizeRuntimeSessionWithAgentActivity,
 } from "./runtime-session-normalization.js"
@@ -180,19 +174,6 @@ export function promptSubmissionTranscriptMetadata(
 ): TranscriptPromptMetadata {
   const prompt = promptSubmissionPrompt(payload, targetAgentId)
   return prompt ? promptQueueItemTranscriptMetadata(prompt) : {}
-}
-
-export function promptQueueItemTranscriptMetadata(prompt: PromptQueueItem): TranscriptPromptMetadata {
-  const promptOrigin = promptOriginFromRecord(prompt)
-  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
-  return {
-    promptId: prompt.id,
-    sourceAttachmentId: prompt.source_attachment_id,
-    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(prompt, "prompt_origin")
-      ? { promptOrigin }
-      : {}),
-    ...externalIdentity,
-  }
 }
 
 export function promptSubmissionPrompt(
