@@ -8,8 +8,9 @@ import type {
   TranscriptEntry,
 } from "./kernel-types.js"
 import {
-  promptOriginFromRecord,
-} from "./prompt-origin.js"
+  kernelRecordTranscriptMetadata,
+  presentTranscriptPromptMetadataFields,
+} from "./transcript-entry-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export type SessionHistoryCursorSelection = {
@@ -222,15 +223,16 @@ export function sessionHistoryOutlineTurnPromptMetadata(
     | "user_prompt"
   >,
 ): SessionHistoryOutlineTurnPromptMetadata {
-  const promptOrigin = promptOriginFromRecord({
-    prompt_origin: turn.prompt_origin,
-  })
   const sourceAttachmentId = sessionHistoryOutlineTurnSourceAttachmentId(turn)
-  return {
-    ...(promptOrigin !== null || Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
-      ? { promptOrigin }
+  const metadata = presentTranscriptPromptMetadataFields(kernelRecordTranscriptMetadata({
+    ...(Object.prototype.hasOwnProperty.call(turn, "prompt_origin")
+      ? { prompt_origin: turn.prompt_origin }
       : {}),
-    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
+    ...(sourceAttachmentId !== undefined ? { source_attachment_id: sourceAttachmentId } : {}),
+  }))
+  return {
+    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
+    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
   }
 }
 
