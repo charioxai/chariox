@@ -359,25 +359,9 @@ impl DaemonApp {
     }
 
     pub(crate) fn update_session_projection(&self, mut session: RuntimeSession) {
-        self.project_prompt_owner_state_into_session(&mut session);
+        self.prompt_state_owner.project_into_session(&mut session);
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);
-    }
-
-    fn project_prompt_owner_state_into_session(&self, session: &mut RuntimeSession) {
-        let mut agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        for agent_id in agent_ids {
-            let (active_prompt, queued_prompts) =
-                self.prompt_state_owner.state_parts(session, &agent_id);
-            session.mirror_agent_prompt_state(&agent_id, active_prompt, queued_prompts);
-        }
     }
 
     pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {

@@ -564,6 +564,21 @@ impl PromptStateOwner {
         (state.active_prompt.clone(), state.queued_prompts.clone())
     }
 
+    pub(crate) fn project_into_session(&self, session: &mut RuntimeSession) {
+        let mut agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
+        for agent_id in agent_ids {
+            let (active_prompt, queued_prompts) = self.state_parts(session, &agent_id);
+            session.mirror_agent_prompt_state(&agent_id, active_prompt, queued_prompts);
+        }
+    }
+
     pub(crate) fn remove_session(&self, session_id: &str) {
         self.state
             .lock()
@@ -842,6 +857,76 @@ mod tests {
             .expect("dispatching prompt should become running");
         assert_eq!(running.id(), "prompt-real-2");
         assert_eq!(running.status(), PromptStatus::Running);
+    }
+
+    #[test]
+    fn project_into_session_uses_owned_prompt_state() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        session.set_agents(vec![crate::agent::AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            session.id(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )]);
+        let active = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-active",
+                    "attachment-1",
+                    "agent-1",
+                    "active",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("active prompt should submit");
+        assert!(matches!(active, PromptSubmissionOutcome::Started { .. }));
+        let queued = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-queued",
+                    "attachment-1",
+                    "agent-1",
+                    "queued",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("queued prompt should submit");
+        assert!(matches!(queued, PromptSubmissionOutcome::Queued { .. }));
+        assert!(session.active_prompt_for_agent("agent-1").is_none());
+        assert!(session.queued_prompts_for_agent("agent-1").is_none());
+
+        owner.project_into_session(&mut session);
+
+        assert_eq!(
+            session
+                .active_prompt_for_agent("agent-1")
+                .map(|prompt| prompt.prompt()),
+            Some("active")
+        );
+        assert_eq!(
+            session
+                .queued_prompts_for_agent("agent-1")
+                .and_then(|queued| queued.front())
+                .map(|prompt| prompt.prompt()),
+            Some("queued")
+        );
     }
 
     #[test]
