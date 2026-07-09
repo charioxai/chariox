@@ -245,11 +245,9 @@ pub(crate) fn agent_activity_for_session_projection(
                 })
             });
         let prompt_busy = agent_prompt_runtime_status_is_active_prompt(&prompt_status);
-        let agent_busy =
-            agent.is_processing() || agent.state() == AgentState::Working || provider_busy;
         let status = if agent.state() == AgentState::Error {
             AgentRuntimeStatus::Error
-        } else if prompt_busy || agent_busy {
+        } else if prompt_busy || provider_busy {
             AgentRuntimeStatus::Working
         } else {
             AgentRuntimeStatus::Idle

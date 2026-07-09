@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::{
     AgentPromptRuntimeStatus, AgentRuntimeStatus, AgentTurnRuntimePhase, SessionSnapshotProjection,
 };
-use crate::agent::CreateAgentRequest;
+use crate::agent::{AgentState, CreateAgentRequest};
 use crate::runtime::projection::{
     test_support::{attach_cli, launch_dev_stub_provider, submit_prompt},
     QUEUED_PROMPT_STEER_EXTERNAL_REASON,
@@ -44,6 +44,36 @@ fn session_snapshot_projection_includes_metadata_agents_and_idle_activity() {
         assert_eq!(activity.queued_prompt_count, 0);
         assert!(activity.active_turn.is_none());
     }
+}
+
+#[test]
+fn session_snapshot_projection_ignores_legacy_agent_working_state_without_prompt_or_turn() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    {
+        let mut agents = app.agents_mut();
+        agents
+            .set_agent_state(agent.id(), AgentState::Working)
+            .expect("agent state should update");
+        agents
+            .set_agent_processing(agent.id(), true)
+            .expect("agent processing should update");
+    }
+
+    let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+        .expect("projection should build");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("agent activity should be projected");
+
+    assert_eq!(activity.status, AgentRuntimeStatus::Idle);
+    assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::None);
+    assert!(!activity.busy);
+    assert_eq!(activity.active_prompt_count, 0);
+    assert!(activity.active_turn.is_none());
 }
 
 #[test]
