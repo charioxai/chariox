@@ -497,6 +497,42 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
             && mismatch.details.contains("external")
     }));
 
+    let mut wrong_source_attachment = active_turn.clone();
+    wrong_source_attachment.source_attachment_id = Some("attachment-wrong".to_string());
+    active_turns.insert(provider_run.id().to_string(), wrong_source_attachment);
+    let source_attachment_drift_snapshot =
+        session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+    assert!(
+        source_attachment_drift_snapshot
+            .mismatches
+            .iter()
+            .any(|mismatch| {
+                mismatch.kind == "active_turn_source_attachment_mismatch"
+                    && mismatch.session_id == session_id
+                    && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                    && mismatch.details.contains("attachment-wrong")
+                    && mismatch.details.contains("external:codex")
+            })
+    );
+
+    let mut missing_source_attachment = active_turn.clone();
+    missing_source_attachment.source_attachment_id = None;
+    active_turns.insert(provider_run.id().to_string(), missing_source_attachment);
+    let missing_source_attachment_snapshot =
+        session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
+    assert!(
+        missing_source_attachment_snapshot
+            .mismatches
+            .iter()
+            .any(|mismatch| {
+                mismatch.kind == "active_turn_source_attachment_mismatch"
+                    && mismatch.session_id == session_id
+                    && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
+                    && mismatch.details.contains("none")
+                    && mismatch.details.contains("external:codex")
+            })
+    );
+
     let mut missing_origin = active_turn.clone();
     missing_origin.prompt_origin = None;
     active_turns.insert(provider_run.id().to_string(), missing_origin);

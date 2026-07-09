@@ -325,6 +325,21 @@ pub(super) fn snapshot(
                     ),
                 });
             }
+            if active_turn.source_attachment_id.as_deref()
+                != Some(active_prompt.source_attachment_id())
+                && (active_turn.source_attachment_id.is_some() || active_prompt.is_external())
+            {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "active_turn_source_attachment_mismatch".to_string(),
+                    session_id: active_turn.session_id.clone(),
+                    agent_id: Some(active_turn.agent_id.clone()),
+                    details: format!(
+                        "active turn source attachment {} does not match active prompt source attachment {}",
+                        describe_source_attachment(active_turn.source_attachment_id.as_deref()),
+                        active_prompt.source_attachment_id()
+                    ),
+                });
+            }
             let active_turn_external_observed_id = active_turn.external_observed_id.as_ref();
             let active_prompt_external_observed_id = active_prompt.external_observed_id();
             if active_turn_external_observed_id != active_prompt_external_observed_id.as_ref()
@@ -425,6 +440,10 @@ fn describe_prompt_origin(prompt_origin: Option<crate::session::PromptOrigin>) -
         None => "none",
         Some(prompt_origin) => prompt_origin_label(prompt_origin),
     }
+}
+
+fn describe_source_attachment(source_attachment_id: Option<&str>) -> &str {
+    source_attachment_id.unwrap_or("none")
 }
 
 fn prompt_origin_label(prompt_origin: crate::session::PromptOrigin) -> &'static str {
