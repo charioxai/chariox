@@ -111,10 +111,6 @@ impl KernelRuntimeState {
         for agent_id in &slice.agent_ids {
             let agent = self.owned.agent_store.get_agent(agent_id)?;
             let session = self.owned.session_store.get_session(agent.session_id())?;
-            if agent.is_processing() || agent.state() == crate::agent::AgentState::Working {
-                busy_agents.push(agent.id().to_string());
-                continue;
-            }
             if self
                 .owned
                 .prompt_state_owner
@@ -791,5 +787,188 @@ impl KernelRuntimeState {
         )?;
         self.owned.runtime_projection_changes.record_change();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn relaunch_manifests_ignore_stale_legacy_agent_busy_state() {
+        let (_app, runtime, slice, _session_id, agent_id) = slice_runtime().await;
+
+        runtime
+            .owned
+            .agent_store
+            .set_agent_processing(&agent_id, true)
+            .expect("stale processing flag should be set");
+        runtime
+            .owned
+            .agent_store
+            .set_agent_state(&agent_id, crate::agent::AgentState::Working)
+            .expect("stale working state should be set");
+
+        let manifests = runtime
+            .slice_agent_relaunch_manifests(&slice)
+            .expect("stale legacy state should not block relaunch manifests");
+
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].agent_id, agent_id);
+    }
+
+    #[tokio::test]
+    async fn relaunch_manifests_block_when_prompt_owner_has_active_prompt() {
+        let (app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        sync_active_prompt(&app, &session_id, &agent_id).await;
+
+        let error = runtime
+            .slice_agent_relaunch_manifests(&slice)
+            .expect_err("active prompt ownership should block relaunch manifests");
+
+        match error {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "slice.state.save");
+                assert!(message.contains("cannot save slice while agents are running"));
+                assert!(message.contains(&agent_id));
+            }
+            other => panic!("expected active prompt ownership error, got {other:?}"),
+        }
+    }
+
+    async fn slice_runtime() -> (
+        Arc<Mutex<DaemonApp>>,
+        KernelRuntimeState,
+        crate::slice::SliceRecord,
+        String,
+        String,
+    ) {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let slice = app
+            .slices()
+            .create(
+                "owner-kernel-1",
+                "owner-machine-1",
+                crate::slice::CreateSliceInput {
+                    name: "slice-1".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headless,
+                    workspace_id: Some("workspace-1".to_string()),
+                    worktree_id: Some("worktree-1".to_string()),
+                    workspace_mount: None,
+                    worker_kernel_ref: Some("worker-kernel-1".to_string()),
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("slice should be created");
+        let slice = app
+            .slices()
+            .attach_agent(&slice.id, &session_id, &agent_id, 2)
+            .expect("agent should attach to slice");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        (app, runtime, slice, session_id, agent_id)
+    }
+
+    async fn sync_active_prompt(app: &Arc<Mutex<DaemonApp>>, session_id: &str, agent_id: &str) {
+        let prompt = crate::session::PromptQueueItem::new(
+            "active-prompt",
+            "attachment-1",
+            agent_id,
+            "active prompt",
+            crate::session::PromptStatus::Running,
+        );
+        app.lock()
+            .await
+            .prompt_owner_sync_external_active_prompt(session_id, agent_id, Some(prompt))
+            .expect("active prompt should sync");
+    }
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app_locked = app.lock().await;
+            (
+                app_locked.config_projection_store(),
+                app_locked.session_state_store(),
+                app_locked.agents().clone(),
+                app_locked.attachments().clone(),
+                app_locked.providers().clone(),
+                app_locked.provider_process_tracking_store(),
+                app_locked.slices(),
+                app_locked.session_state_projection_store(),
+                app_locked.provider_run_projection_store(),
+                app_locked.history_store(),
+                app_locked.operational_history_store(),
+                app_locked.durable_state_store(),
+                app_locked.prompt_state_owner(),
+                app_locked.active_turn_store(),
+                app_locked.prompt_activity_store(),
+                app_locked.prompt_workspace_claim_store(),
+                app_locked.structured_output_record_store(),
+                app_locked.terminal_stream_store(),
+                app_locked.workflow_design_event_store(),
+                app_locked.metaagent_event_store(),
+                app_locked.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
     }
 }
