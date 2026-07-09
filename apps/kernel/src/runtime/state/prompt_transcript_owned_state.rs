@@ -392,9 +392,11 @@ impl KernelRuntimeOwnedState {
             .map(str::to_string)
             .or_else(|| active_turn.as_ref().map(|turn| turn.prompt_id.clone()))
             .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
-        let turn_id = active_turn
-            .as_ref()
-            .map(|turn| turn.trace_id.clone())
+        let external_turn_id = entry
+            .external_provider_observed_turn_id()
+            .map(str::to_string);
+        let turn_id = external_turn_id
+            .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
             .or_else(|| prompt_id.clone());
         crate::history::HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
@@ -484,9 +486,11 @@ impl KernelRuntimeOwnedState {
                 .as_ref()
                 .map(|turn| turn.prompt_id.clone())
                 .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
-            let turn_id = active_turn
-                .as_ref()
-                .map(|turn| turn.trace_id.clone())
+            let external_turn_id = entry
+                .external_provider_observed_turn_id()
+                .map(str::to_string);
+            let turn_id = external_turn_id
+                .or_else(|| active_turn.as_ref().map(|turn| turn.trace_id.clone()))
                 .or_else(|| prompt_id.clone());
             let context = crate::history::HistoryEventTurnContext {
                 session_id: Some(entry.session_id.clone()),

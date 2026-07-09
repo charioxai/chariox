@@ -241,6 +241,53 @@ async fn owned_user_prompt_history_preserves_external_prompt_origin() {
 }
 
 #[tokio::test]
+async fn owned_external_observed_history_uses_provider_turn_id_for_operational_turn() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-owned-external-turn-id",
+            "worktree-owned-external-turn-id",
+        ))
+        .expect("session should be created");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.append_history_entry(
+        session.id(),
+        crate::history::SessionHistoryEntry::external_provider_observed(
+            session.id(),
+            None,
+            agent.id(),
+            crate::history::SessionHistoryEntryKind::ProviderOutput,
+            "external observed output",
+            "codex",
+            "thread-owned-external-turn-id",
+            Some("provider-turn-owned-external".to_string()),
+            Some(1_234),
+        ),
+    );
+
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load");
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].turn_id.as_deref(),
+        Some("provider-turn-owned-external")
+    );
+    let reloaded_entry = events[0]
+        .to_session_history_entry()
+        .expect("history event should project back to session history");
+    assert_eq!(
+        reloaded_entry.prompt_origin,
+        Some(crate::session::PromptOrigin::External)
+    );
+}
+
+#[tokio::test]
 async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
     let config = crate::config::DaemonConfig::for_tests();
     let legacy_history_root = config.session_history_root.clone();
