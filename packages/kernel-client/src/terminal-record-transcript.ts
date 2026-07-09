@@ -1,9 +1,7 @@
 import {
-  normalizePromptOrigin,
-  promptOriginFromRecord,
-} from "./prompt-origin.js"
-import {
   applyTranscriptPromptMetadata,
+  kernelRecordTranscriptMetadata,
+  presentTranscriptPromptMetadataFields,
   type TranscriptPromptMetadataTarget,
 } from "./transcript-entry-state.js"
 import {
@@ -11,7 +9,6 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
   externalProviderObservedHistoryRefreshSignal,
   externalProviderObservedEntryIsPassiveTelemetry,
-  externalProviderObservedIdentityFields,
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   sessionHistoryEntryIsExternalProviderObserved,
@@ -74,44 +71,10 @@ export function terminalRecordTranscriptMetadata(
   record: TerminalRecordTranscriptFields,
 ): TerminalRecordTranscriptMetadata {
   const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
-  const promptId = nullableStringField(record, "prompt_id")
-  const promptOrigin = terminalRecordPromptOrigin(record)
-  const sourceAttachmentId = nullableStringField(record, "source_attachment_id")
   return {
-    ...(promptId !== undefined ? { promptId } : {}),
-    ...(promptOrigin !== null || hasOwn(record, "prompt_origin") ? { promptOrigin } : {}),
-    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
-    ...externalProviderObservedIdentityFields(record),
+    ...presentTranscriptPromptMetadataFields(kernelRecordTranscriptMetadata(record)),
     ...(externalObservedMetadata ?? {}),
   }
-}
-
-function terminalRecordPromptOrigin(
-  record: TerminalRecordTranscriptFields,
-): string | null {
-  if (hasOwn(record, "prompt_origin")) {
-    return promptOriginFromRecord({
-      prompt_origin: normalizePromptOrigin(nullableStringField(record, "prompt_origin")),
-    })
-  }
-  return null
-}
-
-function nullableStringField(
-  record: TerminalRecordTranscriptFields,
-  field:
-    | "prompt_id"
-    | "prompt_origin"
-    | "source_attachment_id"
-    | "external_provider"
-    | "external_provider_session_id"
-    | "external_provider_turn_id",
-): string | null | undefined {
-  if (!Object.prototype.hasOwnProperty.call(record, field)) {
-    return undefined
-  }
-  const value = record[field]
-  return typeof value === "string" ? value : null
 }
 
 export function transcriptEntryWithTerminalMetadata<TEntry extends TerminalTranscriptMetadataTarget>(
@@ -258,13 +221,6 @@ function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRol
 
 function terminalRecordKindIsUserPrompt(kind: string): boolean {
   return kind === "prompt_echo" || kind === "user_prompt"
-}
-
-function hasOwn<T extends object, K extends PropertyKey>(
-  value: T | null | undefined,
-  key: K,
-): value is T & Record<K, unknown> {
-  return Boolean(value && Object.prototype.hasOwnProperty.call(value, key))
 }
 
 type TerminalTranscriptMetadataTarget =

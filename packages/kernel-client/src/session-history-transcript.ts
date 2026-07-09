@@ -32,6 +32,7 @@ import {
 } from "./transcript-display-state.js"
 import {
   applyTranscriptPromptMetadata,
+  presentTranscriptPromptMetadataFields,
   reindexTranscriptEntries,
   sessionHistoryEntryTranscriptMetadata,
   trimSingleTrailingNewline,
@@ -454,16 +455,7 @@ function historyEntryTranscriptIdentityOptions(
 ): Partial<SessionHistoryTranscriptEntry> {
   const metadata = sessionHistoryEntryTranscriptMetadata(entry, { promptId: turnPromptId })
   return {
-    ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
-    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
-    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
-    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
-    ...(metadata.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: metadata.externalProviderSessionId }
-      : {}),
-    ...(metadata.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: metadata.externalProviderTurnId }
-      : {}),
+    ...presentTranscriptPromptMetadataFields(metadata),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
 }

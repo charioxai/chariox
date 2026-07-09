@@ -11,6 +11,8 @@ import {
   createTranscriptSteeredPromptEntry,
   createTranscriptUserPromptTurn,
   createNextTranscriptEntry,
+  kernelRecordTranscriptMetadata,
+  presentTranscriptPromptMetadataFields,
   reindexTranscriptEntries,
   retargetEquivalentTranscriptTurnSiblings,
   shouldSkipConsecutiveTranscriptEntry,
@@ -95,6 +97,53 @@ test("applyTranscriptPromptMetadata can preserve existing prompt identity fields
     externalProvider: "codex",
     externalProviderSessionId: "thread-1",
     externalProviderTurnId: "turn-1",
+  })
+})
+
+test("kernelRecordTranscriptMetadata projects prompt and external identity fields", () => {
+  assert.deepEqual(kernelRecordTranscriptMetadata({
+    prompt_id: "external:codex:thread-1:turn-1",
+    prompt_origin: " External ",
+    source_attachment_id: "attachment-1",
+  }), {
+    promptId: "external:codex:thread-1:turn-1",
+    promptOrigin: "external",
+    sourceAttachmentId: "attachment-1",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+
+  assert.deepEqual(kernelRecordTranscriptMetadata({
+    prompt_id: 42 as unknown as string,
+    prompt_origin: true as unknown as string,
+    source_attachment_id: false as unknown as string,
+  }), {
+    promptId: null,
+    promptOrigin: null,
+    sourceAttachmentId: null,
+  })
+
+  assert.deepEqual(kernelRecordTranscriptMetadata({
+    prompt_id: "prompt-entry",
+  }, { promptId: "turn-prompt" }), {
+    promptId: "turn-prompt",
+  })
+})
+
+test("presentTranscriptPromptMetadataFields omits undefined metadata fields", () => {
+  assert.deepEqual(presentTranscriptPromptMetadataFields({
+    promptId: undefined,
+    promptOrigin: null,
+    sourceAttachmentId: "attachment-1",
+    externalProvider: undefined,
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  }), {
+    promptOrigin: null,
+    sourceAttachmentId: "attachment-1",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
   })
 })
 

@@ -76,6 +76,15 @@ export type TranscriptPromptMetadata = {
   readonly externalProviderTurnId?: string | null | undefined
 }
 
+export type PresentTranscriptPromptMetadata = {
+  readonly promptId?: string | null
+  readonly sourceAttachmentId?: string | null
+  readonly promptOrigin?: string | null
+  readonly externalProvider?: string | null
+  readonly externalProviderSessionId?: string | null
+  readonly externalProviderTurnId?: string | null
+}
+
 export type TranscriptPromptMetadataTarget = {
   promptId?: string | null | undefined
   promptOrigin?: string | null | undefined
@@ -83,6 +92,16 @@ export type TranscriptPromptMetadataTarget = {
   externalProvider?: string | null | undefined
   externalProviderSessionId?: string | null | undefined
   externalProviderTurnId?: string | null | undefined
+}
+
+export type KernelRecordTranscriptMetadataFields = {
+  readonly id?: string | null | undefined
+  readonly prompt_id?: string | null | undefined
+  readonly prompt_origin?: string | null | undefined
+  readonly source_attachment_id?: string | null | undefined
+  readonly external_provider?: string | null | undefined
+  readonly external_provider_session_id?: string | null | undefined
+  readonly external_provider_turn_id?: string | null | undefined
 }
 
 export function applyTranscriptPromptMetadata<TEntry extends object>(
@@ -121,6 +140,21 @@ export function applyTranscriptPromptMetadata<TEntry extends object>(
   return entry
 }
 
+export function presentTranscriptPromptMetadataFields(
+  metadata: TranscriptPromptMetadata,
+): PresentTranscriptPromptMetadata {
+  return {
+    ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
+    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: metadata.externalProviderSessionId }
+      : {}),
+    ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
+  }
+}
+
 export function promptQueueItemTranscriptMetadata(prompt: PromptQueueItem): TranscriptPromptMetadata {
   const promptOrigin = promptOriginFromRecord(prompt)
   const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
@@ -149,14 +183,42 @@ export function sessionHistoryEntryTranscriptMetadata(
   entry: SessionHistoryEntry,
   options: { readonly promptId?: string | null | undefined } = {},
 ): TranscriptPromptMetadata {
-  const hasPromptOrigin = Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
-  const externalIdentity = externalProviderObservedIdentityFields(entry)
+  return kernelRecordTranscriptMetadata(entry, options)
+}
+
+export function kernelRecordTranscriptMetadata(
+  record: KernelRecordTranscriptMetadataFields,
+  options: { readonly promptId?: string | null | undefined } = {},
+): TranscriptPromptMetadata {
+  const promptId = options.promptId !== undefined
+    ? options.promptId
+    : nullableKernelRecordStringField(record, "prompt_id")
+  const hasPromptOrigin = Object.prototype.hasOwnProperty.call(record, "prompt_origin")
+  const sourceAttachmentId = nullableKernelRecordStringField(record, "source_attachment_id")
+  const externalIdentity = externalProviderObservedIdentityFields(record)
   return {
-    ...(options.promptId !== undefined ? { promptId: options.promptId } : {}),
-    ...(hasPromptOrigin ? { promptOrigin: promptOriginFromRecord(entry) } : {}),
-    ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
+    ...(promptId !== undefined ? { promptId } : {}),
+    ...(hasPromptOrigin
+      ? {
+          promptOrigin: promptOriginFromRecord({
+            prompt_origin: nullableKernelRecordStringField(record, "prompt_origin"),
+          }),
+        }
+      : {}),
+    ...(sourceAttachmentId !== undefined ? { sourceAttachmentId } : {}),
     ...externalIdentity,
   }
+}
+
+function nullableKernelRecordStringField(
+  record: KernelRecordTranscriptMetadataFields,
+  field: "prompt_id" | "prompt_origin" | "source_attachment_id",
+): string | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    return undefined
+  }
+  const value = record[field]
+  return typeof value === "string" ? value : null
 }
 
 export type TranscriptUserPromptTurn = {
