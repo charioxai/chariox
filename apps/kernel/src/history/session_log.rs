@@ -301,6 +301,30 @@ pub fn external_provider_observed_merge_key_with_prefix_is_state_signal(
 }
 
 impl SessionHistoryEntry {
+    pub(crate) fn validate_for_history_append(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        if self.prompt_origin.is_some() && self.source_attachment_id.is_none() {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: Some(self.session_id.clone()),
+                operation,
+                message: "prompt-owned history entry must include source attachment".to_string(),
+            });
+        }
+        if matches!(self.kind, SessionHistoryEntryKind::UserPrompt)
+            && self.source_attachment_id.is_none()
+            && !self.is_external_provider_observed()
+        {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: Some(self.session_id.clone()),
+                operation,
+                message: "user prompt history entry must include source attachment".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn is_external_provider_observed(&self) -> bool {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
     }
@@ -683,27 +707,10 @@ impl SessionHistoryStore {
 }
 
 fn validate_session_history_entry_for_append(
-    session: &RuntimeSession,
+    _session: &RuntimeSession,
     entry: &SessionHistoryEntry,
 ) -> Result<(), DaemonError> {
-    if entry.prompt_origin.is_some() && entry.source_attachment_id.is_none() {
-        return Err(DaemonError::SessionHistoryFailed {
-            session_id: Some(session.id().to_string()),
-            operation: "append session history",
-            message: "prompt-owned history entry must include source attachment".to_string(),
-        });
-    }
-    if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
-        && entry.source_attachment_id.is_none()
-        && !entry.is_external_provider_observed()
-    {
-        return Err(DaemonError::SessionHistoryFailed {
-            session_id: Some(session.id().to_string()),
-            operation: "append session history",
-            message: "user prompt history entry must include source attachment".to_string(),
-        });
-    }
-    Ok(())
+    entry.validate_for_history_append("append session history")
 }
 
 impl SessionHistoryStore {

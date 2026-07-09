@@ -548,6 +548,7 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<HistoryEvent, DaemonError> {
+        entry.validate_for_history_append("append operational history transcript")?;
         let sequence = self.reserve_sequence();
         let event = HistoryEvent::transcript(sequence, entry, context);
         self.append(&event)?;
@@ -560,6 +561,9 @@ impl OperationalHistoryStore {
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         if entries.is_empty() {
             return Ok(Vec::new());
+        }
+        for (entry, _) in &entries {
+            entry.validate_for_history_append("append operational history transcripts")?;
         }
         let events = entries
             .into_iter()
@@ -580,6 +584,7 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        entry.validate_for_history_append("replace operational history transcript")?;
         let connection =
             self.connection
                 .lock()

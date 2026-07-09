@@ -144,6 +144,52 @@ fn session_history_append_rejects_prompt_origin_without_source_attachment() {
 }
 
 #[test]
+fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-prompt-owned-validation-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let invalid = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("output-1".to_string()),
+        "output",
+    )
+    .with_prompt_origin(crate::session::PromptOrigin::Arroba);
+
+    let error = store
+        .append_transcript(&invalid, HistoryEventTurnContext::default())
+        .expect_err("prompt-owned operational history without source attachment should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("prompt-owned history entry must include source attachment"),
+        "{error}"
+    );
+
+    let valid = invalid.with_source_attachment_id(Some("attachment-1".to_string()));
+    let event = store
+        .append_transcript(&valid, HistoryEventTurnContext::default())
+        .expect("valid prompt-owned operational history should append");
+    assert_eq!(event.sequence, 1);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn session_history_load_hides_external_observer_state_signals() {
     let config = DaemonConfig::for_tests();
     let mut sessions = SessionService::new(&config);
