@@ -6,7 +6,6 @@ import {
   type TranscriptLineageEntry,
   type TranscriptRoleEntry,
 } from "./transcript-entry-lineage.js"
-import { mergeExternalProviderObservation } from "./external-provider-observation.js"
 import { mergeSessionHistoryPromptAttachments } from "./session-history-attachments.js"
 import { transcriptRetentionSlice } from "./transcript-entry-state.js"
 import type {
@@ -210,34 +209,11 @@ function mergeLoadedHistoryBlobEntryMetadata<TEntry extends AgentPaneHistoryBlob
   loadedEntry: TEntry,
   placeholder: TEntry,
 ): TEntry {
-  const externalObservation = mergeExternalProviderObservation(
-    loadedEntry.externalObservation,
-    placeholder.externalObservation,
-  )
   return {
     ...loadedEntry,
-    ...(loadedEntry.promptId === undefined && placeholder.promptId !== undefined ? { promptId: placeholder.promptId } : {}),
-    ...(loadedEntry.promptOrigin === undefined && placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
-    ...(loadedEntry.sourceAttachmentId === undefined && placeholder.sourceAttachmentId !== undefined
-      ? { sourceAttachmentId: placeholder.sourceAttachmentId }
-      : {}),
     ...(loadedEntry.attachments !== undefined || placeholder.attachments !== undefined
       ? { attachments: mergeSessionHistoryPromptAttachments(loadedEntry.attachments, placeholder.attachments) }
       : {}),
-    ...(loadedEntry.source == null && placeholder.source !== undefined ? { source: placeholder.source } : {}),
-    ...(loadedEntry.externalProvider == null && placeholder.externalProvider !== undefined
-      ? { externalProvider: placeholder.externalProvider }
-      : {}),
-    ...(loadedEntry.externalProviderSessionId == null && placeholder.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: placeholder.externalProviderSessionId }
-      : {}),
-    ...(loadedEntry.externalProviderTurnId == null && placeholder.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: placeholder.externalProviderTurnId }
-      : {}),
-    ...(loadedEntry.observedAtMs == null && placeholder.observedAtMs !== undefined
-      ? { observedAtMs: placeholder.observedAtMs }
-      : {}),
-    ...(externalObservation !== undefined ? { externalObservation } : {}),
     ...(placeholder.historyTurnCompletedAtMs !== undefined
       ? { historyTurnCompletedAtMs: placeholder.historyTurnCompletedAtMs }
       : {}),

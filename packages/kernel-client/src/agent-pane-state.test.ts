@@ -191,6 +191,18 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
         role: "tool",
         turnId: 1,
         text: "loaded tool output",
+        promptId: "prompt-1",
+        promptOrigin: "external",
+        sourceAttachmentId: "attachment-1",
+        source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+        externalProvider: "codex",
+        externalProviderSessionId: "thread-1",
+        externalProviderTurnId: "turn-1",
+        observedAtMs: 1_000,
+        externalObservation: {
+          settles_active_prompt: true,
+          passive_telemetry: false,
+        },
         historyBlobSourceId: "blob-1",
         historyBlobSourceAgentId: "agent-a",
         historyBlobLoaded: true,
@@ -281,7 +293,7 @@ test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritati
   assert.equal(result[0]?.promptOrigin, "arroba")
 })
 
-test("preserveLoadedHistoryBlobs fills sparse loaded external metadata from refreshed placeholder", () => {
+test("preserveLoadedHistoryBlobs does not repair sparse loaded external metadata from refreshed placeholder", () => {
   const result = preserveLoadedHistoryBlobs({
     currentEntries: [{
       role: "tool",
@@ -313,11 +325,11 @@ test("preserveLoadedHistoryBlobs fills sparse loaded external metadata from refr
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
   })
 
-  assert.equal(result[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
-  assert.equal(result[0]?.externalProvider, "codex")
-  assert.equal(result[0]?.externalProviderSessionId, "thread-1")
-  assert.equal(result[0]?.externalProviderTurnId, "turn-1")
-  assert.equal(result[0]?.observedAtMs, 1_000)
+  assert.equal(result[0]?.source, null)
+  assert.equal(result[0]?.externalProvider, null)
+  assert.equal(result[0]?.externalProviderSessionId, null)
+  assert.equal(result[0]?.externalProviderTurnId, null)
+  assert.equal(result[0]?.observedAtMs, null)
 })
 
 test("preserveLoadedHistoryBlobs uses refreshed lifecycle metadata for loaded content", () => {
