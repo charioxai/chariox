@@ -158,10 +158,7 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             if owned
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(
-                    &owned.session_store.get_session(session_id)?,
-                    agent_id,
-                )
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
                 .is_some()
             {
                 if let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) {

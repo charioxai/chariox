@@ -835,7 +835,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, &target_agent_id)
+            .active_prompt_for_agent(&session, &target_agent_id)
             .is_none()
         {
             return Ok(None);

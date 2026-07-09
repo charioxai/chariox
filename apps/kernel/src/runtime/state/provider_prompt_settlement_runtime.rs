@@ -17,10 +17,9 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
-        let active_prompt = owned.prompt_state_owner.active_prompt_for_agent_or_restore(
-            &owned.session_store.get_session(session_id)?,
-            &agent_id,
-        );
+        let active_prompt = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
         let Some(active_prompt) = active_prompt else {
             if !force && !prompt_completed {
                 crate::logging::debug_with_fields(

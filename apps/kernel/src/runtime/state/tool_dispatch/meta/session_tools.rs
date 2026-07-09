@@ -119,7 +119,7 @@ impl KernelRuntimeState {
         if self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&projected, agent.id())
+            .active_prompt_for_agent(&projected, agent.id())
             .is_some()
             && session.metaagent_task(agent.id()).is_some()
             && projected.metaagent_task(agent.id()).is_none()

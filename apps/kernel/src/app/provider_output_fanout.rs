@@ -201,7 +201,7 @@ impl ProviderOutputFanout {
             .ok()
             .and_then(|session| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent_or_restore(&session, agent_id)
+                    .active_prompt_for_agent(&session, agent_id)
             })
             .map(|prompt| ActivePromptTranscriptMetadata {
                 prompt_origin: Some(prompt.prompt_origin()),
@@ -223,7 +223,7 @@ impl ProviderOutputFanout {
             .ok()
             .and_then(|session| {
                 self.prompt_state_owner
-                    .active_prompt_for_agent_or_restore(&session, agent_id)
+                    .active_prompt_for_agent(&session, agent_id)
             })
             .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string));
         let Some(workflow_node_run_id) = workflow_node_run_id else {

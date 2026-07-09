@@ -28,7 +28,7 @@ impl KernelRuntimeState {
             let attachment_id = prepared.prompt.source_attachment_id().to_string();
             let has_active = owned
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(
+                .active_prompt_for_agent(
                     &owned.session_store.get_session(&session_id)?,
                     &target_agent_id,
                 )

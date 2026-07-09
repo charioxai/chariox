@@ -124,7 +124,7 @@ impl KernelRuntimeOwnedState {
         };
         if self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, agent_id)
+            .active_prompt_for_agent(&session, agent_id)
             .is_some_and(|prompt| prompt.is_external())
         {
             return Ok(None);
@@ -229,7 +229,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, agent_id)
+            .active_prompt_for_agent(&session, agent_id)
         else {
             return Err(DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),

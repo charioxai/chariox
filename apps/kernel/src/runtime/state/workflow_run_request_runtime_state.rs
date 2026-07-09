@@ -153,7 +153,7 @@ impl KernelRuntimeState {
             for agent in owned.agent_store.get_session_agents(&request.session_id) {
                 if owned
                     .prompt_state_owner
-                    .active_prompt_for_agent_or_restore(&session, agent.id())
+                    .active_prompt_for_agent(&session, agent.id())
                     .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
                     .as_deref()
                     == Some(workflow_run_id.as_str())

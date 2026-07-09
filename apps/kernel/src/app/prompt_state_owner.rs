@@ -33,7 +33,7 @@ impl DaemonApp {
         let session = self.sessions.get_session(session_id)?;
         Ok(self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, agent_id))
+            .active_prompt_for_agent(&session, agent_id))
     }
 
     #[cfg(test)]
@@ -96,7 +96,7 @@ impl DaemonApp {
         let will_queue = force_queue
             || self
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(&session, &agent_id)
+                .active_prompt_for_agent(&session, &agent_id)
                 .is_some();
         let prompt = if will_queue {
             prompt

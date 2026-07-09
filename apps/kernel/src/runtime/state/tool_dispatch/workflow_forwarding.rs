@@ -28,12 +28,10 @@ impl KernelRuntimeState {
                 &canonical_tool_name,
                 &result,
             ) {
-                if let Some(active_prompt) =
-                    owned.prompt_state_owner.active_prompt_for_agent_or_restore(
-                        &owned.session_store.get_session(&home_session_id)?,
-                        &home_agent_id,
-                    )
-                {
+                if let Some(active_prompt) = owned.prompt_state_owner.active_prompt_for_agent(
+                    &owned.session_store.get_session(&home_session_id)?,
+                    &home_agent_id,
+                ) {
                     let completion = owned.complete_remote_prompt_owner(
                         &home_session_id,
                         &home_agent_id,
@@ -63,7 +61,7 @@ impl KernelRuntimeState {
         let session = owned.session_store.get_session(&context.home_session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, &context.home_agent_id)
+            .active_prompt_for_agent(&session, &context.home_agent_id)
         else {
             return Ok(());
         };

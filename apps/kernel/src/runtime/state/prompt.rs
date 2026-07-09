@@ -26,7 +26,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let _active = self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, agent_id)
+            .active_prompt_for_agent(&session, agent_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;

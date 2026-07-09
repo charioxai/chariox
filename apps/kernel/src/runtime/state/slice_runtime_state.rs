@@ -114,7 +114,7 @@ impl KernelRuntimeState {
             if self
                 .owned
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(&session, agent.id())
+                .active_prompt_for_agent(&session, agent.id())
                 .is_some()
             {
                 busy_agents.push(agent.id().to_string());

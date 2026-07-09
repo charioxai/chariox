@@ -62,7 +62,7 @@ impl KernelRuntimeOwnedState {
                 if let Ok(session) = self.session_store.get_session(&finished.session_id) {
                     if let Some(prompt) = self
                         .prompt_state_owner
-                        .active_prompt_for_agent_or_restore(&session, &finished.agent_id)
+                        .active_prompt_for_agent(&session, &finished.agent_id)
                     {
                         if prompt.workflow_run_id().is_some() {
                             let _ = self.workflow_fail_provider_prompt(
@@ -201,7 +201,7 @@ impl KernelRuntimeOwnedState {
                 let session = self.session_store.get_session(&session_id).ok()?;
                 let prompt = self
                     .prompt_state_owner
-                    .active_prompt_for_agent_or_restore(&session, &agent_id)?;
+                    .active_prompt_for_agent(&session, &agent_id)?;
                 let prompt_id = prompt.id().to_string();
                 Some(
                     crate::app::ActiveTurnState::new(

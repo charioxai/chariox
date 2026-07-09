@@ -599,7 +599,7 @@ impl KernelRuntimeState {
             .and_then(|session| {
                 self.owned
                     .prompt_state_owner
-                    .active_prompt_for_agent_or_restore(&session, granted_agent.id())
+                    .active_prompt_for_agent(&session, granted_agent.id())
                     .map(|prompt| {
                         (
                             prompt.source_attachment_id().to_string(),

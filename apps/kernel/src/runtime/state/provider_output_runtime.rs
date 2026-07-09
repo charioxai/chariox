@@ -223,7 +223,7 @@ impl KernelRuntimeState {
         let session = owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, agent_id)
+            .active_prompt_for_agent(&session, agent_id)
         else {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
@@ -421,7 +421,7 @@ fn first_output_timeout_candidates(
         |turn| {
             owned
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(&session, &turn.agent_id)
+                .active_prompt_for_agent(&session, &turn.agent_id)
                 .is_some_and(|prompt| prompt.id() == turn.prompt_id)
         },
     )
@@ -459,7 +459,7 @@ fn inactivity_timeout_candidates(
         |turn| {
             owned
                 .prompt_state_owner
-                .active_prompt_for_agent_or_restore(&session, &turn.agent_id)
+                .active_prompt_for_agent(&session, &turn.agent_id)
                 .is_some_and(|prompt| prompt.id() == turn.prompt_id)
         },
     )

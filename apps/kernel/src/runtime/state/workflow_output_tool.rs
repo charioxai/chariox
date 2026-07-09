@@ -297,7 +297,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let active_prompt_matches = self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, &agent_id)
+            .active_prompt_for_agent(&session, &agent_id)
             .is_some_and(|prompt| {
                 prompt.workflow_run_id() == Some(workflow_run_id)
                     && prompt.workflow_node_run_id() == Some(workflow_node_run_id)
@@ -339,7 +339,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .prompt_state_owner
-            .active_prompt_for_agent_or_restore(&session, &agent_id)
+            .active_prompt_for_agent(&session, &agent_id)
         else {
             return Ok(WorkflowPromptDispatches::default());
         };
