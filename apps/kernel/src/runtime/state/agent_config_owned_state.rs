@@ -36,7 +36,6 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
             .is_some()
-            || agent.is_processing()
         {
             return Err(DaemonError::LocalTransport {
                 operation: "update agent config",
@@ -160,7 +159,6 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
             .is_some()
-            || agent.is_processing()
         {
             return Err(DaemonError::LocalTransport {
                 operation: "commit remote agent config",
