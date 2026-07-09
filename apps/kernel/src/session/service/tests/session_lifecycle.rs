@@ -597,7 +597,7 @@ fn config_updates_are_versioned() {
 }
 
 #[test]
-fn rejects_idle_required_config_update_while_prompt_running() {
+fn config_update_idle_admission_is_not_owned_by_session_service() {
     let mut service = SessionService::new(&test_config());
     let created = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -615,16 +615,11 @@ fn rejects_idle_required_config_update_while_prompt_running() {
         )
         .expect("prompt should start");
 
-    let error = service
+    let (_session, config) = service
         .update_config(created.id(), "attachment-1", BTreeMap::new(), true)
-        .expect_err("idle-required config change should be rejected");
+        .expect("low-level session service should not own prompt-state admission");
 
-    match error {
-        DaemonError::ConfigChangeRejectedWhilePromptRunning { session_id } => {
-            assert_eq!(session_id, created.id())
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    assert_eq!(config.version(), 1);
 }
 
 #[test]

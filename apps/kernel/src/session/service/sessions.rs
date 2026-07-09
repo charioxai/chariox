@@ -539,7 +539,7 @@ impl SessionService {
         session_id: &str,
         attachment_id: &str,
         values: BTreeMap<String, String>,
-        requires_idle: bool,
+        _requires_idle: bool,
     ) -> Result<(RuntimeSession, SessionConfigState), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "update config")?;
 
@@ -547,12 +547,6 @@ impl SessionService {
             return Err(DaemonError::AttachmentNotInSession {
                 session_id: session_id.to_string(),
                 attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        if requires_idle && session.has_any_active_prompt() {
-            return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
-                session_id: session_id.to_string(),
             });
         }
 

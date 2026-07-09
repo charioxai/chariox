@@ -134,11 +134,19 @@ impl KernelRuntimeOwnedState {
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if requires_idle {
+            let session = self.session_store.get_session(session_id)?;
+            if self.prompt_state_owner.has_any_active_prompt(&session) {
+                return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
+                    session_id: session_id.to_string(),
+                });
+            }
+        }
         let (_session, config) = SessionStateOwner::new(self.session_store.clone()).update_config(
             session_id,
             attachment_id,
             values,
-            requires_idle,
+            false,
         )?;
         self.runtime_projection_changes.record_change();
         let recipient_attachment_ids = self

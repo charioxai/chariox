@@ -68,7 +68,8 @@ mod tests {
     use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
     use crate::runtime::state::KernelRuntimeState;
     use crate::session::{
-        CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, DEFAULT_LOCAL_USER_ID,
+        CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        SessionAgentDefaults, DEFAULT_LOCAL_USER_ID,
     };
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};

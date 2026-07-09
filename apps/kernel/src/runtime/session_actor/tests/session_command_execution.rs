@@ -213,6 +213,197 @@ async fn update_session_config_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn idle_required_session_config_uses_prompt_owner_for_admission() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, agent_id, attachment_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app_locked)
+            .attach(AttachRequest::new(
+                session.id(),
+                "config-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app_locked
+            .prompt_owner_sync_external_active_prompt(
+                session.id(),
+                agent.id(),
+                Some(
+                    PromptQueueItem::new(
+                        "external-active-prompt",
+                        attachment.id(),
+                        agent.id(),
+                        "external prompt",
+                        PromptStatus::Running,
+                    )
+                    .with_prompt_origin(PromptOrigin::External),
+                ),
+            )
+            .expect("active prompt should sync");
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            attachment.id().to_string(),
+            app_locked.terminal_stream_store(),
+        )
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        values: [("mode".to_string(), "owned".to_string())].into(),
+        requires_idle: true,
+    });
+    let command =
+        KernelCommand::from_local_request("owned-session-config-idle", None, None, &request);
+    let error = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect_err("prompt owner active prompt should reject idle-required config");
+
+    match error {
+        DaemonError::ConfigChangeRejectedWhilePromptRunning {
+            session_id: rejected,
+        } => {
+            assert_eq!(rejected, session_id);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+    assert!(
+        app.lock()
+            .await
+            .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+            .expect("prompt owner should read")
+            .is_some(),
+        "test should leave prompt owner active"
+    );
+}
+
+#[tokio::test]
+async fn idle_required_session_config_ignores_stale_session_prompt_mirror() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, agent_id, attachment_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app_locked)
+            .attach(AttachRequest::new(
+                session.id(),
+                "config-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = PromptQueueItem::new(
+            "external-active-prompt",
+            attachment.id(),
+            agent.id(),
+            "external prompt",
+            PromptStatus::Running,
+        )
+        .with_prompt_origin(PromptOrigin::External);
+        app_locked
+            .prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(prompt))
+            .expect("active prompt should sync");
+        app_locked
+            .prompt_owner_sync_external_active_prompt(session.id(), agent.id(), None)
+            .expect("prompt owner should become idle");
+        app_locked
+            .sessions_mut()
+            .mirror_agent_prompt_state(
+                session.id(),
+                agent.id(),
+                Some(PromptQueueItem::new(
+                    "stale-session-prompt",
+                    attachment.id(),
+                    agent.id(),
+                    "stale prompt",
+                    PromptStatus::Running,
+                )),
+                std::collections::VecDeque::new(),
+            )
+            .expect("legacy session mirror should be made stale");
+        assert!(
+            app_locked
+                .sessions()
+                .get_session(session.id())
+                .expect("session should exist")
+                .has_any_active_prompt(),
+            "legacy session mirror should be stale-active"
+        );
+        assert!(
+            !app_locked
+                .prompt_owner_has_any_active_prompt(session.id())
+                .expect("prompt owner should read"),
+            "prompt owner should be authoritative and idle"
+        );
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            attachment.id().to_string(),
+            app_locked.terminal_stream_store(),
+        )
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        values: [("mode".to_string(), "owned".to_string())].into(),
+        requires_idle: true,
+    });
+    let command = KernelCommand::from_local_request(
+        "owned-session-config-stale-mirror",
+        None,
+        None,
+        &request,
+    );
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("stale session prompt mirror should not reject idle-required config");
+
+    let LocalDaemonResponse::SessionConfigUpdated { config, session } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(session.id(), session_id);
+    assert_eq!(
+        config.values().get("mode").map(String::as_str),
+        Some("owned")
+    );
+    assert!(
+        app.lock()
+            .await
+            .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+            .expect("prompt owner should read")
+            .is_none(),
+        "prompt owner should remain idle"
+    );
+}
+
+#[tokio::test]
 async fn alias_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
