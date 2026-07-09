@@ -13,6 +13,8 @@ import {
 } from "./session-agent-prompt-state.js"
 
 export const QUEUED_PROMPT_STALE_REASON = "This prompt is no longer waiting in the queue."
+export const QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON =
+  "Queued prompt controls are unavailable in the current kernel snapshot."
 
 export type QueuedPromptControlInput = {
   readonly prompt_id?: string | null
@@ -66,14 +68,19 @@ export function queuedPromptActionability(
 ): QueuedPromptActionability {
   const status = normalizeQueuedPromptStatus(control?.status ?? promptStatus)
   const queued = queuedPromptStatusIsQueued(status)
-  const canSteer = control?.can_steer ?? queued
-  const canCancel = control?.can_cancel ?? queued
+  const controlsProjected = control !== null && control !== undefined
+  const canSteer = controlsProjected ? control.can_steer === true : false
+  const canCancel = controlsProjected ? control.can_cancel === true : false
+  const missingProjectedReason = queued ? null : QUEUED_PROMPT_STALE_REASON
+  const missingControlReason = queued
+    ? QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON
+    : QUEUED_PROMPT_STALE_REASON
   const steerDisabledReason = hasOwn(control, "steer_disabled_reason")
     ? control.steer_disabled_reason ?? null
-    : queuedPromptSteerDisabledReason(status)
+    : controlsProjected ? missingProjectedReason : missingControlReason
   const cancelDisabledReason = hasOwn(control, "cancel_disabled_reason")
     ? control.cancel_disabled_reason ?? null
-    : queuedPromptCancelDisabledReason(status)
+    : controlsProjected ? missingProjectedReason : missingControlReason
   return {
     status,
     steerDisabled: !canSteer,

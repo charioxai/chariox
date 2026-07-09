@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON,
   QUEUED_PROMPT_STALE_REASON,
   normalizeQueuedPromptStatus,
   projectedQueuedPromptListsMatch,
@@ -23,14 +24,14 @@ import {
 import type { ProjectedQueuedPrompt } from "./queued-prompt-controls.js"
 import type { PromptQueueItem, RuntimeSession } from "./kernel-types.js"
 
-test("queued prompt actionability defaults queued prompts to both actions", () => {
+test("queued prompt actionability disables queued actions without kernel controls", () => {
   assert.deepEqual(queuedPromptActionability(undefined), {
     status: "queued",
-    steerDisabled: false,
-    canSteer: true,
-    canCancel: true,
-    steerDisabledReason: null,
-    cancelDisabledReason: null,
+    steerDisabled: true,
+    canSteer: false,
+    canCancel: false,
+    steerDisabledReason: QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON,
+    cancelDisabledReason: QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON,
   })
 })
 
@@ -71,9 +72,9 @@ test("queued prompt projection does not infer steering controls from external pr
   })
 
   assert.equal(projected?.promptOrigin, "external")
-  assert.equal(projected?.canSteer, true)
-  assert.equal(projected?.steerDisabled, false)
-  assert.equal(projected?.steerDisabledReason, null)
+  assert.equal(projected?.canSteer, false)
+  assert.equal(projected?.steerDisabled, true)
+  assert.equal(projected?.steerDisabledReason, QUEUED_PROMPT_CONTROLS_UNAVAILABLE_REASON)
 })
 
 test("queued prompt projection uses kernel controls to disable external steering", () => {
@@ -99,7 +100,7 @@ test("queued prompt projection uses kernel controls to disable external steering
 })
 
 test("queued prompt actionability comparison includes status and controls", () => {
-  const current = queuedPromptActionability("queued")
+  const current = queuedPromptActionability("queued", enabledControl())
   assert.equal(queuedPromptActionabilityMatches(current, {
     status: "queued",
     steerDisabled: false,
@@ -411,6 +412,9 @@ test("queued prompt projection does not infer steering policy from external acti
           status: "running",
           phase: "streaming",
         },
+        queued_prompt_controls: {
+          "queued-1": enabledControl("queued-1"),
+        },
       },
     },
   })
@@ -489,6 +493,7 @@ test("project queued prompt records attachment count and fallback target", () =>
     status: "Queued",
   }, {
     fallbackTargetAgentId: "agent-fallback",
+    control: enabledControl("queued-1"),
   }), {
     id: "queued-1",
     pendingPromptId: null,
@@ -536,6 +541,8 @@ test("project queued prompt uses pending prompt id as action identity", () => {
     prompt: "queued",
     attachments: [],
     status: "queued",
+  }, {
+    control: enabledControl("pending-prompt-1"),
   }), {
     id: "pending-prompt-1",
     pendingPromptId: "pending-prompt-1",
@@ -628,6 +635,7 @@ test("project queued prompt ignores blank ids and pending ids", () => {
     status: "queued",
   }, {
     fallbackTargetAgentId: " fallback-agent ",
+    control: enabledControl("queued-1"),
   }), {
     id: "queued-1",
     pendingPromptId: null,
@@ -653,6 +661,8 @@ test("project queued prompt normalizes prompt ownership", () => {
     prompt: "queued",
     status: "queued",
     prompt_origin: " External ",
+  }, {
+    control: enabledControl("queued-external"),
   }), {
     id: "queued-external",
     pendingPromptId: null,
@@ -683,6 +693,8 @@ test("project queued prompt normalizes prompt ownership", () => {
     target_agent_id: "agent-1",
     prompt: "external queued",
     status: "queued",
+  }, {
+    control: enabledControl("external:codex:thread-1:turn-1"),
   }), {
     id: "external:codex:thread-1:turn-1",
     pendingPromptId: null,
@@ -957,6 +969,17 @@ function prompt(id: string, agentId = "agent-1", createdAtMs?: number): PromptQu
     prompt: id,
     ...(createdAtMs !== undefined ? { created_at_ms: createdAtMs } : {}),
     status: "Queued",
+  }
+}
+
+function enabledControl(promptId = "queued-1") {
+  return {
+    prompt_id: promptId,
+    status: "queued",
+    can_steer: true,
+    can_cancel: true,
+    steer_disabled_reason: null,
+    cancel_disabled_reason: null,
   }
 }
 

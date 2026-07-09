@@ -477,6 +477,24 @@ function session(overrides: Record<string, unknown> = {}): RuntimeSession {
         }],
       },
     },
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        queued_prompt_count: 1,
+        queued_prompt_controls: {
+          "prompt-1": {
+            prompt_id: "prompt-1",
+            status: "queued",
+            can_steer: true,
+            can_cancel: true,
+            steer_disabled_reason: null,
+            cancel_disabled_reason: null,
+          },
+        },
+      },
+    },
     ...overrides,
   } as unknown as RuntimeSession
 }
