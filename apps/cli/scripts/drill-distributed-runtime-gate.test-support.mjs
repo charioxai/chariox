@@ -74,6 +74,30 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
       scenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
     ],
   })
+  await writeMatrixReport(path.join(ossMatrixRoot, "runtime-resilience-chaos.json"), {
+    matrix: "runtime-resilience-chaos-matrix",
+    metadata: {
+      deploymentPresets: includeCloud
+        ? "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay"
+        : "hetzner,local,same-host-remote,self-hosted-relay",
+      providers: "claude,codex,opencode",
+    },
+    scenarios: [
+      scenario("local-kernel-websocket-drop", "relay-runtime", ["client-projection-health", "relay-target-freshness"]),
+      scenario("local-kernel-restart-durable-state", "kernel-authority", ["provider-run-lifecycle", "runtime-transition-audit", "session-authority"]),
+      scenario("local-relay-restart-reconnect", "relay-target-freshness", ["provider-run-lifecycle", "relay-target-freshness", "session-authority"]),
+      scenario("local-tui-web-terminal-parity", "ui-client-projection", ["client-projection-health", "runtime-projection-health", "session-authority"]),
+      scenario("same-host-remote-worker-restart", "relay-target-freshness", ["lease-health", "relay-target-freshness", "session-authority"]),
+      scenario("worker-provider-resume-codex", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
+      scenario("worker-provider-resume-opencode", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
+      ...(includeCloud
+        ? [
+          scenario("hetzner-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+          scenario("hosted-cloud-relay-second-kernel-reconnect", "relay-runtime", ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
+        ]
+        : []),
+    ],
+  })
   await writeMatrixReport(path.join(ossMatrixRoot, "slice-runtime.json"), {
     matrix: "slice-runtime-matrix",
     metadata: {
@@ -105,6 +129,20 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
   })
 
   if (includeCloud) {
+    await writeMatrixReport(path.join(cloudRoot, ".artifacts", "drill-matrices", "browser-terminal-resilience.json"), {
+      matrix: "browser-terminal-resilience-matrix",
+      metadata: {
+        deploymentPresets: "hosted-cloud,local",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+        defaultModel: "provider-default",
+        providerModelOverrides: "",
+      },
+      scenarios: [
+        scenario("local-browser-relay-kernel-reconnect", "relay-runtime", ["client-projection-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("hosted-browser-relay-kernel-reconnect", "cloud-runtime", ["client-projection-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"], { providers: ["claude", "codex", "opencode"] }),
+      ],
+    })
     await writeMatrixReport(path.join(cloudRoot, ".artifacts", "drill-matrices", "cloud-slice-runtime.json"), {
       matrix: "cloud-slice-runtime-matrix",
       metadata: {
@@ -209,10 +247,12 @@ export function generatedMatrixNamesForEvidenceRepo(evidenceRepo) {
 
 export async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   matrices = [
+    { name: "browser-terminal-resilience-matrix", repo: "cloud" },
     { name: "cloud-slice-runtime-matrix", repo: "cloud" },
     { name: "native-provider-tui-matrix", repo: "oss" },
     { name: "remote-agent-runtime-matrix", repo: "oss" },
     { name: "remote-home-extension-matrix", repo: "oss" },
+    { name: "runtime-resilience-chaos-matrix", repo: "oss" },
     { name: "slice-runtime-matrix", repo: "oss" },
     { name: "workspace-live-sync-matrix", repo: "oss" },
   ],
@@ -409,6 +449,27 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     }),
   })
   await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-runtime-resilience-chaos-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "runtime-resilience-chaos-matrix",
+      metadata: {
+        deploymentPresets: "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("local-kernel-websocket-drop", "relay-runtime", ["client-projection-health", "relay-target-freshness"]),
+        scenario("local-kernel-restart-durable-state", "kernel-authority", ["provider-run-lifecycle", "runtime-transition-audit", "session-authority"]),
+        scenario("local-relay-restart-reconnect", "relay-target-freshness", ["provider-run-lifecycle", "relay-target-freshness", "session-authority"]),
+        scenario("local-tui-web-terminal-parity", "ui-client-projection", ["client-projection-health", "runtime-projection-health", "session-authority"]),
+        scenario("same-host-remote-worker-restart", "relay-target-freshness", ["lease-health", "relay-target-freshness", "session-authority"]),
+        scenario("worker-provider-resume-codex", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
+        scenario("worker-provider-resume-opencode", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
+        scenario("hetzner-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+        scenario("hosted-cloud-relay-second-kernel-reconnect", "relay-runtime", ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
     file: path.join(ossRoot, "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
     report: matrixReport({
       matrix: "slice-runtime-matrix",
@@ -440,6 +501,21 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
         scenario("remote-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
         scenario("remote-tracked-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
         scenario("remote-tracked-restart-codex", "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(cloudRoot, "scripts", "browser-terminal-resilience-matrix.mjs"),
+    report: matrixReport({
+      matrix: "browser-terminal-resilience-matrix",
+      metadata: {
+        deploymentPresets: "hosted-cloud,local",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("local-browser-relay-kernel-reconnect", "relay-runtime", ["client-projection-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("hosted-browser-relay-kernel-reconnect", "cloud-runtime", ["client-projection-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"], { providers: ["claude", "codex", "opencode"] }),
       ],
     }),
   })
@@ -499,6 +575,7 @@ const report = args.includes("--dry-run") ? dryRunReportFor(reportWithMetadata) 
 await writeFile(reportPath, \`\${JSON.stringify(report, null, 2)}\\n\`, "utf8")
 if (artifactIndexPath) {
   const bytes = await readFile(reportPath)
+  const repo = repoForMatrix(report.matrix)
   const index = {
     schema: "arroba.drill.artifact_index.v1",
     rootDir: path.dirname(reportPath),
@@ -508,8 +585,8 @@ if (artifactIndexPath) {
       matrix: report.matrix,
       artifactKinds: "matrix-report",
       generatedMatrixNames: report.matrix,
-      generatedMatrixRepos: report.matrix.startsWith("cloud-") ? "cloud" : "oss",
-      generatedEvidenceRepos: report.matrix.startsWith("cloud-") ? "cloud" : "oss",
+      generatedMatrixRepos: repo,
+      generatedEvidenceRepos: repo,
       ...(providerAccountAliases.length > 0 ? { providerAccountAliases: providerAccountAliases.join(",") } : {}),
     },
     artifacts: [{
@@ -520,6 +597,12 @@ if (artifactIndexPath) {
     }],
   }
   await writeFile(artifactIndexPath, \`\${JSON.stringify(index, null, 2)}\\n\`, "utf8")
+}
+
+function repoForMatrix(matrix) {
+  return matrix === "browser-terminal-resilience-matrix" || matrix === "cloud-slice-runtime-matrix"
+    ? "cloud"
+    : "oss"
 }
 
 function valueFor(flag) {

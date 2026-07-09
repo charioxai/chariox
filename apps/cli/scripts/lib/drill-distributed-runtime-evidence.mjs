@@ -162,6 +162,16 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-slices", "--include-hetzner", "--include-hosted-cloud"],
+      cwd: ossRoot,
+      matrix: "runtime-resilience-chaos-matrix",
+      outputDir: ossOutputDir,
+      reportFileName: "runtime-resilience-chaos-matrix.json",
+      repo: "oss",
+      scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "live-runtime-resilience-chaos-matrix-drill.mjs"),
+    },
+    {
+      artifactIndexFlag: "--artifact-index",
       args: [...commonArgs, "--include-hetzner"],
       cwd: ossRoot,
       matrix: "remote-home-extension-matrix",
@@ -189,6 +199,16 @@ export function distributedRuntimeMatrixCommandsFor({
       reportFileName: "workspace-live-sync-matrix.json",
       repo: "oss",
       scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
+    },
+    {
+      artifactIndexFlag: "--output-artifact-index",
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hosted-cloud", "--include-hetzner"],
+      cwd: cloudRoot,
+      matrix: "browser-terminal-resilience-matrix",
+      outputDir: cloudOutputDir,
+      reportFileName: "browser-terminal-resilience-matrix.json",
+      repo: "cloud",
+      scriptPath: path.join(cloudRoot, "scripts", "browser-terminal-resilience-matrix.mjs"),
     },
     {
       artifactIndexFlag: "--output-artifact-index",

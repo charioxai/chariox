@@ -108,6 +108,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
   "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
   "apps/cli/scripts/live-remote-home-extension-matrix-drill.test.mjs",
+  "apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.test.mjs",
   "apps/cli/scripts/live-slice-runtime-matrix-drill.test.mjs",
   "apps/cli/scripts/live-workspace-live-sync-matrix-drill.test.mjs",
 ])
@@ -171,6 +172,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
       "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
       "apps/cli/scripts/live-remote-home-extension-matrix-drill.test.mjs",
+      "apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.test.mjs",
       "apps/cli/scripts/live-slice-runtime-matrix-drill.test.mjs",
       "apps/cli/scripts/live-workspace-live-sync-matrix-drill.test.mjs",
       "apps/cli/scripts/lib/drill-distributed-runtime-evidence.test.mjs",

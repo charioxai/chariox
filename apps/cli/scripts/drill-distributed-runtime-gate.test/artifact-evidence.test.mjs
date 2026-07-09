@@ -165,7 +165,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       report.checks.matrices.aggregate.reports.find((entry) => entry.matrix === "cloud-slice-runtime-matrix").providers,
       ["claude", "codex", "opencode"],
     )
-    assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 2)
+    assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 4)
     assert.equal(artifactIndex.metadata.drill, "distributed-runtime-gate")
     assert.equal(artifactIndex.metadata.preset, "distributed-runtime")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
@@ -452,9 +452,9 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.deepEqual(report.checks.artifacts.requiredArtifactProviderAccountAliases, ["codex=work_codex", "opencode=zen"])
     assert.deepEqual(report.checks.artifacts.missingArtifactProviderAccountAliases, [])
     assert.deepEqual(report.checks.artifacts.aggregate.providerAccountAliases, {
-      "claude=work_claude": 4,
-      "codex=work_codex": 5,
-      "opencode=zen": 5,
+      "claude=work_claude": 6,
+      "codex=work_codex": 7,
+      "opencode=zen": 7,
     })
     assert.equal(report.checks.matrices.status, "passed")
     assert.deepEqual(report.checks.matrices.roots, [
@@ -466,6 +466,8 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.deepEqual(report.checks.matrices.missingProviders, [])
     assert.deepEqual(report.checks.matrices.missingScenarios, [])
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
+    assert.equal(report.checks.matrices.aggregate.matrixNames["browser-terminal-resilience-matrix"], 1)
+    assert.equal(report.checks.matrices.aggregate.matrixNames["runtime-resilience-chaos-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.matrixNames["workspace-live-sync-matrix"], 1)
     assert.equal(report.generatedEvidence.matrixReports.enabled, true)
     assert.deepEqual(report.generatedEvidence.matrixReports.limitations, [])
@@ -474,14 +476,16 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(matrixOutputRoot, "oss"),
     ].sort())
     assert.deepEqual(report.generatedEvidence.matrixReports.artifactIndexes, [
+      path.join(matrixOutputRoot, "cloud", "browser-terminal-resilience-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "remote-agent-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "remote-home-extension-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "runtime-resilience-chaos-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "slice-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "workspace-live-sync-matrix-artifacts.json"),
     ])
-    assert.equal(report.generatedEvidence.matrixReports.commands.length, 6)
+    assert.equal(report.generatedEvidence.matrixReports.commands.length, 8)
     assert.equal(report.generatedEvidence.matrixReports.commands[0].reportPath, path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix.json"))
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[0].nodeArgs, [
       path.join(ossRoot, "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
@@ -497,7 +501,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--artifact-index",
       path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix-artifacts.json"),
     ])
-    assert.deepEqual(report.generatedEvidence.matrixReports.commands[5].nodeArgs.slice(-4), [
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[7].nodeArgs.slice(-4), [
       "--report",
       path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix.json"),
       "--output-artifact-index",
@@ -522,8 +526,19 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--include-hetzner",
       "--include-hosted-cloud",
     ])
-    assert.deepEqual(report.generatedEvidence.matrixReports.commands[2].args, ["--include-hetzner"])
-    assert.deepEqual(report.generatedEvidence.matrixReports.commands[4].args, [
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[2].args, [
+      "--provider-account",
+      "claude=work_claude",
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
+      "--include-slices",
+      "--include-hetzner",
+      "--include-hosted-cloud",
+    ])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[3].args, ["--include-hetzner"])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[5].args, [
       "--provider-account",
       "codex=work_codex",
       "--provider-account",
@@ -541,19 +556,23 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
     ].sort().join(","))
     assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, [
+      path.join(matrixOutputRoot, "cloud", "browser-terminal-resilience-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "remote-agent-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "remote-home-extension-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "runtime-resilience-chaos-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "slice-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "workspace-live-sync-matrix-artifacts.json"),
     ].join(","))
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.generatedMatrixNames, [
+      "browser-terminal-resilience-matrix",
       "cloud-slice-runtime-matrix",
       "native-provider-tui-matrix",
       "remote-agent-runtime-matrix",
       "remote-home-extension-matrix",
+      "runtime-resilience-chaos-matrix",
       "slice-runtime-matrix",
       "workspace-live-sync-matrix",
     ].join(","))
@@ -641,8 +660,10 @@ test("distributed runtime gate labels dry-run generated matrix limitations", asy
     }])
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.match(artifactIndex.metadata.generatedMatrixNames, /cloud-slice-runtime-matrix/)
+    assert.match(artifactIndex.metadata.generatedMatrixNames, /runtime-resilience-chaos-matrix/)
     assert.match(artifactIndex.metadata.generatedMatrixNames, /workspace-live-sync-matrix/)
     assert.equal(artifactIndex.metadata.generatedMatrixRepos, "cloud,oss")
+    assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /browser-terminal-resilience-matrix-artifacts\.json/)
     assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /cloud-slice-runtime-matrix-artifacts\.json/)
     assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /workspace-live-sync-matrix-artifacts\.json/)
     assert.equal(summary.status, "passed")
