@@ -22,15 +22,11 @@ async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
         "external owned projection prompt",
     );
 
-    runtime
-        .owned
-        .mirror_prompt_owner_agent_state(
-            &session_id,
-            &agent_id,
-            Some(external_prompt),
-            VecDeque::new(),
-        )
-        .expect("owned prompt mirror should refresh projections");
+    {
+        let mut app = app.lock().await;
+        app.prompt_owner_sync_external_active_prompt(&session_id, &agent_id, Some(external_prompt))
+            .expect("external prompt owner sync should refresh projections");
+    }
 
     let projected = runtime
         .owned

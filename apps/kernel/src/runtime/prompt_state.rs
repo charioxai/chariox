@@ -76,53 +76,36 @@ impl PromptStateOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .states
             .get(&key)
-            .map(|state| state.active_prompt.clone())
-            .unwrap_or_else(|| {
-                session
-                    .prompt_states()
-                    .get(agent_id)
-                    .and_then(|state| state.active_prompt().cloned())
-            })
+            .and_then(|state| state.active_prompt.clone())
     }
 
     pub(crate) fn active_prompt_agent_id(&self, session: &RuntimeSession) -> Option<String> {
-        let mut owner = self
+        let owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(focused_agent_id) = session.focused_agent_id() {
             if owner
-                .ensure_agent_state(session, focused_agent_id)
-                .active_prompt
+                .states
+                .get(&PromptStateKey::new(session.id(), focused_agent_id))
+                .and_then(|state| state.active_prompt.as_ref())
                 .is_some()
             {
                 return Some(focused_agent_id.to_string());
             }
         }
 
-        let mut active_agents = session
-            .agents()
-            .iter()
-            .filter_map(|agent| {
+        let active_agents = owner
+            .agent_ids_for_session(session)
+            .into_iter()
+            .filter(|agent_id| {
                 owner
-                    .ensure_agent_state(session, agent.id())
-                    .active_prompt
-                    .as_ref()
-                    .map(|_| agent.id().to_string())
+                    .states
+                    .get(&PromptStateKey::new(session.id(), agent_id))
+                    .and_then(|state| state.active_prompt.as_ref())
+                    .is_some()
             })
             .collect::<Vec<_>>();
-        for agent_id in session.prompt_states().keys() {
-            if active_agents.iter().any(|active| active == agent_id) {
-                continue;
-            }
-            if owner
-                .ensure_agent_state(session, agent_id)
-                .active_prompt
-                .is_some()
-            {
-                active_agents.push(agent_id.clone());
-            }
-        }
         if active_agents.len() == 1 {
             active_agents.into_iter().next()
         } else {
@@ -131,24 +114,20 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn has_any_active_prompt(&self, session: &RuntimeSession) -> bool {
-        let mut owner = self
+        let owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if session.agents().iter().any(|agent| {
-            owner
-                .ensure_agent_state(session, agent.id())
-                .active_prompt
-                .is_some()
-        }) {
-            return true;
-        }
-        session.prompt_states().keys().any(|agent_id| {
-            owner
-                .ensure_agent_state(session, agent_id)
-                .active_prompt
-                .is_some()
-        })
+        owner
+            .agent_ids_for_session(session)
+            .into_iter()
+            .any(|agent_id| {
+                owner
+                    .states
+                    .get(&PromptStateKey::new(session.id(), &agent_id))
+                    .and_then(|state| state.active_prompt.as_ref())
+                    .is_some()
+            })
     }
 
     pub(crate) fn queued_prompt_count_for_agent(
@@ -565,17 +544,53 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn project_into_session(&self, session: &mut RuntimeSession) {
-        let mut agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        for agent_id in agent_ids {
-            let (active_prompt, queued_prompts) = self.state_parts(session, &agent_id);
+        let projected_states = {
+            let owner = self
+                .state
+                .lock()
+                .expect("prompt state owner lock should not be poisoned");
+            owner
+                .agent_ids_for_session(session)
+                .into_iter()
+                .map(|agent_id| {
+                    let state = owner
+                        .states
+                        .get(&PromptStateKey::new(session.id(), &agent_id))
+                        .cloned()
+                        .unwrap_or_default();
+                    (agent_id, state.active_prompt, state.queued_prompts)
+                })
+                .collect::<Vec<_>>()
+        };
+        for (agent_id, active_prompt, queued_prompts) in projected_states {
             session.mirror_agent_prompt_state(&agent_id, active_prompt, queued_prompts);
+        }
+    }
+
+    pub(crate) fn restore_session_state(&self, session: &RuntimeSession) {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let restored_agent_ids = session
+            .prompt_states()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        owner.states.retain(|key, _| {
+            key.session_id != session.id() || restored_agent_ids.contains(&key.agent_id)
+        });
+        for agent_id in session.prompt_states().keys() {
+            let restored = OwnedAgentPromptState::from_session(session, agent_id);
+            if restored.active_prompt.is_none() && restored.queued_prompts.is_empty() {
+                owner
+                    .states
+                    .remove(&PromptStateKey::new(session.id(), agent_id));
+            } else {
+                owner
+                    .states
+                    .insert(PromptStateKey::new(session.id(), agent_id), restored);
+            }
         }
     }
 
@@ -643,6 +658,24 @@ fn validate_prompt_target_agent(
 }
 
 impl PromptStateOwnerState {
+    fn agent_ids_for_session(&self, session: &RuntimeSession) -> Vec<String> {
+        let mut agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.extend(
+            self.states
+                .keys()
+                .filter(|key| key.session_id == session.id())
+                .map(|key| key.agent_id.clone()),
+        );
+        agent_ids.sort();
+        agent_ids.dedup();
+        agent_ids
+    }
+
     fn next_pending_prompt_id(&mut self) -> String {
         self.next_pending_prompt_number = self.next_pending_prompt_number.wrapping_add(1);
         format!(
@@ -927,6 +960,147 @@ mod tests {
                 .map(|prompt| prompt.prompt()),
             Some("queued")
         );
+    }
+
+    #[test]
+    fn projection_does_not_rehydrate_unrestored_session_mirror() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        session.mirror_agent_prompt_state(
+            "agent-1",
+            Some(PromptQueueItem::new(
+                "stale-prompt",
+                "attachment-1",
+                "agent-1",
+                "stale",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+        );
+
+        assert!(session.active_prompt_for_agent("agent-1").is_some());
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
+
+        owner.project_into_session(&mut session);
+
+        assert!(session.active_prompt_for_agent("agent-1").is_none());
+    }
+
+    #[test]
+    fn restore_session_state_hydrates_owner_before_projection() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        session.mirror_agent_prompt_state(
+            "agent-1",
+            Some(PromptQueueItem::new(
+                "restored-prompt",
+                "attachment-1",
+                "agent-1",
+                "restored",
+                PromptStatus::Running,
+            )),
+            VecDeque::from([PromptQueueItem::new(
+                "restored-queued",
+                "attachment-1",
+                "agent-1",
+                "queued",
+                PromptStatus::Queued,
+            )]),
+        );
+
+        owner.restore_session_state(&session);
+        session.mirror_agent_prompt_state("agent-1", None, VecDeque::new());
+
+        assert!(session.active_prompt_for_agent("agent-1").is_none());
+        owner.project_into_session(&mut session);
+
+        assert_eq!(
+            session
+                .active_prompt_for_agent("agent-1")
+                .map(|prompt| prompt.id()),
+            Some("restored-prompt")
+        );
+        assert_eq!(
+            session
+                .queued_prompts_for_agent("agent-1")
+                .and_then(|queued| queued.front())
+                .map(|prompt| prompt.id()),
+            Some("restored-queued")
+        );
+    }
+
+    #[test]
+    fn restore_session_state_replaces_removed_prompt_states() {
+        let owner = PromptStateOwner::default();
+        let mut restored_with_prompt = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        restored_with_prompt.mirror_agent_prompt_state(
+            "agent-1",
+            Some(PromptQueueItem::new(
+                "restored-prompt",
+                "attachment-1",
+                "agent-1",
+                "restored",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+        );
+        owner.restore_session_state(&restored_with_prompt);
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&restored_with_prompt, "agent-1")
+            .is_some());
+
+        let mut restored_without_prompt = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        restored_without_prompt.set_agents(vec![crate::agent::AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            restored_without_prompt.id(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )]);
+
+        owner.restore_session_state(&restored_without_prompt);
+        owner.project_into_session(&mut restored_without_prompt);
+
+        assert!(restored_without_prompt
+            .active_prompt_for_agent("agent-1")
+            .is_none());
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&restored_without_prompt, "agent-1")
+            .is_none());
     }
 
     #[test]

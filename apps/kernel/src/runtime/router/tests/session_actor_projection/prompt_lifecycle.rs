@@ -166,18 +166,17 @@ async fn session_snapshot_refresh_tracks_agent_runtime_projection_inner() {
         .is_some());
 
     {
-        let app = app.lock().await;
-        app.sessions_mut()
-            .complete_active_prompt_only(&session_id, &agent_id)
-            .expect("compatibility state should be externally settled");
+        let mut app = app.lock().await;
+        app.prompt_owner_complete_active_prompt_only(&session_id, &agent_id)
+            .expect("prompt owner should settle");
     }
     assert!(
         router
             .agent_runtime_projection
             .get(&agent_id)
             .and_then(|projection| projection.active_prompt)
-            .is_some(),
-        "prompt projection should stay stale until a session snapshot is observed"
+            .is_none(),
+        "prompt owner completion should refresh the agent runtime projection"
     );
 
     let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {

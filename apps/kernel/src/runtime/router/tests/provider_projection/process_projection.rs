@@ -134,29 +134,8 @@ async fn list_provider_processes_blocks_teardown_for_per_agent_active_prompt_wit
         "background active prompt",
         crate::session::PromptStatus::Running,
     );
-    app.sessions_mut()
-        .mirror_agent_prompt_state(
-            &session_id,
-            &background_agent_id,
-            Some(background_prompt),
-            std::collections::VecDeque::new(),
-        )
-        .expect("background prompt state should mirror");
-    let focused_queued_prompt = crate::session::PromptQueueItem::new(
-        "prompt-focused-queued",
-        attachment.id(),
-        &focused_agent_id,
-        "focused queued prompt",
-        crate::session::PromptStatus::Queued,
-    );
-    app.sessions_mut()
-        .mirror_agent_prompt_state(
-            &session_id,
-            &focused_agent_id,
-            None,
-            std::collections::VecDeque::from([focused_queued_prompt]),
-        )
-        .expect("focused prompt state should mirror");
+    app.prompt_owner_activate_prompt(&session_id, background_prompt)
+        .expect("background prompt state should activate");
     let projected_session = app
         .sessions()
         .get_session(&session_id)

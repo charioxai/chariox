@@ -202,6 +202,7 @@ impl DaemonApp {
             if !restored_session_ids.contains(session.id()) {
                 continue;
             }
+            self.prompt_state_owner.restore_session_state(&session);
             self.sessions.restore_session(session);
         }
         let restored_slices = snapshot
@@ -377,6 +378,7 @@ impl DaemonApp {
         for mut session in sessions {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
+            self.prompt_state_owner.restore_session_state(&session);
             self.sessions.restore_session(session.clone());
             self.update_session_projection(session);
         }
@@ -390,6 +392,7 @@ impl DaemonApp {
         let mut session = self.sessions.get_session(session_id)?;
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
+        self.prompt_state_owner.restore_session_state(&session);
         self.sessions.restore_session(session.clone());
         self.update_session_projection(session);
         Ok(())
@@ -406,6 +409,7 @@ impl DaemonApp {
             reconciled_runtime_state = true;
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
+            self.prompt_state_owner.restore_session_state(&session);
             self.sessions.restore_session(session.clone());
             self.update_session_projection(session.clone());
             crate::logging::info_with_fields(
@@ -494,6 +498,7 @@ impl DaemonApp {
                     "durable_state.restore_default_agent",
                 )?;
                 self.mark_agent_external_provider_sessions_attached(&default_agent);
+                self.prompt_state_owner.restore_session_state(&session);
                 self.sessions.restore_session(session.clone());
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
@@ -507,6 +512,7 @@ impl DaemonApp {
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }
+                self.prompt_state_owner.restore_session_state(&session);
                 self.sessions.restore_session(session.clone());
                 self.update_session_projection(session);
             }
@@ -574,6 +580,7 @@ impl DaemonApp {
                 self.external_provider_sessions.detach_session(session.id());
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
+                self.prompt_state_owner.remove_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.restore_session(session.clone());
@@ -591,6 +598,7 @@ impl DaemonApp {
                 self.external_provider_sessions.detach_session(session.id());
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
+                self.prompt_state_owner.remove_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
