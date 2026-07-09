@@ -12,7 +12,6 @@ import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
   externalProviderObservedIdentityKey,
-  externalProviderObservedPresentIdentityFields,
   type ExternalProviderObservedIdentityFields,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
@@ -26,7 +25,10 @@ import {
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
-import { promptQueueItemTranscriptMetadata } from "./transcript-entry-state.js"
+import {
+  promptQueueItemExternalProviderIdentityFields,
+  promptQueueItemTranscriptMetadata,
+} from "./transcript-entry-state.js"
 
 export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIdentityFields & {
   readonly id: string
@@ -103,13 +105,7 @@ export function sessionPromptLifecycleTransition(
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
   const metadata = promptQueueItemTranscriptMetadata(prompt)
   const status = normalizeActivePromptLifecycleStatus(prompt.status)
-  const externalIdentity = externalProviderObservedPresentIdentityFields({
-    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
-    ...(metadata.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: metadata.externalProviderSessionId }
-      : {}),
-    ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
-  })
+  const externalIdentity = promptQueueItemExternalProviderIdentityFields(prompt)
   return {
     ...prompt,
     ...(status !== undefined ? { status } : {}),

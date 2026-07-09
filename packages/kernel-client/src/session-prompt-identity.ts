@@ -8,7 +8,6 @@ import type {
 } from "./agent-activity.js"
 import {
   externalProviderObservedExactIdentityConflicts,
-  externalProviderObservedExplicitIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 import {
@@ -19,6 +18,7 @@ import {
   sessionProjectedPromptActivityForAgent,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
+import { promptQueueItemExternalProviderIdentityFields } from "./transcript-entry-state.js"
 
 export function sessionPromptStateForAgent(
   session: RuntimeSession,
@@ -163,7 +163,7 @@ function promptExternalIdentityFields(
   if (!prompt) {
     return {}
   }
-  return externalProviderObservedExplicitIdentityFields(prompt)
+  return promptQueueItemExternalProviderIdentityFields(prompt)
 }
 
 function projectedActiveTurnExternalIdentityFields(

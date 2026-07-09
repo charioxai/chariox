@@ -133,6 +133,17 @@ export function promptQueueItemTranscriptMetadata(prompt: PromptQueueItem): Tran
   }
 }
 
+export function promptQueueItemExternalProviderIdentityFields(prompt: PromptQueueItem): ExternalProviderObservedIdentityFields {
+  const metadata = promptQueueItemTranscriptMetadata(prompt)
+  return {
+    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: metadata.externalProviderSessionId }
+      : {}),
+    ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
+  }
+}
+
 export type TranscriptUserPromptTurn = {
   readonly entry: {
     readonly role: "user"
