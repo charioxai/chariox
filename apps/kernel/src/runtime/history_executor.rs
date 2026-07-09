@@ -102,12 +102,10 @@ fn ensure_operational_history_for_outline(
     operational_history_store: &OperationalHistoryStore,
     session: &crate::session::RuntimeSession,
 ) -> Result<(), DaemonError> {
-    if operational_history_store.has_arroba_owned_user_prompts(session.id())? {
+    if operational_history_store.has_session_events(session.id())? {
         return Ok(());
     }
-    if operational_history_store.has_session_events(session.id())?
-        && operational_history_store.legacy_fallback_disabled(session.id())?
-    {
+    if operational_history_store.legacy_fallback_disabled(session.id())? {
         return Ok(());
     }
     let entries = history_store.load(session)?;
@@ -241,4 +239,99 @@ async fn execute_knn_semantic_recall_search(
 ) -> Result<(Vec<SemanticRecallMatch>, Option<String>, Option<String>), DaemonError> {
     let archive_config = config_projection.snapshot().user_config.history.archive;
     knn_semantic_recall_search(archive_config, request, requested_limit).await
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::DaemonConfig;
+    use crate::history::{
+        HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
+        SessionHistoryEntryKind, SessionHistoryStore,
+    };
+    use crate::session::{CreateSessionRequest, SessionService};
+    use crate::terminal::TerminalOutputKind;
+
+    use super::ensure_operational_history_for_outline;
+
+    #[test]
+    fn outline_history_imports_legacy_jsonl_when_operational_history_is_empty() {
+        let config = DaemonConfig::for_tests();
+        let mut sessions = SessionService::new(&config);
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should create");
+        let history_store = SessionHistoryStore::new(config.session_history_root.clone())
+            .expect("legacy history should initialize");
+        let operational_history_store =
+            OperationalHistoryStore::open(config.operational_history_path())
+                .expect("operational history should open");
+        let legacy_prompt =
+            SessionHistoryEntry::user_prompt(session.id(), "attachment-1", "agent-1", "legacy");
+        history_store
+            .append(&session, &legacy_prompt)
+            .expect("legacy history should append");
+
+        ensure_operational_history_for_outline(
+            &history_store,
+            &operational_history_store,
+            &session,
+        )
+        .expect("legacy history should import");
+
+        let entries = operational_history_store
+            .load_session_history_entries(session.id(), Some("agent-1"))
+            .expect("operational history should load");
+        assert_eq!(entries, vec![legacy_prompt]);
+    }
+
+    #[test]
+    fn outline_history_does_not_import_legacy_jsonl_after_operational_history_exists() {
+        let config = DaemonConfig::for_tests();
+        let mut sessions = SessionService::new(&config);
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should create");
+        let history_store = SessionHistoryStore::new(config.session_history_root.clone())
+            .expect("legacy history should initialize");
+        let operational_history_store =
+            OperationalHistoryStore::open(config.operational_history_path())
+                .expect("operational history should open");
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            session.id(),
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(1),
+        );
+        operational_history_store
+            .append_transcript(&external_prompt, HistoryEventTurnContext::default())
+            .expect("operational history should append");
+        let legacy_output = SessionHistoryEntry::provider_output(
+            session.id(),
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some("legacy-output".to_string()),
+            "legacy output",
+        );
+        history_store
+            .append(&session, &legacy_output)
+            .expect("legacy history should append");
+
+        ensure_operational_history_for_outline(
+            &history_store,
+            &operational_history_store,
+            &session,
+        )
+        .expect("operational history should remain authoritative");
+
+        let entries = operational_history_store
+            .load_session_history_entries(session.id(), Some("agent-1"))
+            .expect("operational history should load");
+        assert_eq!(entries, vec![external_prompt]);
+    }
 }

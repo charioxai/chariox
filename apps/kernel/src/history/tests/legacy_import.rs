@@ -28,9 +28,13 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
     store
         .append_transcripts(vec![(&external_prompt, HistoryEventTurnContext::default())])
         .expect("external prompt should append");
-    assert!(!store
-        .has_arroba_owned_user_prompts("session-1")
-        .expect("arroba-owned prompt presence should be checked"));
+    assert!(
+        store
+            .load_arroba_owned_prompt_texts("session-1", "agent-1")
+            .expect("arroba-owned prompt index should load")
+            .is_empty(),
+        "external-observed prompts should not count as Arroba-owned prompt text"
+    );
 
     let mut legacy_prompt =
         SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "legacy prompt")
@@ -55,9 +59,6 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
             .expect("arroba owned prompt should load"),
         vec!["legacy prompt".to_string()]
     );
-    assert!(store
-        .has_arroba_owned_user_prompts("session-1")
-        .expect("arroba-owned prompt presence should be checked"));
 
     let imported_again = store
         .append_missing_legacy_transcripts(&[legacy_prompt, legacy_output])
