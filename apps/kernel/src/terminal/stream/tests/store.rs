@@ -85,6 +85,7 @@ async fn terminal_stream_store_external_observed_output_does_not_wake_unrelated_
         vec!["attachment-1".to_string()],
         crate::history::EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
         metadata,
+        state_entry.source_attachment_id.clone(),
     );
 
     assert!(

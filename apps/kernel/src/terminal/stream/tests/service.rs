@@ -101,9 +101,14 @@ fn external_observed_output_records_carry_metadata() {
         vec!["attachment-1".to_string()],
         crate::history::EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
         metadata,
+        state_entry.source_attachment_id.clone(),
     );
 
     let drained = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(
+        drained[0].source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
     let metadata = drained[0]
         .external_observation_metadata
         .as_ref()
@@ -131,7 +136,7 @@ fn external_observed_output_records_carry_metadata() {
 #[test]
 fn external_observed_output_replaces_pending_record_with_same_merge_key() {
     let mut terminal = TerminalStreamService::new();
-    let (merge_key, metadata) = external_observed_metadata("assistant-1");
+    let (merge_key, metadata, source_attachment_id) = external_observed_metadata("assistant-1");
 
     terminal.fan_out_external_observed_output(
         "session-1",
@@ -142,6 +147,7 @@ fn external_observed_output_replaces_pending_record_with_same_merge_key() {
         vec!["attachment-1".to_string()],
         b"first version",
         metadata.clone(),
+        source_attachment_id.clone(),
     );
     terminal.fan_out_external_observed_output(
         "session-1",
@@ -152,6 +158,7 @@ fn external_observed_output_replaces_pending_record_with_same_merge_key() {
         vec!["attachment-1".to_string()],
         b"updated version",
         metadata,
+        source_attachment_id,
     );
 
     assert_eq!(terminal.output_records().len(), 1);
@@ -164,7 +171,7 @@ fn external_observed_output_replaces_pending_record_with_same_merge_key() {
 #[test]
 fn external_observed_output_requeues_replacement_for_drained_recipient() {
     let mut terminal = TerminalStreamService::new();
-    let (merge_key, metadata) = external_observed_metadata("assistant-1");
+    let (merge_key, metadata, source_attachment_id) = external_observed_metadata("assistant-1");
 
     terminal.fan_out_external_observed_output(
         "session-1",
@@ -175,6 +182,7 @@ fn external_observed_output_requeues_replacement_for_drained_recipient() {
         vec!["attachment-1".to_string(), "attachment-2".to_string()],
         b"first version",
         metadata.clone(),
+        source_attachment_id.clone(),
     );
     let first = terminal.drain_output_records("session-1", "attachment-1");
     assert_eq!(first.len(), 1);
@@ -189,6 +197,7 @@ fn external_observed_output_requeues_replacement_for_drained_recipient() {
         vec!["attachment-1".to_string(), "attachment-2".to_string()],
         b"updated version",
         metadata,
+        source_attachment_id,
     );
 
     let first_after_update = terminal.drain_output_records("session-1", "attachment-1");

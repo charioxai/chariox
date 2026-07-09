@@ -49,6 +49,10 @@ fn session_history_entry_source_metadata_line_matches_serialized_source() {
     );
     assert!(observed.is_external_provider_observed());
     assert_eq!(
+        observed.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
+    assert_eq!(
         observed.external_provider_observed_turn_id(),
         Some("turn-1")
     );

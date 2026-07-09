@@ -495,7 +495,7 @@ impl SessionHistoryEntry {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
             agent_id: Some(agent_id.to_string()),
-            source_attachment_id: None,
+            source_attachment_id: Some(external_provider_source_attachment_id(&provider)),
             prompt_origin: Some(PromptOrigin::External),
             kind,
             merge_key,
@@ -544,6 +544,10 @@ impl SessionHistoryEntry {
             SessionHistoryExternalObservation::for_external_provider_state_reason(reason);
         entry
     }
+}
+
+fn external_provider_source_attachment_id(provider: &str) -> String {
+    format!("external:{provider}")
 }
 
 #[derive(Debug, Clone)]

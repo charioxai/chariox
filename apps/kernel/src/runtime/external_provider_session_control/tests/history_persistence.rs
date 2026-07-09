@@ -74,6 +74,10 @@ fn append_observed_external_turns_persist_as_reloadable_regular_history_turn() {
     );
     assert_eq!(legacy_entries[0].text, "external prompt");
     assert_eq!(
+        legacy_entries[0].source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
+    assert_eq!(
         legacy_entries[0].source,
         Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
     );
@@ -106,6 +110,10 @@ fn append_observed_external_turns_persist_as_reloadable_regular_history_turn() {
     );
     assert_eq!(turn.external_provider_turn_id.as_deref(), Some("user-1"));
     assert_eq!(turn.user_prompt.entry.text, "external prompt");
+    assert_eq!(
+        turn.user_prompt.entry.source_attachment_id.as_deref(),
+        Some("external:codex")
+    );
     assert_eq!(
         turn.user_prompt.entry.source,
         Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)

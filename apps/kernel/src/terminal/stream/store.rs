@@ -206,6 +206,7 @@ impl TerminalStreamStore {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
         external_observation_metadata: TerminalOutputExternalObservationMetadata,
+        source_attachment_id: Option<String>,
     ) -> TerminalOutputRecord {
         let record = self
             .inner
@@ -220,6 +221,7 @@ impl TerminalStreamStore {
                 recipient_attachment_ids,
                 bytes,
                 external_observation_metadata,
+                source_attachment_id,
             );
         self.record_change_for_record(&record);
         record

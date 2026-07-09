@@ -12,7 +12,11 @@ use crate::history::{
 
 fn external_observed_metadata(
     provider_turn_id: &str,
-) -> (String, TerminalOutputExternalObservationMetadata) {
+) -> (
+    String,
+    TerminalOutputExternalObservationMetadata,
+    Option<String>,
+) {
     let entry = crate::history::SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("provider-run-1"),
@@ -31,6 +35,7 @@ fn external_observed_metadata(
             .expect("external observed entry should have merge key"),
         TerminalOutputExternalObservationMetadata::from_session_history_entry(&entry)
             .expect("external observed entry should produce terminal metadata"),
+        entry.source_attachment_id.clone(),
     )
 }
 

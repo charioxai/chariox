@@ -603,6 +603,7 @@ pub(super) fn emit_observed_external_history_signal(
             recipient_attachment_ids,
             EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             external_observation_metadata,
+            entry.source_attachment_id.clone(),
         );
 }
 
@@ -656,5 +657,6 @@ pub(super) fn emit_observed_external_state_signal(
             recipient_attachment_ids,
             EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS.as_bytes(),
             external_observation_metadata,
+            state_entry.source_attachment_id.clone(),
         );
 }

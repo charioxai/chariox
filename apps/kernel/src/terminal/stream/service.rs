@@ -262,6 +262,7 @@ impl TerminalStreamService {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
         external_observation_metadata: TerminalOutputExternalObservationMetadata,
+        source_attachment_id: Option<String>,
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
@@ -271,7 +272,7 @@ impl TerminalStreamService {
             agent_id: agent_id.map(str::to_string),
             prompt_id: None,
             prompt_origin: Some(PromptOrigin::External),
-            source_attachment_id: None,
+            source_attachment_id,
             kind,
             merge_key,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
