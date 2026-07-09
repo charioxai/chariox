@@ -130,6 +130,24 @@ impl PromptStateOwner {
             })
     }
 
+    pub(crate) fn active_prompt_agent_ids(&self, session: &RuntimeSession) -> Vec<String> {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner
+            .agent_ids_for_session(session)
+            .into_iter()
+            .filter(|agent_id| {
+                owner
+                    .states
+                    .get(&PromptStateKey::new(session.id(), agent_id))
+                    .and_then(|state| state.active_prompt.as_ref())
+                    .is_some()
+            })
+            .collect()
+    }
+
     pub(crate) fn queued_prompt_count_for_agent(
         &self,
         session: &RuntimeSession,

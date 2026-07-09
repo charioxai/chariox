@@ -477,22 +477,7 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
     }) {
         provider_run_ids.insert(provider_run_id.to_string());
     }
-    let mut agent_ids = session
-        .agents()
-        .iter()
-        .map(|agent| agent.id().to_string())
-        .collect::<Vec<_>>();
-    agent_ids.extend(session.prompt_states().keys().cloned());
-    agent_ids.sort();
-    agent_ids.dedup();
-    for agent_id in agent_ids {
-        if owned
-            .prompt_state_owner
-            .active_prompt_for_agent(session, &agent_id)
-            .is_none()
-        {
-            continue;
-        }
+    for agent_id in owned.prompt_state_owner.active_prompt_agent_ids(session) {
         if let Some(provider_run_id) = owned
             .provider_store
             .get_run_for_agent(session.id(), &agent_id)
@@ -545,7 +530,7 @@ fn provider_run_requires_owned_output_pump(
     run.agent_instance_id().is_some_and(|agent_id| {
         owned
             .prompt_state_owner
-            .active_prompt_for_agent(session, agent_id)
+            .active_prompt_for_agent_snapshot(session, agent_id)
             .is_some()
     })
 }

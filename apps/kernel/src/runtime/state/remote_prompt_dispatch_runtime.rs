@@ -90,15 +90,11 @@ impl KernelRuntimeState {
         &self,
         session: &crate::session::RuntimeSession,
     ) -> Result<(), DaemonError> {
-        let mut agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        for agent_id in agent_ids {
+        for agent_id in self
+            .owned
+            .prompt_state_owner
+            .active_prompt_agent_ids(session)
+        {
             let _ = self
                 .drain_remote_prompt_projection_once(session.id(), &agent_id)
                 .await?;

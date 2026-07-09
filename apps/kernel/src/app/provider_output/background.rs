@@ -20,22 +20,7 @@ pub(super) fn pump_session_active_prompt_outputs(
     }) {
         provider_run_ids.insert(provider_run_id.to_string());
     }
-    let mut agent_ids = session
-        .agents()
-        .iter()
-        .map(|agent| agent.id().to_string())
-        .collect::<Vec<_>>();
-    agent_ids.extend(session.prompt_states().keys().cloned());
-    agent_ids.sort();
-    agent_ids.dedup();
-    for agent_id in agent_ids {
-        if app
-            .prompt_state_owner
-            .active_prompt_for_agent_snapshot(&session, &agent_id)
-            .is_none()
-        {
-            continue;
-        }
+    for agent_id in app.prompt_state_owner.active_prompt_agent_ids(&session) {
         if let Some(provider_run_id) = app
             .providers
             .get_run_for_agent(session.id(), &agent_id)
