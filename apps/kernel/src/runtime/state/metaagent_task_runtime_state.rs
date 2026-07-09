@@ -698,9 +698,7 @@ impl KernelRuntimeState {
     ) -> crate::session::RuntimeSession {
         let agents = self.owned.agent_store.get_session_agents(session.id());
         session.set_agents(agents);
-        self.owned.project_session_runtime_view(&mut session);
-        self.owned.session_projection.update(session.clone());
-        session
+        self.owned.update_session_projection(session)
     }
 }
 

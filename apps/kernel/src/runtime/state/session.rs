@@ -11,7 +11,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session = self.build_session_snapshot(session_id)?;
-        self.session_projection.update(session.clone());
+        let session = self.update_session_projection(session);
         self.runtime_projection_changes.record_change();
         Ok(session)
     }
@@ -67,6 +67,15 @@ impl KernelRuntimeOwnedState {
         session.set_active_provider_run(projected_run_id);
     }
 
+    pub(super) fn update_session_projection(
+        &self,
+        mut session: crate::session::RuntimeSession,
+    ) -> crate::session::RuntimeSession {
+        self.project_session_runtime_view(&mut session);
+        self.session_projection.update(session.clone());
+        session
+    }
+
     pub(super) fn create_session_response(
         &self,
         request: crate::session::CreateSessionRequest,
@@ -113,8 +122,7 @@ impl KernelRuntimeOwnedState {
         session = self.session_store.get_session(session.id())?;
         let agents = self.agent_store.get_session_agents(session.id());
         session.set_agents(agents);
-        self.project_session_runtime_view(&mut session);
-        self.session_projection.update(session.clone());
+        session = self.update_session_projection(session);
         self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.kernel_session",
