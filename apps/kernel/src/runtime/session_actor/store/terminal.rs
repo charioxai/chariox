@@ -59,19 +59,25 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = match self
-            .state
-            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
-            .await
-        {
-            Ok(()) => Ok(LocalDaemonResponse::RuntimeNotices {
+        let result = async {
+            self.state
+                .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+                .await?;
+            self.state
+                .record_terminal_attachment_heartbeat(
+                    &request.session_id,
+                    &request.attachment_id,
+                    crate::session::unix_epoch_ms(),
+                )
+                .await?;
+            Ok(LocalDaemonResponse::RuntimeNotices {
                 notices: self
                     .state
                     .drain_notice_records(&request.session_id, &request.attachment_id)
                     .await,
-            }),
-            Err(error) => Err(error),
-        };
+            })
+        }
+        .await;
         self.with_session_projection_action_result(result).await
     }
 }

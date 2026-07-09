@@ -39,6 +39,13 @@ impl DaemonKey {
     }
 }
 
+pub(crate) fn daemon_registration_is_kernel_target(registration: &DaemonRegistration) -> bool {
+    registration
+        .capabilities
+        .iter()
+        .any(|capability| capability == "kernel_websocket" || capability == "kernel_ws")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectedPeer {
     pub role: RelayConnectionRole,
@@ -433,6 +440,7 @@ impl RelayRegistry {
             .iter()
             .filter(move |(key, _)| key.realm_id == realm_id)
             .map(|(_, registration)| registration)
+            .filter(|registration| daemon_registration_is_kernel_target(registration))
     }
 
     fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {

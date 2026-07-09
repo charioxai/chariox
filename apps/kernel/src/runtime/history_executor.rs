@@ -102,9 +102,6 @@ fn ensure_operational_history_for_outline(
     operational_history_store: &OperationalHistoryStore,
     session: &crate::session::RuntimeSession,
 ) -> Result<(), DaemonError> {
-    if operational_history_store.has_session_events(session.id())? {
-        return Ok(());
-    }
     if operational_history_store.legacy_fallback_disabled(session.id())? {
         return Ok(());
     }
@@ -285,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_history_does_not_import_legacy_jsonl_after_operational_history_exists() {
+    fn outline_history_imports_missing_legacy_jsonl_after_operational_history_exists() {
         let config = DaemonConfig::for_tests();
         let mut sessions = SessionService::new(&config);
         let session = sessions
@@ -327,11 +324,11 @@ mod tests {
             &operational_history_store,
             &session,
         )
-        .expect("operational history should remain authoritative");
+        .expect("legacy history should import missing entries");
 
         let entries = operational_history_store
             .load_session_history_entries(session.id(), Some("agent-1"))
             .expect("operational history should load");
-        assert_eq!(entries, vec![external_prompt]);
+        assert_eq!(entries, vec![external_prompt, legacy_output]);
     }
 }

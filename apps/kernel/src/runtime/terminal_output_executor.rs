@@ -70,6 +70,14 @@ impl TerminalOutputExecutor {
                 attachment_id: request.attachment_id,
             });
         }
+        self.terminal_output_store
+            .state
+            .record_terminal_attachment_heartbeat(
+                &request.session_id,
+                &request.attachment_id,
+                crate::session::unix_epoch_ms(),
+            )
+            .await?;
         let provider_run_ids = self.provider_run_ids_for_pump(&session);
         if provider_run_ids.is_empty()
             && session

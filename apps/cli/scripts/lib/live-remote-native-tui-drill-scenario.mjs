@@ -324,9 +324,11 @@ async function loadAgentHistoryEntries(client, sessionId, agentId, latestPromptC
   const entries = []
   const agent = outline.agents?.find((entry) => entry.agent_id === agentId)
   for (const turn of agent?.turns ?? []) {
+    if (turn.user_prompt?.entry) entries.push(turn.user_prompt.entry)
     for (const row of turn.entries ?? []) {
       if (row?.entry) entries.push(row.entry)
     }
+    if (turn.summary?.entry) entries.push(turn.summary.entry)
     for (const blob of turn.blobs ?? []) {
       const content = unwrap(
         await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)),

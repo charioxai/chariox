@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::PumpTerminalOutputRequest;
 
 #[test]
 fn append_native_provider_output_fans_out_and_records_history() {
@@ -187,4 +188,104 @@ fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
         records[0].pending_recipient_attachment_ids,
         vec![fresh_attachment.id().to_string()]
     );
+}
+
+#[test]
+fn pump_terminal_output_refreshes_terminal_attachment_heartbeat() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-pump-heartbeat", "worktree-pump-heartbeat"),
+        ))
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-pump-heartbeat".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attachment should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.attachments()
+            .record_heartbeat(session.id(), attachment.id(), 1)
+            .expect("old heartbeat should record");
+    });
+
+    match harness
+        .dispatch(LocalDaemonRequest::PumpTerminalOutput(
+            PumpTerminalOutputRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+            },
+        ))
+        .expect("terminal output pump should succeed")
+    {
+        LocalDaemonResponse::TerminalOutput { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    harness.pump_transport_runtime();
+    let attachment_ids =
+        harness.with_app(|app| app.attachments().list_session_attachment_ids(session.id()));
+    assert_eq!(attachment_ids, vec![attachment.id().to_string()]);
+}
+
+#[test]
+fn poll_runtime_notices_refreshes_terminal_attachment_heartbeat() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-notice-heartbeat", "worktree-notice-heartbeat"),
+        ))
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-notice-heartbeat".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attachment should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.attachments()
+            .record_heartbeat(session.id(), attachment.id(), 1)
+            .expect("old heartbeat should record");
+    });
+
+    match harness
+        .dispatch(LocalDaemonRequest::PollRuntimeNotices(
+            PollRuntimeNoticesRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+            },
+        ))
+        .expect("runtime notice poll should succeed")
+    {
+        LocalDaemonResponse::RuntimeNotices { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    harness.pump_transport_runtime();
+    let attachment_ids =
+        harness.with_app(|app| app.attachments().list_session_attachment_ids(session.id()));
+    assert_eq!(attachment_ids, vec![attachment.id().to_string()]);
 }

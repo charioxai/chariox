@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -618,7 +618,9 @@ pub(super) async fn resolve_target_daemon_key(
         .daemons
         .iter()
         .filter(|(key, registration)| {
-            key.realm_id == realm_id && registration.daemon_alias.as_ref() == Some(alias)
+            key.realm_id == realm_id
+                && registration.daemon_alias.as_ref() == Some(alias)
+                && crate::registry::daemon_registration_is_kernel_target(registration)
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;
