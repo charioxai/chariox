@@ -11,8 +11,8 @@ import {
   externalProviderObservedCoalescedTranscriptIdentityFields,
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
-  externalProviderObservedExplicitIdentityFields,
   externalProviderObservedIdentityKey,
+  externalProviderObservedPresentIdentityFields,
   type ExternalProviderObservedIdentityFields,
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
@@ -26,6 +26,7 @@ import {
   sessionPromptStateEntriesForSessionAgents,
   sessionPromptStateRecordForAgent,
 } from "./session-agent-prompt-state.js"
+import { promptQueueItemTranscriptMetadata } from "./transcript-entry-state.js"
 
 export type ActivePromptLifecycleRecord = ExternalProviderObservedTranscriptIdentityFields & {
   readonly id: string
@@ -100,13 +101,19 @@ export function sessionPromptLifecycleTransition(
 }
 
 function activePromptLifecycleRecordFromPrompt(prompt: PromptQueueItem): ActivePromptLifecycleRecord {
-  const promptOrigin = promptOriginFromRecord(prompt)
+  const metadata = promptQueueItemTranscriptMetadata(prompt)
   const status = normalizeActivePromptLifecycleStatus(prompt.status)
-  const externalIdentity = activePromptLifecycleExternalIdentity(prompt)
+  const externalIdentity = externalProviderObservedPresentIdentityFields({
+    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: metadata.externalProviderSessionId }
+      : {}),
+    ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
+  })
   return {
     ...prompt,
     ...(status !== undefined ? { status } : {}),
-    promptOrigin,
+    promptOrigin: metadata.promptOrigin ?? null,
     ...externalIdentity,
   }
 }
@@ -136,21 +143,6 @@ function activePromptLifecycleRecordFromProjectedTurn(
       : {}),
     ...(projection.activeTurnExternalProviderTurnId
       ? { externalProviderTurnId: projection.activeTurnExternalProviderTurnId }
-      : {}),
-  }
-}
-
-function activePromptLifecycleExternalIdentity(
-  prompt: PromptQueueItem,
-): ExternalProviderObservedTranscriptIdentityFields {
-  const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
-  return {
-    ...(externalIdentity.externalProvider ? { externalProvider: externalIdentity.externalProvider } : {}),
-    ...(externalIdentity.externalProviderSessionId
-      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
-      : {}),
-    ...(externalIdentity.externalProviderTurnId
-      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
       : {}),
   }
 }
