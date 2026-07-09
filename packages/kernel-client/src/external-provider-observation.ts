@@ -305,6 +305,14 @@ export function externalProviderObservedPresentIdentityFields(
   }
 }
 
+export function externalProviderObservedPresentExplicitIdentityFields(
+  record: ExternalProviderObservedPromptOriginFields,
+): ExternalProviderObservedPresentIdentityFields {
+  return externalProviderObservedPresentIdentityFields(
+    externalProviderObservedExplicitIdentityFields(record),
+  )
+}
+
 export function mergeExternalProviderObservation(
   existing: SessionHistoryExternalObservation | null | undefined,
   incoming: SessionHistoryExternalObservation | null | undefined,

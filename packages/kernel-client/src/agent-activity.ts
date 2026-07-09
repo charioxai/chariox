@@ -4,8 +4,7 @@ import {
 } from "./prompt-origin.js"
 import {
   externalProviderObservedExactIdentityConflicts,
-  externalProviderObservedExplicitIdentityFields,
-  externalProviderObservedPresentIdentityFields,
+  externalProviderObservedPresentExplicitIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 
@@ -482,9 +481,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
 function projectExternalProviderObservedIdentity(
   record: Record<string, unknown>,
 ): AgentRuntimeExternalIdentityProjection {
-  return externalProviderObservedPresentIdentityFields(
-    externalProviderObservedExplicitIdentityFields(record),
-  )
+  return externalProviderObservedPresentExplicitIdentityFields(record)
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {

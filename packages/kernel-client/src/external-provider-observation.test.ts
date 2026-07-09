@@ -19,6 +19,7 @@ import {
   externalProviderObservedIdentityKey,
   externalProviderObservedIdentityMatches,
   externalProviderObservedPresentIdentityFields,
+  externalProviderObservedPresentExplicitIdentityFields,
   externalProviderObservedProviderStatusShouldRender,
   externalProviderObservedStatusSettlesActivePrompt,
   externalProviderObservedTranscriptExactIdentityConflicts,
@@ -181,6 +182,18 @@ test("external provider observed identity matching normalizes provider and trims
   assert.deepEqual(externalProviderObservedPresentIdentityFields({
     externalProvider: null,
     externalProviderTurnId: "",
+  }), {})
+  assert.deepEqual(externalProviderObservedPresentExplicitIdentityFields({
+    external_provider: " CODEX ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: " user-1 ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+  assert.deepEqual(externalProviderObservedPresentExplicitIdentityFields({
+    id: "external:codex:thread-1:user-1",
   }), {})
 })
 
