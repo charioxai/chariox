@@ -637,6 +637,107 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn pending_git_snapshot_waits_for_prompt_owner_when_session_mirror_is_stale() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-git-turn-owner-active-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    init_repo_with_file(&root, "src/lib.rs", "seed\n");
+
+    let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let provider_run = app
+        .providers
+        .start_run_provider_only(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id())
+            .with_working_directory(root.clone()),
+        )
+        .expect("provider should start")
+        .into_run();
+    app.update_provider_run_projection(provider_run.clone());
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "codex-thread-git-owner-active",
+        "codex-turn-git-owner-active",
+        agent.id(),
+        "external prompt still running",
+    );
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(external_prompt))
+        .expect("external active prompt should sync");
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            None,
+            std::collections::VecDeque::new(),
+        )
+        .expect("test drift should clear stale session prompt mirror");
+    assert!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should load")
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "session mirror should not expose the active prompt"
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        provider: provider_run.provider().to_string(),
+        model: provider_run.model().to_string(),
+        provider_run_id: provider_run.id().to_string(),
+        provider_session_id: None,
+        prompt_id: "prompt-owner-active".to_string(),
+        turn_id: "prompt-owner-active".to_string(),
+        source_attachment_id: Some("external:codex".to_string()),
+        prompt_origin: Some(crate::session::PromptOrigin::External),
+        external_provider: Some("codex".to_string()),
+        external_provider_session_id: Some("codex-thread-git-owner-active".to_string()),
+        external_provider_turn_id: Some("codex-turn-git-owner-active".to_string()),
+        started_at_ms: Some(crate::session::unix_epoch_ms()),
+        worktree_path: root.clone(),
+        workspace_live_sync_tracked: true,
+        machine_id: None,
+        prompt_summary: "external prompt still running".to_string(),
+    })
+    .expect("pre-turn snapshot should be captured");
+    runtime.owned.git_turn_snapshots.insert(before);
+    std::fs::write(root.join("src/lib.rs"), "seed\nagent change\n").expect("source should change");
+
+    runtime
+        .observe_git_after_provider_activity_if_pending(provider_run.id())
+        .await;
+
+    assert!(
+        runtime
+            .owned
+            .git_turn_snapshots
+            .get_for_provider_run(provider_run.id())
+            .is_some(),
+        "pending git snapshot must not finalize while prompt owner still has an active prompt"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn workspace_live_sync_text_change(
     session_id: &str,
     agent_id: &str,

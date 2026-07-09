@@ -171,7 +171,11 @@ impl KernelRuntimeState {
         else {
             return;
         };
-        let prompt_is_active = session.active_prompt_for_agent(agent_id).is_some();
+        let prompt_is_active = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some();
         if prompt_is_active {
             return;
         }
