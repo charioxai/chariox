@@ -72,14 +72,6 @@ fn provider_tool_history_gate() -> &'static Mutex<BTreeMap<String, ProviderToolH
     GATE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-#[cfg(test)]
-fn reset_provider_tool_history_gate_for_tests() {
-    provider_tool_history_gate()
-        .lock()
-        .expect("provider tool history gate lock should not be poisoned")
-        .clear();
-}
-
 pub(super) fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
     matches!(
         entry.kind,
@@ -98,9 +90,8 @@ mod tests {
 
     #[test]
     fn provider_tool_history_persists_first_running_and_status_transition() {
-        reset_provider_tool_history_gate_for_tests();
-        let running = provider_tool_entry("running");
-        let completed = provider_tool_entry("completed");
+        let running = provider_tool_entry("transition", "running");
+        let completed = provider_tool_entry("transition", "completed");
 
         assert!(should_persist_provider_tool_history(&running));
         assert!(!should_persist_provider_tool_history(&running));
@@ -110,18 +101,18 @@ mod tests {
 
     #[test]
     fn provider_tool_history_requires_tool_identity_and_status() {
-        reset_provider_tool_history_gate_for_tests();
         let no_status = SessionHistoryEntry::provider_output(
-            "session-1",
-            "provider-run-1",
+            "provider-tool-history-missing-fields-session",
+            "provider-tool-history-missing-fields-run",
             Some("agent-1"),
             TerminalOutputKind::ProviderTool,
-            Some("call-1".to_string()),
-            serde_json::json!({ "id": "call-1", "tool": "shell" }).to_string(),
+            Some("provider-tool-history-no-status-call".to_string()),
+            serde_json::json!({ "id": "provider-tool-history-no-status-call", "tool": "shell" })
+                .to_string(),
         );
         let no_identity = SessionHistoryEntry::provider_output(
-            "session-1",
-            "provider-run-1",
+            "provider-tool-history-missing-fields-session",
+            "provider-tool-history-missing-fields-run",
             Some("agent-1"),
             TerminalOutputKind::ProviderTool,
             None,
@@ -134,15 +125,29 @@ mod tests {
         assert!(should_persist_provider_tool_history(&no_identity));
     }
 
-    fn provider_tool_entry(status: &str) -> SessionHistoryEntry {
+    #[test]
+    fn provider_tool_history_keys_are_scoped_by_runtime_identity() {
+        let first = provider_tool_entry("scoped-a", "running");
+        let second = provider_tool_entry("scoped-b", "running");
+
+        assert!(should_persist_provider_tool_history(&first));
+        assert!(should_persist_provider_tool_history(&second));
+        assert!(!should_persist_provider_tool_history(&first));
+        assert!(!should_persist_provider_tool_history(&second));
+    }
+
+    fn provider_tool_entry(test_id: &str, status: &str) -> SessionHistoryEntry {
+        let session_id = format!("provider-tool-history-{test_id}-session");
+        let provider_run_id = format!("provider-tool-history-{test_id}-run");
+        let call_id = format!("provider-tool-history-{test_id}-call");
         SessionHistoryEntry::provider_output(
-            "session-1",
-            "provider-run-1",
+            &session_id,
+            &provider_run_id,
             Some("agent-1"),
             TerminalOutputKind::ProviderTool,
-            Some("call-1".to_string()),
+            Some(call_id.clone()),
             serde_json::json!({
-                "id": "call-1",
+                "id": call_id,
                 "tool": "shell",
                 "status": status,
                 "output": "snapshot",
