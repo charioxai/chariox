@@ -18,6 +18,7 @@ use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::projection::TransportHealthSnapshot;
 use crate::slice::SliceRecord;
 use crate::terminal::TerminalStreamHealthSnapshot;
+use std::collections::BTreeSet;
 
 #[test]
 fn daemon_health_projection_records_actor_queue_snapshots() {
@@ -703,13 +704,18 @@ fn remote_execution_health_reports_active_agent_without_worker_run() {
         relay_token: None,
     }));
 
-    let snapshot = RemoteExecutionHealthSnapshot::from_agents(&[
-        healthy_idle,
-        missing_run,
-        empty_run,
-        malformed,
-        local_agent("agent-local"),
-    ]);
+    let active_agent_ids =
+        BTreeSet::from(["agent-working".to_string(), "agent-empty-run".to_string()]);
+    let snapshot = RemoteExecutionHealthSnapshot::from_agents_with_active_agent_ids(
+        &[
+            healthy_idle,
+            missing_run,
+            empty_run,
+            malformed,
+            local_agent("agent-local"),
+        ],
+        &active_agent_ids,
+    );
 
     assert_eq!(snapshot.remote_agents, 4);
     assert_eq!(snapshot.active_remote_agents, 2);
@@ -737,6 +743,24 @@ fn remote_execution_health_reports_active_agent_without_worker_run() {
     assert!(snapshot.issues[3]
         .details
         .contains("worker_kernel_id, execution_lease_id"));
+}
+
+#[test]
+fn remote_execution_health_ignores_stale_legacy_worker_flags() {
+    let mut stale = remote_agent("agent-stale-working");
+    stale.set_remote_execution_active_worker_provider_run_id(None);
+    stale.set_state(AgentState::Working);
+    stale.set_processing(true);
+
+    let snapshot = RemoteExecutionHealthSnapshot::from_agents_with_active_agent_ids(
+        &[stale],
+        &BTreeSet::new(),
+    );
+
+    assert_eq!(snapshot.remote_agents, 1);
+    assert_eq!(snapshot.active_remote_agents, 0);
+    assert_eq!(snapshot.missing_active_worker_runs, 0);
+    assert!(snapshot.issues.is_empty());
 }
 
 fn local_agent(id: &str) -> AgentInstance {

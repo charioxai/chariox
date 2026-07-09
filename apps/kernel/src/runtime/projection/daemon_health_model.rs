@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use super::ProjectionMetadata;
 use crate::agent::{AgentInstance, AgentState};
@@ -512,7 +513,10 @@ pub struct RemoteExecutionIssue {
 }
 
 impl RemoteExecutionHealthSnapshot {
-    pub(crate) fn from_agents(agents: &[AgentInstance]) -> Self {
+    pub(crate) fn from_agents_with_active_agent_ids(
+        agents: &[AgentInstance],
+        active_agent_ids: &BTreeSet<String>,
+    ) -> Self {
         let mut snapshot = Self::default();
         for agent in agents {
             let Some(remote_execution) = agent.remote_execution() else {
@@ -520,7 +524,7 @@ impl RemoteExecutionHealthSnapshot {
             };
             snapshot.remote_agents += 1;
 
-            let active = agent.is_processing() || agent.state() == AgentState::Working;
+            let active = active_agent_ids.contains(agent.id());
             if active {
                 snapshot.active_remote_agents += 1;
             }

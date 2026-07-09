@@ -38,6 +38,13 @@ pub(crate) async fn build_daemon_health_projection(
     let agents = input.runtime_state.list_agents();
     let active_turns = input.runtime_state.active_turn_snapshot();
     let provider_runs = input.provider_run_projection.list();
+    let active_agent_ids = input
+        .agent_runtime_projection
+        .list()
+        .into_iter()
+        .filter(|projection| projection.active_prompt.is_some())
+        .map(|projection| projection.agent_id)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut projection = DaemonHealthProjection::new(
         input.last_event_id,
         input.session_runtime.queue_snapshots().await,
@@ -62,7 +69,10 @@ pub(crate) async fn build_daemon_health_projection(
         ),
         input.terminal_health.snapshot(),
         SliceLifecycleHealthSnapshot::from_slices(&input.runtime_state.list_slices()),
-        RemoteExecutionHealthSnapshot::from_agents(&agents),
+        RemoteExecutionHealthSnapshot::from_agents_with_active_agent_ids(
+            &agents,
+            &active_agent_ids,
+        ),
         RemoteExtensionSyncHealthSnapshot::from_agents(&agents),
         input
             .session_projection
