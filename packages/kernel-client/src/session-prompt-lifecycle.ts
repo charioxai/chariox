@@ -16,9 +16,6 @@ import {
   type ExternalProviderObservedTranscriptIdentityFields,
 } from "./external-provider-observation.js"
 import {
-  promptOriginFromRecord,
-} from "./prompt-origin.js"
-import {
   sessionHasAgentActivityProjection,
   sessionHasPromptStateProjection,
   sessionProjectedPromptActivityEntriesForSessionAgents,
@@ -127,7 +124,7 @@ function activePromptLifecycleRecordFromProjectedTurn(
   return {
     id: projection.activeTurnPromptId,
     ...(status !== undefined ? { status } : {}),
-    promptOrigin: activePromptLifecycleRecordPromptOriginFromProjectedTurn(projection),
+    promptOrigin: projection.activeTurnPromptOrigin ?? null,
     target_agent_id: agentId,
     ...(projection.activeTurnProviderRunId ? { providerRunId: projection.activeTurnProviderRunId } : {}),
     ...(projection.activeTurnSourceAttachmentId !== undefined
@@ -147,17 +144,6 @@ function normalizeActivePromptLifecycleStatus(value: string | null | undefined):
   return normalizeAgentRuntimePromptProjectionStatus(value)
     ?? normalizeAgentRuntimePromptStatus(value)
     ?? undefined
-}
-
-function activePromptLifecycleRecordPromptOriginFromProjectedTurn(
-  projection: AgentRuntimeActivityProjection,
-): string | null {
-  if (projection.activeTurnPromptOrigin !== undefined) {
-    return promptOriginFromRecord({
-      prompt_origin: projection.activeTurnPromptOrigin,
-    })
-  }
-  return null
 }
 
 function activePromptLifecycleRecordWithPromptState(
