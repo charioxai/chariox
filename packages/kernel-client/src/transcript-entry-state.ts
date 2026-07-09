@@ -520,6 +520,10 @@ export function retargetEquivalentTranscriptTurnSiblings<
   ) {
     return 0
   }
+  const canonicalHasExactExternalIdentity = externalProviderObservedExactIdentityMatches(
+    canonicalEntry,
+    canonicalEntry,
+  )
   let retargeted = 0
   for (const sibling of entries) {
     if (
@@ -528,6 +532,10 @@ export function retargetEquivalentTranscriptTurnSiblings<
       || sibling.turnId !== equivalentOutput.previousTurnId
       || sibling.turnTracking === "none"
       || externalProviderObservedExactIdentityConflicts(sibling, canonicalEntry)
+      || (
+        canonicalHasExactExternalIdentity
+        && !externalProviderObservedExactIdentityMatches(sibling, canonicalEntry)
+      )
     ) {
       continue
     }

@@ -543,7 +543,7 @@ test("retargetEquivalentTranscriptTurnSiblings moves same-turn siblings to canon
   assert.deepEqual(retargetedAt, [[8, "tool", 1_200]])
 })
 
-test("retargetEquivalentTranscriptTurnSiblings fills sparse external identity from canonical turn", () => {
+test("retargetEquivalentTranscriptTurnSiblings rejects sparse external identity for external turns", () => {
   const entries: AssignmentEntry<number>[] = [
     assignmentEntry("equivalent", "assistant", { turnId: 3, outputIdentity: "run-1:assistant" }),
     assignmentEntry("tool", "tool", {
@@ -564,11 +564,11 @@ test("retargetEquivalentTranscriptTurnSiblings fills sparse external identity fr
     externalProviderTurnId: "user-1",
   }))
 
-  assert.equal(retargeted, 1)
-  assert.equal(entries[1]?.turnId, 8)
-  assert.equal(entries[1]?.externalProvider, "codex")
-  assert.equal(entries[1]?.externalProviderSessionId, "thread-1")
-  assert.equal(entries[1]?.externalProviderTurnId, "user-1")
+  assert.equal(retargeted, 0)
+  assert.equal(entries[1]?.turnId, 3)
+  assert.equal(entries[1]?.externalProvider, null)
+  assert.equal(entries[1]?.externalProviderSessionId, null)
+  assert.equal(entries[1]?.externalProviderTurnId, null)
 })
 
 test("retargetEquivalentTranscriptTurnSiblings rejects conflicting exact external identities", () => {
