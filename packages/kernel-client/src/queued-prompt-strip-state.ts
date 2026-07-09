@@ -130,9 +130,8 @@ export function queuedPromptStripItemsForAgent(
     return optimisticByPromptId
   }
   return projection.prompts.map((prompt) => {
-    const optimistic = optimisticByPromptId.find((candidate) => candidate.promptId === prompt.id)
     const override = agentStatusOverrides.find((candidate) => candidate.promptId === prompt.id)
-    return queuedPromptItemFromProjection(prompt, agentId, optimistic, override)
+    return queuedPromptItemFromProjection(prompt, agentId, override)
   })
 }
 
@@ -144,22 +143,42 @@ export function queuedPromptStripItemToTranscriptEntry(
     role: "user",
     text: item.prompt,
     promptId: item.promptId,
+    ...queuedPromptStripTranscriptMetadataFields(item),
+    queuedPrompt: queuedPromptStripTranscriptQueuedMetadata(item),
+  }
+}
+
+function queuedPromptStripTranscriptMetadataFields(
+  item: QueuedPromptStripItem,
+): Pick<QueuedPromptStripTranscriptEntry,
+  | "sourceAttachmentId"
+  | "promptOrigin"
+  | "externalProvider"
+  | "externalProviderSessionId"
+  | "externalProviderTurnId"
+> {
+  return {
     sourceAttachmentId: item.sourceAttachmentId,
     promptOrigin: item.promptOrigin,
     ...externalProviderObservedTranscriptIdentityFields(item),
-    queuedPrompt: {
-      promptId: item.promptId,
-      agentId: item.agentId,
-      promptOrigin: item.promptOrigin,
-      ...externalProviderObservedTranscriptIdentityFields(item),
-      status: item.status,
-      attachmentCount: item.attachmentCount,
-      steerDisabled: item.steerDisabled,
-      canSteer: item.canSteer,
-      canCancel: item.canCancel,
-      steerDisabledReason: item.steerDisabledReason,
-      cancelDisabledReason: item.cancelDisabledReason,
-    },
+  }
+}
+
+function queuedPromptStripTranscriptQueuedMetadata(
+  item: QueuedPromptStripItem,
+): QueuedPromptTranscriptMetadata {
+  return {
+    promptId: item.promptId,
+    agentId: item.agentId,
+    promptOrigin: item.promptOrigin,
+    ...externalProviderObservedTranscriptIdentityFields(item),
+    status: item.status,
+    attachmentCount: item.attachmentCount,
+    steerDisabled: item.steerDisabled,
+    canSteer: item.canSteer,
+    canCancel: item.canCancel,
+    steerDisabledReason: item.steerDisabledReason,
+    cancelDisabledReason: item.cancelDisabledReason,
   }
 }
 
@@ -266,7 +285,6 @@ function queuedPromptItemsFromEntries(
 function queuedPromptItemFromProjection(
   prompt: ProjectedQueuedPrompt,
   agentId: string,
-  optimistic: QueuedPromptStripItem | undefined,
   statusOverride: QueuedPromptStripStatusOverride | undefined,
 ): QueuedPromptStripItem {
   const applyOverride = (item: QueuedPromptStripItem): QueuedPromptStripItem => {
@@ -282,23 +300,6 @@ function queuedPromptItemFromProjection(
       steerDisabledReason: statusOverride.steerDisabledReason,
       cancelDisabledReason: statusOverride.cancelDisabledReason,
     }
-  }
-  if (optimistic) {
-    return applyOverride({
-      promptId: prompt.id,
-      agentId,
-      prompt: trimSingleTrailingNewline(prompt.prompt),
-      promptOrigin: prompt.promptOrigin,
-      ...externalProviderObservedTranscriptIdentityFields(prompt),
-      sourceAttachmentId: prompt.sourceAttachmentId,
-      status: prompt.status,
-      attachmentCount: prompt.attachmentCount,
-      steerDisabled: prompt.steerDisabled,
-      canSteer: prompt.canSteer,
-      canCancel: prompt.canCancel,
-      steerDisabledReason: prompt.steerDisabledReason,
-      cancelDisabledReason: prompt.cancelDisabledReason,
-    })
   }
   return applyOverride({
     promptId: prompt.id,
