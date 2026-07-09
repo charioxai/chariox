@@ -89,6 +89,8 @@ const TEST_HARNESS_PATTERNS = [
   /missing built binary/i,
   /run cargo build/i,
   /missing built CLI/i,
+  /docker build .* exited with code/i,
+  /couldn't read .*examples\/workflow-code/i,
 ]
 
 const RUNTIME_TIMEOUT_PATTERNS = [

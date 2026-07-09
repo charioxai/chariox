@@ -147,7 +147,7 @@ const MATRIX = [
     runtimeSignals: ["provider-run-lifecycle", "session-authority", "slice-runtime-state"],
     deployment: "local",
     requires: ["slice"],
-    extraArgs: ["--slice-build-image", "auto", "--cleanup-on-success"],
+    extraArgs: ["--slice-build-image", "always", "--cleanup-on-success"],
     exitCriteria: [
       "slice restart leaves kernel-owned session authority intact",
       "provider state is either resumed once or surfaced as a structured retry state",
@@ -162,7 +162,7 @@ const MATRIX = [
     runtimeSignals: ["provider-run-lifecycle", "session-authority", "slice-runtime-state"],
     deployment: "local",
     requires: ["slice"],
-    extraArgs: ["--slice-build-image", "auto", "--cleanup-on-success"],
+    extraArgs: ["--slice-build-image", "always", "--cleanup-on-success"],
     exitCriteria: [
       "slice restart leaves kernel-owned session authority intact",
       "provider state is either resumed once or surfaced as a structured retry state",

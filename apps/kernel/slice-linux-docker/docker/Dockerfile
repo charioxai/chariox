@@ -58,6 +58,7 @@ RUN mkdir -p /opt/arroba-source/apps /opt/arroba-slice/bin /opt/arroba-slice/log
 
 COPY --chown=slice:slice apps/kernel /opt/arroba-source/apps/kernel
 COPY --chown=slice:slice apps/relay /opt/arroba-source/apps/relay
+COPY --chown=slice:slice examples/workflow-code /opt/arroba-source/examples/workflow-code
 
 USER slice
 RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-kernel-target \

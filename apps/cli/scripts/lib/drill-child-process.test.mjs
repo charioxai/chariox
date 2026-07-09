@@ -57,6 +57,16 @@ test('classifies local test harness prerequisite failures', () => {
   )
 })
 
+test('classifies Docker slice image build failures as test harness failures', () => {
+  const text = [
+    'docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile -t arroba-slice-linux:0.1.0 . exited with code 101',
+    'stdout tail:',
+    "error: couldn't read `src/../../../examples/workflow-code/prompt-chaining.js`: No such file or directory",
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'test-harness')
+})
+
 test('classifies cloud deployment runtime failures', () => {
   const text = 'deployment did not become ready: {"status":"FAILED","lastError":"Scalingo 503 service unavailable"}'
 

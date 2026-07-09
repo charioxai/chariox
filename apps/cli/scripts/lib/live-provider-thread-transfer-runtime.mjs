@@ -571,11 +571,26 @@ export async function runLoggedCommand(command, args, { cwd, env, stdoutPath, st
       timeoutMs,
     )
     if (status.code !== 0) {
-      throw new Error(`${command} ${args.join(" ")} exited with code ${status.code}${status.signal ? ` signal ${status.signal}` : ""}`)
+      const stdoutTail = await readLogTail(stdoutPath)
+      const stderrTail = await readLogTail(stderrPath)
+      throw new Error([
+        `${command} ${args.join(" ")} exited with code ${status.code}${status.signal ? ` signal ${status.signal}` : ""}`,
+        stdoutTail ? `stdout tail:\n${stdoutTail}` : null,
+        stderrTail ? `stderr tail:\n${stderrTail}` : null,
+      ].filter(Boolean).join("\n"))
     }
   } catch (error) {
     await terminateChild(child)
     throw error
+  }
+}
+
+async function readLogTail(filePath) {
+  if (!filePath) return ""
+  try {
+    return (await readFile(filePath, "utf8")).split("\n").slice(-80).join("\n").trim()
+  } catch {
+    return ""
   }
 }
 
