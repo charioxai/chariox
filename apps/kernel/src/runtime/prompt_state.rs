@@ -708,9 +708,7 @@ impl PromptStateOwnerState {
         agent_id: &str,
     ) -> &mut OwnedAgentPromptState {
         let key = PromptStateKey::new(session.id(), agent_id);
-        self.states
-            .entry(key)
-            .or_insert_with(|| OwnedAgentPromptState::from_session(session, agent_id))
+        self.states.entry(key).or_default()
     }
 }
 
@@ -1011,6 +1009,90 @@ mod tests {
         owner.project_into_session(&mut session);
 
         assert!(session.active_prompt_for_agent("agent-1").is_none());
+    }
+
+    #[test]
+    fn active_prompt_lookup_does_not_rehydrate_unrestored_session_mirror() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        session.mirror_agent_prompt_state(
+            "agent-1",
+            Some(PromptQueueItem::new(
+                "stale-prompt",
+                "attachment-1",
+                "agent-1",
+                "stale",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+        );
+
+        assert!(owner
+            .active_prompt_for_agent_or_restore(&session, "agent-1")
+            .is_none());
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
+    }
+
+    #[test]
+    fn submit_prepared_prompt_ignores_unrestored_session_mirror() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        session.mirror_agent_prompt_state(
+            "agent-1",
+            Some(PromptQueueItem::new(
+                "stale-prompt",
+                "attachment-1",
+                "agent-1",
+                "stale",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+        );
+
+        let outcome = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "fresh-prompt",
+                    "attachment-1",
+                    "agent-1",
+                    "fresh",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("fresh prompt should submit");
+
+        let started = match outcome {
+            PromptSubmissionOutcome::Started { prompt } => prompt,
+            PromptSubmissionOutcome::Queued { prompt } => {
+                panic!("stale mirror queued fresh prompt as `{}`", prompt.id())
+            }
+        };
+        assert_eq!(started.id(), "fresh-prompt");
+        assert_eq!(
+            owner
+                .active_prompt_for_agent_snapshot(&session, "agent-1")
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some("fresh-prompt")
+        );
     }
 
     #[test]
