@@ -16,17 +16,13 @@ pub(crate) fn waiting_room_agent_activity_summary(
         .map(|queued| queued.len())
         .unwrap_or(0);
     let error = agent.state() == AgentState::Error;
-    let prompt_state_projected = session.prompt_states().contains_key(agent.id());
-    let legacy_working =
-        !prompt_state_projected && (agent.state() == AgentState::Working || agent.is_processing());
-    let working = legacy_working || active_prompt_count > 0;
+    let working = active_prompt_count > 0;
     WaitingRoomPublicItemActivitySummary {
         working,
         active_prompt_count,
         queued_prompt_count,
         error,
         unread_idle_output: active_prompt_count == 0
-            && !legacy_working
             && session.agent_has_unread_output(caller_user_id, agent.id()),
     }
 }
@@ -76,9 +72,7 @@ pub(crate) fn waiting_room_session_activity_summary(
     let mut working_agent_count = session
         .agents()
         .iter()
-        .filter(|agent| {
-            waiting_room_agent_has_active_work(session, agent, &active_prompt_agent_ids)
-        })
+        .filter(|agent| waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids))
         .count();
     if working_agent_count == 0 && active_prompt_count > 0 {
         working_agent_count = 1;
@@ -102,7 +96,7 @@ pub(crate) fn waiting_room_session_activity_summary(
                 .unwrap_or_default()
                 .is_empty();
             active_worker_run_missing
-                && waiting_room_agent_has_active_work(session, agent, &active_prompt_agent_ids)
+                && waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids)
         })
         .count();
     let home_proxy_extension_agents = session
@@ -135,7 +129,6 @@ pub(crate) fn waiting_room_session_activity_summary(
             .iter()
             .filter(|agent| {
                 !active_prompt_agent_ids.contains(agent.id())
-                    && !waiting_room_agent_legacy_working(session, agent)
                     && session.agent_has_unread_output(caller_user_id, agent.id())
             })
             .count(),
@@ -143,17 +136,10 @@ pub(crate) fn waiting_room_session_activity_summary(
 }
 
 fn waiting_room_agent_has_active_work(
-    session: &RuntimeSession,
     agent: &AgentInstance,
     active_prompt_agent_ids: &HashSet<&str>,
 ) -> bool {
     active_prompt_agent_ids.contains(agent.id())
-        || waiting_room_agent_legacy_working(session, agent)
-}
-
-fn waiting_room_agent_legacy_working(session: &RuntimeSession, agent: &AgentInstance) -> bool {
-    !session.prompt_states().contains_key(agent.id())
-        && (agent.state() == AgentState::Working || agent.is_processing())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -283,8 +269,39 @@ mod tests {
         serde_json::from_value(serialized).expect("session with queued prompt should deserialize")
     }
 
+    fn session_with_active_prompt_state(agent_id: &str, agent: AgentInstance) -> RuntimeSession {
+        session_with_active_prompt_states(vec![agent_id], vec![agent])
+    }
+
+    fn session_with_active_prompt_states(
+        agent_ids: Vec<&str>,
+        agents: Vec<AgentInstance>,
+    ) -> RuntimeSession {
+        let session = session_with_agents(agents);
+        let mut serialized = serde_json::to_value(&session).expect("session should serialize");
+        let prompt_states = agent_ids
+            .into_iter()
+            .map(|agent_id| {
+                (
+                    agent_id.to_string(),
+                    serde_json::json!({
+                        "active_prompt": PromptQueueItem::new(
+                            format!("active-{agent_id}"),
+                            format!("attachment-{agent_id}"),
+                            agent_id,
+                            "active prompt",
+                            PromptStatus::Running,
+                        ),
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        serialized["prompt_states"] = serde_json::Value::Object(prompt_states);
+        serde_json::from_value(serialized).expect("session with active prompt should deserialize")
+    }
+
     #[test]
-    fn agent_activity_tracks_working_processing_and_error_state() {
+    fn agent_activity_ignores_legacy_working_processing_state() {
         let idle = agent("idle", AgentState::Idle, false);
         let working = agent("working", AgentState::Working, false);
         let processing = agent("processing", AgentState::Idle, true);
@@ -305,7 +322,7 @@ mod tests {
             .working
         );
         assert!(
-            waiting_room_agent_activity_summary(
+            !waiting_room_agent_activity_summary(
                 &session,
                 &working,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -313,7 +330,7 @@ mod tests {
             .working
         );
         assert!(
-            waiting_room_agent_activity_summary(
+            !waiting_room_agent_activity_summary(
                 &session,
                 &processing,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -328,6 +345,29 @@ mod tests {
             )
             .error
         );
+    }
+
+    #[test]
+    fn agent_activity_tracks_active_prompt_state_as_working() {
+        let session = session_with_active_prompt_state(
+            "agent-1",
+            agent("agent-1", AgentState::Working, true),
+        );
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+
+        let summary = waiting_room_agent_activity_summary(
+            &session,
+            agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        assert!(summary.working);
+        assert_eq!(summary.active_prompt_count, 1);
+        assert_eq!(summary.queued_prompt_count, 0);
     }
 
     #[test]
@@ -397,7 +437,7 @@ mod tests {
         let summary =
             waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.agent_count, 3);
-        assert_eq!(summary.working_agent_count, 2);
+        assert_eq!(summary.working_agent_count, 0);
         assert_eq!(summary.error_agent_count, 1);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
@@ -459,18 +499,21 @@ mod tests {
 
     #[test]
     fn session_activity_summarizes_remote_worker_run_blockers() {
-        let session = session_with_agents(vec![
-            remote_agent("remote-working-missing", AgentState::Working, false, None),
-            remote_agent("remote-processing-empty", AgentState::Idle, true, Some("")),
-            remote_agent("remote-idle-missing", AgentState::Idle, false, None),
-            remote_agent(
-                "remote-working-ready",
-                AgentState::Working,
-                false,
-                Some("worker-run"),
-            ),
-            agent("local-working", AgentState::Working, false),
-        ]);
+        let session = session_with_active_prompt_states(
+            vec!["remote-working-missing", "remote-processing-empty"],
+            vec![
+                remote_agent("remote-working-missing", AgentState::Working, false, None),
+                remote_agent("remote-processing-empty", AgentState::Idle, true, Some("")),
+                remote_agent("remote-idle-missing", AgentState::Idle, false, None),
+                remote_agent(
+                    "remote-working-ready",
+                    AgentState::Working,
+                    false,
+                    Some("worker-run"),
+                ),
+                agent("local-working", AgentState::Working, false),
+            ],
+        );
 
         let summary =
             waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
