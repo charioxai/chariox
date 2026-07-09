@@ -89,11 +89,19 @@ test("authoritative idle controller clears local busy state when only queued pro
   ])
 })
 
-test("authoritative idle controller leaves local state alone while an agent is processing", () => {
+test("authoritative idle controller leaves local state alone while projected agent work remains", () => {
   const harness = idleHarness()
 
   const cleared = harness.controller.clear(session({
     agents: [agent("agent-1", { state: "Working", is_processing: true })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
   }))
 
   assert.equal(cleared, false)

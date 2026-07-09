@@ -1,10 +1,8 @@
 import type {
-  AgentInstance,
   AgentPromptState,
   RuntimeSession,
 } from "./kernel-types.js"
 import {
-  agentLegacyProcessingStateIsBusy,
   agentRuntimeActivityProjectionHasTurnWork,
   agentRuntimePromptStatusIsActivePrompt,
   type AgentRuntimeActivityProjection,
@@ -25,7 +23,7 @@ export function sessionHasAgentRuntimeProjection(session: RuntimeSession | null 
 }
 
 export function sessionAllowsLegacyAgentProcessingState(session: RuntimeSession | null | undefined): boolean {
-  return !sessionHasAgentRuntimeProjection(session)
+  return false
 }
 
 export type SessionPromptWorkSummary = {
@@ -70,7 +68,7 @@ export function sessionPromptWorkSummary(session: RuntimeSession): SessionPrompt
   return {
     active: 0,
     queued,
-    busyAgents: legacyBusyAgentCount(session),
+    busyAgents: 0,
   }
 }
 
@@ -121,7 +119,7 @@ export function sessionAgentIsBusy(
   if (promptState !== undefined) {
     return Boolean(promptState?.active_prompt)
   }
-  return session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
+  return false
 }
 
 export function sessionAgentHasTurnWork(
@@ -142,7 +140,7 @@ export function sessionAgentHasTurnWork(
   if (promptState !== undefined) {
     return Boolean(promptState?.active_prompt)
   }
-  return session.agents.some((agent) => agent.id === agentId && agentLegacyProcessingStateIsBusy(agent))
+  return false
 }
 
 export function sessionAgentBusyForProviderRunRecovery(
@@ -231,8 +229,4 @@ function promptWorkCountFromProjectedActivities(
     count += projection.queuedPromptCount
   }
   return count
-}
-
-function legacyBusyAgentCount(session: RuntimeSession): number {
-  return session.agents.filter((agent: AgentInstance) => agentLegacyProcessingStateIsBusy(agent)).length
 }

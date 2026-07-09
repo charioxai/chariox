@@ -809,6 +809,20 @@ test("executeShellCommand context reports missing active remote worker provider 
           session: makeSession({
             focused_agent_id: "agent-remote",
             agents: [agent],
+            agent_activity: {
+              [agent.id]: {
+                status: "working",
+                prompt_status: "running",
+                busy: true,
+                unread_idle_output: false,
+                active_turn: {
+                  prompt_id: "prompt-remote",
+                  status: "running",
+                  phase: "streaming",
+                },
+              },
+            },
+            agent_activity_revision: 1,
           }),
         },
       }
@@ -859,6 +873,20 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
           leased_agent_id: "leased-agent-1",
         },
       })],
+      agent_activity: {
+        "agent-remote": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-remote",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+      agent_activity_revision: 1,
     }),
   ]
   const fake = fakeClient((request) => {
@@ -903,6 +931,20 @@ test("executeShellCommand shows current session runtime status", async () => {
     workspace_live_sync_mode: "tracked",
     focused_agent_id: remoteAgent.id,
     agents: [remoteAgent],
+    agent_activity: {
+      [remoteAgent.id]: {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+        active_turn: {
+          prompt_id: "prompt-remote",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    agent_activity_revision: 1,
   })
   const fake = fakeClient((request) => {
     if ("GetSessionState" in request) {

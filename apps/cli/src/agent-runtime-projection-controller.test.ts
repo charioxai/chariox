@@ -195,6 +195,14 @@ test("agent runtime projection updates busy latches and preserves active labels"
   const session = runtimeSession({
     focused_agent_id: "agent-a",
     agents: [agent("agent-a", { state: "Working" })],
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
   })
   const controller = createAgentRuntimeProjectionController({
     getSession: () => session,

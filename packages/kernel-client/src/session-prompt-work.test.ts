@@ -18,12 +18,12 @@ import {
   makeSession,
 } from "./shell-executor.test-support.js"
 
-test("session runtime projection helpers gate legacy processing state", () => {
+test("session runtime projection helpers do not allow legacy processing state", () => {
   const legacyOnly = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
   })
   assert.equal(sessionHasAgentRuntimeProjection(legacyOnly), false)
-  assert.equal(sessionAllowsLegacyAgentProcessingState(legacyOnly), true)
+  assert.equal(sessionAllowsLegacyAgentProcessingState(legacyOnly), false)
 
   const projectedIdle = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
@@ -129,11 +129,11 @@ test("session prompt work prefers projected activity over stale prompt state", (
   assert.equal(sessionAgentBusyForProviderRunRecovery(session, "agent-2"), true)
 })
 
-test("session provider run recovery busy state falls back only without runtime projection", () => {
+test("session provider run recovery busy state does not infer legacy processing", () => {
   const legacyOnly = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
   })
-  assert.equal(sessionAgentBusyForProviderRunRecovery(legacyOnly, "agent-1"), null)
+  assert.equal(sessionAgentBusyForProviderRunRecovery(legacyOnly, "agent-1"), false)
 
   const promptStateProjected = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
@@ -370,7 +370,7 @@ test("session agent turn work excludes queued-only prompt work", () => {
   assert.equal(sessionHasTurnWork(externalTurn), true)
 })
 
-test("session turn work includes legacy processing without counting queues", () => {
+test("session turn work ignores legacy processing and top-level queues", () => {
   const legacyProcessing = makeSession({
     agents: [makeAgent({ id: "agent-1", state: "Working", is_processing: true })],
   })
@@ -385,8 +385,8 @@ test("session turn work includes legacy processing without counting queues", () 
     }],
   })
 
-  assert.equal(sessionAgentHasTurnWork(legacyProcessing, "agent-1"), true)
-  assert.equal(sessionHasTurnWork(legacyProcessing), true)
+  assert.equal(sessionAgentHasTurnWork(legacyProcessing, "agent-1"), false)
+  assert.equal(sessionHasTurnWork(legacyProcessing), false)
   assert.equal(sessionAgentIsBusy(legacyQueuedOnly, "agent-1"), false)
   assert.equal(sessionAgentHasTurnWork(legacyQueuedOnly, "agent-1"), false)
   assert.equal(sessionHasTurnWork(legacyQueuedOnly), false)

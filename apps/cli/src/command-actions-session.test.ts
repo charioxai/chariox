@@ -91,6 +91,20 @@ test("session status renders home authority and runtime blockers", async () => {
       workspace_live_sync_mode: "managed",
       focused_agent_id: remoteAgent.id,
       agents: [remoteAgent],
+      agent_activity: {
+        [remoteAgent.id]: {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+          active_turn: {
+            prompt_id: "prompt-remote",
+            status: "running",
+            phase: "streaming",
+          },
+        },
+      },
+      agent_activity_revision: 1,
     }),
     appendNotice: (message: string) => { notices.push(message) },
     flashFooter: (message: string, tone: string) => { footers.push(`${tone}:${message}`) },

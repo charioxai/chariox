@@ -213,7 +213,7 @@ export function sessionAgentRuntimeState(
   agent: AgentInstance,
 ): AgentInstance["state"] {
   if (!session) {
-    return legacyAgentRuntimeState(agent)
+    return agent.state === "Error" ? "Error" : "Idle"
   }
   const projection = sessionProjectedPromptActivityForAgent(session, agent.id)
   if (projection && projection !== "idle" && projection !== "not_found") {
@@ -235,7 +235,7 @@ export function sessionAgentRuntimeState(
       ? "Working"
       : "Idle"
   }
-  return legacyAgentRuntimeState(agent)
+  return agent.state === "Error" ? "Error" : "Idle"
 }
 
 export function sessionAgentRuntimeDisplayState(
@@ -293,7 +293,7 @@ export function agentRuntimeStateFromProjection(
   if (context.promptStates) {
     return agent.state === "Error" ? "Error" : "Idle"
   }
-  return legacyAgentRuntimeState(agent)
+  return agent.state === "Error" ? "Error" : "Idle"
 }
 
 export function sessionAgentHasUnreadIdleOutput(
@@ -326,8 +326,4 @@ function formatSessionWorkingStatusLabel(activity: string | null): string {
 
 function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | undefined): boolean {
   return Boolean(state?.active_prompt)
-}
-
-function legacyAgentRuntimeState(agent: AgentInstance): AgentInstance["state"] {
-  return agent.is_processing && agent.state !== "Error" ? "Working" : agent.state
 }

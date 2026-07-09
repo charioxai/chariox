@@ -75,7 +75,7 @@ test("agent activity labels preserve current labels only while activity is still
   assert.equal(nextAgentActivityLabels(current, null, "reading", false), current)
 })
 
-test("agent activity labels are preserved for streaming, prompt work, and working agents", () => {
+test("agent activity labels are preserved for streaming and projected prompt work", () => {
   assert.equal(shouldPreserveAgentActivityLabel({
     agentId: "a1",
     session: session(),
@@ -90,7 +90,7 @@ test("agent activity labels are preserved for streaming, prompt work, and workin
     agentId: "a1",
     session: session({ agents: [agent("a1", { state: "Working" })] }),
     streamingAgentId: null,
-  }), true)
+  }), false)
   assert.equal(shouldPreserveAgentActivityLabel({
     agentId: "a1",
     session: session(),
@@ -159,7 +159,7 @@ test("active tool labels prefer visible transcript tools and ignore completed pa
   }), null)
 })
 
-test("focused activity and busy state derive from tool labels, latches, prompt work, and agent state", () => {
+test("focused activity and busy state derive from tool labels, latches, and projected prompt work", () => {
   assert.equal(deriveFocusedActivityLabel({
     focusedAgentId: "a1",
     activeToolLabel: "reading",
@@ -193,7 +193,7 @@ test("focused activity and busy state derive from tool labels, latches, prompt w
     streamingAgentId: null,
     focusedActivityLabel: null,
     agentBusyLatches: {},
-  }), true)
+  }), false)
   assert.equal(deriveFocusedAgentBusy({
     focusedAgentId: "a1",
     submitting: false,
@@ -209,7 +209,23 @@ test("all agent busy state is derived per agent", () => {
   assert.deepEqual(deriveAllAgentsBusyState({
     submitting: true,
     submittingAgentId: "a1",
-    session: session({ agents: [agent("a1"), agent("a2", { state: "Working" })] }),
+    session: session({
+      agents: [agent("a1"), agent("a2", { state: "Working" })],
+      agent_activity: {
+        a1: {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+        },
+        a2: {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+    }),
     streamingAgentId: null,
     agentActivityLabels: {},
     agentBusyLatches: {},

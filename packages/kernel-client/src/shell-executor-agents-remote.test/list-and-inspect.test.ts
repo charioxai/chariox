@@ -57,7 +57,10 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   const fake = fakeClient((request) => {
     requests.push(request)
     if ("GetSessionState" in request) {
-      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
+      return { SessionState: { session: makeSession({
+        agents: [agent],
+        focused_agent_id: agent.id,
+      }) } }
     }
     if ("ListSlices" in request) {
       return {
@@ -136,7 +139,24 @@ test("executeShellCommand lists blocked remote worker provider runs inline", asy
   })
   const fake = fakeClient((request) => {
     if ("GetSessionState" in request) {
-      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
+      return { SessionState: { session: makeSession({
+        agents: [agent],
+        focused_agent_id: agent.id,
+        agent_activity: {
+          [agent.id]: {
+            status: "working",
+            prompt_status: "running",
+            busy: true,
+            unread_idle_output: false,
+            active_turn: {
+              prompt_id: "prompt-remote",
+              status: "running",
+              phase: "streaming",
+            },
+          },
+        },
+        agent_activity_revision: 1,
+      }) } }
     }
     if ("ListSlices" in request) {
       return { SlicesListed: { slices: [] } }
@@ -399,4 +419,3 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     { GetProviderRun: { provider_run_id: "run-session" } },
   ])
 })
-

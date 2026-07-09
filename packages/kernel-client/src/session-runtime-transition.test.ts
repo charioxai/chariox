@@ -297,7 +297,7 @@ test("agent activity labels preserve current labels only while activity is still
   assert.equal(nextAgentActivityLabels(current, null, "reading", false), current)
 })
 
-test("agent activity labels are preserved for streaming, prompt work, and working agents", () => {
+test("agent activity labels are preserved for streaming and projected prompt work", () => {
   assert.equal(shouldPreserveAgentActivityLabel({
     agentId: "agent-1",
     session: makeSession({ agents: [makeAgent({ id: "agent-1" })] }),
@@ -322,7 +322,7 @@ test("agent activity labels are preserved for streaming, prompt work, and workin
     agentId: "agent-1",
     session: makeSession({ agents: [makeAgent({ id: "agent-1", state: "Working" })] }),
     streamingAgentId: null,
-  }), true)
+  }), false)
   assert.equal(shouldPreserveAgentActivityLabel({
     agentId: "agent-1",
     session: makeSession({ agents: [makeAgent({ id: "agent-1" })] }),
@@ -367,7 +367,7 @@ test("projected idle activity suppresses stale legacy busy state", () => {
   }), [{ id: "agent-1", busy: false }])
 })
 
-test("focused activity and busy state derive from labels, latches, prompt work, and agent state", () => {
+test("focused activity and busy state derive from labels, latches, and projected prompt work", () => {
   assert.equal(deriveFocusedActivityLabel({
     focusedAgentId: "agent-1",
     activeToolLabel: "reading",
@@ -402,7 +402,7 @@ test("focused activity and busy state derive from labels, latches, prompt work, 
     streamingAgentId: null,
     focusedActivityLabel: null,
     agentBusyLatches: {},
-  }), true)
+  }), false)
   assert.equal(deriveFocusedAgentBusy({
     focusedAgentId: "agent-1",
     submitting: false,
@@ -451,7 +451,23 @@ test("all agent busy state is derived per agent", () => {
   assert.deepEqual(deriveAllAgentsBusyState({
     submitting: true,
     submittingAgentId: "agent-1",
-    session: makeSession({ agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2", state: "Working" })] }),
+    session: makeSession({
+      agents: [makeAgent({ id: "agent-1" }), makeAgent({ id: "agent-2", state: "Working" })],
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+          unread_idle_output: false,
+        },
+        "agent-2": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          unread_idle_output: false,
+        },
+      },
+    }),
     streamingAgentId: null,
     agentActivityLabels: {},
     agentBusyLatches: {},
@@ -490,7 +506,7 @@ test("sessionShouldConfirmIdleTurnCompletion treats idle snapshots as stale-turn
   }), true)
 })
 
-test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or processing snapshots", () => {
+test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or projected processing snapshots", () => {
   const activePromptSession = makeSession({
     prompt_states: {
       "agent-1": {
@@ -508,6 +524,14 @@ test("sessionShouldConfirmIdleTurnCompletion does not override active prompt or 
   })
   const processingSession = makeSession({
     agents: [makeAgent({ id: "agent-1", is_processing: true, state: "Working" })],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        unread_idle_output: false,
+      },
+    },
   })
 
   for (const nextSession of [activePromptSession, processingSession]) {
