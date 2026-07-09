@@ -686,6 +686,13 @@ fn validate_session_history_entry_for_append(
     session: &RuntimeSession,
     entry: &SessionHistoryEntry,
 ) -> Result<(), DaemonError> {
+    if entry.prompt_origin.is_some() && entry.source_attachment_id.is_none() {
+        return Err(DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "append session history",
+            message: "prompt-owned history entry must include source attachment".to_string(),
+        });
+    }
     if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
         && entry.source_attachment_id.is_none()
         && !entry.is_external_provider_observed()

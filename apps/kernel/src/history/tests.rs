@@ -113,6 +113,37 @@ fn appends_and_loads_session_history() {
 }
 
 #[test]
+fn session_history_append_rejects_prompt_origin_without_source_attachment() {
+    let config = DaemonConfig::for_tests();
+    let mut sessions = SessionService::new(&config);
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let store = SessionHistoryStore::new(config.session_history_root.clone())
+        .expect("history store should initialize");
+    let entry = SessionHistoryEntry::provider_output(
+        session.id(),
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("output-1".to_string()),
+        "output",
+    )
+    .with_prompt_origin(crate::session::PromptOrigin::Arroba);
+
+    let error = store
+        .append(&session, &entry)
+        .expect_err("prompt-owned history without source attachment should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("prompt-owned history entry must include source attachment"),
+        "{error}"
+    );
+}
+
+#[test]
 fn session_history_load_hides_external_observer_state_signals() {
     let config = DaemonConfig::for_tests();
     let mut sessions = SessionService::new(&config);

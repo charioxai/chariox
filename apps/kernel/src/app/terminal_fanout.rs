@@ -763,6 +763,7 @@ mod tests {
             "output",
         );
         entry.prompt_origin = Some(crate::session::PromptOrigin::Arroba);
+        entry.source_attachment_id = Some(attachment.id().to_string());
         app.append_history_entry(session.id(), entry);
 
         let events = app
