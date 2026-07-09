@@ -1,5 +1,4 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import {
@@ -7,14 +6,11 @@ import {
   type CommandCenterKeyEvent,
   type CommandCenterRenderState,
 } from "./command-center-controller.js"
-import type { CommandNode } from "./command-center-tree-projection.js"
+import { loadCommandCenterTestCatalog } from "./command-center-test-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
-const commandTree = JSON.parse(readFileSync(
-  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
-  "utf8",
-)) as CommandNode[]
+const commandTree = loadCommandCenterTestCatalog()
 
 function createHarness(initialPrompt = "") {
   let promptText = initialPrompt

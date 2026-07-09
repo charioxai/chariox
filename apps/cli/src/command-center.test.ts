@@ -1,18 +1,14 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import { buildCommandCenterItems as buildCommandCenterItemsFromCatalog } from "./command-center.js"
 import type { CommandCenterContext } from "./command-center-context.js"
-import type { CommandNode } from "./command-center-tree-projection.js"
+import { loadCommandCenterTestCatalog } from "./command-center-test-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"
 
-const commandTree = JSON.parse(readFileSync(
-  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
-  "utf8",
-)) as CommandNode[]
+const commandTree = loadCommandCenterTestCatalog()
 
 function buildCommandCenterItems(
   input: string,

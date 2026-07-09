@@ -1,5 +1,4 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import {
@@ -10,14 +9,11 @@ import {
   buildViewItems,
   providerNamespaceRootItem,
 } from "./command-center-dynamic-items.js"
-import type { CommandNode } from "./command-center-tree-projection.js"
+import { loadCommandCenterTestCatalog } from "./command-center-test-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
-const commandTree = JSON.parse(readFileSync(
-  new URL("../../kernel/src/runtime/terminal_command_catalog/catalog.json", import.meta.url),
-  "utf8",
-)) as CommandNode[]
+const commandTree = loadCommandCenterTestCatalog()
 
 test("command center dynamic items project provider namespaces and completions", () => {
   const catalogs = withCodexCommand()
