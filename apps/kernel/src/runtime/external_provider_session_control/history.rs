@@ -92,95 +92,41 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             &external_merge_key_prefix,
         )?;
     let mut existing_entries_by_merge_key = history_index.external_entries_by_merge_key;
-    let mut arroba_owned_prompt_text_counts = history_index
-        .arroba_owned_prompts
-        .iter()
-        .filter_map(|text| normalized_observed_prompt_text(text))
-        .fold(BTreeMap::<String, usize>::new(), |mut counts, text| {
-            *counts.entry(text).or_default() += 1;
-            counts
-        });
-    if let Some(active_prompt) = active_prompt.as_ref() {
-        if active_prompt.is_arroba_owned() {
-            if let Some(text) = normalized_observed_prompt_text(active_prompt.prompt()) {
-                *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
-            }
-        }
-    }
-    for queued_prompt in &queued_prompts {
-        if queued_prompt.is_arroba_owned() {
-            if let Some(text) = normalized_observed_prompt_text(queued_prompt.prompt()) {
-                *arroba_owned_prompt_text_counts.entry(text).or_default() += 1;
-            }
-        }
-    }
     let mut appended = 0usize;
     let mut active_relevant_appended = 0usize;
-    let mut last_cursor = read.target.observed_cursor.clone();
-    let mut visible_provider_turn_id = None;
-    let mut current_observed_turn_is_arroba_owned = false;
-    let mut arroba_owned_provider_turn_ids = read
-        .target
-        .observed_cursor
-        .arroba_owned_observed_prompt_turn_ids
-        .clone();
     let candidate_turns =
         latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
-    let candidate_user_turn_ids = candidate_turns
-        .iter()
-        .filter(|turn| turn.role == ObservedExternalProviderTurnRole::User)
-        .map(ObservedExternalProviderTurn::provider_turn_id_or_fallback)
-        .collect::<BTreeSet<_>>();
+    let mut import_state = ObservedExternalTurnImportState::new(
+        read.target.observed_cursor.clone(),
+        &candidate_turns,
+        arroba_owned_prompt_text_counts(
+            &history_index.arroba_owned_prompts,
+            active_prompt.as_ref(),
+            &queued_prompts,
+        ),
+    );
     for turn in &candidate_turns {
-        let kind = turn.role.session_history_kind();
-        let merge_turn_id = turn.provider_turn_id_or_fallback();
-        if turn.role == ObservedExternalProviderTurnRole::User {
-            visible_provider_turn_id = Some(merge_turn_id.clone());
-        }
-        let provider_turn_id = visible_provider_turn_id
-            .clone()
-            .unwrap_or_else(|| merge_turn_id.clone());
-        let merge_key = turn.external_merge_key(&provider, &provider_session_id);
-        if turn.role == ObservedExternalProviderTurnRole::User {
-            current_observed_turn_is_arroba_owned = arroba_owned_provider_turn_ids
-                .contains(&merge_turn_id)
-                || consume_arroba_owned_prompt_text_match(
-                    &mut arroba_owned_prompt_text_counts,
-                    &turn.text,
-                );
-            if current_observed_turn_is_arroba_owned {
-                arroba_owned_provider_turn_ids.insert(merge_turn_id.clone());
-            }
-        }
-        if current_observed_turn_is_arroba_owned {
-            last_cursor.last_observed_merge_key = Some(merge_key);
-            last_cursor.last_observed_turn_id = Some(merge_turn_id);
-            last_cursor.last_observed_at_ms =
-                turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
-            last_cursor.arroba_owned_observed_prompt_turn_ids =
-                observed_arroba_owned_user_turn_ids_in_window(
-                    &arroba_owned_provider_turn_ids,
-                    &candidate_user_turn_ids,
-                );
+        let observed = import_state.record_turn(turn, &provider, &provider_session_id);
+        if observed.is_arroba_owned {
             continue;
         }
         let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
             &read.target.session_id,
             provider_run_id.as_deref(),
             &read.target.agent_id,
-            kind,
+            observed.kind,
             turn.text.clone(),
             &provider,
             &provider_session_id,
-            Some(merge_key.clone()),
-            Some(provider_turn_id.clone()),
+            Some(observed.merge_key.clone()),
+            Some(observed.provider_turn_id.clone()),
             turn.observed_at_ms,
         );
         entry.external_observation =
             ExternalProviderObservationPolicy::for_provider(&provider).observation_for_turn(turn);
         let existing_entry_match_key = external_observed_history_entry_match_key(
             &existing_entries_by_merge_key,
-            &merge_key,
+            &observed.merge_key,
             &entry,
         );
         let has_observable_change = existing_entry_match_key
@@ -189,17 +135,17 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             .is_none_or(|existing| !external_observed_history_entry_matches(existing, &entry));
         if has_observable_change {
             let replacement_merge_key =
-                existing_entry_match_key.unwrap_or_else(|| merge_key.clone());
+                existing_entry_match_key.unwrap_or_else(|| observed.merge_key.clone());
             app.replace_history_entry_by_merge_key_or_append(
                 &read.target.session_id,
                 &replacement_merge_key,
                 entry.clone(),
             );
-            if replacement_merge_key != merge_key {
+            if replacement_merge_key != observed.merge_key {
                 existing_entries_by_merge_key.remove(&replacement_merge_key);
             }
             existing_entries_by_merge_key.insert(
-                merge_key.clone(),
+                observed.merge_key.clone(),
                 ExternalImportHistoryEntry {
                     kind: entry.kind,
                     text: entry.text.clone(),
@@ -229,14 +175,6 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             &provider,
             turn,
         );
-        last_cursor.last_observed_merge_key = Some(merge_key);
-        last_cursor.last_observed_turn_id = Some(merge_turn_id);
-        last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
-        last_cursor.arroba_owned_observed_prompt_turn_ids =
-            observed_arroba_owned_user_turn_ids_in_window(
-                &arroba_owned_provider_turn_ids,
-                &candidate_user_turn_ids,
-            );
     }
     let changed = appended;
     outcome.changed_count = changed;
@@ -247,7 +185,7 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
         changed,
         active_relevant_appended,
         options.allow_external_active_prompt_settlement,
-        &arroba_owned_provider_turn_ids,
+        import_state.arroba_owned_provider_turn_ids(),
     );
     let latest_active_prompt = active_prompt_sync
         .active_prompt_turn
@@ -264,6 +202,7 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
     outcome.external_active_prompt_settled = active_prompt_sync.should_sync_active_prompt
         && latest_active_prompt.is_none()
         && (active_prompt_changed || queued_prompt_waiting);
+    let last_cursor = import_state.cursor().clone();
     let cursor_changed = last_cursor != read.target.observed_cursor;
     let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
     let state_signal_observed_at_ms = last_cursor.last_observed_at_ms;
@@ -275,7 +214,7 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             &read.target,
             provider_run_id.as_deref(),
             state_signal_merge_key.as_deref(),
-            visible_provider_turn_id.as_deref(),
+            import_state.visible_provider_turn_id(),
             last_cursor.last_observed_at_ms,
         );
     }
@@ -293,7 +232,7 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
             &read.target,
             provider_run_id.as_deref(),
             state_signal_merge_key.as_deref(),
-            visible_provider_turn_id.as_deref(),
+            import_state.visible_provider_turn_id(),
             state_signal_observed_at_ms,
             if latest_active_prompt.is_some() {
                 EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON
@@ -303,6 +242,131 @@ pub(super) fn append_observed_external_turns_for_attached_target_with_options(
         );
     }
     Ok(outcome)
+}
+
+struct ObservedExternalTurnImportState {
+    cursor: ExternalProviderObservedCursor,
+    visible_provider_turn_id: Option<String>,
+    current_observed_turn_is_arroba_owned: bool,
+    arroba_owned_provider_turn_ids: BTreeSet<String>,
+    candidate_user_turn_ids: BTreeSet<String>,
+    arroba_owned_prompt_text_counts: BTreeMap<String, usize>,
+}
+
+struct ObservedExternalTurnImportDecision {
+    kind: crate::history::SessionHistoryEntryKind,
+    provider_turn_id: String,
+    merge_key: String,
+    is_arroba_owned: bool,
+}
+
+impl ObservedExternalTurnImportState {
+    fn new(
+        cursor: ExternalProviderObservedCursor,
+        candidate_turns: &[ObservedExternalProviderTurn],
+        arroba_owned_prompt_text_counts: BTreeMap<String, usize>,
+    ) -> Self {
+        let candidate_user_turn_ids = candidate_turns
+            .iter()
+            .filter(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+            .map(ObservedExternalProviderTurn::provider_turn_id_or_fallback)
+            .collect::<BTreeSet<_>>();
+        Self {
+            arroba_owned_provider_turn_ids: cursor.arroba_owned_observed_prompt_turn_ids.clone(),
+            cursor,
+            visible_provider_turn_id: None,
+            current_observed_turn_is_arroba_owned: false,
+            candidate_user_turn_ids,
+            arroba_owned_prompt_text_counts,
+        }
+    }
+
+    fn record_turn(
+        &mut self,
+        turn: &ObservedExternalProviderTurn,
+        provider: &str,
+        provider_session_id: &str,
+    ) -> ObservedExternalTurnImportDecision {
+        let kind = turn.role.session_history_kind();
+        let merge_turn_id = turn.provider_turn_id_or_fallback();
+        if turn.role == ObservedExternalProviderTurnRole::User {
+            self.visible_provider_turn_id = Some(merge_turn_id.clone());
+            self.current_observed_turn_is_arroba_owned =
+                self.arroba_owned_provider_turn_ids.contains(&merge_turn_id)
+                    || consume_arroba_owned_prompt_text_match(
+                        &mut self.arroba_owned_prompt_text_counts,
+                        &turn.text,
+                    );
+            if self.current_observed_turn_is_arroba_owned {
+                self.arroba_owned_provider_turn_ids
+                    .insert(merge_turn_id.clone());
+            }
+        }
+        let provider_turn_id = self
+            .visible_provider_turn_id
+            .clone()
+            .unwrap_or_else(|| merge_turn_id.clone());
+        let merge_key = turn.external_merge_key(provider, provider_session_id);
+        self.cursor.last_observed_merge_key = Some(merge_key.clone());
+        self.cursor.last_observed_turn_id = Some(merge_turn_id);
+        self.cursor.last_observed_at_ms = turn.observed_at_ms.or(self.cursor.last_observed_at_ms);
+        self.cursor.arroba_owned_observed_prompt_turn_ids =
+            observed_arroba_owned_user_turn_ids_in_window(
+                &self.arroba_owned_provider_turn_ids,
+                &self.candidate_user_turn_ids,
+            );
+        ObservedExternalTurnImportDecision {
+            kind,
+            provider_turn_id,
+            merge_key,
+            is_arroba_owned: self.current_observed_turn_is_arroba_owned,
+        }
+    }
+
+    fn cursor(&self) -> &ExternalProviderObservedCursor {
+        &self.cursor
+    }
+
+    fn visible_provider_turn_id(&self) -> Option<&str> {
+        self.visible_provider_turn_id.as_deref()
+    }
+
+    fn arroba_owned_provider_turn_ids(&self) -> &BTreeSet<String> {
+        &self.arroba_owned_provider_turn_ids
+    }
+}
+
+fn arroba_owned_prompt_text_counts(
+    history_prompts: &[String],
+    active_prompt: Option<&PromptQueueItem>,
+    queued_prompts: &std::collections::VecDeque<PromptQueueItem>,
+) -> BTreeMap<String, usize> {
+    let mut counts = history_prompts
+        .iter()
+        .filter_map(|text| normalized_observed_prompt_text(text))
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, text| {
+            *counts.entry(text).or_default() += 1;
+            counts
+        });
+    if let Some(active_prompt) = active_prompt {
+        add_arroba_owned_prompt_text_count(&mut counts, active_prompt);
+    }
+    for queued_prompt in queued_prompts {
+        add_arroba_owned_prompt_text_count(&mut counts, queued_prompt);
+    }
+    counts
+}
+
+fn add_arroba_owned_prompt_text_count(
+    counts: &mut BTreeMap<String, usize>,
+    prompt: &PromptQueueItem,
+) {
+    if !prompt.is_arroba_owned() {
+        return;
+    }
+    if let Some(text) = normalized_observed_prompt_text(prompt.prompt()) {
+        *counts.entry(text).or_default() += 1;
+    }
 }
 
 pub(super) fn update_provider_run_usage_from_external_observation(
