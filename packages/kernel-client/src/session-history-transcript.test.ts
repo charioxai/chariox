@@ -373,6 +373,15 @@ test("shared history transcript stitch helpers preserve metadata", () => {
       historyTotalChars: 12,
     })],
     [transcriptEntry(2, "assistant", "reply", {
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      externalProvider: "codex",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 1_000,
+      externalObservation: {
+        settles_active_prompt: true,
+        passive_telemetry: false,
+      },
       historyEntryIndex: 8,
       historyFragmentStart: 7,
       historyFragmentEnd: 12,

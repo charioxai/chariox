@@ -55,6 +55,8 @@ test("stitchPrependedTranscriptHistory preserves prompt attachment metadata", ()
       historyFragmentStart: 8,
       historyFragmentEnd: 13,
       historyTotalChars: 13,
+      promptId: "prompt-1",
+      sourceAttachmentId: "attachment-1",
     })],
   )
 
@@ -82,6 +84,10 @@ test("stitchPrependedTranscriptHistory preserves prompt ownership metadata", () 
       historyFragmentStart: 9,
       historyFragmentEnd: 15,
       historyTotalChars: 15,
+      promptId: "prompt-1",
+      promptOrigin: "external",
+      historyTurnCompletedAtMs: null,
+      historyTurnLifecycle: "open",
     })],
   )
 
@@ -93,7 +99,7 @@ test("stitchPrependedTranscriptHistory preserves prompt ownership metadata", () 
   assert.equal(stitched[0]?.historyTurnLifecycle, "open")
 })
 
-test("stitchPrependedTranscriptHistory keeps newer prompt ownership metadata authoritative", () => {
+test("stitchPrependedTranscriptHistory does not merge conflicting prompt ownership metadata", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "user", "arroba ", {
       historyEntryIndex: 8,
@@ -115,9 +121,11 @@ test("stitchPrependedTranscriptHistory keeps newer prompt ownership metadata aut
     })],
   )
 
-  assert.equal(stitched[0]?.promptOrigin, "arroba")
-  assert.equal(stitched[0]?.historyTurnCompletedAtMs, 1_000)
-  assert.equal(stitched[0]?.historyTurnLifecycle, "completed")
+  assert.equal(stitched.length, 2)
+  assert.equal(stitched[0]?.text, "arroba ")
+  assert.equal(stitched[0]?.promptOrigin, "external")
+  assert.equal(stitched[1]?.text, "prompt")
+  assert.equal(stitched[1]?.promptOrigin, "arroba")
 })
 
 test("stitchPrependedTranscriptHistory merges external observed metadata", () => {
@@ -142,8 +150,8 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
       externalProviderSessionId: "thread-1",
       externalProviderTurnId: "turn-1",
       externalObservation: {
-        settles_active_prompt: false,
-        passive_telemetry: true,
+        settles_active_prompt: true,
+        passive_telemetry: false,
       },
       historyEntryIndex: 8,
       historyFragmentStart: 7,
@@ -160,7 +168,7 @@ test("stitchPrependedTranscriptHistory merges external observed metadata", () =>
   })
 })
 
-test("stitchPrependedTranscriptHistory keeps external source authoritative across stale fragments", () => {
+test("stitchPrependedTranscriptHistory does not merge stale external source fragments", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
       source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -182,15 +190,17 @@ test("stitchPrependedTranscriptHistory keeps external source authoritative acros
     })],
   )
 
-  assert.equal(stitched.length, 1)
+  assert.equal(stitched.length, 2)
   assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
   assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.equal(stitched[1]?.source, "provider_output")
+  assert.equal(stitched[1]?.externalProvider, undefined)
 })
 
-test("stitchPrependedTranscriptHistory preserves external identity when newer fragment is null", () => {
+test("stitchPrependedTranscriptHistory does not merge sparse null external identity fragments", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
       source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
@@ -216,15 +226,16 @@ test("stitchPrependedTranscriptHistory preserves external identity when newer fr
     })],
   )
 
-  assert.equal(stitched.length, 1)
+  assert.equal(stitched.length, 2)
   assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
   assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.equal(stitched[1]?.externalProvider, null)
 })
 
-test("stitchPrependedTranscriptHistory recovers external identity split across fragments", () => {
+test("stitchPrependedTranscriptHistory does not recover external identity split across fragments", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "native ", {
       externalProvider: "codex",
@@ -245,15 +256,17 @@ test("stitchPrependedTranscriptHistory recovers external identity split across f
     })],
   )
 
-  assert.equal(stitched.length, 1)
-  assert.equal(stitched[0]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(stitched.length, 2)
+  assert.equal(stitched[0]?.source, undefined)
   assert.equal(stitched[0]?.externalProvider, "codex")
   assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
   assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
   assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.equal(stitched[1]?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(stitched[1]?.externalProvider, undefined)
 })
 
-test("stitchPrependedTranscriptHistory ignores stray external metadata without observed source", () => {
+test("stitchPrependedTranscriptHistory does not merge stray external metadata without observed source", () => {
   const stitched = stitchPrependedTranscriptHistory(
     [entry(1, "assistant", "ordinary ", {
       source: "provider_output",
@@ -278,13 +291,13 @@ test("stitchPrependedTranscriptHistory ignores stray external metadata without o
     })],
   )
 
-  assert.equal(stitched.length, 1)
+  assert.equal(stitched.length, 2)
   assert.equal(stitched[0]?.source, "provider_output")
-  assert.equal(stitched[0]?.externalProvider, undefined)
-  assert.equal(stitched[0]?.externalProviderSessionId, undefined)
-  assert.equal(stitched[0]?.externalProviderTurnId, undefined)
-  assert.equal(stitched[0]?.observedAtMs, undefined)
-  assert.equal(stitched[0]?.externalObservation, undefined)
+  assert.equal(stitched[0]?.externalProvider, "codex")
+  assert.equal(stitched[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(stitched[0]?.externalProviderTurnId, "turn-1")
+  assert.equal(stitched[0]?.observedAtMs, 1_000)
+  assert.equal(stitched[1]?.externalProvider, undefined)
 })
 
 test("stitchPrependedTranscriptHistory does not merge conflicting external turn fragments", () => {

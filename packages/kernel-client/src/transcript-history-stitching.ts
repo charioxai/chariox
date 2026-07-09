@@ -4,9 +4,6 @@ import {
   parseToolTranscriptUpdate,
 } from "@arroba/tool-display"
 import {
-  externalProviderObservedTranscriptExactIdentityConflicts,
-  mergeExternalProviderObservedTranscriptFields,
-  mergeExternalProviderObservedSource,
   type ExternalProviderObservedMutableTranscriptMetadataFields,
 } from "./external-provider-observation.js"
 import {
@@ -52,11 +49,16 @@ export function mergePrependedTranscriptHistoryFragments<TEntry extends Transcri
     text: newer.text,
     sourceText,
   } as TEntry
-  mergeStitchedHistoryMetadata(mergedBase, older, newer)
   if (older.historyFragmentStart !== undefined) mergedBase.historyFragmentStart = older.historyFragmentStart
   if (newer.historyFragmentEnd !== undefined) mergedBase.historyFragmentEnd = newer.historyFragmentEnd
   const totalChars = newer.historyTotalChars ?? older.historyTotalChars
   if (totalChars !== undefined) mergedBase.historyTotalChars = totalChars
+  if (older.attachments !== undefined || newer.attachments !== undefined) {
+    mergedBase.attachments = mergeSessionHistoryPromptAttachments(
+      older.attachments,
+      newer.attachments,
+    )
+  }
   if (older.role !== "tool") {
     return applyTranscriptHistoryDeferral({
       ...mergedBase,
@@ -98,7 +100,10 @@ export function stitchPrependedTranscriptHistory<TEntry extends TranscriptHistor
   if (!transcriptHistoryFragmentsAreAdjacent(tail, head)) {
     return markDeferredTranscriptHistoryEntries([...olderEntries, ...currentEntries])
   }
-  if (externalProviderObservedTranscriptExactIdentityConflicts(tail, head)) {
+  if (
+    tail.role !== head.role
+    || !transcriptHistoryFragmentIdentityMetadataMatches(tail, head)
+  ) {
     return markDeferredTranscriptHistoryEntries([...olderEntries, ...currentEntries])
   }
 
@@ -109,38 +114,30 @@ export function stitchPrependedTranscriptHistory<TEntry extends TranscriptHistor
   ])
 }
 
-function mergeStitchedHistoryMetadata<TEntry extends TranscriptHistoryStitchEntry>(
-  target: TEntry,
-  older: TEntry,
-  newer: TEntry,
-): void {
-  if (target.providerRunId === undefined && older.providerRunId !== undefined) {
-    target.providerRunId = older.providerRunId
-  }
-  const source = mergeExternalProviderObservedSource(target.source, older.source)
-  if (source !== undefined) {
-    target.source = source
-  }
-  mergeExternalProviderObservedTranscriptFields(target, older, newer)
-  if (target.promptId === undefined && older.promptId !== undefined) {
-    target.promptId = older.promptId
-  }
-  if (target.promptOrigin === undefined && older.promptOrigin !== undefined) {
-    target.promptOrigin = older.promptOrigin
-  }
-  if (target.sourceAttachmentId === undefined && older.sourceAttachmentId !== undefined) {
-    target.sourceAttachmentId = older.sourceAttachmentId
-  }
-  if (target.historyTurnCompletedAtMs === undefined && older.historyTurnCompletedAtMs !== undefined) {
-    target.historyTurnCompletedAtMs = older.historyTurnCompletedAtMs
-  }
-  if (target.historyTurnLifecycle === undefined && older.historyTurnLifecycle !== undefined) {
-    target.historyTurnLifecycle = older.historyTurnLifecycle
-  }
-  if (older.attachments !== undefined || newer.attachments !== undefined) {
-    target.attachments = mergeSessionHistoryPromptAttachments(
-      older.attachments,
-      newer.attachments,
-    )
-  }
+function transcriptHistoryFragmentIdentityMetadataMatches(
+  older: TranscriptHistoryStitchEntry,
+  newer: TranscriptHistoryStitchEntry,
+): boolean {
+  return nullableField(older.providerRunId) === nullableField(newer.providerRunId)
+    && nullableField(older.promptId) === nullableField(newer.promptId)
+    && nullableField(older.promptOrigin) === nullableField(newer.promptOrigin)
+    && nullableField(older.sourceAttachmentId) === nullableField(newer.sourceAttachmentId)
+    && nullableField(older.historyTurnCompletedAtMs) === nullableField(newer.historyTurnCompletedAtMs)
+    && nullableField(older.historyTurnLifecycle) === nullableField(newer.historyTurnLifecycle)
+    && nullableField(older.source) === nullableField(newer.source)
+    && nullableField(older.externalProvider) === nullableField(newer.externalProvider)
+    && nullableField(older.externalProviderSessionId) === nullableField(newer.externalProviderSessionId)
+    && nullableField(older.externalProviderTurnId) === nullableField(newer.externalProviderTurnId)
+    && nullableField(older.observedAtMs) === nullableField(newer.observedAtMs)
+    && normalizedExternalObservation(older) === normalizedExternalObservation(newer)
+}
+
+function nullableField(value: string | number | null | undefined): string | number | undefined {
+  return value ?? undefined
+}
+
+function normalizedExternalObservation(entry: TranscriptHistoryStitchEntry): string | undefined {
+  return entry.externalObservation === undefined || entry.externalObservation === null
+    ? undefined
+    : JSON.stringify(entry.externalObservation)
 }

@@ -47,6 +47,11 @@ test("adjacent session history page entries preserve identity fields and richer 
     pageEntry(7, 4, 8, {
       kind: "user_prompt",
       text: " now",
+      agent_id: "agent-1",
+      provider_run_id: "run-1",
+      prompt_origin: "external",
+      merge_key: "prompt-1",
+      source_attachment_id: "attachment-1",
       attachments: [{
         url: "file:///tmp/image.png",
         mime: "image/png",
@@ -73,7 +78,7 @@ test("adjacent session history page entries preserve identity fields and richer 
   })
 })
 
-test("adjacent session history page entries recover stable metadata from later fragments", () => {
+test("adjacent session history page entries do not merge sparse prompt ownership metadata", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
     pageEntry(8, 0, 4, {
       kind: "user_prompt",
@@ -91,16 +96,11 @@ test("adjacent session history page entries recover stable metadata from later f
     }),
   ])
 
-  assert.deepEqual(merged[0]?.entry, {
-    kind: "user_prompt",
-    text: "look now",
-    agent_id: "agent-1",
-    provider_run_id: "run-1",
-    prompt_origin: "external",
-    merge_key: "prompt-1",
-    source_attachment_id: "attachment-1",
-    timestamp_ms: 1_000,
-  })
+  assert.equal(merged.length, 2)
+  assert.equal(merged[0]?.entry.text, "look")
+  assert.equal(merged[0]?.entry.prompt_origin, undefined)
+  assert.equal(merged[1]?.entry.text, " now")
+  assert.equal(merged[1]?.entry.prompt_origin, "external")
 })
 
 test("adjacent session history page entries upgrade matching attachments without dropping extra chips", () => {
@@ -145,7 +145,7 @@ test("adjacent session history page entries upgrade matching attachments without
   }])
 })
 
-test("adjacent session history page entries merge external observation settlement metadata", () => {
+test("adjacent session history page entries do not merge divergent external observation metadata", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
     pageEntry(3, 0, 4, {
       kind: "provider_status",
@@ -163,6 +163,11 @@ test("adjacent session history page entries merge external observation settlemen
     pageEntry(3, 4, 8, {
       kind: "provider_status",
       text: " done",
+      source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      observed_at_ms: 1_000,
       external_observation: {
         settles_active_prompt: true,
         passive_telemetry: false,
@@ -170,22 +175,20 @@ test("adjacent session history page entries merge external observation settlemen
     }),
   ])
 
-  assert.deepEqual(merged[0]?.entry, {
-    kind: "provider_status",
-    text: "work done",
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    external_provider: "codex",
-    external_provider_session_id: "thread-1",
-    external_provider_turn_id: "turn-1",
-    observed_at_ms: 1_000,
-    external_observation: {
-      settles_active_prompt: true,
-      passive_telemetry: false,
-    },
+  assert.equal(merged.length, 2)
+  assert.equal(merged[0]?.entry.text, "work")
+  assert.deepEqual(merged[0]?.entry.external_observation, {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  })
+  assert.equal(merged[1]?.entry.text, " done")
+  assert.deepEqual(merged[1]?.entry.external_observation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
   })
 })
 
-test("adjacent session history page entries recover external observation identity from later fragments", () => {
+test("adjacent session history page entries do not merge sparse external observation identity", () => {
   const merged = mergeAdjacentSessionHistoryPageEntries([
     pageEntry(4, 0, 4, {
       kind: "provider_output",
@@ -202,15 +205,11 @@ test("adjacent session history page entries recover external observation identit
     }),
   ])
 
-  assert.deepEqual(merged[0]?.entry, {
-    kind: "provider_output",
-    text: "work done",
-    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    external_provider: "codex",
-    external_provider_session_id: "thread-1",
-    external_provider_turn_id: "turn-1",
-    observed_at_ms: 1_000,
-  })
+  assert.equal(merged.length, 2)
+  assert.equal(merged[0]?.entry.text, "work")
+  assert.equal(merged[0]?.entry.external_provider_turn_id, undefined)
+  assert.equal(merged[1]?.entry.text, " done")
+  assert.equal(merged[1]?.entry.external_provider_turn_id, "turn-1")
 })
 
 test("adjacent session history page entries do not merge conflicting external turn fragments", () => {

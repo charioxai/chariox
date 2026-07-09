@@ -1,9 +1,5 @@
 import type { SessionHistoryEntry, SessionHistoryPageEntry } from "./kernel-types.js"
 import {
-  externalProviderObservedHistoryExactIdentityConflicts,
-  mergeExternalProviderObservedHistoryFields,
-} from "./external-provider-observation.js"
-import {
   cloneSessionHistoryPromptAttachments,
   mergeSessionHistoryPromptAttachments,
 } from "./session-history-attachments.js"
@@ -20,7 +16,7 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
       previous
       && sessionHistoryFragmentsAreAdjacent(previous, entry)
       && previous.entry.kind === entry.entry.kind
-      && !externalProviderObservedHistoryExactIdentityConflicts(previous.entry, entry.entry)
+      && sessionHistoryFragmentIdentityMetadataMatches(previous.entry, entry.entry)
     ) {
       previous.fragment_end = entry.fragment_end
       previous.entry.text += entry.entry.text
@@ -28,8 +24,6 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
       if (entry.entry.attachments !== undefined) {
         previous.entry.attachments = mergeSessionHistoryPromptAttachments(previous.entry.attachments, entry.entry.attachments)
       }
-      fillMissingSessionHistoryEntryMetadata(previous.entry, entry.entry)
-      mergeExternalProviderObservedHistoryFields(previous.entry, entry.entry)
       continue
     }
 
@@ -45,28 +39,32 @@ export function mergeAdjacentSessionHistoryPageEntries<T extends SessionHistoryP
   return merged
 }
 
-function fillMissingSessionHistoryEntryMetadata(
-  target: SessionHistoryEntry,
-  incoming: SessionHistoryEntry,
-): void {
-  if (target.agent_id === undefined && incoming.agent_id !== undefined) {
-    target.agent_id = incoming.agent_id
-  }
-  if (target.provider_run_id === undefined && incoming.provider_run_id !== undefined) {
-    target.provider_run_id = incoming.provider_run_id
-  }
-  if (target.prompt_origin === undefined && incoming.prompt_origin !== undefined) {
-    target.prompt_origin = incoming.prompt_origin
-  }
-  if (target.merge_key === undefined && incoming.merge_key !== undefined) {
-    target.merge_key = incoming.merge_key
-  }
-  if (target.source_attachment_id === undefined && incoming.source_attachment_id !== undefined) {
-    target.source_attachment_id = incoming.source_attachment_id
-  }
-  if (target.timestamp_ms === undefined && incoming.timestamp_ms !== undefined) {
-    target.timestamp_ms = incoming.timestamp_ms
-  }
+function sessionHistoryFragmentIdentityMetadataMatches(
+  left: SessionHistoryEntry,
+  right: SessionHistoryEntry,
+): boolean {
+  return nullableField(left.agent_id) === nullableField(right.agent_id)
+    && nullableField(left.provider_run_id) === nullableField(right.provider_run_id)
+    && nullableField(left.prompt_origin) === nullableField(right.prompt_origin)
+    && nullableField(left.merge_key) === nullableField(right.merge_key)
+    && nullableField(left.source) === nullableField(right.source)
+    && nullableField(left.external_provider) === nullableField(right.external_provider)
+    && nullableField(left.external_provider_session_id) === nullableField(right.external_provider_session_id)
+    && nullableField(left.external_provider_turn_id) === nullableField(right.external_provider_turn_id)
+    && nullableField(left.observed_at_ms) === nullableField(right.observed_at_ms)
+    && normalizedExternalObservation(left) === normalizedExternalObservation(right)
+    && nullableField(left.source_attachment_id) === nullableField(right.source_attachment_id)
+    && nullableField(left.timestamp_ms) === nullableField(right.timestamp_ms)
+}
+
+function nullableField(value: string | number | null | undefined): string | number | undefined {
+  return value ?? undefined
+}
+
+function normalizedExternalObservation(entry: SessionHistoryEntry): string | undefined {
+  return entry.external_observation === undefined || entry.external_observation === null
+    ? undefined
+    : JSON.stringify(entry.external_observation)
 }
 
 export function cloneSessionHistoryEntry(entry: SessionHistoryEntry): SessionHistoryEntry {
