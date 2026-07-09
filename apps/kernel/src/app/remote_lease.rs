@@ -324,7 +324,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
         if self
             .app
             .prompt_owner_active_prompt_for_agent(
@@ -332,7 +331,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_agent_id,
             )?
             .is_some()
-            || backing_agent.is_processing()
         {
             return Err(DaemonError::LocalTransport {
                 operation: "update leased agent config",
@@ -415,7 +413,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &leased_agent.backing_agent_id,
             )?
             .is_some()
-            || backing_agent.is_processing()
         {
             return Err(DaemonError::LocalTransport {
                 operation: "update leased agent meta mode",
@@ -516,6 +513,129 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) {
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys.push(key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leased_agent_config_update_ignores_legacy_processing_without_active_prompt() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        app.agents_mut()
+            .set_agent_processing(&leased_agent.backing_agent_id, true)
+            .expect("backing agent processing should update");
+
+        let updated = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_config(
+                &leased_agent.id,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+            )
+            .expect("stale processing alone should not block leased config update");
+
+        assert_eq!(
+            updated.execution_mode,
+            Some(crate::provider::AgentExecutionMode::Plan)
+        );
+        assert_eq!(
+            updated.permission_level,
+            Some(crate::provider::AgentPermissionLevel::Required)
+        );
+    }
+
+    #[test]
+    fn leased_agent_meta_mode_update_ignores_legacy_processing_without_active_prompt() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        app.agents_mut()
+            .set_agent_processing(&leased_agent.backing_agent_id, true)
+            .expect("backing agent processing should update");
+
+        let updated = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_meta_mode(&leased_agent.id, true)
+            .expect("stale processing alone should not block leased meta-mode update");
+
+        assert_eq!(updated.id, leased_agent.id);
+        assert!(app
+            .agents()
+            .get_agent(&leased_agent.backing_agent_id)
+            .expect("backing agent should exist")
+            .is_metaagent());
+    }
+
+    #[test]
+    fn leased_agent_config_update_still_blocks_active_prompt_owner() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        sync_active_prompt(&mut app, &leased_agent);
+
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_config(
+                &leased_agent.id,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+            )
+            .expect_err("active prompt ownership should block leased config update");
+
+        assert_active_turn_error(error, "update leased agent config");
+    }
+
+    fn leased_agent_fixture(home_agent_metaagent: bool) -> (DaemonApp, LeasedAgent) {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                home_agent_metaagent,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        (app, leased_agent)
+    }
+
+    fn sync_active_prompt(app: &mut DaemonApp, leased_agent: &LeasedAgent) {
+        let prompt = crate::session::PromptQueueItem::new(
+            "active-prompt",
+            &leased_agent.backing_attachment_id,
+            &leased_agent.backing_agent_id,
+            "active prompt",
+            crate::session::PromptStatus::Running,
+        );
+        app.prompt_owner_sync_external_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(prompt),
+        )
+        .expect("active prompt should sync");
+    }
+
+    fn assert_active_turn_error(error: DaemonError, operation: &'static str) {
+        match error {
+            DaemonError::LocalTransport {
+                operation: actual,
+                message,
+            } => {
+                assert_eq!(actual, operation);
+                assert!(message.contains("has an active turn"));
+            }
+            other => panic!("expected active turn error, got {other:?}"),
         }
     }
 }
