@@ -28,6 +28,23 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
     app.sessions
         .set_active_provider_run(session.id(), None)
         .expect("test should clear stale stored active run");
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "thread-session-lookup-projection",
+        "turn-session-lookup-projection",
+        agent.id(),
+        "external prompt from prompt owner",
+    );
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(external_prompt))
+        .expect("external active prompt should sync");
+    app.sessions_mut()
+        .mirror_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            None,
+            std::collections::VecDeque::new(),
+        )
+        .expect("test drift should clear stale session prompt mirror");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -39,6 +56,17 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
         .expect("listed sessions should include the test session");
     assert_eq!(listed_session.agents().len(), 1);
     assert_eq!(listed_session.active_provider_run_id(), Some(run.id()));
+    let listed_active_prompt = listed_session
+        .active_prompt_for_agent(agent.id())
+        .expect("listed session should project prompt owner active prompt");
+    assert_eq!(
+        listed_active_prompt.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
+    assert_eq!(
+        listed_active_prompt.prompt(),
+        "external prompt from prompt owner"
+    );
 
     let resolved = runtime
         .resolve_session_snapshot(crate::local::ResolveSessionRequest {
@@ -49,6 +77,17 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
     assert_eq!(resolved.id(), session.id());
     assert_eq!(resolved.agents().len(), 1);
     assert_eq!(resolved.active_provider_run_id(), Some(run.id()));
+    let resolved_active_prompt = resolved
+        .active_prompt_for_agent(agent.id())
+        .expect("resolved session should project prompt owner active prompt");
+    assert_eq!(
+        resolved_active_prompt.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
+    assert_eq!(
+        resolved_active_prompt.prompt(),
+        "external prompt from prompt owner"
+    );
 }
 
 #[tokio::test]

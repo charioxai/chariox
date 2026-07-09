@@ -38,6 +38,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &mut crate::session::RuntimeSession,
     ) {
+        self.project_prompt_owner_state_into_session(session);
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
         let projected_run_id = crate::runtime::projection::projected_active_provider_run_id(
@@ -64,6 +65,25 @@ impl KernelRuntimeOwnedState {
             active_prompt_agent_id,
         );
         session.set_active_provider_run(projected_run_id);
+    }
+
+    fn project_prompt_owner_state_into_session(
+        &self,
+        session: &mut crate::session::RuntimeSession,
+    ) {
+        let mut agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
+        for agent_id in agent_ids {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(session, &agent_id);
+            session.mirror_agent_prompt_state(&agent_id, active_prompt, queued_prompts);
+        }
     }
 
     pub(super) fn create_session_response(
