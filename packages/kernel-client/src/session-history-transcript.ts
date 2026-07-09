@@ -26,7 +26,6 @@ import {
   mergePrependedTranscriptHistoryFragments,
   stitchPrependedTranscriptHistory,
 } from "./transcript-history-stitching.js"
-import { promptOriginFromRecord } from "./prompt-origin.js"
 import {
   applyTranscriptDisplayState,
   type TranscriptHistoryTurnLifecycle,
@@ -34,6 +33,7 @@ import {
 import {
   applyTranscriptPromptMetadata,
   reindexTranscriptEntries,
+  sessionHistoryEntryTranscriptMetadata,
   trimSingleTrailingNewline,
 } from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
@@ -452,19 +452,18 @@ function historyEntryTranscriptIdentityOptions(
   entry: SessionHistoryEntry,
   turnPromptId?: string | null,
 ): Partial<SessionHistoryTranscriptEntry> {
-  const hasPromptOrigin = Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
-  const externalIdentity = externalProviderObservedIdentityFields(entry)
+  const metadata = sessionHistoryEntryTranscriptMetadata(entry, { promptId: turnPromptId })
   return {
-    ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
-    ...(hasPromptOrigin ? { promptOrigin: promptOriginFromRecord(entry) } : {}),
-    ...(externalIdentity.externalProvider !== undefined ? { externalProvider: externalIdentity.externalProvider } : {}),
-    ...(externalIdentity.externalProviderSessionId !== undefined
-      ? { externalProviderSessionId: externalIdentity.externalProviderSessionId }
+    ...(metadata.promptId !== undefined ? { promptId: metadata.promptId } : {}),
+    ...(metadata.promptOrigin !== undefined ? { promptOrigin: metadata.promptOrigin } : {}),
+    ...(metadata.sourceAttachmentId !== undefined ? { sourceAttachmentId: metadata.sourceAttachmentId } : {}),
+    ...(metadata.externalProvider !== undefined ? { externalProvider: metadata.externalProvider } : {}),
+    ...(metadata.externalProviderSessionId !== undefined
+      ? { externalProviderSessionId: metadata.externalProviderSessionId }
       : {}),
-    ...(externalIdentity.externalProviderTurnId !== undefined
-      ? { externalProviderTurnId: externalIdentity.externalProviderTurnId }
+    ...(metadata.externalProviderTurnId !== undefined
+      ? { externalProviderTurnId: metadata.externalProviderTurnId }
       : {}),
-    ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
     ...(entry.attachments !== undefined ? { attachments: cloneSessionHistoryPromptAttachments(entry.attachments) } : {}),
   }
 }

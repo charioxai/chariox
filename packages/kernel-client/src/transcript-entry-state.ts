@@ -1,8 +1,9 @@
-import type { PromptQueueItem, TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+import type { PromptQueueItem, SessionHistoryEntry, TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
 import {
   externalProviderObservedExactIdentityConflicts,
   externalProviderObservedExactIdentityMatches,
   externalProviderObservedExplicitIdentityFields,
+  externalProviderObservedIdentityFields,
   type ExternalProviderObservedIdentityFields,
 } from "./external-provider-observation.js"
 import { promptOriginFromRecord } from "./prompt-origin.js"
@@ -141,6 +142,20 @@ export function promptQueueItemExternalProviderIdentityFields(prompt: PromptQueu
       ? { externalProviderSessionId: metadata.externalProviderSessionId }
       : {}),
     ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
+  }
+}
+
+export function sessionHistoryEntryTranscriptMetadata(
+  entry: SessionHistoryEntry,
+  options: { readonly promptId?: string | null | undefined } = {},
+): TranscriptPromptMetadata {
+  const hasPromptOrigin = Object.prototype.hasOwnProperty.call(entry, "prompt_origin")
+  const externalIdentity = externalProviderObservedIdentityFields(entry)
+  return {
+    ...(options.promptId !== undefined ? { promptId: options.promptId } : {}),
+    ...(hasPromptOrigin ? { promptOrigin: promptOriginFromRecord(entry) } : {}),
+    ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
+    ...externalIdentity,
   }
 }
 
