@@ -179,9 +179,10 @@ export function promptSubmissionTranscriptMetadata(
   targetAgentId: string | null,
 ): TranscriptPromptMetadata {
   const prompt = promptSubmissionPrompt(payload, targetAgentId)
-  if (!prompt) {
-    return {}
-  }
+  return prompt ? promptQueueItemTranscriptMetadata(prompt) : {}
+}
+
+export function promptQueueItemTranscriptMetadata(prompt: PromptQueueItem): TranscriptPromptMetadata {
   const promptOrigin = promptOriginFromRecord(prompt)
   const externalIdentity = externalProviderObservedExplicitIdentityFields(prompt)
   return {

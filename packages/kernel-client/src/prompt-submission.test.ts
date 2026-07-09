@@ -12,6 +12,7 @@ import {
   promptSubmissionFailureTransition,
   promptSubmissionOutcomeName,
   promptSubmissionPrompt,
+  promptQueueItemTranscriptMetadata,
   promptSubmissionTranscriptMetadata,
   promptSubmissionRuntimeState,
   promptSubmitPreparationDecision,
@@ -414,6 +415,38 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
     externalProvider: "opencode",
     externalProviderSessionId: "thread-explicit",
     externalProviderTurnId: "turn-explicit",
+  })
+})
+
+test("prompt queue item transcript metadata preserves explicit kernel ownership only", () => {
+  assert.deepEqual(promptQueueItemTranscriptMetadata({
+    id: "external:codex:thread-1:turn-from-id",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "Running",
+  }), {
+    promptId: "external:codex:thread-1:turn-from-id",
+    sourceAttachmentId: "attachment-1",
+  })
+
+  assert.deepEqual(promptQueueItemTranscriptMetadata({
+    id: "prompt-explicit",
+    source_attachment_id: "attachment-2",
+    target_agent_id: "agent-1",
+    prompt: "hello",
+    status: "Running",
+    prompt_origin: " External ",
+    external_provider: " CODEX ",
+    external_provider_session_id: " thread-2 ",
+    external_provider_turn_id: " turn-2 ",
+  }), {
+    promptId: "prompt-explicit",
+    sourceAttachmentId: "attachment-2",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "turn-2",
   })
 })
 
