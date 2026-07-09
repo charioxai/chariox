@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { resolveBuiltBinarySync } from "./lib/drill-runtime-helpers.mjs"
 import { historyOutlineText } from "./lib/drill-history-outline.mjs"
 
 import WebSocket from "ws"
@@ -18,6 +19,7 @@ import {
   getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
+  setUserConfigValueRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -25,7 +27,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
 const marker = `NTCMD_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
 function parseArgs(argv) {
@@ -77,6 +83,15 @@ async function waitForDaemon(kernelUrl, workspace, worktree) {
     }
   }
   throw new Error("kernel did not become ready")
+}
+
+async function disableWorkspaceLiveSync(kernelUrl) {
+  const client = new LocalIpcClient(kernelUrl)
+  try {
+    await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
@@ -158,6 +173,29 @@ async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, ex
     await sleep(1_000)
   }
   throw new Error(`timed out waiting for history output ${expected}`)
+}
+
+async function readLogTail(file, lines = 80) {
+  try {
+    return (await readFile(file, "utf8")).split("\n").slice(-lines).join("\n").trim()
+  } catch {
+    return ""
+  }
+}
+
+async function errorWithLogTails(error, logs) {
+  const nativeTail = await readLogTail(logs.native)
+  const proxyTail = await readLogTail(logs.proxy)
+  const message = [
+    error?.message ?? String(error),
+    nativeTail ? `native log tail:\n${nativeTail}` : null,
+    proxyTail ? `proxy log tail:\n${proxyTail}` : null,
+  ].filter(Boolean).join("\n")
+  const enriched = new Error(message)
+  if (error?.stack) {
+    enriched.stack = `${enriched.name}: ${message}\nCaused by: ${error.stack}`
+  }
+  return enriched
 }
 
 function sendJsonRpc(ws, message) {
@@ -273,6 +311,7 @@ async function runCodex(options) {
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForDaemon(kernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(kernelUrl)
 
     await startScreen(screenNative, logs.nativeDir, "bun", [
       cliPath,
@@ -328,8 +367,8 @@ async function runCodex(options) {
     succeeded = true
     return { provider, status: "ok", sessionId, threadId, proxyUrl, logs }
   } catch (error) {
-    failure = error
-    throw error
+    failure = await errorWithLogTails(error, logs)
+    throw failure
   } finally {
     await screenQuit(screenNative)
     if (daemon && daemon.exitCode == null) {
@@ -388,6 +427,7 @@ async function runOpenCode(options) {
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForDaemon(kernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(kernelUrl)
 
     await startScreen(screenNative, logs.nativeDir, "bun", [
       cliPath,
@@ -429,8 +469,8 @@ async function runOpenCode(options) {
     succeeded = true
     return { provider, status: "ok", sessionId, providerSessionId, proxyUrl, commandName, logs }
   } catch (error) {
-    failure = error
-    throw error
+    failure = await errorWithLogTails(error, logs)
+    throw failure
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)

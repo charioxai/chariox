@@ -28,6 +28,7 @@ import {
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
+  setUserConfigValueRequest,
   startSliceRequest,
 } from "../dist/ipc-requests.js"
 import {
@@ -47,6 +48,7 @@ import {
 import {
   assertBinary,
   makeAvailablePorts,
+  resolveBuiltBinarySync,
   resolveCommandPath,
   runLogged,
   screenQuit,
@@ -68,8 +70,16 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
+const relayBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/relay/target/debug/arroba-relay"),
+  path.join(repoRoot, "apps/relay/Cargo.toml"),
+  "arroba-relay",
+)
 const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
@@ -84,6 +94,19 @@ function unwrap(response, variant) {
 
 function unwrapVariant(response, variant) {
   return unwrap(response, variant)
+}
+
+async function disableWorkspaceLiveSync(kernelUrl) {
+  if (!kernelUrl) return
+  const client = new LocalIpcClient(kernelUrl, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 function parseArgs(argv) {
@@ -404,6 +427,7 @@ async function main() {
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(homeKernelUrl)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
@@ -463,6 +487,7 @@ async function main() {
           stdio: ["ignore", "ignore", "inherit"],
         })
         await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
+        await disableWorkspaceLiveSync(workerKernelUrl)
       }
       await waitForRelayTarget(relayUrl, relayToken, workerDaemonAlias)
       await waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, workerMachineAlias)

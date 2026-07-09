@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { resolveBuiltBinarySync } from "./lib/drill-runtime-helpers.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -17,6 +18,7 @@ import {
   getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
+  setUserConfigValueRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -24,7 +26,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
 const marker = `NTPERM_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
 function parseArgs(argv) {
@@ -76,6 +82,15 @@ async function waitForDaemon(kernelUrl, workspace, worktree) {
     }
   }
   throw new Error("kernel did not become ready")
+}
+
+async function disableWorkspaceLiveSync(kernelUrl) {
+  const client = new LocalIpcClient(kernelUrl)
+  try {
+    await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
@@ -405,6 +420,7 @@ async function runProvider(provider, options) {
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForDaemon(kernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(kernelUrl)
 
     const nativeArgs = [
       cliPath,

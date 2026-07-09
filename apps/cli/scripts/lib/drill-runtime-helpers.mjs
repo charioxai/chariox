@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process"
+import { existsSync } from "node:fs"
 import net from "node:net"
 import { access, readFile } from "node:fs/promises"
 import path from "node:path"
@@ -78,6 +79,18 @@ export async function resolveBuiltBinary(binaryPath, manifestPath, binName) {
     } catch {}
     throw error
   }
+}
+
+export function resolveBuiltBinarySync(binaryPath, manifestPath, binName) {
+  if (existsSync(binaryPath)) return binaryPath
+  const workspaceBinaryPath = path.join(
+    path.dirname(path.dirname(path.dirname(manifestPath))),
+    "target",
+    "debug",
+    binName,
+  )
+  if (existsSync(workspaceBinaryPath)) return workspaceBinaryPath
+  return binaryPath
 }
 
 export async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 15_000) {
