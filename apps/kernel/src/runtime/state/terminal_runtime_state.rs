@@ -54,6 +54,16 @@ impl KernelRuntimeState {
                 if let Some(agent_id) = projected_run.agent_instance_id() {
                     let agent = self.owned.agent_store.get_agent(agent_id)?;
                     if let Some(remote_execution) = agent.remote_execution().cloned() {
+                        let worker_provider_run_id = remote_execution
+                            .active_worker_provider_run_id
+                            .clone()
+                            .or_else(|| {
+                                crate::provider::worker_provider_run_id_from_projected_leased_id(
+                                    &remote_execution.leased_agent_id,
+                                    &provider_run_id,
+                                )
+                            })
+                            .unwrap_or_else(|| provider_run_id.clone());
                         self.owned
                             .ensure_attachment_in_session(&session_id, &attachment_id)?;
                         let mut relay_config = self.owned.config_projection.snapshot();
@@ -72,7 +82,7 @@ impl KernelRuntimeState {
                                 },
                                 RelayPeerRequest::SendLeasedNativeProviderInput {
                                     leased_agent_id: remote_execution.leased_agent_id,
-                                    provider_run_id: provider_run_id.clone(),
+                                    provider_run_id: worker_provider_run_id,
                                     attachment_id: attachment_id.clone(),
                                     data_base64: data_base64.to_string(),
                                 },

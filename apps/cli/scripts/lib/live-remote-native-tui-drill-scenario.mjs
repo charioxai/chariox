@@ -185,25 +185,46 @@ async function waitForActiveProviderRun(client, sessionId) {
 
 async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, expectedByAgent) {
   const deadline = Date.now() + 300_000
+  let lastHistories = {}
+  let lastMissing = {}
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
     let ok = true
     const histories = {}
+    const missing = {}
     for (const agent of agents) {
-      const entries = await loadAgentHistoryEntries(client, sessionId, agent.id, 20)
+      const entries = await loadAgentHistoryEntries(client, sessionId, agent.id, 200)
       histories[agent.alias] = {
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
         outputs: entries.filter((entry) => entry.kind !== "user_prompt").map((entry) => entry.text ?? "").join(""),
       }
       const expected = expectedByAgent[agent.alias] ?? {}
-      for (const marker of expected.prompts ?? []) ok &&= histories[agent.alias].prompts.includes(marker)
-      for (const marker of expected.outputs ?? []) ok &&= histories[agent.alias].outputs.includes(marker)
+      for (const marker of expected.prompts ?? []) {
+        if (!histories[agent.alias].prompts.includes(marker)) {
+          ok = false
+          missing[agent.alias] ??= []
+          missing[agent.alias].push(`prompt:${marker}`)
+        }
+      }
+      for (const marker of expected.outputs ?? []) {
+        if (!histories[agent.alias].outputs.includes(marker)) {
+          ok = false
+          missing[agent.alias] ??= []
+          missing[agent.alias].push(`output:${marker}`)
+        }
+      }
     }
     if (ok) return histories
+    lastHistories = histories
+    lastMissing = missing
     await sleep(1_000)
   }
-  throw new Error("timed out waiting for all history markers")
+  const seen = Object.fromEntries(Object.entries(lastHistories).map(([alias, history]) => [
+    alias,
+    { promptBytes: history.prompts.length, outputBytes: history.outputs.length },
+  ]))
+  throw new Error(`timed out waiting for all history markers; missing=${JSON.stringify(lastMissing)}; seen=${JSON.stringify(seen)}`)
 }
 
 function badgeSnapshotForAlias(snapshot, alias) {

@@ -76,7 +76,9 @@ pub(crate) use run_actor::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
-pub(crate) use runtime_run::projected_leased_provider_run_id;
+pub(crate) use runtime_run::{
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+};
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};

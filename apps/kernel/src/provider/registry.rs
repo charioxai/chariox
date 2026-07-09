@@ -86,6 +86,7 @@ impl ProviderRegistry {
     pub fn advertised_provider_ids(&self) -> Vec<String> {
         let ids = vec![
             DevStubAdapter::KEY.to_string(),
+            ClaudeAdapter::KEY.to_string(),
             "claude-headless".to_string(),
             "claude-p".to_string(),
             CodexAdapter::KEY.to_string(),
@@ -232,6 +233,25 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{LaunchProviderRequest, ProviderRegistry};
+
+    #[test]
+    fn advertised_provider_ids_include_native_and_backend_provider_modes() {
+        let ids = ProviderRegistry::new().advertised_provider_ids();
+
+        for provider in [
+            "dev-stub",
+            "claude",
+            "claude-headless",
+            "claude-p",
+            "codex",
+            "opencode",
+        ] {
+            assert!(
+                ids.iter().any(|candidate| candidate == provider),
+                "advertised provider ids should include {provider}; got {ids:?}",
+            );
+        }
+    }
 
     #[test]
     fn managed_workspace_live_sync_support_matches_selective_write_fence_support() {
