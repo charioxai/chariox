@@ -669,7 +669,7 @@ test("session history outline hydration keeps absent completion markers active",
   assert.equal(entries.find((entry) => entry.role === "assistant")?.historyTurnLifecycle, "open")
 })
 
-test("session history outline hydration projects sparse external turn metadata", () => {
+test("session history outline hydration does not mark sparse external turn metadata as observed", () => {
   const entries = hydrateSessionHistoryOutlineAgentEntries({
     agent_id: "agent-1",
     turns: [{
@@ -693,11 +693,11 @@ test("session history outline hydration projects sparse external turn metadata",
   const prompt = entries.find((entry) => entry.role === "user")
   const assistant = entries.find((entry) => entry.role === "assistant")
   const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
-  assert.equal(prompt?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(prompt?.source, undefined)
   assert.equal(prompt?.promptOrigin, "external")
-  assert.equal(assistant?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(assistant?.source, undefined)
   assert.equal(assistant?.promptOrigin, "external")
-  assert.equal(placeholder?.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+  assert.equal(placeholder?.source, undefined)
   assert.equal(placeholder?.promptOrigin, "external")
   assert.equal(prompt?.externalProvider, "codex")
   assert.equal(prompt?.externalProviderSessionId, "thread-1")

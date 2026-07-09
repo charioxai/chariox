@@ -165,14 +165,11 @@ test("external provider observed turn marker resolves footer identity", () => {
     provider: "opencode",
     providerSessionId: "thread-2",
   })
-  assert.deepEqual(transcriptExternalProviderObservedTurnMarker([{
+  assert.equal(transcriptExternalProviderObservedTurnMarker([{
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
     externalProvider: "",
     externalProviderSessionId: null,
-  }]), {
-    provider: "provider",
-    providerSessionId: "unknown",
-  })
+  }]), null)
   assert.equal(transcriptExternalProviderObservedTurnMarker([{
     source: "provider_output",
     externalProvider: "codex",

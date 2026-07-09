@@ -244,11 +244,14 @@ export function promptOriginExternalProviderObservedMetadata(
   if (!promptOriginIsExternal(promptOrigin)) {
     return null
   }
+  if (!externalProvider || !externalProviderSessionId || !externalProviderTurnId) {
+    return null
+  }
   return {
     source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-    externalProvider: externalProvider ?? null,
-    externalProviderSessionId: externalProviderSessionId ?? null,
-    externalProviderTurnId: externalProviderTurnId ?? null,
+    externalProvider,
+    externalProviderSessionId,
+    externalProviderTurnId,
   }
 }
 
@@ -694,9 +697,12 @@ export function transcriptExternalProviderObservedTurnMarker(
   if (!metadata) {
     return null
   }
+  if (!metadata.externalProvider || !metadata.externalProviderSessionId) {
+    return null
+  }
   return {
-    provider: metadata.externalProvider ?? "provider",
-    providerSessionId: metadata.externalProviderSessionId ?? "unknown",
+    provider: metadata.externalProvider,
+    providerSessionId: metadata.externalProviderSessionId,
   }
 }
 
