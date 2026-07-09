@@ -305,6 +305,9 @@ impl SessionHistoryEntry {
         &self,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        if self.is_external_provider_observed() {
+            self.validate_external_provider_observed_for_history_append(operation)?;
+        }
         if self.prompt_origin.is_some() && self.source_attachment_id.is_none() {
             return Err(DaemonError::SessionHistoryFailed {
                 session_id: Some(self.session_id.clone()),
@@ -320,6 +323,38 @@ impl SessionHistoryEntry {
                 session_id: Some(self.session_id.clone()),
                 operation,
                 message: "user prompt history entry must include source attachment".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_external_provider_observed_for_history_append(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let missing = [
+            ("external provider", self.external_provider.as_deref()),
+            (
+                "external provider session id",
+                self.external_provider_session_id.as_deref(),
+            ),
+            (
+                "external provider turn id",
+                self.external_provider_turn_id.as_deref(),
+            ),
+            ("external provider merge key", self.merge_key.as_deref()),
+        ]
+        .into_iter()
+        .find_map(|(field, value)| {
+            value
+                .is_none_or(|value| value.trim().is_empty())
+                .then_some(field)
+        });
+        if let Some(field) = missing {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: Some(self.session_id.clone()),
+                operation,
+                message: format!("external-observed history entry must include {field}"),
             });
         }
         Ok(())
@@ -724,6 +759,7 @@ impl SessionHistoryStore {
         if !path.exists() {
             return Ok(false);
         }
+        validate_session_history_entry_for_append(session, entry)?;
         let _guard = self
             .write_lock
             .lock()

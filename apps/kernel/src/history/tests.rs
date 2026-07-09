@@ -14,6 +14,20 @@ use super::{
     SessionHistoryEntrySource, SessionHistoryPromptAttachment, SessionHistoryStore,
 };
 
+fn external_observed_entry(session_id: &str) -> SessionHistoryEntry {
+    SessionHistoryEntry::external_provider_observed(
+        session_id,
+        Some("external-observer:agent-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderOutput,
+        "external output",
+        "codex",
+        "thread-1",
+        Some("turn-1".to_string()),
+        Some(1_000),
+    )
+}
+
 #[test]
 fn session_history_entry_source_metadata_line_matches_serialized_source() {
     let serialized = serde_json::to_value(SessionHistoryEntrySource::ExternalProviderObserved)
@@ -144,6 +158,93 @@ fn session_history_append_rejects_prompt_origin_without_source_attachment() {
 }
 
 #[test]
+fn session_history_append_rejects_external_provider_observed_without_complete_identity() {
+    let config = DaemonConfig::for_tests();
+    let mut sessions = SessionService::new(&config);
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let store = SessionHistoryStore::new(config.session_history_root.clone())
+        .expect("history store should initialize");
+    let valid = external_observed_entry(session.id());
+
+    let invalid_entries = [
+        {
+            let mut entry = valid.clone();
+            entry.external_provider = None;
+            (entry, "external provider")
+        },
+        {
+            let mut entry = valid.clone();
+            entry.external_provider_session_id = Some(" ".to_string());
+            (entry, "external provider session id")
+        },
+        {
+            let mut entry = valid.clone();
+            entry.external_provider_turn_id = None;
+            (entry, "external provider turn id")
+        },
+        {
+            let mut entry = valid.clone();
+            entry.merge_key = None;
+            (entry, "external provider merge key")
+        },
+    ];
+    for (entry, missing_field) in invalid_entries {
+        let error = store
+            .append(&session, &entry)
+            .expect_err("external-observed history without complete identity should fail");
+        assert!(
+            error.to_string().contains(&format!(
+                "external-observed history entry must include {missing_field}"
+            )),
+            "{error}"
+        );
+    }
+
+    store
+        .append(&session, &valid)
+        .expect("complete external-observed history should append");
+    let entries = store.load(&session).expect("history should load");
+    assert_eq!(entries, vec![valid]);
+}
+
+#[test]
+fn session_history_replace_rejects_external_provider_observed_without_complete_identity() {
+    let config = DaemonConfig::for_tests();
+    let mut sessions = SessionService::new(&config);
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let store = SessionHistoryStore::new(config.session_history_root.clone())
+        .expect("history store should initialize");
+    let valid = external_observed_entry(session.id());
+    let merge_key = valid
+        .merge_key
+        .clone()
+        .expect("external observed entry should have a merge key");
+    store
+        .append(&session, &valid)
+        .expect("complete external-observed history should append");
+
+    let mut invalid_replacement = valid.clone();
+    invalid_replacement.text = "replacement".to_string();
+    invalid_replacement.external_provider_turn_id = None;
+    let error = store
+        .replace_by_merge_key(&session, &merge_key, &invalid_replacement)
+        .expect_err("external-observed replacement without complete identity should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("external-observed history entry must include external provider turn id"),
+        "{error}"
+    );
+
+    let entries = store.load(&session).expect("history should load");
+    assert_eq!(entries, vec![valid]);
+}
+
+#[test]
 fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
     let path = std::env::temp_dir().join(format!(
         "arroba-operational-history-prompt-owned-validation-{}-{}.db",
@@ -181,6 +282,45 @@ fn operational_history_append_rejects_prompt_origin_without_source_attachment_be
     let event = store
         .append_transcript(&valid, HistoryEventTurnContext::default())
         .expect("valid prompt-owned operational history should append");
+    assert_eq!(event.sequence, 1);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn operational_history_append_rejects_external_provider_observed_without_complete_identity_before_sequence(
+) {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-external-observed-validation-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let valid = external_observed_entry("session-1");
+    let mut invalid = valid.clone();
+    invalid.merge_key = Some(" ".to_string());
+
+    let error = store
+        .append_transcript(&invalid, HistoryEventTurnContext::default())
+        .expect_err("external-observed operational history without complete identity should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("external-observed history entry must include external provider merge key"),
+        "{error}"
+    );
+
+    let event = store
+        .append_transcript(&valid, HistoryEventTurnContext::default())
+        .expect("complete external-observed operational history should append");
     assert_eq!(event.sequence, 1);
 
     drop(store);
