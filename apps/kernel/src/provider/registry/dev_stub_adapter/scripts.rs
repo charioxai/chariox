@@ -38,29 +38,6 @@ pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
     vec!["-lc".to_string(), script]
 }
 
-fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
-    matches!(
-        model,
-        "workflow-drill-node-1"
-            | "workflow-drill-node-2"
-            | "workflow-single-turn-node"
-            | "workflow-intermediate-node"
-            | "workflow-dashboard-producer-node"
-            | "workflow-final-passthrough-node"
-            | "workflow-html-final-node"
-            | "workflow-code-topology-node"
-            | "semantic-url-renderer-stub"
-            | "slow-first-output-drill"
-            | "large-output-drill"
-            | "metaagent-workflow-code-author"
-    )
-}
-
-pub(super) fn is_dev_stub_unique_pty_model(model: &str) -> bool {
-    is_dev_stub_workflow_drill_model(model)
-        || matches!(model, "terminal-echo-a" | "terminal-echo-b")
-}
-
 fn dev_stub_terminal_echo_script() -> String {
     "while IFS= read -r line; do printf '%s\\n' \"$line\"; done".to_string()
 }
