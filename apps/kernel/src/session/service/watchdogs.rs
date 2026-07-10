@@ -257,15 +257,26 @@ impl SessionService {
         &mut self,
         now_ms: u64,
     ) -> Result<Vec<WorkflowWatchdogTickPlan>, DaemonError> {
+        Ok(self
+            .collect_due_workflow_watchdog_invocations_with_changes(now_ms)?
+            .plans)
+    }
+
+    pub fn collect_due_workflow_watchdog_invocations_with_changes(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
         let mut plans = Vec::new();
+        let mut changed_session_ids = BTreeSet::new();
         let session_ids = self
             .store
             .non_ended_sessions()
             .map(|s| s.id().to_string())
             .collect::<Vec<_>>();
         for session_id in session_ids {
-            let queued_prompt_specs = {
+            let (queued_prompt_specs, mut session_changed) = {
                 let mut queued_prompt_specs = Vec::new();
+                let mut session_changed = false;
                 let session = match self.store.get_mut(&session_id) {
                     Some(session) => session,
                     None => continue,
@@ -285,6 +296,11 @@ impl SessionService {
                     .iter()
                     .map(|run| (run.id().to_string(), run.status()))
                     .collect::<BTreeMap<_, _>>();
+                let queued_watchdog_ids = session
+                    .workflow_queued_prompts()
+                    .iter()
+                    .filter_map(|prompt| prompt.watchdog_id().map(str::to_string))
+                    .collect::<BTreeSet<_>>();
                 for watchdog in session.workflow_watchdogs_mut().iter_mut() {
                     if let Some(run_status) = watchdog
                         .last_workflow_run_id()
@@ -296,15 +312,16 @@ impl SessionService {
                                 | WorkflowRunStatus::Failed
                                 | WorkflowRunStatus::Stopped
                         ) {
-                            watchdog.set_last_status(Some(
-                                match run_status {
-                                    WorkflowRunStatus::Completed => "last_run_completed",
-                                    WorkflowRunStatus::Failed => "last_run_failed",
-                                    WorkflowRunStatus::Stopped => "last_run_stopped",
-                                    _ => "last_run_finished",
-                                }
-                                .to_string(),
-                            ));
+                            let status = match run_status {
+                                WorkflowRunStatus::Completed => "last_run_completed",
+                                WorkflowRunStatus::Failed => "last_run_failed",
+                                WorkflowRunStatus::Stopped => "last_run_stopped",
+                                _ => "last_run_finished",
+                            };
+                            if watchdog.last_status() != Some(status) {
+                                watchdog.set_last_status(Some(status.to_string()));
+                                session_changed = true;
+                            }
                         }
                     }
                     if !watchdog.enabled() {
@@ -317,6 +334,7 @@ impl SessionService {
                         watchdog.set_enabled(false);
                         watchdog.set_pending_run(false);
                         watchdog.set_last_status(Some("completed_budget".to_string()));
+                        session_changed = true;
                         continue;
                     }
                     let should_run_pending = watchdog.pending_run() && !active_run_exists;
@@ -324,6 +342,7 @@ impl SessionService {
                     if should_run_pending {
                         watchdog.set_pending_run(false);
                         watchdog.set_last_status(Some("invoking_pending".to_string()));
+                        session_changed = true;
                         plans.push(WorkflowWatchdogTickPlan {
                             watchdog_id: watchdog.id().to_string(),
                             session_id: session_id.clone(),
@@ -331,6 +350,7 @@ impl SessionService {
                             endpoint_id: watchdog.endpoint_id().to_string(),
                             queue_id: watchdog.queue_id().map(str::to_string),
                             invocation_prompt: watchdog.invocation_prompt().to_string(),
+                            enqueue_prompt: !queued_watchdog_ids.contains(watchdog.id()),
                         });
                         continue;
                     }
@@ -348,6 +368,7 @@ impl SessionService {
                             session_created_at_ms
                                 .saturating_add(PUBLICATION_WATCHDOG_STARTUP_GRACE_MS),
                         );
+                        session_changed = true;
                         continue;
                     }
                     let next_run =
@@ -365,9 +386,12 @@ impl SessionService {
                             WorkflowWatchdogPolicy::Skip => {
                                 watchdog.set_last_status(Some("skipped_running".to_string()));
                                 watchdog.set_next_run_at_ms(next_run);
+                                session_changed = true;
                             }
                             WorkflowWatchdogPolicy::Queue => {
-                                if !watchdog.pending_run() {
+                                if !watchdog.pending_run()
+                                    && !queued_watchdog_ids.contains(watchdog.id())
+                                {
                                     queued_prompt_specs.push((
                                         watchdog.workflow_id().to_string(),
                                         watchdog.endpoint_id().to_string(),
@@ -379,12 +403,14 @@ impl SessionService {
                                 watchdog.set_pending_run(true);
                                 watchdog.set_last_status(Some("queued_running".to_string()));
                                 watchdog.set_next_run_at_ms(next_run);
+                                session_changed = true;
                             }
                         }
                         continue;
                     }
                     watchdog.set_last_status(Some("invoking".to_string()));
                     watchdog.set_next_run_at_ms(next_run);
+                    session_changed = true;
                     plans.push(WorkflowWatchdogTickPlan {
                         watchdog_id: watchdog.id().to_string(),
                         session_id: session_id.clone(),
@@ -392,25 +418,37 @@ impl SessionService {
                         endpoint_id: watchdog.endpoint_id().to_string(),
                         queue_id: watchdog.queue_id().map(str::to_string),
                         invocation_prompt: watchdog.invocation_prompt().to_string(),
+                        enqueue_prompt: !queued_watchdog_ids.contains(watchdog.id()),
                     });
                 }
-                queued_prompt_specs
+                (queued_prompt_specs, session_changed)
             };
             for (workflow_id, endpoint_id, queue_id, invocation_prompt, watchdog_id) in
                 queued_prompt_specs
             {
-                let _ = self.enqueue_workflow_prompt(
-                    &session_id,
-                    &workflow_id,
-                    &endpoint_id,
-                    Some(invocation_prompt),
-                    queue_id.as_deref(),
-                    WorkflowQueuedPromptSource::Scheduled,
-                    Some(watchdog_id),
-                );
+                if self
+                    .enqueue_workflow_prompt(
+                        &session_id,
+                        &workflow_id,
+                        &endpoint_id,
+                        Some(invocation_prompt),
+                        queue_id.as_deref(),
+                        WorkflowQueuedPromptSource::Scheduled,
+                        Some(watchdog_id),
+                    )
+                    .is_ok()
+                {
+                    session_changed = true;
+                }
+            }
+            if session_changed {
+                changed_session_ids.insert(session_id);
             }
         }
-        Ok(plans)
+        Ok(WorkflowWatchdogCollection {
+            plans,
+            changed_session_ids,
+        })
     }
 
     pub fn mark_workflow_watchdog_invoked(
@@ -557,5 +595,58 @@ impl SessionService {
         watchdog.set_last_status(Some("invoke_failed".to_string()));
         watchdog.set_last_error(Some(error.into()));
         Ok(watchdog.clone())
+    }
+
+    pub fn mark_workflow_watchdog_failed_and_disable(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+        error: impl Into<String>,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let watchdog = self.mark_workflow_watchdog_failed(session_id, watchdog_id, error)?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session
+            .workflow_watchdog_mut(watchdog.id())
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_enabled(false);
+        watchdog.set_pending_run(false);
+        let watchdog = watchdog.clone();
+        session.remove_queued_workflow_prompts_for_watchdog(watchdog_id);
+        Ok(watchdog)
+    }
+
+    pub fn workflow_watchdog_can_start(
+        &self,
+        session_id: &str,
+        watchdog_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self
+            .store
+            .get(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session.workflow_watchdog(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            }
+        })?;
+        Ok(watchdog.enabled()
+            && !watchdog
+                .max_wakeups()
+                .is_some_and(|limit| watchdog.wakeups_executed() >= limit))
     }
 }

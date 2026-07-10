@@ -254,14 +254,14 @@ impl KernelRuntimeState {
     ) -> u64 {
         transport_runtime_pump_interval_for_state(
             self.next_structured_output_poll_due_at_ms(),
-            self.next_workflow_watchdog_run_at_ms(now_ms),
+            self.next_workflow_watchdog_run_at_ms(),
             now_ms,
             active_interval_ms,
             idle_interval_ms,
         )
     }
 
-    fn next_workflow_watchdog_run_at_ms(&self, now_ms: u64) -> Option<u64> {
+    fn next_workflow_watchdog_run_at_ms(&self) -> Option<u64> {
         self.owned
             .session_store
             .list_non_ended_sessions_including_hidden()
@@ -273,13 +273,7 @@ impl KernelRuntimeState {
                         .max_wakeups()
                         .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
             })
-            .map(|watchdog| {
-                if watchdog.pending_run() {
-                    now_ms
-                } else {
-                    watchdog.next_run_at_ms()
-                }
-            })
+            .map(|watchdog| watchdog.next_run_at_ms())
             .min()
     }
 
