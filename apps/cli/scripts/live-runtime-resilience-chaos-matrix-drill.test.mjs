@@ -64,6 +64,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "--provider-model",
       "codex=gpt-test-codex",
     ])
+    assert(report.scenarios.find((scenario) => scenario.id === "worker-provider-resume-codex").args.includes("--cleanup-on-success"))
     assert.equal(report.metadata.deploymentPresets, "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex")
@@ -92,4 +93,30 @@ test("runtime resilience chaos matrix rejects gated scenarios without opt-in fla
       return true
     },
   )
+})
+
+test("runtime resilience chaos matrix uses the supported Codex default model", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-resilience-codex-model-"))
+  const reportPath = path.join(rootDir, "matrix.json")
+  const env = { ...process.env }
+  delete env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
+  delete env.ARROBA_CODEX_MODEL
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      "--dry-run",
+      "--only",
+      "worker-provider-resume-codex",
+      "--report",
+      reportPath,
+    ], { env })
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+
+    assert.deepEqual(report.scenarios[0].args.slice(-2), [
+      "--provider-model",
+      "codex=gpt-5.4-mini",
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
 })

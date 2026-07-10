@@ -35,7 +35,7 @@ const providerThreadTransferDrill = path.join(scriptDir, "live-provider-thread-t
 
 const DEFAULT_CODEX_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
   ?? process.env.ARROBA_CODEX_MODEL
-  ?? "gpt-5.2-codex"
+  ?? "gpt-5.4-mini"
 const DEFAULT_OPENCODE_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_OPENCODE_MODEL
   ?? process.env.ARROBA_OPENCODE_MODEL
   ?? "opencode/gpt-5.2"
@@ -120,6 +120,7 @@ const MATRIX = [
     classification: "provider-error",
     runtimeSignals: ["lease-health", "provider-run-lifecycle", "session-authority"],
     deployment: "same-host-remote",
+    extraArgs: ["--cleanup-on-success"],
     exitCriteria: [
       "provider resume state is captured before transfer",
       "worker-side provider run resumes without duplicating the prompt",
@@ -133,6 +134,7 @@ const MATRIX = [
     classification: "provider-error",
     runtimeSignals: ["lease-health", "provider-run-lifecycle", "session-authority"],
     deployment: "same-host-remote",
+    extraArgs: ["--cleanup-on-success"],
     exitCriteria: [
       "provider resume state is captured before transfer",
       "worker-side provider run resumes without duplicating the prompt",
