@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::provider::ProviderRunState;
 use crate::session::PromptQueueItem;
 use crate::transport::flow_control;
 
@@ -64,6 +65,9 @@ impl<'a> KernelAgentService<'a> {
                     return Ok(None);
                 }
             };
+            if self.app.providers.get_run(&provider_run_id)?.state() == ProviderRunState::Starting {
+                return Ok(None);
+            }
             let (_session, next_candidate) = self.activate_next_queued_prompt_for_mirror(
                 session_id,
                 &target_agent_id,
@@ -205,8 +209,29 @@ impl<'a> KernelAgentService<'a> {
         ),
         DaemonError,
     > {
-        let expected_prompt_id = expected_next.map(PromptQueueItem::id);
         let prompt_id = self.app.sessions_mut().reserve_prompt_id();
+        self.activate_next_queued_prompt_for_mirror_with_prompt_id(
+            session_id,
+            agent_id,
+            expected_next,
+            prompt_id,
+        )
+    }
+
+    pub(super) fn activate_next_queued_prompt_for_mirror_with_prompt_id(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
+        prompt_id: String,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Option<crate::session::PromptQueueItem>,
+        ),
+        DaemonError,
+    > {
+        let expected_prompt_id = expected_next.map(PromptQueueItem::id);
         let next = self
             .app
             .prompt_owner_activate_next_queued_prompt_with_prompt_id(

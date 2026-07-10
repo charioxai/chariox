@@ -151,6 +151,82 @@ fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering
 }
 
 #[test]
+fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-starting-provider",
+            "agent-home-starting-provider",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let prepared = RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_prompt_submission(
+            &leased_agent.id,
+            "queued while provider starts\n",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should prepare");
+    let request = match &prepared.provider_run {
+        crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => request.clone(),
+        crate::app::PreparedLeasedProviderRun::Ready(_) => {
+            panic!("first leased prompt should require a provider launch")
+        }
+    };
+    let started = app
+        .start_provider_launch(request)
+        .expect("provider launch should enter starting state");
+    let (_provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .finish_prepared_leased_prompt_submission(prepared, started.run.id().to_string())
+        .expect("prompt should queue behind provider startup");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+
+    let recovered = RemoteLeaseRuntime::new(&mut app)
+        .recover_idle_leased_prompt_queue(&leased_agent.id)
+        .expect("startup queue recovery should defer cleanly");
+    assert!(recovered.is_none());
+    assert_eq!(
+        app.prompt_owner_peek_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queued prompt state should load")
+        .expect("startup must not drop the queued prompt")
+        .prompt(),
+        "queued while provider starts\n"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .is_none());
+}
+
+#[test]
 fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

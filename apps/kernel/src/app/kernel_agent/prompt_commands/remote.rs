@@ -67,12 +67,13 @@ fn remote_git_turn_context_for_prompt(
     session_id: &str,
     agent_id: &str,
     prompt: &PromptQueueItem,
+    home_prompt_id: &str,
 ) -> crate::transport::relay_peer::RemoteGitTurnContext {
     crate::transport::relay_peer::RemoteGitTurnContext {
         home_session_id: session_id.to_string(),
         home_agent_id: agent_id.to_string(),
-        home_prompt_id: prompt.id().to_string(),
-        home_turn_id: prompt.id().to_string(),
+        home_prompt_id: home_prompt_id.to_string(),
+        home_turn_id: home_prompt_id.to_string(),
         source_attachment_id: Some(prompt.source_attachment_id().to_string()),
         workspace_live_sync_mode: remote_workspace_live_sync_mode_for_agent(
             app, session_id, agent_id,
@@ -421,6 +422,7 @@ impl<'a> KernelAgentService<'a> {
             }
             let agent = self.app.agents().get_agent(agent_id)?;
             let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
+            let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
             let response = self.app.block_on_relay_future(
                 send_peer_request_via_temporary_connection_with_timeout(
                     &relay_config,
@@ -445,7 +447,11 @@ impl<'a> KernelAgentService<'a> {
                             None
                         },
                         git_context: Some(remote_git_turn_context_for_prompt(
-                            self.app, session_id, agent_id, &peeked,
+                            self.app,
+                            session_id,
+                            agent_id,
+                            &peeked,
+                            &home_prompt_id,
                         )),
                         required_mcps: Vec::new(),
                         remote_extension_manifest,
@@ -465,8 +471,13 @@ impl<'a> KernelAgentService<'a> {
                 }
                 Err(error) => return Err(error),
             };
-            let (_session, next_candidate) =
-                self.activate_next_queued_prompt_for_mirror(session_id, agent_id, expected_next)?;
+            let (_session, next_candidate) = self
+                .activate_next_queued_prompt_for_mirror_with_prompt_id(
+                    session_id,
+                    agent_id,
+                    Some(&peeked),
+                    home_prompt_id,
+                )?;
             let Some(active) = next_candidate else {
                 continue;
             };
@@ -493,5 +504,84 @@ impl<'a> KernelAgentService<'a> {
             crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::config::DaemonConfig;
+    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+
+    #[test]
+    fn queued_remote_prompt_keeps_reserved_home_prompt_id_after_activation() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let first_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let first = PromptQueueItem::new(
+            first_prompt_id,
+            attachment.id(),
+            agent.id(),
+            "first",
+            PromptStatus::Queued,
+        );
+        assert!(matches!(
+            app.prompt_owner_submit_prepared_prompt(session.id(), first, false)
+                .expect("first prompt should submit"),
+            PromptSubmissionOutcome::Started { .. }
+        ));
+        let second_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let second = PromptQueueItem::new(
+            second_prompt_id,
+            attachment.id(),
+            agent.id(),
+            "second",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Queued { prompt: queued } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), second, false)
+            .expect("second prompt should queue")
+        else {
+            panic!("second prompt should remain queued")
+        };
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("first prompt should complete without promoting the queue");
+        let peeked = app
+            .prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+            .expect("queued prompt should load")
+            .expect("second prompt should remain queued");
+        assert_eq!(peeked.id(), queued.id());
+
+        let canonical_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let context = remote_git_turn_context_for_prompt(
+            &app,
+            session.id(),
+            agent.id(),
+            &peeked,
+            &canonical_prompt_id,
+        );
+        let (_session, active) = KernelAgentService::new(&mut app)
+            .activate_next_queued_prompt_for_mirror_with_prompt_id(
+                session.id(),
+                agent.id(),
+                Some(&peeked),
+                canonical_prompt_id,
+            )
+            .expect("queued prompt should activate with the reserved id");
+        let active = active.expect("queued prompt should become active");
+
+        assert_ne!(queued.id(), active.id());
+        assert_eq!(context.home_prompt_id, active.id());
+        assert_eq!(context.home_turn_id, active.id());
     }
 }
