@@ -1,5 +1,10 @@
 import assert from "node:assert/strict"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
+
+import { fileExists } from "./workspace-live-sync-drill-runtime.mjs"
 
 import {
   workspaceLiveSyncRequiredDeployments,
@@ -92,4 +97,14 @@ test("workspace live sync descriptors combine ids and evidence metadata", () => 
     requires: ["remote"],
     runtimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
   })
+})
+
+test("workspace live sync file existence probes distinguish present and missing paths", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "workspace-live-sync-file-exists-"))
+  t.after(async () => await rm(root, { recursive: true, force: true }))
+  const present = path.join(root, "present.txt")
+  await writeFile(present, "present\n", "utf8")
+
+  assert.equal(await fileExists(present), true)
+  assert.equal(await fileExists(path.join(root, "missing.txt")), false)
 })

@@ -6,6 +6,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -183,13 +184,14 @@ async function initGitRepo(dir, label) {
 
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
-  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
+  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const cliBuild = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
   if (cliBuild.code !== 0) throw new Error(`cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
-  const kernelBuild = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const kernelBuild = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
   if (kernelBuild.code !== 0) throw new Error(`kernel build failed\n${kernelBuild.stdout}\n${kernelBuild.stderr}`)
+  const kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel')
   await stat(cliDist)
-  await stat(kernelBinary)
   return { cliDist, kernelBinary }
 }
 

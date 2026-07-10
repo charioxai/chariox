@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import {
   assertHetznerArrobaBinaries,
   assertHetznerTcpPortAvailable,
@@ -228,12 +229,7 @@ async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
+  return await resolveBuiltBinary(binaryPath, manifestPath, binName)
 }
 
 async function assertHetznerBinaries(options) {

@@ -4,8 +4,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { parseArgs, printHelp } from './lib/workspace-live-sync-drill-options.mjs'
-import { assertFileBytes, assertFileContent, initGitWorktree, initManagedTargetWorkspace, initTrackedWorkspace, loadCliModules, makePorts, modelForProvider, resolveBinary, resolveRemoteWorkerKernelRef, runAfterFixtureCommand, sleep, spawnWorkspaceLiveSyncPhaseAgents, terminateChild, waitForLocalDaemon, wrapClientSendWithTimeout } from './lib/workspace-live-sync-drill-runtime.mjs'
-import { assertFilesAbsent, assertManagedTargetFanout, managedTargetFanoutSnapshot, waitForCompletionCount, waitForFilesAbsent, waitForHistoryOutputMarkers, waitForManagedToolExpectationsAndFiles, waitForPromptPhase } from './lib/workspace-live-sync-drill-waiters.mjs'
+import { assertFileBytes, assertFileContent, fileExists, initGitWorktree, initManagedTargetWorkspace, initTrackedWorkspace, loadCliModules, makePorts, modelForProvider, resolveBinary, resolveRemoteWorkerKernelRef, runAfterFixtureCommand, sleep, spawnWorkspaceLiveSyncPhaseAgents, terminateChild, unwrap, unwrapVariant, waitForLocalDaemon, workspaceLiveSyncMoveSourceName, workspaceLiveSyncSpawnAgentRequest, workspaceLiveSyncToolNames, wrapClientSendWithTimeout } from './lib/workspace-live-sync-drill-runtime.mjs'
+import { assertFilesAbsent, assertManagedTargetFanout, managedTargetFanoutSnapshot, waitForAgentsIdle, waitForCompletionCount, waitForCompletionsAndFiles, waitForFilesAbsent, waitForHistoryNotices, waitForHistoryOutputMarkers, waitForManagedToolExpectationsAndFiles, waitForPromptPhase } from './lib/workspace-live-sync-drill-waiters.mjs'
 import { runLiveCollisionAndExternalChecks } from './lib/workspace-live-sync-drill-collision-scenarios.mjs'
 import { runTrackedWorkspaceLiveSyncDrill } from './lib/workspace-live-sync-drill-scenarios.mjs'
 
@@ -439,8 +439,8 @@ async function main() {
           'This is a live Arroba workspace live sync positive text edit smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
-          `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id from step 1.`,
+          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"}. Use the snapshot_id returned by this call for outputs/${provider}.txt.`,
+          `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id returned in step 1. Do not reuse the seed.txt snapshot or any snapshot from an earlier turn.`,
           `Only after the edit succeeds and outputs/${provider}.txt contains the new text, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_TEXT_EDIT_DONE and nothing else.`,
           `If any workspace live sync tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop.`,
         ].join('\n'),
