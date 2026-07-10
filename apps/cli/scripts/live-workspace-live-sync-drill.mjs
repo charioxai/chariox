@@ -399,8 +399,8 @@ async function main() {
     }
 
     for (const { provider, agent } of agents) {
-      const written = `${provider}-workspace-live-sync-write-ok: seed-value-42\n`
-      const edited = `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`
+      const written = `${provider}-workspace-live-sync-write-ok: seed-value-42`
+      const edited = `${provider}-workspace-live-sync-edit-ok: seed-value-42`
       const sourceName = workspaceLiveSyncMoveSourceName(provider)
       const patchInitial = provider === 'opencode' ? `source-start-${provider}\n` : `patch-start-${provider}\n`
       const patchMoved = provider === 'opencode' ? patchInitial : `patch-moved-${provider}\n`
@@ -428,6 +428,7 @@ async function main() {
           'Use only the Arroba MCP/runtime tools for file I/O.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
           `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
+          'The content_text value must end at seed-value-42; do not append a newline or a literal backslash-n sequence.',
           `Only after both steps succeed and outputs/${provider}.txt exists, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_TEXT_WRITE_DONE and nothing else.`,
           `If any workspace live sync tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop.`,
         ].join('\n'),
@@ -577,7 +578,7 @@ async function main() {
     for (const provider of options.providers) {
       await assertFileContent(
         path.join(outputsDir, `${provider}.txt`),
-        `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`,
+        `${provider}-workspace-live-sync-edit-ok: seed-value-42`,
       )
       await assertFileContent(
         path.join(outputsDir, `${provider}-moved.txt`),
