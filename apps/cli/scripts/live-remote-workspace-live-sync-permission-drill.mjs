@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
+import { portIsAvailable, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import {
   assertHetznerArrobaBinaries,
   assertHetznerTcpPortAvailable,
@@ -115,19 +115,24 @@ function preflightWorkspaceLiveSyncPermissionSupport(options) {
   return null
 }
 
-function makePorts() {
-  const base = 60000 + Math.floor(Math.random() * 1000)
-  return {
-    relayPort: base,
-    homeKernelPort: base + 1000,
-    workerKernelPort: base + 1001,
-    homeMcpPort: base + 2000,
-    workerMcpPort: base + 2001,
-    homeOpenCodePort: base + 3000,
-    workerOpenCodePort: base + 3001,
-    homeCodexPort: base + 3002,
-    workerCodexPort: base + 3003,
+async function makePorts() {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const base = 60000 + Math.floor(Math.random() * 1000)
+    const ports = {
+      relayPort: base,
+      homeKernelPort: base + 1000,
+      workerKernelPort: base + 1001,
+      homeMcpPort: base + 2000,
+      workerMcpPort: base + 2001,
+      homeOpenCodePort: base + 3000,
+      workerOpenCodePort: base + 3001,
+      homeCodexPort: base + 3002,
+      workerCodexPort: base + 3003,
+    }
+    const availability = await Promise.all(Object.values(ports).map(portIsAvailable))
+    if (availability.every(Boolean)) return ports
   }
+  throw new Error('could not find an unused remote Workspace Live Sync permission drill port range')
 }
 
 function daemonEnv({
@@ -251,6 +256,17 @@ async function syncHetznerCodexAuth(options) {
 
 async function assertHetznerRelayPortAvailable(options, port) {
   await assertHetznerTcpPortAvailable(options, port, 'Hetzner relay port')
+}
+
+async function assertHetznerWorkerPortsAvailable(options, ports) {
+  for (const [label, port] of [
+    ['kernel', ports.workerKernelPort],
+    ['MCP', ports.workerMcpPort],
+    ['OpenCode', ports.workerOpenCodePort],
+    ['Codex', ports.workerCodexPort],
+  ]) {
+    await assertHetznerTcpPortAvailable(options, port, `Hetzner worker ${label} port`)
+  }
 }
 
 async function stopOwnedHetznerRelay(options, port, runId) {
@@ -410,7 +426,7 @@ async function main() {
     return
   }
 
-  const ports = makePorts()
+  const ports = await makePorts()
   const runId = `${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-permission-${runId}`)
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
@@ -475,6 +491,7 @@ async function main() {
         await syncHetznerCodexAuth(options)
       }
       await assertHetznerRelayPortAvailable(options, ports.relayPort)
+      await assertHetznerWorkerPortsAvailable(options, ports)
       relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
         ARROBA_REMOTE_REPO: options.hetznerRepo,
         ARROBA_RELAY_HOST: '127.0.0.1',
