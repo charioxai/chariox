@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  assertHetznerBinaryFreshness,
   assertMatchingHetznerCheckoutCommit,
   hetznerNativeRuntimeCleanupCommand,
   hetznerWorktreeCleanupCommand,
@@ -37,6 +38,25 @@ test("rejects unverifiable checkout revisions", () => {
       remoteRepo: "/tmp/arroba-run",
     }),
     /could not verify local and remote checkout commits/,
+  )
+})
+
+test("accepts Hetzner binaries newer than their tracked inputs", () => {
+  assert.doesNotThrow(() => assertHetznerBinaryFreshness({
+    remoteRepo: "/tmp/arroba-run",
+    kernelNewerPath: "",
+    relayNewerPath: "",
+  }))
+})
+
+test("rejects stale Hetzner component binaries with the newer input", () => {
+  assert.throws(
+    () => assertHetznerBinaryFreshness({
+      remoteRepo: "/tmp/arroba-run",
+      kernelNewerPath: "apps/kernel/src/app.rs",
+      relayNewerPath: "apps/relay/src/server.rs",
+    }),
+    /kernel binary is older than apps\/kernel\/src\/app\.rs; relay binary is older than apps\/relay\/src\/server\.rs/,
   )
 })
 

@@ -38,8 +38,8 @@ export async function assertHetznerArrobaBinaries(options) {
     "  git checkout main && git reset --hard origin/main",
     "  export PATH=/root/.cargo/bin:$PATH",
     "  rustup toolchain install stable --profile minimal",
-    "  cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel",
-    "  cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay",
+    "  CARGO_TARGET_DIR=apps/kernel/target cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel",
+    "  CARGO_TARGET_DIR=apps/relay/target cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay",
   ].join("\n")
   await runHetznerCommand(options, [
     `repo=${shellQuote(options.hetznerRepo)}`,
@@ -63,6 +63,7 @@ export async function prepareHetznerWorktree(options, localWorktree) {
     remoteCommit,
     remoteRepo: options.hetznerRepo,
   })
+  await assertHetznerArrobaBinaryFreshness(options)
   await execFileAsync("ssh", sshArgs(options, [
     "set -e",
     `mkdir -p ${shellQuote(parent)}`,
@@ -70,6 +71,52 @@ export async function prepareHetznerWorktree(options, localWorktree) {
     `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,
     `git -C ${shellQuote(options.hetznerRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
   ].join("; ")))
+}
+
+export async function assertHetznerArrobaBinaryFreshness(options) {
+  const repo = options.hetznerRepo
+  const kernelBinary = path.posix.join(repo, "apps/kernel/target/debug/arroba-kernel")
+  const relayBinary = path.posix.join(repo, "apps/relay/target/debug/arroba-relay")
+  const command = [
+    "set -euo pipefail",
+    `repo=${shellQuote(repo)}`,
+    `kernel=${shellQuote(kernelBinary)}`,
+    `relay=${shellQuote(relayBinary)}`,
+    "newer_source() {",
+    "  local binary=$1; shift;",
+    "  git -C \"$repo\" ls-files -- \"$@\" | while IFS= read -r relative; do",
+    "    if test \"$repo/$relative\" -nt \"$binary\"; then printf '%s' \"$relative\"; break; fi;",
+    "  done;",
+    "}",
+    "printf 'kernel_newer=%s\\n' \"$(newer_source \"$kernel\" Cargo.toml Cargo.lock apps/kernel apps/relay)\"",
+    "printf 'relay_newer=%s\\n' \"$(newer_source \"$relay\" Cargo.toml Cargo.lock apps/relay)\"",
+  ].join("\n")
+  const output = await runHetznerCommand(options, `bash -lc ${shellQuote(command)}`)
+  const info = Object.fromEntries(output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf("=")
+      return [line.slice(0, separator), line.slice(separator + 1)]
+    }))
+  assertHetznerBinaryFreshness({
+    remoteRepo: repo,
+    kernelNewerPath: info.kernel_newer ?? "",
+    relayNewerPath: info.relay_newer ?? "",
+  })
+}
+
+export function assertHetznerBinaryFreshness({ remoteRepo, kernelNewerPath, relayNewerPath }) {
+  const stale = [
+    kernelNewerPath ? `kernel binary is older than ${kernelNewerPath}` : null,
+    relayNewerPath ? `relay binary is older than ${relayNewerPath}` : null,
+  ].filter(Boolean)
+  if (stale.length === 0) return
+  throw new Error([
+    `Hetzner Arroba binaries are stale at ${remoteRepo}: ${stale.join("; ")}.`,
+    "Rebuild into apps/kernel/target and apps/relay/target before running the drill.",
+  ].join("\n"))
 }
 
 export function assertMatchingHetznerCheckoutCommit({ localCommit, remoteCommit, remoteRepo }) {
