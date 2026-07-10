@@ -165,14 +165,32 @@ impl KernelRuntimeOwnedState {
                 WorkflowPromptDispatches::default(),
             ));
         }
-        self.workflow_start_next_queued_prompt_for_response(session_id)?
-            .ok_or_else(|| DaemonError::WorkflowLaunchRejected {
-                session_id: session_id.to_string(),
-                workflow_id: workflow.id().to_string(),
-                endpoint_id: endpoint.id().to_string(),
-                message: "workflow prompt was enqueued but no dispatchable queue item was found"
-                    .to_string(),
-            })
+        if let Some(outcome) = self.workflow_start_next_queued_prompt_for_response(session_id)? {
+            return Ok(outcome);
+        }
+        if self
+            .session_store
+            .read()
+            .list_queued_workflow_prompts(session_id)?
+            .iter()
+            .any(|candidate| candidate.id() == queued_prompt.id())
+        {
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                    queued_prompt,
+                    workflow,
+                    endpoint,
+                },
+                WorkflowPromptDispatches::default(),
+            ));
+        }
+        Err(DaemonError::WorkflowLaunchRejected {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            message: "workflow prompt was enqueued but no dispatchable queue item was found"
+                .to_string(),
+        })
     }
 
     pub(super) fn workflow_invoke_queued_prompt(

@@ -41,9 +41,9 @@ use super::{
     GetWorkspaceGitOverviewRequest, GetWorkspaceLiveSyncStatusRequest, InspectGitCapabilityRequest,
     InvokeWorkflowEndpointRequest, JoinSessionInviteRequest, JoinTerminalPairingLinkRequest,
     KernelClientConnection, LaunchProviderRunRequest, LaunchProviderRunsRequest, ListAgentsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionMembersRequest,
-    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, ListWorkspaceFilesRequest,
-    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
+    ListSessionMembersRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     MaterializeWorkflowPublicationRequest, MoveAgentToLocalRequest,
     NativeProviderInteractionResolution, PollRuntimeNoticesRequest, PushWorkspaceBranchRequest,
     QueryRecallRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
@@ -58,10 +58,11 @@ use super::{
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, SubmitPromptsRequest,
     SubmitPromptsRequestItem, TerminalType, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
     UpdateAgentSubstitutesRequest, UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
-    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkflowDesignNode,
-    WorkflowDesignOp, WorkflowDesignPoint, WorkflowPublicationSnapshot,
-    WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent, WorkspacePullRequestRecord,
-    WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
+    UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest,
+    UpdateWorkflowPromptQueueRequest, WorkflowDesignNode, WorkflowDesignOp, WorkflowDesignPoint,
+    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 mod protocol_shapes;
