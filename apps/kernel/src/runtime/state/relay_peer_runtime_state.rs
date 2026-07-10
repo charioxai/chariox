@@ -78,7 +78,7 @@ impl KernelRuntimeState {
         let projected_snapshot = match self.read_only_session_snapshot_projection_for_attachment(
             &session_id,
             &attachment_id,
-            0,
+            self.session_projection_change_sequence(),
         ) {
             Ok(snapshot) => Box::new(
                 (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
