@@ -51,6 +51,13 @@ impl DaemonApp {
         .with_variant(agent.effort().map(str::to_string))
         .with_execution_mode(effective_config.mode)
         .with_permission_level(effective_config.permission_level);
+        request = request.with_workspace_live_sync_mode(
+            crate::provider::provider_workspace_live_sync_mode_for_session(
+                provider,
+                &self.config,
+                Some(&session),
+            ),
+        );
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
@@ -69,10 +76,19 @@ mod tests {
     use crate::session::CreateSessionRequest;
 
     #[test]
-    fn prompt_launched_agents_default_to_non_sync_even_when_session_sync_is_enabled() {
+    fn prompt_launched_agents_inherit_session_workspace_live_sync_mode() {
+        let workspace = std::env::temp_dir().join(format!(
+            "arroba-prompt-provider-live-sync-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&workspace).expect("workspace fixture should exist");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
             .expect("session should be created");
         app.sessions_mut()
             .set_workspace_live_sync_mode(session.id(), WorkspaceLiveSyncMode::Managed)
@@ -81,16 +97,29 @@ mod tests {
             .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
             .expect("worker should spawn");
 
+        let error = app
+            .ensure_prompt_provider_run_for_agent(session.id(), worker.id())
+            .expect_err("managed mode should fail closed for an unsupported adapter");
+        assert!(matches!(
+            error,
+            DaemonError::ProviderWorkspaceLiveSyncUnsupported { .. }
+        ));
+
+        app.sessions_mut()
+            .set_workspace_live_sync_mode(session.id(), WorkspaceLiveSyncMode::Tracked)
+            .expect("session sync mode should update");
         let run_id = app
             .ensure_prompt_provider_run_for_agent(session.id(), worker.id())
-            .expect("worker provider run should launch");
+            .expect("tracked worker provider run should launch");
         let run = app.providers.get_run(&run_id).expect("run should exist");
 
         assert_eq!(
             run.write_access_mode(),
-            ProviderWriteAccessMode::Unrestricted
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked
         );
         assert!(!run.requires_workspace_live_sync());
-        assert!(!run.tracks_workspace_live_sync());
+        assert!(run.tracks_workspace_live_sync());
+        drop(app);
+        let _ = std::fs::remove_dir_all(workspace);
     }
 }
