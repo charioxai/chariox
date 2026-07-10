@@ -71,12 +71,13 @@ RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGE
   && rm -rf /tmp/arroba-relay-target /home/slice/.cargo/registry /home/slice/.cargo/git
 
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/arroba-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/arroba-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/arroba-slice/slice-screen.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/arroba-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/arroba-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/arroba-slice/validate-screen.sh
 
-RUN chmod +x /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/validate-screen.sh
+RUN chmod +x /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/validate-screen.sh
 
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace

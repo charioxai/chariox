@@ -228,7 +228,7 @@ async function syncHetznerCodexAuth(options) {
   await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
 }
 
-async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers, relayUrl, relayToken }) {
+async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers }) {
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
@@ -245,7 +245,12 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
     for (const provider of providers) {
       await client.send(importSliceProviderAuthRequest(started.id, provider))
     }
-    await waitForRelayTarget(relayUrl, relayToken, started.worker_kernel_ref, started.worker_kernel_id ?? null)
+    if (!started.worker_kernel_id) {
+      throw new Error(`started managed slice ${started.id} did not discover its worker kernel`)
+    }
+    if (!started.worker_kernel_ref) {
+      throw new Error(`started managed slice ${started.id} did not expose its worker kernel reference`)
+    }
     return started
   } finally {
     await client.close().catch(() => {})
@@ -513,8 +518,6 @@ async function main() {
           homeKernelUrl,
           workspace,
           providers: [provider],
-          relayUrl,
-          relayToken,
         })
         managedSlices.push(providerSlice)
       }

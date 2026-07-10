@@ -12,6 +12,7 @@ import {
   getSessionStateRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
+  listSessionsRequest,
   pumpTerminalOutputRequest,
 } from "../../dist/ipc-requests.js"
 import {
@@ -197,6 +198,17 @@ async function waitForNamedAgents(client, sessionId, aliases) {
   }
   const agents = unwrap(await client.send(listAgentsRequest(sessionId)), "AgentsListed").agents ?? []
   throw new Error(`timed out waiting for agents ${aliases.join(", ")}; saw ${agents.map((agent) => agent.alias ?? agent.id).join(", ")}`)
+}
+
+async function waitForSessionByAlias(client, alias, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const sessions = unwrap(await client.send(listSessionsRequest()), "SessionsListed").sessions ?? []
+    const session = sessions.find((candidate) => candidate.alias === alias)
+    if (session) return session
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for run-owned session ${alias}`)
 }
 
 async function waitForActiveProviderRun(client, sessionId) {
@@ -460,6 +472,7 @@ export async function runProviderScenario({
 }) {
   const scenarioRoot = path.join(root, provider)
   const remotePlacement = Boolean(machineRef || sliceRef)
+  const sessionAlias = `remote-native-${provider}-${process.pid}`
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
   const screenB = `arroba-rnt-${provider}-b-${process.pid}`
   const screenCli = `arroba-rnt-${provider}-cli-${process.pid}`
@@ -541,7 +554,7 @@ export async function runProviderScenario({
       "--target-daemon-alias",
       targetDaemonAlias,
       "--alias",
-      `remote-native-${provider}-${process.pid}`,
+      sessionAlias,
       "--agent-alias",
       aliases[0],
       "--workspace",
@@ -565,7 +578,14 @@ export async function runProviderScenario({
       ARROBA_CLAUDE_NATIVE_DEBUG: "1",
       ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
-    sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    client = relayClient(relayUrl, relayToken, targetDaemonAlias)
+    sessionId = (await waitForSessionByAlias(client, sessionAlias)).id
+    await client.close().catch(() => {})
+    client = null
+    const bannerSessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    if (bannerSessionId !== sessionId) {
+      throw new Error(`native TUI banner session ${bannerSessionId} did not match run-owned session ${sessionId}`)
+    }
 
     await startScreen(screenB, logs.bDir, "bun", [
       cliPath,
@@ -1032,7 +1052,6 @@ export async function runProviderScenario({
     }
   } finally {
     await cleanupNativeDrillCapabilities(workspace, nativeCapabilities)
-    if (client) await client.close().catch(() => {})
     await screenQuit(screenA)
     await screenQuit(screenB)
     await screenQuit(screenCli)
@@ -1045,6 +1064,20 @@ export async function runProviderScenario({
       `remote-native-${provider}-${process.pid}`,
       `arroba-remote-native-observer-${provider}-${process.pid}`,
     ])
+    if (sessionId) {
+      let ended = false
+      if (client) {
+        ended = await client.send(endSessionRequest(sessionId)).then(() => true).catch(() => false)
+      }
+      if (!ended) {
+        const cleanupClient = relayClient(relayUrl, relayToken, targetDaemonAlias)
+        await cleanupClient.send(endSessionRequest(sessionId)).catch((error) => {
+          console.error(`remote native TUI session cleanup failed: ${error.message}`)
+        })
+        await cleanupClient.close().catch(() => {})
+      }
+    }
+    if (client) await client.close().catch(() => {})
     await rm(automationSocket, { force: true }).catch(() => {})
   }
 }

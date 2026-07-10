@@ -49,6 +49,7 @@ fi
 
 screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
+screen -S arroba-slice-provider-bridge -X quit >/dev/null 2>&1 || true
 
 if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLOUD_RELAY_CONFIG_PATH" ]]; then
   CLOUD_RELAY_CONFIG_JSON="$(cat "$CLOUD_RELAY_CONFIG_PATH")"
@@ -57,6 +58,31 @@ fi
 if [[ -n "$CLOUD_RELAY_CONFIG_JSON" ]]; then
   printf '%s' "$CLOUD_RELAY_CONFIG_JSON" >"$HOME/.arroba/daemon/config.json"
   chmod 600 "$HOME/.arroba/daemon/config.json"
+fi
+
+PROVIDER_BRIDGE_READY_FILE="/tmp/arroba-slice-provider-bridge-ready.json"
+PROVIDER_BRIDGE_LOG="$LOGS/provider-port-bridge.log"
+rm -f "$PROVIDER_BRIDGE_READY_FILE"
+: >"$PROVIDER_BRIDGE_LOG"
+screen -L -Logfile "$PROVIDER_BRIDGE_LOG" -dmS arroba-slice-provider-bridge env \
+  ARROBA_SLICE_PROVIDER_BRIDGE_PORT_RANGES="$CODEX_PORT_RANGE,$OPENCODE_PORT_RANGE" \
+  ARROBA_SLICE_PROVIDER_BRIDGE_READY_FILE="$PROVIDER_BRIDGE_READY_FILE" \
+  node "$ROOT/provider-port-bridge.mjs"
+for attempt in $(seq 1 40); do
+  if [[ -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
+    break
+  fi
+  if ! screen -ls | grep -E '[.]arroba-slice-provider-bridge[[:space:]]' >/dev/null; then
+    printf '[slice-runtime] provider bridge exited before becoming ready\n' >&2
+    cat "$PROVIDER_BRIDGE_LOG" >&2 || true
+    exit 1
+  fi
+  sleep 0.25
+done
+if [[ ! -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
+  printf '[slice-runtime] provider bridge did not become ready\n' >&2
+  cat "$PROVIDER_BRIDGE_LOG" >&2 || true
+  exit 1
 fi
 
 if [[ -z "${ARROBA_SLICE_RELAY_URL:-}" ]]; then
