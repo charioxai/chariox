@@ -11,6 +11,72 @@ import {
   waitForTcpPort,
   withDevStubProviderInventory,
 } from "./drill-runtime-helpers.mjs"
+import { cleanupHostedCloudIdentity } from "./live-hosted-cloud-relay-drill-helpers.mjs"
+
+test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out without exposing the session", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: {
+      accountId: "account-1",
+      accountSlug: "hosted-cleanup",
+      realmId: "realm-1",
+    },
+    cloudSessionToken: "session-1",
+    clientIds: ["client-1", "client-1"],
+    machineIds: ["machine-1"],
+    kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+    baseUrl: "https://cloud.example",
+    post: async (url, body) => { calls.push({ url, body }) },
+    logger: (event, details) => { logs.push({ event, details }) },
+  })
+
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+    "https://cloud.example/auth/logout",
+  ])
+  assert.equal(calls[0].body.status, "OFFLINE")
+  assert.equal(calls[3].body.sessionToken, "session-1")
+  assert.deepEqual(logs, [{
+    event: "cloud-identity-cleanup",
+    details: {
+      accountSlug: "hosted-cleanup",
+      clients: ["client-1"],
+      machines: ["machine-1"],
+      kernels: ["kernel-1"],
+      logout: true,
+    },
+  }])
+  assert.doesNotMatch(JSON.stringify(logs), /session-1/)
+})
+
+test("hosted Cloud cleanup attempts revocation and logout after an earlier cleanup failure", async () => {
+  const calls = []
+  await assert.rejects(
+    () => cleanupHostedCloudIdentity({
+      profile: { accountId: "account-1", accountSlug: "hosted-cleanup", realmId: "realm-1" },
+      cloudSessionToken: "session-1",
+      clientIds: ["client-1"],
+      machineIds: ["machine-1"],
+      kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+      baseUrl: "https://cloud.example",
+      post: async (url) => {
+        calls.push(url)
+        if (url.endsWith("/kernels/presence")) throw new Error("presence rejected")
+      },
+      logger: () => {},
+    }),
+    /hosted Cloud identity cleanup failed/,
+  )
+  assert.deepEqual(calls, [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+    "https://cloud.example/auth/logout",
+  ])
+})
 
 test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {
   const source = { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "0" }

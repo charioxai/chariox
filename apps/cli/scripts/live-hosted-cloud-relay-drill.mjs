@@ -12,6 +12,7 @@ import {
   allowDevStubProvider,
   assert,
   buildKernelIfNeeded,
+  cleanupHostedCloudIdentity,
   closeClient,
   createHostedCommandDeps,
   devBrowserCloudLogin,
@@ -101,8 +102,11 @@ async function main() {
   let daemon = null
   let localClient = null
   let remoteClient = null
+  let requests = null
   let passed = false
   let failure = null
+  let createdSessionId = null
+  const profileRef = { current: null }
 
   try {
     log("build-cli")
@@ -115,11 +119,12 @@ async function main() {
     const kernelPath = await buildKernelIfNeeded()
     const python = await resolveExecutable(process.env.PYTHON ?? "python3")
 
-    const [{ LocalIpcClient }, requests, commandActions] = await Promise.all([
+    const [{ LocalIpcClient }, loadedRequests, commandActions] = await Promise.all([
       import("../../../packages/kernel-client/dist/ipc.js"),
       import("../../../packages/kernel-client/dist/ipc-requests.js"),
       import("../dist/command-actions.js"),
     ])
+    requests = loadedRequests
 
     const daemonEnv = withDevStubProviderInventory({
       ...process.env,
@@ -148,7 +153,6 @@ async function main() {
     await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace)
     localClient = new LocalIpcClient(kernelUrl)
 
-    const profileRef = { current: null }
     const notices = []
     const handlers = commandActions.createCommandActionHandlers(createHostedCommandDeps({
       workspace,
@@ -220,6 +224,7 @@ async function main() {
       await sendWithRetry(remoteClient, requests.createSessionRequest(workspace, workspace), "remote-session-create"),
       "SessionCreated",
     )
+    createdSessionId = created.session.id
     assert(created.session?.id, "remote cloud session creation should return a session", created)
 
     const listed = unwrap(
@@ -340,6 +345,7 @@ async function main() {
         closeClient,
         terminateChild,
         spawnProcess,
+        cleanupHostedCloudIdentity,
       })
     }
 
@@ -363,6 +369,7 @@ async function main() {
         manualCloudDeviceLogin,
         installSendRetry,
         expectReject,
+        cleanupHostedCloudIdentity,
       })
     } else {
       log("multi-user-skipped", {
@@ -390,9 +397,39 @@ async function main() {
     failure = error
     throw error
   } finally {
+    const cleanupErrors = []
+    if (createdSessionId && localClient && requests) {
+      await localClient.send(requests.endSessionRequest(createdSessionId)).catch((error) => {
+        cleanupErrors.push(error)
+        log("cloud-session-runtime-cleanup-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    }
     await closeClient(remoteClient, "remote")
     await closeClient(localClient, "local")
     await terminateChild(daemon)
+    if (profileRef.current) {
+      await cleanupHostedCloudIdentity({
+        profile: profileRef.current,
+        clientIds: [clientId],
+        machineIds: [daemonId],
+        kernelPresences: [{ machineId: daemonId, kernelId: daemonId }],
+        reason: "hosted Cloud relay drill cleanup",
+      }).catch((error) => {
+        cleanupErrors.push(error)
+        log("cloud-identity-cleanup-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    }
+    const cleanupFailure = cleanupErrors.length > 0
+      ? new AggregateError(cleanupErrors, "hosted Cloud relay drill cleanup failed")
+      : null
+    if (cleanupFailure && !failure) {
+      passed = false
+      failure = cleanupFailure
+    }
     await finalizeDrillArtifacts({
       rootDir,
       passed,
@@ -410,6 +447,9 @@ async function main() {
         trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
       },
     })
+    if (cleanupFailure && failure === cleanupFailure) {
+      throw cleanupFailure
+    }
   }
 }
 

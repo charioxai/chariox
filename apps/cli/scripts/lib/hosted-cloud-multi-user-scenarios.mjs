@@ -77,6 +77,7 @@ export async function runHostedMultiUserAssertions({
   manualCloudDeviceLogin,
   installSendRetry,
   expectReject,
+  cleanupHostedCloudIdentity,
 }) {
   log("multi-user-cloud-invites")
   const localInvite = unwrap(
@@ -116,15 +117,18 @@ export async function runHostedMultiUserAssertions({
   const thirdClientId = `${ownerClientId}-third`
   let peerRemoteClient = null
   let thirdRemoteClient = null
+  let peerLogin = null
+  let thirdLogin = null
+  let scenarioFailure = null
   try {
-    const peerLogin = await manualCloudDeviceLogin({
+    peerLogin = await manualCloudDeviceLogin({
       role: "peer",
       clientId: peerClientId,
       clientAlias: "hosted-peer-cli",
       localClient,
       requests,
     })
-    const thirdLogin = await manualCloudDeviceLogin({
+    thirdLogin = await manualCloudDeviceLogin({
       role: "third",
       clientId: thirdClientId,
       clientAlias: "hosted-third-cli",
@@ -353,9 +357,33 @@ export async function runHostedMultiUserAssertions({
       "peer node instructions should remain visible to peer",
       visiblePeerNode,
     )
+  } catch (error) {
+    scenarioFailure = error
+    throw error
   } finally {
     await thirdRemoteClient?.close().catch(() => {})
     await peerRemoteClient?.close().catch(() => {})
     await ownerScopedClient.close().catch(() => {})
+    const cleanupErrors = []
+    for (const identity of [
+      { login: peerLogin, clientId: peerClientId, role: "peer" },
+      { login: thirdLogin, clientId: thirdClientId, role: "third" },
+    ]) {
+      if (!identity.login) continue
+      await cleanupHostedCloudIdentity({
+        profile: identity.login.profile,
+        cloudSessionToken: identity.login.cloudSessionToken,
+        clientIds: [identity.clientId],
+        reason: `hosted Cloud ${identity.role} drill cleanup`,
+      }).catch((error) => cleanupErrors.push(error))
+    }
+    if (cleanupErrors.length > 0) {
+      log("multi-user-cloud-cleanup-failed", {
+        errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)),
+      })
+      if (!scenarioFailure) {
+        throw new AggregateError(cleanupErrors, "hosted Cloud multi-user identity cleanup failed")
+      }
+    }
   }
 }

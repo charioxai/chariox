@@ -454,6 +454,7 @@ async function assertHostedCollaboratorHomeExtensions({
   devBrowserCloudLogin,
   installSendRetry,
   expectReject,
+  cleanupHostedCloudIdentity,
 }) {
   log("second-kernel-collab-extension-start", { sessionId: session.id })
   const localInvite = unwrap(
@@ -490,8 +491,10 @@ async function assertHostedCollaboratorHomeExtensions({
     kernelMaxMissedPongs: 10,
   }), "extension-owner-relay")
   let peerRemoteClient = null
+  let peerLogin = null
+  let scenarioFailure = null
   try {
-    const peerLogin = await devBrowserCloudLogin({ role: "extension-peer" })
+    peerLogin = await devBrowserCloudLogin({ role: "extension-peer" })
     const peerProfile = peerLogin.profile
     assert(peerProfile.userId !== ownerProfile.userId, "extension peer login must use a different cloud user", {
       ownerUserId: ownerProfile.userId,
@@ -601,9 +604,24 @@ async function assertHostedCollaboratorHomeExtensions({
       peerUserId: peerProfile.userId,
       workspaceLiveSync: Boolean(liveSyncFixture),
     })
+  } catch (error) {
+    scenarioFailure = error
+    throw error
   } finally {
     await peerRemoteClient?.close().catch(() => {})
     await ownerScopedClient.close().catch(() => {})
+    if (peerLogin) {
+      await cleanupHostedCloudIdentity({
+        profile: peerLogin.profile,
+        cloudSessionToken: peerLogin.cloudSessionToken,
+        reason: "hosted Cloud extension collaborator cleanup",
+      }).catch((error) => {
+        log("second-kernel-collab-cleanup-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        if (!scenarioFailure) throw error
+      })
+    }
   }
 }
 
@@ -651,6 +669,7 @@ export async function runHostedSecondKernelAssertions({
   closeClient,
   terminateChild,
   spawnProcess,
+  cleanupHostedCloudIdentity,
 }) {
   const workerPorts = await makeWorkerPorts()
   const workerDaemonId = `hosted-worker-daemon-${process.pid}-${Date.now()}`
@@ -661,46 +680,48 @@ export async function runHostedSecondKernelAssertions({
   const workerWorkspace = path.join(rootDir, "worker-workspace")
   const workerHistoryDir = path.join(rootDir, "worker-session-history")
 
-  log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
-  await pairCloudMachineDirect({
-    profile: ownerProfile,
-    machineId: workerDaemonId,
-    alias: workerAlias,
-  })
-  const workerRelayToken = await issueMachineRelayToken({
-    profile: ownerProfile,
-    machineId: workerDaemonId,
-  })
-  await mkdir(workerArrobaHome, { recursive: true })
-  await mkdir(workerWorkspace, { recursive: true })
-  const workerEnv = withDevStubProviderInventory({
-    ...process.env,
-    HOME: workerHome,
-    ARROBA_HOME: workerArrobaHome,
-    ARROBA_KERNEL_PORT: String(workerPorts.kernelPort),
-    ARROBA_MCP_PORT: String(workerPorts.mcpPort),
-    ARROBA_OPENCODE_PORT: String(workerPorts.opencodePort),
-    ARROBA_CODEX_PORT: String(workerPorts.codexPort),
-    ARROBA_RELAY_URL: ownerProfile.relayUrl,
-    ARROBA_RELAY_TOKEN: workerRelayToken,
-    ARROBA_DAEMON_ID: workerDaemonId,
-    ARROBA_DAEMON_ALIAS: workerAlias,
-    ARROBA_MACHINE_ID: workerDaemonId,
-    ARROBA_MACHINE_ALIAS: workerAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: "1",
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: workerHistoryDir,
-    ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
-    ...(trackedWorkspaceLiveSyncProvider === "codex"
-      ? { CODEX_HOME: process.env.CODEX_HOME?.trim() || path.join(process.env.HOME ?? "", ".codex") }
-      : {}),
-  })
-
   let worker = null
   let workerClient = null
   let fixtures = null
+  let workerMachinePaired = false
+  let scenarioFailure = null
   const eventLog = []
   try {
+    log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
+    await pairCloudMachineDirect({
+      profile: ownerProfile,
+      machineId: workerDaemonId,
+      alias: workerAlias,
+    })
+    workerMachinePaired = true
+    const workerRelayToken = await issueMachineRelayToken({
+      profile: ownerProfile,
+      machineId: workerDaemonId,
+    })
+    await mkdir(workerArrobaHome, { recursive: true })
+    await mkdir(workerWorkspace, { recursive: true })
+    const workerEnv = withDevStubProviderInventory({
+      ...process.env,
+      HOME: workerHome,
+      ARROBA_HOME: workerArrobaHome,
+      ARROBA_KERNEL_PORT: String(workerPorts.kernelPort),
+      ARROBA_MCP_PORT: String(workerPorts.mcpPort),
+      ARROBA_OPENCODE_PORT: String(workerPorts.opencodePort),
+      ARROBA_CODEX_PORT: String(workerPorts.codexPort),
+      ARROBA_RELAY_URL: ownerProfile.relayUrl,
+      ARROBA_RELAY_TOKEN: workerRelayToken,
+      ARROBA_DAEMON_ID: workerDaemonId,
+      ARROBA_DAEMON_ALIAS: workerAlias,
+      ARROBA_MACHINE_ID: workerDaemonId,
+      ARROBA_MACHINE_ALIAS: workerAlias,
+      ARROBA_ACCEPT_REMOTE_LEASES: "1",
+      ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
+      ARROBA_SESSION_HISTORY_DIR: workerHistoryDir,
+      ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
+      ...(trackedWorkspaceLiveSyncProvider === "codex"
+        ? { CODEX_HOME: process.env.CODEX_HOME?.trim() || path.join(process.env.HOME ?? "", ".codex") }
+        : {}),
+    })
     fixtures = await createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort })
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
@@ -858,6 +879,7 @@ export async function runHostedSecondKernelAssertions({
         devBrowserCloudLogin,
         installSendRetry,
         expectReject,
+        cleanupHostedCloudIdentity,
       })
     }
     if (trackedWorkspaceLiveSync) {
@@ -910,10 +932,26 @@ export async function runHostedSecondKernelAssertions({
       homeExtensions: ["script", "mcp", "connector"],
       workspaceLiveSync,
     })
+  } catch (error) {
+    scenarioFailure = error
+    throw error
   } finally {
     await fixtures?.close?.().catch(() => {})
     await closeClient(workerClient, "worker")
     await terminateChild(worker)
+    if (workerMachinePaired) {
+      await cleanupHostedCloudIdentity({
+        profile: ownerProfile,
+        machineIds: [workerDaemonId],
+        reason: "hosted Cloud worker drill cleanup",
+        logout: false,
+      }).catch((error) => {
+        log("second-kernel-cloud-cleanup-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        if (!scenarioFailure) throw error
+      })
+    }
   }
 }
 
