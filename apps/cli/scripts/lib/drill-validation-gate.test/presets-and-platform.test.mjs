@@ -39,7 +39,7 @@ test("describes validation gate presets", () => {
   assert.deepEqual(presets.map((preset) => preset.name), ["distributed-runtime", "distributed-state-health", "native-provider-tui", "remote-agent-runtime", "remote-home-extension", "runtime-authority", "slice-runtime", "workspace-live-sync"])
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0].requiredMatrices,
-    ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    ["browser-terminal-resilience-matrix", "cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "runtime-resilience-chaos-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["runtime-authority"] })[0].requiredRuntimeSignals,
@@ -47,7 +47,7 @@ test("describes validation gate presets", () => {
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-state-health"] })[0].requiredMatrices,
-    ["cloud-slice-runtime-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    ["browser-terminal-resilience-matrix", "cloud-slice-runtime-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "runtime-resilience-chaos-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
@@ -91,13 +91,13 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.checks.configuration.status, "passed")
     assert.equal(report.checks.platformBundle.status, "passed")
     assert.deepEqual(report.checks.platformBundle.validationSuite, {
-      testCount: 70,
+      testCount: 72,
       coverageAreas: [
         { id: "distributed-observability", testCount: 4 },
         { id: "artifact-contracts", testCount: 19 },
         { id: "failure-diagnostics", testCount: 4 },
-        { id: "matrix-validation", testCount: 32 },
-        { id: "runtime-fixtures", testCount: 9 },
+        { id: "matrix-validation", testCount: 33 },
+        { id: "runtime-fixtures", testCount: 10 },
         { id: "suite-contract", testCount: 2 },
       ],
       validationPresets: platformValidationPresetSummaries(),
@@ -109,7 +109,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.deepEqual(report.nextActions, [])
     assert.doesNotThrow(() => validateDrillValidationGateReport(report))
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
-    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=70 coverage=distributed-observability:4/)
+    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=72 coverage=distributed-observability:4/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -443,8 +443,10 @@ test("distributed state health preset reports owner-routed missing diagnostics",
     assert.equal(report.status, "failed")
     assert.deepEqual(report.presets, ["distributed-state-health"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [
+      "browser-terminal-resilience-matrix",
       "cloud-slice-runtime-matrix",
       "remote-home-extension-matrix",
+      "runtime-resilience-chaos-matrix",
       "slice-runtime-matrix",
       "workspace-live-sync-matrix",
     ])
@@ -631,4 +633,3 @@ test("rejects unknown required failure classifications", async () => {
     /unknown required failure classification: remote-extension-synch/,
   )
 })
-
