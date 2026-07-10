@@ -15,3 +15,9 @@ export function historyOutlineText(outline, options = {}) {
     .map((row) => row.entry?.text ?? "")
     .join("\n")
 }
+
+export function historyOutlineContiguousText(outline, options = {}) {
+  return historyOutlineRows(outline, options)
+    .map((row) => row.entry?.text ?? "")
+    .join("")
+}
