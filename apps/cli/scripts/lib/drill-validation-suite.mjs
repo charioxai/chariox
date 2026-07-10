@@ -105,6 +105,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
   "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
   "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
+  "apps/cli/scripts/lib/workspace-live-sync-drill-environment.test.mjs",
   "apps/cli/scripts/lib/workspace-live-sync-fixtures.test.mjs",
   "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
   "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
@@ -213,6 +214,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
       "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
       "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
+      "apps/cli/scripts/lib/workspace-live-sync-drill-environment.test.mjs",
     ]),
   },
   {
