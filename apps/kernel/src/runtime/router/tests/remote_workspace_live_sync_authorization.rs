@@ -252,6 +252,151 @@ async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_onc
     let _ = std::fs::remove_dir_all(worktree);
 }
 
+#[tokio::test]
+async fn forwarded_workspace_live_sync_retry_waits_for_inflight_permission_result() {
+    let worktree = create_test_git_worktree("workspace-live-sync-inflight-permission");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-live-sync-inflight-permission",
+            worktree.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "codex")
+                .with_alias("sync-agent")
+                .with_permission_level_override(crate::provider::AgentPermissionLevel::Required),
+        )
+        .expect("required-permission agent should spawn");
+    let agent_id = agent.id().to_string();
+    focus_test_agent(&mut app, &session_id, &agent_id);
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        4,
+    ));
+    let metadata = crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata {
+        invocation_id: "workspace-live-sync-inflight-permission-1".to_string(),
+        provider_tool_call_id: Some("provider-call-permission-1".to_string()),
+        attempt: 1,
+        idempotency_key: None,
+    };
+    let context = remote_workspace_live_sync_context(&session_id, &agent_id, &worktree);
+    let arguments = serde_json::json!({
+        "path": "permission.txt",
+        "content_text": "approved\n",
+        "domain": "text"
+    });
+    let initial_states = vec![
+        crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
+            path: "permission.txt".to_string(),
+            exists: false,
+            domain: Some("text".to_string()),
+            content_text: None,
+            content_base64: None,
+        },
+    ];
+
+    let first = tokio::spawn({
+        let router = Arc::clone(&router);
+        let context = context.clone();
+        let metadata = metadata.clone();
+        let arguments = arguments.clone();
+        let initial_states = initial_states.clone();
+        async move {
+            router
+                .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+                    context,
+                    metadata,
+                    crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL.to_string(),
+                    arguments,
+                    initial_states,
+                )
+                .await
+        }
+    });
+    let interaction_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(interaction_id) = {
+                let app = app.lock().await;
+                app.sessions()
+                    .get_session(&session_id)
+                    .expect("session should remain available")
+                    .active_interaction_for_agent(&agent_id)
+                    .map(|interaction| interaction.id().to_string())
+            } {
+                return interaction_id;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("forwarded write should project a permission interaction");
+
+    let duplicate = tokio::spawn({
+        let router = Arc::clone(&router);
+        let context = context.clone();
+        let mut metadata = metadata.clone();
+        metadata.attempt = 2;
+        let arguments = arguments.clone();
+        let initial_states = initial_states.clone();
+        async move {
+            router
+                .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+                    context,
+                    metadata,
+                    crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL.to_string(),
+                    arguments,
+                    initial_states,
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert!(
+        !duplicate.is_finished(),
+        "a transport retry should wait for the original permission result"
+    );
+
+    let response =
+        LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+            session_id: session_id.clone(),
+            interaction_id,
+            choice_id: "allow".to_string(),
+            custom_reply: None,
+        });
+    router
+        .dispatch(
+            KernelCommand::from_local_request(
+                "workspace-live-sync-inflight-permission-allow",
+                None,
+                None,
+                &response,
+            ),
+            response,
+        )
+        .await
+        .expect("permission response should succeed");
+
+    let first_result = tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("original invocation should finish")
+        .expect("original invocation task should not panic")
+        .expect("original invocation should succeed");
+    let duplicate_result = tokio::time::timeout(Duration::from_secs(2), duplicate)
+        .await
+        .expect("retry invocation should finish")
+        .expect("retry invocation task should not panic")
+        .expect("retry invocation should succeed");
+    assert!(first_result.0.ok, "original result: {first_result:?}");
+    assert_eq!(duplicate_result, first_result);
+
+    let _ = std::fs::remove_dir_all(worktree);
+}
+
 fn remote_workspace_live_sync_context(
     session_id: &str,
     agent_id: &str,

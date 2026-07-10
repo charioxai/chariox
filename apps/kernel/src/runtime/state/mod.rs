@@ -121,12 +121,15 @@ struct RemoteExtensionInvocationState {
 #[derive(Debug, Clone)]
 struct RemoteWorkspaceLiveSyncInvocationState {
     request_fingerprint: String,
-    result: Option<(
-        crate::transport::runtime_tools::RuntimeToolResult,
-        Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
-    )>,
+    result: Option<RemoteWorkspaceLiveSyncInvocationResult>,
+    completion_tx: tokio::sync::watch::Sender<Option<RemoteWorkspaceLiveSyncInvocationResult>>,
     finalized: bool,
 }
+
+type RemoteWorkspaceLiveSyncInvocationResult = (
+    crate::transport::runtime_tools::RuntimeToolResult,
+    Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
+);
 
 struct SlicePrivateRelayConnector {
     relay_url: String,
