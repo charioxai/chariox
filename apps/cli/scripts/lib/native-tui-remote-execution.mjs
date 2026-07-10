@@ -53,6 +53,15 @@ export async function assertHetznerArrobaBinaries(options) {
 export async function prepareHetznerWorktree(options, localWorktree) {
   const parent = path.posix.dirname(localWorktree)
   await assertHetznerArrobaBinaries(options)
+  const [{ stdout: localCommit }, remoteCommit] = await Promise.all([
+    execFileAsync("git", ["-C", localWorktree, "rev-parse", "HEAD"]),
+    runHetznerCommand(options, `git -C ${shellQuote(options.hetznerRepo)} rev-parse HEAD`),
+  ])
+  assertMatchingHetznerCheckoutCommit({
+    localCommit,
+    remoteCommit,
+    remoteRepo: options.hetznerRepo,
+  })
   await execFileAsync("ssh", sshArgs(options, [
     "set -e",
     `mkdir -p ${shellQuote(parent)}`,
@@ -60,6 +69,19 @@ export async function prepareHetznerWorktree(options, localWorktree) {
     `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,
     `git -C ${shellQuote(options.hetznerRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
   ].join("; ")))
+}
+
+export function assertMatchingHetznerCheckoutCommit({ localCommit, remoteCommit, remoteRepo }) {
+  const local = String(localCommit ?? "").trim()
+  const remote = String(remoteCommit ?? "").trim()
+  if (!/^[0-9a-f]{40}$/i.test(local) || !/^[0-9a-f]{40}$/i.test(remote)) {
+    throw new Error(`could not verify local and remote checkout commits for ${remoteRepo}`)
+  }
+  if (local !== remote) {
+    throw new Error(
+      `remote worker checkout \`${remoteRepo}\` is at commit ${remote}, but home checkout expects ${local}; prepare the remote checkout at the home commit and rebuild its binaries`,
+    )
+  }
 }
 
 export async function runHetznerCommand(options, command) {

@@ -103,6 +103,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-validation-statuses.test.mjs",
   "apps/cli/scripts/lib/drill-validation-suite.test.mjs",
   "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
+  "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
   "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
   "apps/cli/scripts/lib/workspace-live-sync-fixtures.test.mjs",
   "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
@@ -210,6 +211,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-secrets.test.mjs",
       "apps/cli/scripts/lib/drill-time.test.mjs",
       "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
+      "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
       "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
     ]),
   },
@@ -642,6 +644,7 @@ async function collectDrillValidationSuiteTestPaths(dir, rootDir, found) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name)
     if (entry.isDirectory()) {
+      if (entry.name.endsWith(".test")) continue
       await collectDrillValidationSuiteTestPaths(fullPath, rootDir, found)
     } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
       found.push(path.relative(rootDir, fullPath).split(path.sep).join("/"))
