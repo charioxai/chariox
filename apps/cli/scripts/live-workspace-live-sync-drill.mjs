@@ -8,6 +8,10 @@ import { assertFileBytes, assertFileContent, fileExists, initGitWorktree, initMa
 import { assertFilesAbsent, assertManagedTargetFanout, managedTargetFanoutSnapshot, waitForAgentsIdle, waitForCompletionCount, waitForCompletionsAndFiles, waitForFilesAbsent, waitForHistoryNotices, waitForHistoryOutputMarkers, waitForManagedToolExpectationsAndFiles, waitForPromptPhase } from './lib/workspace-live-sync-drill-waiters.mjs'
 import { runLiveCollisionAndExternalChecks } from './lib/workspace-live-sync-drill-collision-scenarios.mjs'
 import { runTrackedWorkspaceLiveSyncDrill } from './lib/workspace-live-sync-drill-scenarios.mjs'
+import {
+  prepareWorkspaceLiveSyncDaemonEnvironment,
+  removeWorkspaceLiveSyncProviderProfile,
+} from './lib/workspace-live-sync-drill-environment.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -100,11 +104,10 @@ async function main() {
   } = requests
 
   let daemonChild = null
+  let daemonProfile = null
   let kernelUrl = options.kernel
   const startedAt = Date.now()
   const historyDir = options.historyDir ?? path.join(rootDir, 'history')
-  const xdgConfigHome = path.join(rootDir, 'xdg-config')
-  const xdgStateHome = path.join(rootDir, 'xdg-state')
   let succeeded = false
   if (options.spawnDaemon) {
     const ports = makePorts()
@@ -114,19 +117,24 @@ async function main() {
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
     )
+    const daemonId = `workspace-live-sync-drill-${process.pid}-${Date.now()}`
+    daemonProfile = await prepareWorkspaceLiveSyncDaemonEnvironment({
+      rootDir,
+      daemonId,
+      providers: options.providers,
+    })
     daemonChild = spawn(daemonBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
+        ...daemonProfile.env,
         ARROBA_KERNEL_PORT: String(ports.kernelPort),
         ARROBA_MCP_PORT: String(ports.mcpPort),
         ARROBA_OPENCODE_PORT: String(ports.opencodePort),
         ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `workspace-live-sync-drill-${process.pid}-${Date.now()}`,
+        ARROBA_DAEMON_ID: daemonId,
         ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
         ARROBA_SESSION_HISTORY_DIR: historyDir,
-        XDG_CONFIG_HOME: xdgConfigHome,
-        XDG_STATE_HOME: xdgStateHome,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -949,6 +957,7 @@ async function main() {
     }
     await client.close().catch(() => {})
     await terminateChild(daemonChild)
+    await removeWorkspaceLiveSyncProviderProfile(daemonProfile).catch(() => {})
     await finalizeDrillArtifacts({
       rootDir,
       passed: succeeded,

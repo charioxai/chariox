@@ -9,6 +9,10 @@ import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import {
+  prepareWorkspaceLiveSyncDaemonEnvironment,
+  removeWorkspaceLiveSyncProviderProfile,
+} from './lib/workspace-live-sync-drill-environment.mjs'
+import {
   assertHetznerArrobaBinaries,
   assertHetznerTcpPortAvailable,
   remoteEnvCommand,
@@ -159,9 +163,11 @@ function daemonEnv({
   codexPort,
   socketName,
   historyDir,
+  isolatedEnv,
 }) {
   return {
     ...process.env,
+    ...isolatedEnv,
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
@@ -175,9 +181,6 @@ function daemonEnv({
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: historyDir,
-    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
-    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
-    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
   }
 }
 
@@ -241,10 +244,13 @@ function localCodexAuthPath() {
   return path.join(codexHome, 'auth.json')
 }
 
-async function syncHetznerCodexAuth(options) {
+async function syncHetznerCodexAuth(options, remoteCodexHome) {
   const authPath = localCodexAuthPath()
   await access(authPath)
-  await execFileAsync('ssh', sshArgs(options, 'mkdir -p /root/.codex && chmod 700 /root/.codex'))
+  await execFileAsync('ssh', sshArgs(
+    options,
+    `mkdir -p ${shellQuote(remoteCodexHome)} && chmod 700 ${shellQuote(remoteCodexHome)}`,
+  ))
   await execFileAsync('scp', [
     '-i',
     options.hetznerKey,
@@ -253,9 +259,45 @@ async function syncHetznerCodexAuth(options) {
     '-o',
     'StrictHostKeyChecking=accept-new',
     authPath,
-    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
+    `${options.hetznerHost}:${remoteCodexHome}/auth.json.tmp`,
   ])
-  await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
+  await execFileAsync('ssh', sshArgs(
+    options,
+    `mv ${shellQuote(`${remoteCodexHome}/auth.json.tmp`)} ${shellQuote(`${remoteCodexHome}/auth.json`)} && chmod 600 ${shellQuote(`${remoteCodexHome}/auth.json`)}`,
+  ))
+}
+
+async function prepareHetznerProviderProfile(options, remoteRoot, providers) {
+  const credentialRoot = path.posix.join(remoteRoot, 'provider-profile')
+  const codexHome = path.posix.join(credentialRoot, 'codex')
+  const xdgDataHome = path.posix.join(credentialRoot, 'xdg-data')
+  const opencodeDataHome = path.posix.join(xdgDataHome, 'opencode')
+  const opencodeConfigDir = path.posix.join(credentialRoot, 'opencode-config')
+  const home = path.posix.join(remoteRoot, 'home')
+  const xdgConfigHome = path.posix.join(remoteRoot, 'xdg-config')
+  const xdgStateHome = path.posix.join(remoteRoot, 'xdg-state')
+  const xdgCacheHome = path.posix.join(remoteRoot, 'xdg-cache')
+  await runHetznerCommand(options, [
+    'set -eu',
+    `mkdir -p ${[home, xdgConfigHome, xdgStateHome, xdgCacheHome, codexHome, opencodeDataHome, opencodeConfigDir].map(shellQuote).join(' ')}`,
+    `chmod 700 ${shellQuote(credentialRoot)} ${shellQuote(codexHome)} ${shellQuote(opencodeDataHome)} ${shellQuote(opencodeConfigDir)}`,
+    providers.includes('opencode')
+      ? `if test -f /root/.local/share/opencode/auth.json; then cp /root/.local/share/opencode/auth.json ${shellQuote(`${opencodeDataHome}/auth.json`)}; chmod 600 ${shellQuote(`${opencodeDataHome}/auth.json`)}; fi`
+      : ':',
+  ].join('; '))
+  if (providers.includes('codex')) {
+    await syncHetznerCodexAuth(options, codexHome)
+  }
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: xdgConfigHome,
+    XDG_STATE_HOME: xdgStateHome,
+    XDG_DATA_HOME: xdgDataHome,
+    XDG_CACHE_HOME: xdgCacheHome,
+    CODEX_HOME: codexHome,
+    OPENCODE_DATA_HOME: opencodeDataHome,
+    OPENCODE_CONFIG_DIR: opencodeConfigDir,
+  }
 }
 
 async function assertHetznerRelayPortAvailable(options, port) {
@@ -437,12 +479,18 @@ async function main() {
   const workerDaemonId = `workspace-live-sync-worker-${process.pid}-${Date.now()}`
   const homeHistoryDir = path.join(rootDir, `${homeDaemonId}-history`)
   const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
+  const remoteRuntimeRoot = options.hetznerWorker
+    ? `/tmp/arroba-remote-workspace-live-sync-${runId}`
+    : null
 
   let relayChild = null
   let relayTunnel = null
   let homeChild = null
   let workerChild = null
   let localClient = null
+  let homeProfile = null
+  let workerProfile = null
+  let remoteWorkerEnv = null
   let succeeded = false
   let failure = null
   const childRootDir = options.hetznerWorker
@@ -450,11 +498,26 @@ async function main() {
     : null
 
   try {
+    homeProfile = await prepareWorkspaceLiveSyncDaemonEnvironment({
+      rootDir,
+      daemonId: homeDaemonId,
+      providers: options.providers,
+    })
+    if (options.hetznerWorker) {
+      remoteWorkerEnv = await prepareHetznerProviderProfile(
+        options,
+        remoteRuntimeRoot,
+        options.providers,
+      )
+    } else {
+      workerProfile = await prepareWorkspaceLiveSyncDaemonEnvironment({
+        rootDir,
+        daemonId: workerDaemonId,
+        providers: options.providers,
+      })
+    }
     if (options.hetznerWorker) {
       await assertHetznerBinaries(options)
-      if (options.providers.includes('codex')) {
-        await syncHetznerCodexAuth(options)
-      }
       await assertHetznerRelayPortAvailable(options, ports.relayPort)
     }
     if (options.hetznerWorker) {
@@ -499,22 +562,16 @@ async function main() {
         codexPort: ports.homeCodexPort,
         socketName: 'home.sock',
         historyDir: homeHistoryDir,
+        isolatedEnv: homeProfile.env,
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
     if (options.hetznerWorker) {
-      const remoteRoot = `/tmp/arroba-remote-workspace-live-sync-${runId}`
       workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
         ARROBA_REMOTE_REPO: options.hetznerRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        HOME: '/root',
-        XDG_CONFIG_HOME: '/root/.config',
-        XDG_STATE_HOME: '/root/.local/state',
-        XDG_DATA_HOME: '/root/.local/share',
-        XDG_CACHE_HOME: '/root/.cache',
-        CODEX_HOME: '/root/.codex',
-        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
-        ARROBA_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
+        ...remoteWorkerEnv,
+        ARROBA_LOG_DIR: path.posix.join(remoteRuntimeRoot, 'worker-logs'),
         ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
         ARROBA_MCP_PORT: String(ports.workerMcpPort),
         ARROBA_OPENCODE_PORT: String(ports.workerOpenCodePort),
@@ -526,9 +583,9 @@ async function main() {
         ARROBA_MACHINE_ID: workerMachineId,
         ARROBA_MACHINE_ALIAS: workerMachineAlias,
         ARROBA_ACCEPT_REMOTE_LEASES: '1',
-        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, 'worker.sock'),
+        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, 'worker-history'),
+      }, `mkdir -p ${shellQuote(remoteRuntimeRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {
@@ -549,6 +606,7 @@ async function main() {
           codexPort: ports.workerCodexPort,
           socketName: 'worker.sock',
           historyDir: workerHistoryDir,
+          isolatedEnv: workerProfile.env,
         }),
         stdio: ['ignore', 'ignore', 'inherit'],
       })
@@ -665,8 +723,13 @@ async function main() {
     await terminateChild(workerChild)
     await terminateChild(relayChild)
     await terminateChild(relayTunnel)
+    await removeWorkspaceLiveSyncProviderProfile(homeProfile).catch(() => {})
+    await removeWorkspaceLiveSyncProviderProfile(workerProfile).catch(() => {})
     if (options.hetznerWorker) {
       await stopOwnedHetznerRelay(options, ports.relayPort, runId)
+      if (remoteRuntimeRoot) {
+        await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRuntimeRoot)}`).catch(() => {})
+      }
     }
     if (options.hetznerWorker && childRootDir && (succeeded || !options.keepArtifactsOnFailure)) {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})

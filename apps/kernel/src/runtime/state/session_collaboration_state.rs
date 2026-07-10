@@ -336,14 +336,13 @@ impl KernelRuntimeState {
             .owned
             .workspace_live_sync_journal
             .target_results_for_session(session_id);
-        match self.owned.durable_state_store.load_events_after(0) {
+        match self.owned.durable_state_store.load_subject_events_by_kind(
+            session_id,
+            "workspace_live_sync.target_results_recorded",
+            200,
+        ) {
             Ok(events) => {
                 for event in events {
-                    if event.kind != "workspace_live_sync.target_results_recorded"
-                        || event.subject_id.as_deref() != Some(session_id)
-                    {
-                        continue;
-                    }
                     match event.payload.get("target_results").cloned().map(
                         serde_json::from_value::<
                             Vec<crate::git_observer::WorkspaceLiveSyncTargetResult>,

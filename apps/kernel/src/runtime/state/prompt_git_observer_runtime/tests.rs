@@ -154,6 +154,55 @@ fn workspace_live_sync_failed_io_notice_names_source_target_path_and_action() {
     assert!(messages[1].contains("failed_io=1"));
 }
 
+#[tokio::test]
+async fn workspace_live_sync_status_reads_durable_only_results_by_session_and_kind() {
+    let app = Arc::new(Mutex::new(
+        crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed"),
+    ));
+    let runtime = owned_runtime_state(&app).await;
+    let session_id = "session-durable-only";
+    let mut persisted = target_result(vec![path_result(
+        "src/lib.rs",
+        crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+        "applied remotely",
+    )]);
+    persisted.session_id = session_id.to_string();
+
+    runtime
+        .owned
+        .durable_state_store
+        .append_event(
+            "session.updated",
+            Some(session_id.to_string()),
+            serde_json::json!({ "unrelated": "x".repeat(1_000_000) }),
+        )
+        .expect("unrelated event should append");
+    runtime
+        .owned
+        .durable_state_store
+        .append_event(
+            "workspace_live_sync.target_results_recorded",
+            Some(session_id.to_string()),
+            serde_json::json!({ "target_results": [persisted] }),
+        )
+        .expect("target result event should append");
+    runtime
+        .owned
+        .durable_state_store
+        .append_event(
+            "workspace_live_sync.target_results_recorded",
+            Some("other-session".to_string()),
+            serde_json::json!({ "target_results": [] }),
+        )
+        .expect("other session event should append");
+
+    let results = runtime.workspace_live_sync_target_results(session_id);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].session_id, session_id);
+    assert_eq!(results[0].path_results[0].message, "applied remotely");
+}
+
 #[test]
 fn workspace_live_sync_source_attachment_skip_matches_root_and_origin_machine_or_kernel() {
     let source = attachment("/tmp/source", "kernel-source");

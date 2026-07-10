@@ -76,6 +76,13 @@ fn workspace_live_sync_journal_restores_durable_events_and_next_sequence() {
             serde_json::json!({ "target_results": [target_result] }),
         )
         .expect("target result event should append");
+    store
+        .append_event(
+            "session.updated",
+            Some("session-1".to_string()),
+            serde_json::json!({ "unrelated": "x".repeat(1_000_000) }),
+        )
+        .expect("unrelated event should append");
 
     let journal =
         WorkspaceLiveSyncJournal::restore_from_durable_state(&store).expect("restore journal");
