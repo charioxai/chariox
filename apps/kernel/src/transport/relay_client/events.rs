@@ -116,6 +116,19 @@ pub(super) async fn replay_recent_relay_events(
                 attachment_id,
             )
             .await?;
+            emit_relay_event(
+                router,
+                outgoing_tx,
+                subscription_id,
+                client_public_key,
+                event_runtime,
+                &event_stream_id,
+                KernelEvent::TransportResumed {
+                    session_id: session_id.to_string(),
+                    resumed_from_event_id: Some(cursor),
+                },
+            )
+            .await?;
             return Ok(());
         }
     };
