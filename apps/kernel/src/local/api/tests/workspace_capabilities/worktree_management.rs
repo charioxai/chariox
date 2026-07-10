@@ -144,6 +144,61 @@ fn local_request_api_deletes_unused_workspace_worktree_inner() {
 }
 
 #[test]
+fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix() {
+    run_workspace_capability_test(
+        "local_request_api_creates_session_worktree_without_duplicate_repo_prefix",
+        local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inner,
+    );
+}
+
+fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inner() {
+    let parent = std::env::temp_dir().join("arroba-workspace-session-worktree-prefix-test");
+    let workspace_root = parent.join("arroba-cloud");
+    let expected_worktree_root = parent.join("arroba-cloud-session-1783622367");
+    let duplicate_worktree_root =
+        parent.join("arroba-cloud-arroba-arroba-cloud-session-1783622367");
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
+    std::fs::write(workspace_root.join("README.md"), "hello\n").expect("file should exist");
+    run_test_git(&workspace_root, &["init", "-b", "main"]);
+    run_test_git(
+        &workspace_root,
+        &["config", "user.email", "agent@example.com"],
+    );
+    run_test_git(&workspace_root, &["config", "user.name", "Agent"]);
+    run_test_git(&workspace_root, &["add", "."]);
+    run_test_git(&workspace_root, &["commit", "-m", "seed"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let create = harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceWorktree(
+            CreateWorkspaceWorktreeRequest {
+                workspace_id: workspace_root.display().to_string(),
+                path: None,
+                branch: Some("arroba/arroba-cloud-session-1783622367".to_string()),
+                base_ref: Some("main".to_string()),
+            },
+        ))
+        .expect("worktree create should succeed");
+
+    match create {
+        LocalDaemonResponse::WorkspaceWorktreeCreated { worktree, .. } => {
+            let returned_path = std::path::PathBuf::from(&worktree.path);
+            assert_eq!(
+                returned_path.file_name().and_then(std::ffi::OsStr::to_str),
+                Some("arroba-cloud-session-1783622367")
+            );
+            assert!(returned_path.exists());
+            assert!(expected_worktree_root.exists());
+            assert!(!duplicate_worktree_root.exists());
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
 fn local_request_api_refuses_to_delete_runtime_owned_worktree() {
     run_workspace_capability_test(
         "local_request_api_refuses_to_delete_runtime_owned_worktree",

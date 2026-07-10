@@ -82,13 +82,12 @@ pub(crate) fn create_waiting_room_worktree(
         None => resolve_available_branch_name(&repo_root, &branch_base)?,
     };
     let parent = repo_root.parent().unwrap_or(&repo_root);
-    let directory_base = format!(
-        "{}-{}",
+    let directory_base = default_worktree_directory_base(
         repo_root
             .file_name()
             .and_then(OsStr::to_str)
             .unwrap_or("workspace"),
-        slugify_segment(&branch.replace('/', "-"))
+        &branch,
     );
     let directory = requested_path
         .map(str::trim)
@@ -293,6 +292,30 @@ fn resolve_available_worktree_directory(parent: &Path, base_name: &str) -> PathB
     attempt
 }
 
+fn default_worktree_directory_base(repo_name: &str, branch: &str) -> String {
+    let repo_slug = non_empty_slug(repo_name, "workspace");
+    let branch_leaf = branch
+        .rsplit('/')
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or(branch);
+    let branch_slug = non_empty_slug(branch_leaf, "worktree");
+    let repo_prefix = format!("{repo_slug}-");
+    if branch_slug == repo_slug || branch_slug.starts_with(&repo_prefix) {
+        branch_slug
+    } else {
+        format!("{repo_slug}-{branch_slug}")
+    }
+}
+
+fn non_empty_slug(value: &str, fallback: &str) -> String {
+    let slug = slugify_segment(value);
+    if slug.is_empty() {
+        fallback.to_string()
+    } else {
+        slug
+    }
+}
+
 fn resolve_requested_worktree_directory(parent: &Path, value: &str) -> PathBuf {
     let expanded = expand_workspace_query_path(value);
     if expanded.is_absolute() {
@@ -335,8 +358,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        parse_git_worktree_list, resolve_available_worktree_directory,
-        resolve_requested_worktree_directory, slugify_segment,
+        default_worktree_directory_base, parse_git_worktree_list,
+        resolve_available_worktree_directory, resolve_requested_worktree_directory,
+        slugify_segment,
     };
 
     #[test]
@@ -378,6 +402,25 @@ mod tests {
         assert_eq!(slugify_segment(" Feature/Add Thing "), "feature-add-thing");
         assert_eq!(slugify_segment("///"), "");
         assert_eq!(slugify_segment("A__B"), "a-b");
+    }
+
+    #[test]
+    fn default_worktree_directory_base_uses_branch_leaf_without_duplicate_repo_prefix() {
+        assert_eq!(
+            default_worktree_directory_base(
+                "arroba-cloud",
+                "arroba/arroba-cloud-session-1783622367"
+            ),
+            "arroba-cloud-session-1783622367"
+        );
+        assert_eq!(
+            default_worktree_directory_base("arroba", "arroba/arroba-session-1779647319"),
+            "arroba-session-1779647319"
+        );
+        assert_eq!(
+            default_worktree_directory_base("arroba-cloud", "feature/worktree-name"),
+            "arroba-cloud-worktree-name"
+        );
     }
 
     #[test]

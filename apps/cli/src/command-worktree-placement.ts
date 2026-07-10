@@ -279,8 +279,7 @@ export function suggestNamedWorktreePath(baseDirectory: string, branch: string, 
   if (explicitPath?.trim()) {
     return resolvePath(baseDirectory, explicitPath)
   }
-  const rootName = basename(baseDirectory)
-  return resolvePath(dirname(baseDirectory), `${rootName}-${slugifyGitBranch(branch)}`)
+  return resolvePath(dirname(baseDirectory), defaultWorktreeDirectoryBase(basename(baseDirectory), branch))
 }
 
 async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions): Promise<string> {
@@ -293,7 +292,7 @@ async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions):
   const fromRef = options.fromRef ?? "HEAD"
   const targetDirectory = options.targetDirectory
     ? resolvePath(baseDirectory, options.targetDirectory)
-    : resolvePath(dirname(repoRoot), `${basename(repoRoot)}-${slugifyGitBranch(options.branch ?? fromRef)}`)
+    : resolvePath(dirname(repoRoot), defaultWorktreeDirectoryBase(basename(repoRoot), options.branch ?? fromRef))
 
   let args: string[]
   if (options.branch) {
@@ -333,6 +332,18 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
     const message = detail || (error instanceof Error ? error.message : String(error))
     throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`)
   }
+}
+
+export function defaultWorktreeDirectoryBase(repoName: string, branchOrRef: string): string {
+  const repoSlug = slugifyGitBranch(repoName)
+  const branchLeaf = branchOrRef.split("/").filter(Boolean).at(-1) ?? branchOrRef
+  const branchSlug = slugifyGitBranch(branchLeaf)
+  const branchSlugLower = branchSlug.toLowerCase()
+  const repoSlugLower = repoSlug.toLowerCase()
+  if (branchSlugLower === repoSlugLower || branchSlugLower.startsWith(`${repoSlugLower}-`)) {
+    return branchSlug
+  }
+  return `${repoSlug}-${branchSlug}`
 }
 
 function slugifyGitBranch(value: string): string {

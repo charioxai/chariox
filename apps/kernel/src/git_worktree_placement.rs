@@ -54,15 +54,16 @@ pub(crate) fn prepare_git_worktree(
         .or(target_hint)
         .map(|target| resolve_target_directory(base_directory, target))
         .unwrap_or_else(|| {
-            let slug = slugify_git_branch(placement.branch.as_deref().unwrap_or(from_ref));
             let repo_name = repo_root
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("worktree");
-            repo_root
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(format!("{repo_name}-{slug}"))
+            repo_root.parent().unwrap_or_else(|| Path::new(".")).join(
+                default_worktree_directory_base(
+                    repo_name,
+                    placement.branch.as_deref().unwrap_or(from_ref),
+                ),
+            )
         });
 
     let target = target_directory.display().to_string();
@@ -176,5 +177,47 @@ fn slugify_git_branch(value: &str) -> String {
         "worktree".to_string()
     } else {
         slug
+    }
+}
+
+fn default_worktree_directory_base(repo_name: &str, branch_or_ref: &str) -> String {
+    let repo_slug = slugify_git_branch(repo_name);
+    let branch_leaf = branch_or_ref
+        .rsplit('/')
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or(branch_or_ref);
+    let branch_slug = slugify_git_branch(branch_leaf);
+    let repo_prefix = format!("{}-", repo_slug.to_ascii_lowercase());
+    let branch_slug_lower = branch_slug.to_ascii_lowercase();
+    if branch_slug_lower == repo_slug.to_ascii_lowercase()
+        || branch_slug_lower.starts_with(&repo_prefix)
+    {
+        branch_slug
+    } else {
+        format!("{repo_slug}-{branch_slug}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_worktree_directory_base;
+
+    #[test]
+    fn default_worktree_directory_base_uses_branch_leaf_without_duplicate_repo_prefix() {
+        assert_eq!(
+            default_worktree_directory_base(
+                "arroba-cloud",
+                "arroba/arroba-cloud-session-1783622367"
+            ),
+            "arroba-cloud-session-1783622367"
+        );
+        assert_eq!(
+            default_worktree_directory_base("arroba", "arroba/arroba-session-1779647319"),
+            "arroba-session-1779647319"
+        );
+        assert_eq!(
+            default_worktree_directory_base("arroba-cloud", "feature/worktree-name"),
+            "arroba-cloud-worktree-name"
+        );
     }
 }
