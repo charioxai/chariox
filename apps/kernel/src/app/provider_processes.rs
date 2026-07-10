@@ -80,7 +80,17 @@ impl<'a> ProviderProcessTracker<'a> {
         }
         tracking
             .run_processes
-            .insert(run.id().to_string(), process_key);
+            .insert(run.id().to_string(), process_key.clone());
+        drop(tracking);
+        crate::logging::info_with_fields(
+            "daemon.provider_process_gc",
+            "registered managed provider process",
+            serde_json::json!({
+                "pid": pid,
+                "process_key": process_key,
+                "provider_run_id": run.id(),
+            }),
+        );
         Ok(())
     }
 
@@ -463,7 +473,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
             if process.pid == current_pid
                 || tracked_pids.contains(&process.pid)
                 || tracked_process_group_ids.contains(&process.process_group_id)
-                || has_tracked_process_ancestor(process, &processes, tracked_pids)
+                || has_protected_process_ancestor(process, &processes, tracked_pids, current_pid)
                 || process.age_secs < min_age_secs
                 || !process.command.contains("codex app-server")
                 || !process.command.contains("mcp_servers.arroba.url")
@@ -476,15 +486,16 @@ fn owned_orphan_provider_process_ids_from_ps_output(
         .collect()
 }
 
-fn has_tracked_process_ancestor(
+fn has_protected_process_ancestor(
     process: &ProviderProcessSnapshot,
     processes: &BTreeMap<u32, ProviderProcessSnapshot>,
     tracked_pids: &BTreeSet<u32>,
+    current_pid: u32,
 ) -> bool {
     let mut parent_pid = process.parent_pid;
     let mut visited = BTreeSet::new();
     while parent_pid > 0 && visited.insert(parent_pid) {
-        if tracked_pids.contains(&parent_pid) {
+        if parent_pid == current_pid || tracked_pids.contains(&parent_pid) {
             return true;
         }
         let Some(parent) = processes.get(&parent_pid) else {
@@ -587,6 +598,28 @@ mod tests {
         );
 
         assert_eq!(orphan_ids, vec![200]);
+    }
+
+    #[test]
+    fn orphan_scan_preserves_processes_parented_by_the_current_kernel() {
+        let ps_output = format!(
+            "300 999 300 45 node {}\n\
+             301 300 300 44 /opt/codex {}\n\
+             400 1 400 43 /opt/codex {}\n",
+            codex_command(50001),
+            codex_command(50001),
+            codex_command(50002),
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::new(),
+            30_000,
+            MCP_URL,
+        );
+
+        assert_eq!(orphan_ids, vec![400]);
     }
 
     #[test]
