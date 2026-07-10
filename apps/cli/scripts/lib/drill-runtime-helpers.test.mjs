@@ -5,10 +5,23 @@ import test from "node:test"
 import {
   findMatchingProcessIdsFromPsOutput,
   formatDrillCommandLine,
+  providerAuthFailureFromTerminalText,
   runLogged,
   waitForCondition,
   waitForTcpPort,
 } from "./drill-runtime-helpers.mjs"
+
+test("detects ANSI-rendered provider authentication failures", () => {
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[8BLogin\x1b[9Gexpired\x1b[17G \u00b7 Please run /login"),
+    "Login expired",
+  )
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[93C\x1b[35BNot\x1b[98Glogged\x1b[105Gin \u00b7 Run /login"),
+    "Not logged in",
+  )
+  assert.equal(providerAuthFailureFromTerminalText("CLAUDECHARLIE"), null)
+})
 
 test("formatDrillCommandLine quotes replayable command diagnostics", () => {
   assert.equal(

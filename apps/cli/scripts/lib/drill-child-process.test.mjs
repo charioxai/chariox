@@ -35,6 +35,10 @@ test('classifies provider authentication failures', () => {
   )
 })
 
+test('classifies expired provider logins', () => {
+  assert.equal(classifyDrillChildFailure('provider authentication failed: Login expired'), 'provider-auth')
+})
+
 test('redacts token-shaped values from formatted child output tails', () => {
   const text = 'Token refresh failed: 401\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz'
   const formatted = formatDrillChildFailure('remote workspace live sync drill', 1, null, '', text)

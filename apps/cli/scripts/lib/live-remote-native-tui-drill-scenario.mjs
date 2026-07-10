@@ -26,6 +26,7 @@ import {
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 import {
+  providerAuthFailureFromTerminalText,
   resolveCommandPath,
   screenQuit,
   screenStuff,
@@ -199,6 +200,10 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
         outputs: entries.filter((entry) => entry.kind !== "user_prompt").map((entry) => entry.text ?? "").join(""),
+      }
+      const providerAuthFailure = providerAuthFailureFromTerminalText(histories[agent.alias].outputs)
+      if (providerAuthFailure) {
+        throw new Error(`provider authentication failed for ${agent.alias}: ${providerAuthFailure}`)
       }
       const expected = expectedByAgent[agent.alias] ?? {}
       for (const marker of expected.prompts ?? []) {

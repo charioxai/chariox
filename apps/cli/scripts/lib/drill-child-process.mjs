@@ -19,6 +19,7 @@ const PROVIDER_AUTH_PATTERNS = [
   /unauthori[sz]ed/i,
   /authentication/i,
   /not logged in/i,
+  /login expired/i,
   /login required/i,
   /token refresh failed/i,
 ]

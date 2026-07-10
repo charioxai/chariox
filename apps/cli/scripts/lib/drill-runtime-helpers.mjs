@@ -196,6 +196,15 @@ export async function resolveCommandPath(command) {
   return stdout.trim()
 }
 
+export function providerAuthFailureFromTerminalText(value) {
+  const normalized = String(value ?? "")
+    .replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  const match = normalized.match(/\b(?:login expired|not logged in|login required|token refresh failed|authentication failed|unauthori[sz]ed)\b/i)
+  return match?.[0] ?? null
+}
+
 export async function screen(name, args) {
   await execFileAsync("screen", ["-S", name, ...args])
 }
