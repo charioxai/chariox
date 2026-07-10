@@ -311,6 +311,13 @@ async function stopOwnedHetznerRelay(options, port, runId) {
   })
 }
 
+async function stopOwnedHetznerWorker(options, daemonId, port) {
+  await stopHetznerProcessByEnv(options, {
+    ARROBA_DAEMON_ID: daemonId,
+    ARROBA_KERNEL_PORT: String(port),
+  })
+}
+
 function mirrorFixturesToHetznerCommand(options, rootDir) {
   const parent = path.dirname(rootDir)
   const base = path.basename(rootDir)
@@ -726,6 +733,7 @@ async function main() {
     await removeWorkspaceLiveSyncProviderProfile(homeProfile).catch(() => {})
     await removeWorkspaceLiveSyncProviderProfile(workerProfile).catch(() => {})
     if (options.hetznerWorker) {
+      await stopOwnedHetznerWorker(options, workerDaemonId, ports.workerKernelPort)
       await stopOwnedHetznerRelay(options, ports.relayPort, runId)
       if (remoteRuntimeRoot) {
         await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRuntimeRoot)}`).catch(() => {})

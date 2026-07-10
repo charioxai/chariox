@@ -260,6 +260,13 @@ async function stopOwnedHetznerRelay(options, port, runId) {
   })
 }
 
+async function stopOwnedHetznerWorker(options, daemonId, port) {
+  await stopHetznerProcessByEnv(options, {
+    ARROBA_DAEMON_ID: daemonId,
+    ARROBA_KERNEL_PORT: String(port),
+  })
+}
+
 function mirrorFixturesToHetznerCommand(options, rootDir) {
   const parent = path.dirname(rootDir)
   const base = path.basename(rootDir)
@@ -657,6 +664,7 @@ async function main() {
     await terminateChild(relayChild)
     await terminateChild(relayTunnel)
     if (options.hetznerWorker) {
+      await stopOwnedHetznerWorker(options, workerDaemonId, ports.workerKernelPort)
       await stopOwnedHetznerRelay(options, ports.relayPort, runId)
       await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/arroba-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
     }
