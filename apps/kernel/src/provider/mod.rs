@@ -6,6 +6,7 @@ mod codex;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
+mod executable_resolution;
 mod external_observation;
 mod launch_contract;
 mod mcp_proxy;

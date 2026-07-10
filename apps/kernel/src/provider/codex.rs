@@ -8,6 +8,7 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use self::mcp_config::runtime_mcp_config;
 use self::ports::resolve_codex_launch_port;
+use super::executable_resolution::ExecutableResolutionState;
 
 mod catalog_endpoint;
 mod mcp_config;
@@ -16,6 +17,8 @@ mod ports;
 pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
+static CODEX_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
+    ExecutableResolutionState::new("codex");
 const CODEX_BIND_HOST_OVERRIDE: &str = "ARROBA_CODEX_BIND_HOST";
 pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
 const CODEX_SESSION_ENV_VARS: &[&str] = &[
@@ -33,20 +36,20 @@ pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
 
 fn resolve_codex_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(CODEX_ENV_OVERRIDE).map(PathBuf::from) {
-        return resolve_candidate(path, true).ok_or_else(|| {
-            DaemonError::ProviderExecutableNotFound {
+        return CODEX_EXECUTABLE_RESOLUTION
+            .resolve(|| resolve_candidate(path.clone(), true))
+            .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
                 adapter_key: "codex".to_string(),
                 executable: env::var(CODEX_ENV_OVERRIDE).unwrap_or_else(|_| "codex".to_string()),
-            }
-        });
+            });
     }
 
-    resolve_candidate(PathBuf::from("codex"), false).ok_or_else(|| {
-        DaemonError::ProviderExecutableNotFound {
+    CODEX_EXECUTABLE_RESOLUTION
+        .resolve(|| resolve_candidate(PathBuf::from("codex"), false))
+        .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "codex".to_string(),
             executable: "codex".to_string(),
-        }
-    })
+        })
 }
 
 pub fn plan_codex_launch(

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
+use super::executable_resolution::ExecutableResolutionState;
+
 mod catalog;
 mod launch_args;
 mod native_tui;
@@ -18,6 +20,8 @@ use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
 const CLAUDE_ENV_OVERRIDE: &str = "ARROBA_CLAUDE_BIN";
+static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
+    ExecutableResolutionState::new("claude");
 const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -31,20 +35,20 @@ pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
 
 fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(CLAUDE_ENV_OVERRIDE).map(PathBuf::from) {
-        return resolve_candidate(path, true).ok_or_else(|| {
-            DaemonError::ProviderExecutableNotFound {
+        return CLAUDE_EXECUTABLE_RESOLUTION
+            .resolve(|| resolve_candidate(path.clone(), true))
+            .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
                 adapter_key: "claude".to_string(),
                 executable: env::var(CLAUDE_ENV_OVERRIDE).unwrap_or_else(|_| "claude".to_string()),
-            }
-        });
+            });
     }
 
-    resolve_candidate(PathBuf::from("claude"), false).ok_or_else(|| {
-        DaemonError::ProviderExecutableNotFound {
+    CLAUDE_EXECUTABLE_RESOLUTION
+        .resolve(|| resolve_candidate(PathBuf::from("claude"), false))
+        .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "claude".to_string(),
             executable: "claude".to_string(),
-        }
-    })
+        })
 }
 
 pub fn plan_claude_launch(
