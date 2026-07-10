@@ -503,6 +503,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     initial_liveness_already_checked: false,
                 },
             )?;
+            let _ = self.recover_idle_leased_prompt_queue(&leased_agent.id)?;
             if let Some(event) =
                 self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
             {
@@ -510,6 +511,47 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         Ok(events)
+    }
+
+    pub(crate) fn recover_idle_leased_prompt_queue(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let started = self.app.advance_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
+        if let Some(prompt) = started.as_ref() {
+            crate::logging::info_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "recovered idle leased prompt queue",
+                serde_json::json!({
+                    "leased_agent_id": leased_agent.id,
+                    "session_id": leased_agent.backing_session_id,
+                    "agent_id": leased_agent.backing_agent_id,
+                    "prompt_id": prompt.id(),
+                }),
+            );
+        }
+        Ok(started)
     }
 
     pub(crate) fn project_remote_runtime_projection(

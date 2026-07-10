@@ -77,6 +77,80 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
 }
 
 #[test]
+fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-queue-recovery",
+            "agent-home-queue-recovery",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let (_provider_run_id, first) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "first leased prompt\n", Vec::new())
+        .expect("first leased prompt should submit");
+    assert!(matches!(first, PromptSubmissionOutcome::Started { .. }));
+    let (_provider_run_id, second) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "second leased prompt\n", Vec::new())
+        .expect("second leased prompt should submit");
+    assert!(matches!(second, PromptSubmissionOutcome::Queued { .. }));
+
+    app.prompt_owner_complete_active_prompt_only(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+    )
+    .expect("completion race should leave the first prompt settled");
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .is_none());
+
+    let recovered = RemoteLeaseRuntime::new(&mut app)
+        .recover_idle_leased_prompt_queue(&leased_agent.id)
+        .expect("idle leased queue recovery should succeed")
+        .expect("queued prompt should be promoted");
+    assert_eq!(recovered.prompt(), "second leased prompt\n");
+    assert!(app
+        .prompt_owner_peek_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queued prompt state should load")
+        .is_none());
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .expect("recovered prompt should be active")
+        .id(),
+        recovered.id()
+    );
+}
+
+#[test]
 fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
