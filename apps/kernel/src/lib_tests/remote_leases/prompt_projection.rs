@@ -211,6 +211,56 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
 }
 
 #[test]
+fn leased_projection_does_not_complete_a_running_turn_without_turn_evidence() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+    app.prompt_owner_complete_active_prompt_only(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+    )
+    .expect("the simulated startup visibility gap should settle the backing prompt");
+
+    let projection = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("projection drain should succeed");
+    if let Some((_target, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = projection
+    {
+        assert!(
+            completions.is_empty(),
+            "a running provider needs output or an explicit completion before home may settle"
+        );
+    }
+}
+
+#[test]
 fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

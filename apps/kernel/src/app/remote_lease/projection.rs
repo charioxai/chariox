@@ -60,8 +60,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
         let home_prompt_id = leased_agent.active_home_prompt_id.clone();
-        let had_output_history_before_pump =
-            self.leased_provider_run_has_output_history(&leased_agent, provider_run_id)?;
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
@@ -243,10 +241,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let current_batch_has_provider_output = output_chunks
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput);
-        let has_settleable_output_history = had_output_history_before_pump
-            || current_batch_has_provider_output
-            || (output_chunks.is_empty()
-                && self.leased_provider_run_has_output_history(&leased_agent, provider_run_id)?);
+        let has_settleable_output_history = current_batch_has_provider_output;
+        let provider_run_ended = self
+            .app
+            .providers
+            .get_run(provider_run_id)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
         let should_complete_from_history = completions.is_empty()
             && prompts.is_empty()
             && backing_active_prompt
@@ -285,7 +285,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
         }
-        if completions.is_empty() && (settled_quiet || !backing_prompt_active) {
+        if completions.is_empty()
+            && !backing_prompt_active
+            && (settled_quiet || has_settleable_output_history || provider_run_ended)
+        {
             let message_id = leased_synthetic_completion_message_id(
                 &leased_agent,
                 provider_run_id,
@@ -424,25 +427,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             Some(provider_run_id),
         )?;
         Ok(true)
-    }
-
-    fn leased_provider_run_has_output_history(
-        &mut self,
-        leased_agent: &LeasedAgent,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let session = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)?;
-        let entries = self
-            .app
-            .load_session_history_entries(&session, Some(&leased_agent.backing_agent_id))?;
-        Ok(entries.into_iter().any(|entry| {
-            entry.provider_run_id.as_deref() == Some(provider_run_id)
-                && entry.kind == SessionHistoryEntryKind::ProviderOutput
-                && !entry.is_external_provider_observed()
-        }))
     }
 
     fn leased_provider_run_output_history_chunks(
