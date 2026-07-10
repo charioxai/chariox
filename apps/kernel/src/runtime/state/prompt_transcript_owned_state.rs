@@ -683,6 +683,8 @@ impl KernelRuntimeOwnedState {
             prompt,
             attachments,
             recipient_attachment_ids,
+            None,
+            None,
         );
     }
 
@@ -706,9 +708,43 @@ impl KernelRuntimeOwnedState {
             prompt,
             attachments,
             recipient_attachment_ids,
+            None,
+            None,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn echo_steering_prompt_to_other_attachments(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+        prompt_source_attachment_id: &str,
+        steering_attachment_id: &str,
+        prompt: &str,
+        attachments: &[crate::session::PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
+    ) {
+        let recipient_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter(|attachment_id| attachment_id != steering_attachment_id)
+            .collect::<Vec<_>>();
+        self.echo_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            prompt_id,
+            prompt_source_attachment_id,
+            prompt,
+            attachments,
+            recipient_attachment_ids,
+            Some(prompt_origin),
+            Some(crate::history::steering_prompt_merge_key(prompt_id)),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn echo_prompt_to_attachments(
         &self,
         session_id: &str,
@@ -718,6 +754,8 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
         recipient_attachment_ids: Vec<String>,
+        prompt_origin_override: Option<crate::session::PromptOrigin>,
+        merge_key: Option<String>,
     ) {
         if recipient_attachment_ids.is_empty() {
             return;
@@ -732,16 +770,18 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
-            self.session_store
-                .get_session(session_id)
-                .ok()
-                .and_then(|session| {
-                    self.prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
-                })
-                .filter(|prompt| prompt.id() == prompt_id)
-                .map(|prompt| prompt.prompt_origin())
+        let prompt_origin = prompt_origin_override.or_else(|| {
+            agent_id.as_deref().and_then(|agent_id| {
+                self.session_store
+                    .get_session(session_id)
+                    .ok()
+                    .and_then(|session| {
+                        self.prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                    })
+                    .filter(|prompt| prompt.id() == prompt_id)
+                    .map(|prompt| prompt.prompt_origin())
+            })
         });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
@@ -750,13 +790,14 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        self.terminal_stream.fan_out_prompt_output(
+        self.terminal_stream.fan_out_prompt_output_with_merge_key(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             prompt_id,
             prompt_origin,
             source_attachment_id,
+            merge_key,
             recipient_attachment_ids,
             &bytes,
         );

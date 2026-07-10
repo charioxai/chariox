@@ -322,6 +322,32 @@ impl TerminalStreamService {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_prompt_output_with_merge_key(
+            session_id,
+            provider_run_id,
+            agent_id,
+            prompt_id,
+            prompt_origin,
+            source_attachment_id,
+            None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_prompt_output_with_merge_key(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        prompt_id: &str,
+        prompt_origin: Option<PromptOrigin>,
+        source_attachment_id: &str,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             record_id: None,
             timestamp_ms: unix_epoch_ms(),
@@ -332,7 +358,7 @@ impl TerminalStreamService {
             prompt_origin,
             source_attachment_id: Some(source_attachment_id.to_string()),
             kind: TerminalOutputKind::PromptEcho,
-            merge_key: None,
+            merge_key,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),

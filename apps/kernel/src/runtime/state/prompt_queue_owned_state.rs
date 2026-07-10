@@ -293,6 +293,16 @@ impl KernelRuntimeOwnedState {
             prompt.prompt(),
             prompt.attachments(),
         )?;
+        self.echo_steering_prompt_to_other_attachments(
+            session_id,
+            provider_run.id(),
+            prompt.id(),
+            &source_attachment_id,
+            attachment_id,
+            prompt.prompt(),
+            prompt.attachments(),
+            prompt.prompt_origin(),
+        );
         self.record_notice(
             session_id,
             Some(provider_run.id()),

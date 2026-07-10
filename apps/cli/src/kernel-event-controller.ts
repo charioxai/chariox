@@ -5,6 +5,7 @@ import {
   type TerminalRecordTranscriptMetadata,
   type TerminalRecordTranscriptProjection,
 } from "@arroba/kernel-client/terminal-record-transcript"
+import { createTranscriptSteeredPromptEntry } from "@arroba/kernel-client/transcript-entry-state"
 import { isProviderIdleStatus } from "@arroba/kernel-client/provider-status"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
@@ -61,7 +62,7 @@ type KernelEventControllerDeps = {
 }
 
 type ProjectedRecordAppendTarget = {
-  user: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
+  user: (text: string, projection: TerminalRecordTranscriptProjection) => void
   reasoning: (text: string, projection: TerminalRecordTranscriptProjection) => void
   tool: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
   error: (text: string, metadata: TerminalRecordTranscriptMetadata) => void
@@ -80,7 +81,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const metadata = projection.metadata
     switch (projection.transcriptRole) {
       case "user": {
-        target.user(projection.transcriptText, metadata)
+        target.user(projection.transcriptText, projection)
         break
       }
       case "reasoning":
@@ -109,8 +110,14 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     recordAgentId: string,
     projection: TerminalRecordTranscriptProjection,
   ) => appendProjectedRecord(projection, {
-    user: (text, metadata) => {
+    user: (text, item) => {
+      const metadata = item.metadata
       if (deps.hasTrailingUserPrompt(recordAgentId, text, metadata.promptId ?? null)) {
+        return
+      }
+      if (item.steeringPrompt) {
+        const entry = createTranscriptSteeredPromptEntry(text, metadata)
+        if (entry) deps.appendTranscriptEntryToAgentPane(recordAgentId, entry)
         return
       }
       const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
@@ -143,8 +150,15 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     recordAgentId: string,
     projection: TerminalRecordTranscriptProjection,
   ) => appendProjectedRecord(projection, {
-    user: (text, metadata) => {
+    user: (text, item) => {
+      const metadata = item.metadata
       if (deps.hasTrailingUserPrompt(recordAgentId, text, metadata.promptId ?? null)) {
+        return
+      }
+      if (item.steeringPrompt) {
+        const entry = createTranscriptSteeredPromptEntry(text, metadata)
+        if (entry) deps.appendEntry(entry)
+        deps.syncVisibleTranscriptPreview()
         return
       }
       deps.appendEntry(transcriptEntryWithTerminalMetadata<Omit<TranscriptEntry, "id">>({ role: "user", text: deps.trimSingleTrailingNewline(text) }, metadata))

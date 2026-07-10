@@ -18,6 +18,8 @@ import {
 } from "./external-provider-observation.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
+export const STEERING_PROMPT_MERGE_KEY_PREFIX = "steering-prompt:"
+
 export type TerminalRecordTranscriptFields = {
   readonly prompt_id?: string | null
   readonly prompt_origin?: string | null
@@ -65,6 +67,7 @@ export type TerminalRecordTranscriptProjection = {
   readonly renderInAgentPane: boolean
   readonly append: boolean
   readonly replace: boolean
+  readonly steeringPrompt: boolean
 }
 
 export function terminalRecordTranscriptMetadata(
@@ -119,6 +122,7 @@ export function terminalRecordTranscriptProjection(
     && !providerStatusIdle
   const startsOrMarksLiveTurn = !terminalRecordKindIsUserPrompt(record.kind)
     && (renderInAgentPane || updatesProviderActivity)
+  const steeringPrompt = terminalRecordIsSteeringPrompt(record)
 
   return {
     metadata,
@@ -141,7 +145,16 @@ export function terminalRecordTranscriptProjection(
     renderInAgentPane,
     append: renderInAgentPane && terminalRecordRoleShouldAppend(transcriptRole),
     replace: renderInAgentPane && terminalRecordRoleShouldReplace(transcriptRole),
+    steeringPrompt,
   }
+}
+
+export function terminalRecordIsSteeringPrompt(
+  record: Pick<TerminalRecordTranscriptFields, "kind"> & { readonly merge_key?: string | null },
+): boolean {
+  return record.kind === "prompt_echo"
+    && typeof record.merge_key === "string"
+    && record.merge_key.startsWith(STEERING_PROMPT_MERGE_KEY_PREFIX)
 }
 
 export function terminalRecordPromptHistoryText(
