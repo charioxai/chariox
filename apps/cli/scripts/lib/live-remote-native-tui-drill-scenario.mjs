@@ -1,6 +1,6 @@
 import net from "node:net"
 import path from "node:path"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
@@ -136,6 +136,31 @@ async function automationRequest(socketPath, request) {
       socket.write(`${JSON.stringify({ id: Date.now(), ...request })}\n`)
     })
   })
+}
+
+async function waitForAutomationReady(socketPath, cliLogDir, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      await automationRequest(socketPath, { action: "ping" })
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  const structuredLogDir = path.join(cliLogDir, ".arroba", "logs")
+  const structuredLogs = await readdir(structuredLogDir).catch(() => [])
+  const latestLog = structuredLogs.sort().at(-1)
+  const logTail = latestLog
+    ? (await readFile(path.join(structuredLogDir, latestLog), "utf8").catch(() => "")).slice(-4_000)
+    : ""
+  throw new Error([
+    `observer automation socket did not become ready within ${timeoutMs}ms: ${socketPath}`,
+    `last connection error: ${lastError?.message ?? "none"}`,
+    logTail ? `observer log tail:\n${logTail}` : "observer emitted no structured log",
+  ].join("\n"))
 }
 
 async function fireAutomationRequest(socketPath, request) {
@@ -636,15 +661,7 @@ export async function runProviderScenario({
       provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
       ...(provider === "codex" ? ["--effort", "high"] : []),
     ], process.env)
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      try {
-        await automationRequest(automationSocket, { action: "ping" })
-        break
-      } catch (error) {
-        if (attempt === 79) throw error
-        await sleep(250)
-      }
-    }
+    await waitForAutomationReady(automationSocket, logs.cliDir)
     const snapshot = await automationRequest(automationSocket, {
       action: "wait_for",
       sessionId,

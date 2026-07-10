@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { assertMatchingHetznerCheckoutCommit } from "./native-tui-remote-execution.mjs"
+import {
+  assertMatchingHetznerCheckoutCommit,
+  hetznerNativeRuntimeCleanupCommand,
+  hetznerWorktreeCleanupCommand,
+} from "./native-tui-remote-execution.mjs"
 
 const LOCAL_COMMIT = "1111111111111111111111111111111111111111"
 const REMOTE_COMMIT = "2222222222222222222222222222222222222222"
@@ -33,5 +37,30 @@ test("rejects unverifiable checkout revisions", () => {
       remoteRepo: "/tmp/arroba-run",
     }),
     /could not verify local and remote checkout commits/,
+  )
+})
+
+test("builds scoped Hetzner worktree cleanup", () => {
+  assert.equal(
+    hetznerWorktreeCleanupCommand("/tmp/arroba-run", "/remote/worktree/arroba"),
+    "git -C '/tmp/arroba-run' worktree remove --force '/remote/worktree/arroba' 2>/dev/null || rm -rf -- '/remote/worktree/arroba'; git -C '/tmp/arroba-run' worktree prune",
+  )
+})
+
+test("builds deduplicated cleanup for native TUI runtime roots", () => {
+  assert.equal(
+    hetznerNativeRuntimeCleanupCommand([
+      "/tmp/arb-remote-native-tui-42",
+      "/tmp/arb-remote-native-tui-42-123456789",
+      "/tmp/arb-remote-native-tui-42",
+    ]),
+    "rm -rf -- '/tmp/arb-remote-native-tui-42' '/tmp/arb-remote-native-tui-42-123456789'",
+  )
+})
+
+test("rejects cleanup paths outside a native TUI runtime root", () => {
+  assert.throws(
+    () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
+    /refusing to remove unexpected Hetzner native TUI runtime path/,
   )
 })

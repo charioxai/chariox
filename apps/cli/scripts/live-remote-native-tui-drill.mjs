@@ -37,12 +37,16 @@ import {
   waitForProviderRunMcpGrant,
 } from "./lib/native-tui-capabilities.mjs"
 import {
+  copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
   prepareHetznerWorktree,
   remoteEnvCommand,
   removeExecutionFile,
+  removeHetznerNativeRuntimePaths,
+  removeHetznerWorktree,
   shellQuote,
   sshArgs,
+  stopHetznerProcessByEnv,
   waitForExecutionFileContent,
 } from "./lib/native-tui-remote-execution.mjs"
 import {
@@ -293,7 +297,8 @@ async function main() {
     printHelp()
     return
   }
-  const root = path.join("/tmp", `arb-remote-native-tui-${process.pid}-${Date.now()}`)
+  const runId = `${process.pid}-${Date.now()}`
+  const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
   const ports = await makeAvailablePorts()
   const relayToken = `remote-native-token-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
@@ -301,6 +306,12 @@ async function main() {
   const targetDaemonAlias = `remote-native-home-${process.pid}`
   const workerDaemonAlias = `remote-native-worker-${process.pid}`
   const workerMachineAlias = `remote-native-worker-machine-${process.pid}`
+  const homeDaemonId = `remote-native-home-${runId}`
+  const workerDaemonId = `remote-native-worker-${runId}`
+  const remoteRuntimeParent = `/tmp/arb-remote-native-tui-${process.pid}`
+  const remoteRuntimeRoot = options.hetznerWorker
+    ? `/tmp/arb-remote-native-tui-${runId}`
+    : null
   const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
@@ -315,6 +326,7 @@ async function main() {
   let relayTunnel = null
   let kernel = null
   let workerKernel = null
+  let hetznerWorktreePrepared = false
   const managedSlices = []
   let succeeded = false
   let failure = null
@@ -345,6 +357,7 @@ async function main() {
     }
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
+      hetznerWorktreePrepared = true
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
@@ -415,7 +428,7 @@ async function main() {
         ARROBA_CODEX_PORT: String(ports.codexPort),
         ARROBA_RELAY_URL: relayUrl,
         ARROBA_RELAY_TOKEN: relayToken,
-        ARROBA_DAEMON_ID: `remote-native-home-${process.pid}-${Date.now()}`,
+        ARROBA_DAEMON_ID: homeDaemonId,
         ARROBA_DAEMON_ALIAS: targetDaemonAlias,
         ARROBA_MACHINE_ID: `remote-native-machine-${process.pid}`,
         ARROBA_MACHINE_ALIAS: targetDaemonAlias,
@@ -431,7 +444,6 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
-        const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
         workerKernel = spawn("ssh", sshArgs(options, remoteEnvCommand({
           ARROBA_REMOTE_REPO: options.hetznerRepo,
           RUST_MIN_STACK: rustMinStack,
@@ -443,19 +455,19 @@ async function main() {
           XDG_CACHE_HOME: "/root/.cache",
           CODEX_HOME: "/root/.codex",
           OPENCODE_CONFIG_DIR: "/root/.config/opencode",
-          ARROBA_LOG_DIR: path.posix.join(remoteRoot, "worker-logs"),
+          ARROBA_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
           ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
           ARROBA_MCP_PORT: String(ports.workerMcpPort),
           ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
           ARROBA_RELAY_TOKEN: relayToken,
-          ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+          ARROBA_DAEMON_ID: workerDaemonId,
           ARROBA_DAEMON_ALIAS: workerDaemonAlias,
           ARROBA_MACHINE_ID: workerMachineAlias,
           ARROBA_MACHINE_ALIAS: workerMachineAlias,
           ARROBA_ACCEPT_REMOTE_LEASES: "1",
-          ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
-          ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
-        }, `mkdir -p /tmp/arb-remote-native-tui-${process.pid} && ./apps/kernel/target/debug/arroba-kernel`)), {
+          ARROBA_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, "worker.sock"),
+          ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, "worker-history"),
+        }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/arroba-kernel`)), {
           stdio: ["ignore", "ignore", "inherit"],
         })
       } else {
@@ -475,7 +487,7 @@ async function main() {
             ARROBA_MCP_PORT: String(ports.workerMcpPort),
             ARROBA_RELAY_URL: relayUrl,
             ARROBA_RELAY_TOKEN: relayToken,
-            ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+            ARROBA_DAEMON_ID: workerDaemonId,
             ARROBA_DAEMON_ALIAS: workerDaemonAlias,
             ARROBA_MACHINE_ID: workerMachineAlias,
             ARROBA_MACHINE_ALIAS: workerMachineAlias,
@@ -554,17 +566,38 @@ async function main() {
     throw error
   } finally {
     const preserveFailedRun = !succeeded && options.keepArtifactsOnFailure
-    if (!preserveFailedRun) {
-      for (const slice of managedSlices.splice(0)) {
-        await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
-          console.error(`home-managed slice cleanup failed: ${error.message}`)
-        })
-      }
+    for (const slice of managedSlices.splice(0)) {
+      await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
+        console.error(`home-managed slice cleanup failed: ${error.message}`)
+      })
     }
     await terminateChild(workerKernel)
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
+    if (options.hetznerWorker) {
+      await stopHetznerProcessByEnv(options, {
+        ARROBA_DAEMON_ID: workerDaemonId,
+        ARROBA_RELAY_TOKEN: relayToken,
+      })
+      await stopHetznerProcessByEnv(options, {
+        ARROBA_RELAY_PORT: String(ports.relayPort),
+        ARROBA_RELAY_TOKEN: relayToken,
+      })
+      if (preserveFailedRun && remoteRuntimeRoot) {
+        await copyHetznerDirectoryToLocal(
+          options,
+          path.posix.join(remoteRuntimeRoot, "worker-logs"),
+          path.join(root, "remote-worker-logs"),
+        ).catch((error) => {
+          console.error(`Hetzner worker log collection failed: ${error.message}`)
+        })
+      }
+      await removeHetznerNativeRuntimePaths(options, [remoteRuntimeParent, remoteRuntimeRoot])
+      if (hetznerWorktreePrepared) {
+        await removeHetznerWorktree(options, worktree)
+      }
+    }
     await finalizeDrillArtifacts({
       rootDir: root,
       passed: succeeded,
@@ -589,9 +622,6 @@ async function main() {
     })
     if (preserveFailedRun) {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
-      for (const slice of managedSlices) {
-        console.error(`home-managed slice ${slice.id} left running`)
-      }
     }
   }
 }

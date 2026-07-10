@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::config::DaemonConfig;
@@ -395,7 +395,7 @@ fn owned_orphan_provider_process_ids(
     orphan_ttl_ms: u64,
 ) -> Vec<u32> {
     let output = match std::process::Command::new("ps")
-        .args(["-axo", "pid=,ppid=,etimes=,command="])
+        .args(["-axo", "pid=,ppid=,pgid=,etimes=,command="])
         .output()
     {
         Ok(output) => output,
@@ -405,29 +405,94 @@ fn owned_orphan_provider_process_ids(
         "http://{}:{}/mcp",
         config.runtime_mcp_host, config.runtime_mcp_port
     );
+    owned_orphan_provider_process_ids_from_ps_output(
+        &String::from_utf8_lossy(&output.stdout),
+        std::process::id(),
+        tracked_pids,
+        orphan_ttl_ms,
+        &mcp_url,
+    )
+}
+
+#[derive(Debug)]
+struct ProviderProcessSnapshot {
+    pid: u32,
+    parent_pid: u32,
+    process_group_id: u32,
+    age_secs: u64,
+    command: String,
+}
+
+fn owned_orphan_provider_process_ids_from_ps_output(
+    ps_output: &str,
+    current_pid: u32,
+    tracked_pids: &BTreeSet<u32>,
+    orphan_ttl_ms: u64,
+    mcp_url: &str,
+) -> Vec<u32> {
     let min_age_secs = orphan_ttl_ms.div_ceil(1_000);
-    String::from_utf8_lossy(&output.stdout)
+    let processes = ps_output
         .lines()
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let pid = parts.next()?.parse::<u32>().ok()?;
-            let _ppid = parts.next()?.parse::<u32>().ok()?;
+            let parent_pid = parts.next()?.parse::<u32>().ok()?;
+            let process_group_id = parts.next()?.parse::<u32>().ok()?;
             let age_secs = parts.next()?.parse::<u64>().ok()?;
             let command = parts.collect::<Vec<_>>().join(" ");
-            if pid == std::process::id()
-                || tracked_pids.contains(&pid)
-                || age_secs < min_age_secs
-                || !command.contains("codex app-server")
-                || !command.contains("mcp_servers.arroba.url")
-                || !command.contains(&mcp_url)
+            Some(ProviderProcessSnapshot {
+                pid,
+                parent_pid,
+                process_group_id,
+                age_secs,
+                command,
+            })
+        })
+        .map(|process| (process.pid, process))
+        .collect::<BTreeMap<_, _>>();
+    let tracked_process_group_ids = tracked_pids
+        .iter()
+        .filter_map(|pid| processes.get(pid))
+        .map(|process| process.process_group_id)
+        .filter(|process_group_id| *process_group_id > 0)
+        .collect::<BTreeSet<_>>();
+
+    processes
+        .values()
+        .filter_map(|process| {
+            if process.pid == current_pid
+                || tracked_pids.contains(&process.pid)
+                || tracked_process_group_ids.contains(&process.process_group_id)
+                || has_tracked_process_ancestor(process, &processes, tracked_pids)
+                || process.age_secs < min_age_secs
+                || !process.command.contains("codex app-server")
+                || !process.command.contains("mcp_servers.arroba.url")
+                || !process.command.contains(mcp_url)
             {
                 return None;
             }
-            Some(pid)
+            Some(process.pid)
         })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
+}
+
+fn has_tracked_process_ancestor(
+    process: &ProviderProcessSnapshot,
+    processes: &BTreeMap<u32, ProviderProcessSnapshot>,
+    tracked_pids: &BTreeSet<u32>,
+) -> bool {
+    let mut parent_pid = process.parent_pid;
+    let mut visited = BTreeSet::new();
+    while parent_pid > 0 && visited.insert(parent_pid) {
+        if tracked_pids.contains(&parent_pid) {
+            return true;
+        }
+        let Some(parent) = processes.get(&parent_pid) else {
+            break;
+        };
+        parent_pid = parent.parent_pid;
+    }
+    false
 }
 
 fn clear_active_provider_run_session_pointer(
@@ -482,5 +547,67 @@ impl DaemonApp {
         orphan_ttl_ms: u64,
     ) -> Result<ProviderProcessReapSummary, DaemonError> {
         ProviderProcessTracker::new(self).reap_idle_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owned_orphan_provider_process_ids_from_ps_output;
+    use std::collections::BTreeSet;
+
+    const MCP_URL: &str = "http://127.0.0.1:49999/mcp";
+
+    fn codex_command(port: u16) -> String {
+        format!(
+            "codex app-server -c mcp_servers.arroba.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"
+        )
+    }
+
+    #[test]
+    fn orphan_scan_preserves_children_and_process_group_members_of_tracked_launchers() {
+        let ps_output = format!(
+            "100 1 100 45 node {}\n\
+             101 100 100 44 /opt/codex {}\n\
+             102 101 102 43 /opt/codex {}\n\
+             103 1 100 42 /opt/codex {}\n\
+             200 1 200 41 /opt/codex {}\n",
+            codex_command(50001),
+            codex_command(50001),
+            codex_command(50001),
+            codex_command(50001),
+            codex_command(50002),
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::from([100]),
+            30_000,
+            MCP_URL,
+        );
+
+        assert_eq!(orphan_ids, vec![200]);
+    }
+
+    #[test]
+    fn orphan_scan_requires_age_managed_command_and_runtime_mcp_url() {
+        let ps_output = format!(
+            "200 1 200 29 /opt/codex {}\n\
+             201 1 201 30 /opt/codex codex app-server --listen ws://127.0.0.1:50002\n\
+             202 1 202 30 /opt/codex codex app-server -c mcp_servers.arroba.url=\"http://127.0.0.1:49998/mcp\"\n\
+             203 1 203 30 /opt/codex {}\n",
+            codex_command(50001),
+            codex_command(50003),
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::new(),
+            30_000,
+            MCP_URL,
+        );
+
+        assert_eq!(orphan_ids, vec![203]);
     }
 }

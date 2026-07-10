@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -114,6 +115,52 @@ export async function stopHetznerProcessByEnv(options, expectedEnv) {
     '  kill -9 "$pid" 2>/dev/null || true;',
     'done',
   ].join(' ')).catch(() => {})
+}
+
+export async function copyHetznerDirectoryToLocal(options, remoteDir, localDir) {
+  await mkdir(localDir, { recursive: true })
+  await execFileAsync("scp", [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-r",
+    `${options.hetznerHost}:${remoteDir}/.`,
+    `${localDir}/`,
+  ], { maxBuffer: 4 * 1024 * 1024 })
+}
+
+export function hetznerWorktreeCleanupCommand(remoteRepo, remoteWorktree) {
+  return [
+    `git -C ${shellQuote(remoteRepo)} worktree remove --force ${shellQuote(remoteWorktree)} 2>/dev/null || rm -rf -- ${shellQuote(remoteWorktree)}`,
+    `git -C ${shellQuote(remoteRepo)} worktree prune`,
+  ].join("; ")
+}
+
+export async function removeHetznerWorktree(options, remoteWorktree) {
+  await runHetznerCommand(
+    options,
+    hetznerWorktreeCleanupCommand(options.hetznerRepo, remoteWorktree),
+  ).catch(() => {})
+}
+
+export function hetznerNativeRuntimeCleanupCommand(paths) {
+  const uniquePaths = [...new Set(paths.filter(Boolean))]
+  for (const runtimePath of uniquePaths) {
+    if (!/^\/tmp\/arb-remote-native-tui-\d+(?:-\d+)?$/.test(runtimePath)) {
+      throw new Error(`refusing to remove unexpected Hetzner native TUI runtime path: ${runtimePath}`)
+    }
+  }
+  return uniquePaths.length > 0
+    ? `rm -rf -- ${uniquePaths.map(shellQuote).join(" ")}`
+    : null
+}
+
+export async function removeHetznerNativeRuntimePaths(options, paths) {
+  const command = hetznerNativeRuntimeCleanupCommand(paths)
+  if (command) await runHetznerCommand(options, command).catch(() => {})
 }
 
 export async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
