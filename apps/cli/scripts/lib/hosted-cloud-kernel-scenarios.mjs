@@ -3,6 +3,7 @@ import http from "node:http"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runNodeDrillChild } from "./drill-child-process.mjs"
+import { withDevStubProviderInventory } from "./drill-runtime-helpers.mjs"
 import {
   callRuntimeMcp,
   expectRuntimeMcpReject,
@@ -672,7 +673,7 @@ export async function runHostedSecondKernelAssertions({
   })
   await mkdir(workerArrobaHome, { recursive: true })
   await mkdir(workerWorkspace, { recursive: true })
-  const workerEnv = {
+  const workerEnv = withDevStubProviderInventory({
     ...process.env,
     HOME: workerHome,
     ARROBA_HOME: workerArrobaHome,
@@ -693,7 +694,7 @@ export async function runHostedSecondKernelAssertions({
     ...(trackedWorkspaceLiveSyncProvider === "codex"
       ? { CODEX_HOME: process.env.CODEX_HOME?.trim() || path.join(process.env.HOME ?? "", ".codex") }
       : {}),
-  }
+  })
 
   let worker = null
   let workerClient = null

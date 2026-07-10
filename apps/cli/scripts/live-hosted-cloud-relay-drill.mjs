@@ -7,6 +7,7 @@ import { runHostedSecondKernelAssertions, runHostedTokenRotationAssertions } fro
 import { runHostedMultiUserAssertions } from "./lib/hosted-cloud-multi-user-scenarios.mjs"
 import { runHostedRemoteCliAssertions, runHostedRemoteCliPairingAssertions } from "./lib/hosted-cloud-remote-cli-scenarios.mjs"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { withDevStubProviderInventory } from "./lib/drill-runtime-helpers.mjs"
 import {
   allowDevStubProvider,
   assert,
@@ -120,7 +121,7 @@ async function main() {
       import("../dist/command-actions.js"),
     ])
 
-    const daemonEnv = {
+    const daemonEnv = withDevStubProviderInventory({
       ...process.env,
       HOME: os.homedir(),
       XDG_CONFIG_HOME: xdgConfigHome,
@@ -138,7 +139,7 @@ async function main() {
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: homeHistoryDir,
       ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
-    }
+    })
 
     log("start-kernel")
     daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })

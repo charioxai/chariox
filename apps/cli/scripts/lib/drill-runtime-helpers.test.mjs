@@ -9,7 +9,16 @@ import {
   runLogged,
   waitForCondition,
   waitForTcpPort,
+  withDevStubProviderInventory,
 } from "./drill-runtime-helpers.mjs"
+
+test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {
+  const source = { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "0" }
+  const enabled = withDevStubProviderInventory(source)
+
+  assert.deepEqual(enabled, { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "1" })
+  assert.equal(source.ARROBA_PROVIDER_DEV_STUB, "0")
+})
 
 test("detects ANSI-rendered provider authentication failures", () => {
   assert.equal(

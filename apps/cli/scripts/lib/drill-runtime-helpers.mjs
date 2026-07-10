@@ -20,6 +20,13 @@ export function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   }
 }
 
+export function withDevStubProviderInventory(env) {
+  return {
+    ...env,
+    ARROBA_PROVIDER_DEV_STUB: "1",
+  }
+}
+
 export async function makeAvailablePorts() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const ports = makePorts()
