@@ -87,6 +87,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       workspace: session.workspace_id,
       worktree: session.worktree_id,
       focusedAgentId: deps.focusedAgentId(),
+      agentActivityRevision: session.agent_activity_revision ?? 0,
       agentCount: session.agents.length,
       agents: session.agents.map((agent) => {
         const badge = sessionAgentPaneStatusBadgeForSession({
@@ -98,8 +99,18 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
         })
         return {
           id: agent.id,
+          agentRef: agent.agent_ref,
           alias: agent.alias,
           provider: agent.provider,
+          model: agent.model,
+          effort: agent.effort ?? null,
+          accountProfile: agent.account_profile ?? null,
+          executionMode: agent.execution_mode_override ?? null,
+          permissionLevel: agent.permission_level_override ?? null,
+          primaryProvider: agent.primary_provider ?? null,
+          primaryModel: agent.primary_model ?? null,
+          primaryEffort: agent.primary_effort ?? null,
+          visibleInFreeform: agent.visible_in_freeform ?? true,
           state: agentRuntimeDisplayStates[agent.id],
           isProcessing: agentRuntimeDisplayStates[agent.id] === "Working",
           badge,
@@ -153,22 +164,8 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       : null,
     selectedWorkflowId: deps.selectedWorkflowId(),
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId(),
-    selectedWorkflow: selectedWorkflow
-      ? {
-        id: selectedWorkflow.id,
-        alias: selectedWorkflow.alias,
-        nodeCount: selectedWorkflow.nodes?.length ?? 0,
-        edgeCount: selectedWorkflow.edges?.length ?? 0,
-        endpointCount: selectedWorkflow.endpoints?.length ?? 0,
-      }
-      : null,
-    workflows: (session.workflows ?? []).map((workflow) => ({
-      id: workflow.id,
-      alias: workflow.alias,
-      nodeCount: workflow.nodes?.length ?? 0,
-      edgeCount: workflow.edges?.length ?? 0,
-      endpointCount: workflow.endpoints?.length ?? 0,
-    })),
+    selectedWorkflow: selectedWorkflow ? automationWorkflow(session, selectedWorkflow) : null,
+    workflows: (session.workflows ?? []).map((workflow) => automationWorkflow(session, workflow)),
     workflowRuns: (session.workflow_runs ?? []).map((run) => ({
       id: run.id,
       workflowId: run.workflow_id,
@@ -206,6 +203,63 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       }),
     ),
     footer: deps.footerFlash(),
+  }
+}
+
+function automationWorkflow(
+  session: RuntimeSession,
+  workflow: NonNullable<RuntimeSession["workflows"]>[number],
+): Record<string, unknown> {
+  const promptQueues = (session.workflow_prompt_queues ?? []).filter((queue) => queue.workflow_id === workflow.id)
+  const queuedPrompts = (session.workflow_queued_prompts ?? []).filter((prompt) => prompt.workflow_id === workflow.id)
+  return {
+    id: workflow.id,
+    alias: workflow.alias,
+    flushAgentContextBeforeRun: workflow.flush_agent_context_before_run ?? false,
+    runOutputSchemaRef: workflow.run_output_schema_ref ?? null,
+    nodeCount: workflow.nodes?.length ?? 0,
+    edgeCount: workflow.edges?.length ?? 0,
+    endpointCount: workflow.endpoints?.length ?? 0,
+    nodes: (workflow.nodes ?? []).map((node) => ({
+      id: node.id,
+      agentId: node.agent_id,
+      publicLabel: node.public_label ?? null,
+      instructions: node.instructions ?? null,
+      canCompleteWorkflowRun: node.can_complete_workflow_run ?? false,
+      canEmitIntermediateRunOutput: node.can_emit_intermediate_run_output ?? false,
+      waitForAllInputs: node.wait_for_all_inputs ?? false,
+      intermediateOutputSchemaRef: node.intermediate_output_schema_ref ?? null,
+      maxTurns: node.max_turns ?? null,
+    })),
+    edges: (workflow.edges ?? []).map((edge) => ({
+      id: edge.id,
+      fromNodeId: edge.from_node_id,
+      toNodeId: edge.to_node_id,
+      sourceSide: edge.source_side ?? null,
+      targetSide: edge.target_side ?? null,
+      handoffSchemaRef: edge.handoff_schema_ref ?? null,
+      validationPolicy: edge.validation_policy ?? null,
+    })),
+    endpoints: (workflow.endpoints ?? []).map((endpoint) => ({
+      id: endpoint.id,
+      alias: endpoint.alias,
+      entryNodeId: endpoint.entry_node_id,
+    })),
+    promptQueues: promptQueues.map((queue) => ({
+      id: queue.id,
+      alias: queue.alias,
+      priority: queue.priority,
+      enabled: queue.enabled,
+    })),
+    queuedPrompts: queuedPrompts.map((prompt) => ({
+      id: prompt.id,
+      queueId: prompt.queue_id,
+      endpointId: prompt.endpoint_id,
+      prompt: prompt.prompt ?? null,
+      source: prompt.source,
+      status: prompt.status,
+      workflowRunId: prompt.workflow_run_id ?? null,
+    })),
   }
 }
 
