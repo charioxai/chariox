@@ -148,7 +148,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
             session_id,
             provider_run_id,
             attachment_id,
-            provider_prompt.as_bytes(),
+            &crate::app::terminal_input::provider_prompt_input(&provider_prompt),
         )
     }
 }

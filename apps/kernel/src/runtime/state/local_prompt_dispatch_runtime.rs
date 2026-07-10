@@ -476,13 +476,21 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &prompt_with_hidden_context,
         )?;
+        let uses_claude_native_bridge =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
+        let provider_pty_input =
+            crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
             .await;
         owned.terminal_stream.record_input(
             &dispatch.session_id,
             &dispatch.provider_run_id,
             &dispatch.source_attachment_id,
-            provider_prompt.as_bytes(),
+            if uses_claude_native_bridge {
+                provider_prompt.as_bytes()
+            } else {
+                &provider_pty_input
+            },
         );
         let mut has_managed_process = owned
             .provider_process_tracking
@@ -518,7 +526,7 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
-        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+        if uses_claude_native_bridge {
             let dispatch_with_handoff = crate::app::KernelPromptDispatch {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: dispatch.provider_run_id.clone(),
@@ -577,10 +585,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.with_app_side_effect(|app| {
-            app.write_provider_pty_input_for_runtime(
-                &dispatch.provider_run_id,
-                provider_prompt.as_bytes(),
-            )
+            app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, &provider_pty_input)
         })
         .await?;
         owned.consume_pending_context_handoff(

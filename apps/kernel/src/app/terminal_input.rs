@@ -3,6 +3,14 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 
+pub(crate) fn provider_prompt_input(prompt: &str) -> Vec<u8> {
+    let mut input = prompt.as_bytes().to_vec();
+    if !input.ends_with(b"\n") && !input.ends_with(b"\r") {
+        input.push(b'\n');
+    }
+    input
+}
+
 pub(crate) struct ProviderTerminalInput<'a> {
     app: &'a mut DaemonApp,
 }
@@ -57,5 +65,17 @@ impl DaemonApp {
         provider_run_id: &str,
     ) -> Result<Vec<crate::pty::PtyOutputChunk>, DaemonError> {
         self.pty.drain_output(provider_run_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_prompt_input;
+
+    #[test]
+    fn provider_prompt_input_appends_one_submit_terminator() {
+        assert_eq!(provider_prompt_input("hello"), b"hello\n");
+        assert_eq!(provider_prompt_input("hello\n"), b"hello\n");
+        assert_eq!(provider_prompt_input("hello\r"), b"hello\r");
     }
 }
