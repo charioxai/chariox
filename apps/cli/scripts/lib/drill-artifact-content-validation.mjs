@@ -1,4 +1,5 @@
 import { validateDrillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
+import { validateCloudCompatibleDrillFailureTaxonomyManifest } from "./drill-failure-taxonomy-registry-parity.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { validateDrillFocusedRuntimeGateReport } from "./drill-focused-runtime-gate-report.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
@@ -11,6 +12,7 @@ import {
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { validateDrillRuntimeAuthorityManifest } from "./drill-runtime-authority-invariants.mjs"
+import { validateCloudCompatibleDrillRuntimeAuthorityManifest } from "./drill-runtime-authority-registry-parity.mjs"
 
 export function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   let parsed
@@ -35,6 +37,7 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
     "requiredRuntimeAuthorityInvariants",
     "missingRuntimeAuthorityInvariants",
   ])
+  const cloudOnlyEvidence = isCloudOnlyEvidence(metadata)
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({
@@ -53,13 +56,21 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
       throw new Error(`drill artifact ${artifactPath} is missing runtimeAuthorityManifest`)
     }
     if (parsed.failureTaxonomyManifest !== undefined) {
-      validateDrillFailureTaxonomyManifest(parsed.failureTaxonomyManifest, `${artifactPath}.failureTaxonomyManifest`)
+      validateFailureTaxonomyManifestForEvidence(
+        parsed.failureTaxonomyManifest,
+        `${artifactPath}.failureTaxonomyManifest`,
+        cloudOnlyEvidence,
+      )
     }
     if (parsed.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
     }
     if (parsed.runtimeAuthorityManifest !== undefined) {
-      validateDrillRuntimeAuthorityManifest(parsed.runtimeAuthorityManifest, `${artifactPath}.runtimeAuthorityManifest`)
+      validateRuntimeAuthorityManifestForEvidence(
+        parsed.runtimeAuthorityManifest,
+        `${artifactPath}.runtimeAuthorityManifest`,
+        cloudOnlyEvidence,
+      )
     }
   }
   if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
@@ -81,13 +92,21 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
       throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeAuthorityManifest`)
     }
     if (parsed.manifest?.failureTaxonomyManifest !== undefined) {
-      validateDrillFailureTaxonomyManifest(parsed.manifest.failureTaxonomyManifest, `${artifactPath}.manifest.failureTaxonomyManifest`)
+      validateFailureTaxonomyManifestForEvidence(
+        parsed.manifest.failureTaxonomyManifest,
+        `${artifactPath}.manifest.failureTaxonomyManifest`,
+        cloudOnlyEvidence,
+      )
     }
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
     }
     if (parsed.manifest?.runtimeAuthorityManifest !== undefined) {
-      validateDrillRuntimeAuthorityManifest(parsed.manifest.runtimeAuthorityManifest, `${artifactPath}.manifest.runtimeAuthorityManifest`)
+      validateRuntimeAuthorityManifestForEvidence(
+        parsed.manifest.runtimeAuthorityManifest,
+        `${artifactPath}.manifest.runtimeAuthorityManifest`,
+        cloudOnlyEvidence,
+      )
     }
   }
   if (parsed?.schema === "arroba.drill.matrix.v1") {
@@ -98,6 +117,27 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
     validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
     validateFocusedRuntimeGateArtifactMetadata(parsed, artifactPath, metadata)
   }
+}
+
+function isCloudOnlyEvidence(metadata) {
+  const evidenceRepos = metadataListFromMetadata(metadata, "evidenceRepos")
+  return evidenceRepos.length === 1 && evidenceRepos[0] === "cloud"
+}
+
+function validateFailureTaxonomyManifestForEvidence(manifest, source, cloudOnlyEvidence) {
+  if (cloudOnlyEvidence) {
+    validateCloudCompatibleDrillFailureTaxonomyManifest(manifest, source)
+    return
+  }
+  validateDrillFailureTaxonomyManifest(manifest, source)
+}
+
+function validateRuntimeAuthorityManifestForEvidence(manifest, source, cloudOnlyEvidence) {
+  if (cloudOnlyEvidence) {
+    validateCloudCompatibleDrillRuntimeAuthorityManifest(manifest, source)
+    return
+  }
+  validateDrillRuntimeAuthorityManifest(manifest, source)
 }
 
 function validateFocusedRuntimeGateArtifactMetadata(report, artifactPath, metadata) {

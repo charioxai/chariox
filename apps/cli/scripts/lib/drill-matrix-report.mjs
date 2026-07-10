@@ -102,8 +102,9 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (report.scenarios.length === 0) {
     throw new Error(`${source} has no scenarios`)
   }
+  const contextualDiagnostics = isCloudContextualMatrixReport(report)
   for (const [index, scenario] of report.scenarios.entries()) {
-    validateDrillMatrixScenario(scenario, `${source}.scenarios[${index}]`)
+    validateDrillMatrixScenario(scenario, `${source}.scenarios[${index}]`, { contextualDiagnostics })
   }
   validateDrillMatrixReportConsistency(report, source)
   validateScenarioProviderMetadataConsistency(report, source)
@@ -475,7 +476,7 @@ function appendDryRunCriteria(lines, scenarios) {
   }
 }
 
-function validateDrillMatrixScenario(scenario, source) {
+function validateDrillMatrixScenario(scenario, source, { contextualDiagnostics = false } = {}) {
   if (!scenario || typeof scenario !== "object") {
     throw new Error(`${source} is not an object`)
   }
@@ -511,13 +512,16 @@ function validateDrillMatrixScenario(scenario, source) {
     if (!nonEmptyString(scenario.owner)) {
       throw new Error(`${source} has invalid owner`)
     }
+    if (contextualDiagnostics && !nonSecretString(scenario.owner)) {
+      throw new Error(`${source} has invalid owner`)
+    }
     if (!nonEmptyString(scenario.classification)) {
       if (scenario.status !== "dry-run") {
         throw new Error(`${source} owner requires classification`)
       }
     } else {
       const expectedOwner = drillFailureOwnerForClassification(scenario.classification)
-      if (scenario.owner !== expectedOwner) {
+      if (!contextualDiagnostics && scenario.owner !== expectedOwner) {
         throw new Error(`${source} owner does not match classification`)
       }
     }
@@ -526,15 +530,18 @@ function validateDrillMatrixScenario(scenario, source) {
     if (!nonEmptyString(scenario.nextAction)) {
       throw new Error(`${source} has invalid nextAction`)
     }
+    if (contextualDiagnostics && !nonSecretString(scenario.nextAction)) {
+      throw new Error(`${source} has invalid nextAction`)
+    }
     if (!nonEmptyString(scenario.classification)) {
       throw new Error(`${source} nextAction requires classification`)
     }
     const expectedNextAction = drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
-    if (scenario.nextAction !== expectedNextAction) {
+    if (!contextualDiagnostics && scenario.nextAction !== expectedNextAction) {
       throw new Error(`${source} nextAction does not match classification`)
     }
   }
-  validatePlannedScenarioDiagnostics(scenario, source)
+  validatePlannedScenarioDiagnostics(scenario, source, { contextualDiagnostics })
   if (!Number.isSafeInteger(scenario.durationMs) || scenario.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
@@ -615,7 +622,7 @@ function validateDrillMatrixScenarioOutcome(scenario, source) {
   }
 }
 
-function validatePlannedScenarioDiagnostics(scenario, source) {
+function validatePlannedScenarioDiagnostics(scenario, source, { contextualDiagnostics = false } = {}) {
   const hasPlannedClassification = scenario.plannedClassification !== undefined && scenario.plannedClassification !== null
   const hasPlannedOwner = scenario.plannedOwner !== undefined && scenario.plannedOwner !== null
   const hasPlannedNextAction = scenario.plannedNextAction !== undefined && scenario.plannedNextAction !== null
@@ -630,11 +637,29 @@ function validatePlannedScenarioDiagnostics(scenario, source) {
     label: "plannedClassification",
   })
   const expectedOwner = drillFailureOwnerForClassification(scenario.plannedClassification)
-  if (scenario.plannedOwner !== expectedOwner) {
+  if (!nonEmptyString(scenario.plannedOwner)
+    || (contextualDiagnostics && !nonSecretString(scenario.plannedOwner))) {
+    throw new Error(`${source} has invalid plannedOwner`)
+  }
+  if (!contextualDiagnostics && scenario.plannedOwner !== expectedOwner) {
     throw new Error(`${source} plannedOwner does not match plannedClassification`)
   }
   const expectedNextAction = drillFailureNextActionForClassification(scenario.plannedClassification, { target: "scenario" })
-  if (scenario.plannedNextAction !== expectedNextAction) {
+  if (!nonEmptyString(scenario.plannedNextAction)
+    || (contextualDiagnostics && !nonSecretString(scenario.plannedNextAction))) {
+    throw new Error(`${source} has invalid plannedNextAction`)
+  }
+  if (!contextualDiagnostics && scenario.plannedNextAction !== expectedNextAction) {
     throw new Error(`${source} plannedNextAction does not match plannedClassification`)
   }
+}
+
+function isCloudContextualMatrixReport(report) {
+  const rawRepos = report?.metadata?.generatedMatrixRepos
+  const repos = Array.isArray(rawRepos)
+    ? rawRepos
+    : typeof rawRepos === "string"
+      ? rawRepos.split(",").map((value) => value.trim()).filter(Boolean)
+      : []
+  return repos.length === 1 && repos[0] === "cloud"
 }

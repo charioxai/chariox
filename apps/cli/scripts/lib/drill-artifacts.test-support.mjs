@@ -25,6 +25,7 @@ import {
 } from "./drill-artifacts.mjs"
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
+import { drillRuntimeAuthorityManifest } from "./drill-runtime-authority-invariants.mjs"
 
 export function validationSuiteRunArtifact(overrides = {}) {
   const manifest = overrides.manifest ?? validationSuiteManifestArtifact()
@@ -197,4 +198,5 @@ export {
   writeDrillJsonArtifactOutput,
   drillFailureTaxonomyManifest,
   drillRuntimeSignalsManifest,
+  drillRuntimeAuthorityManifest,
 }

@@ -38,6 +38,7 @@ import {
   validateDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
 import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
+import { normalizeCloudRuntimeAuthorityInvariantId } from "./drill-runtime-authority-registry-parity.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -329,9 +330,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexRequiredRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRequiredRuntimeSignals)
     const indexMissingRuntimeSignals = metadataListFromMetadata(index.metadata, "missingRuntimeSignals")
     const indexMissingRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexMissingRuntimeSignals)
-    const indexRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "runtimeAuthorityInvariants")
-    const indexRequiredRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "requiredRuntimeAuthorityInvariants")
-    const indexMissingRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "missingRuntimeAuthorityInvariants")
+    const indexRuntimeAuthorityInvariants = runtimeAuthorityInvariantsForEvidence(index.metadata, "runtimeAuthorityInvariants")
+    const indexRequiredRuntimeAuthorityInvariants = runtimeAuthorityInvariantsForEvidence(index.metadata, "requiredRuntimeAuthorityInvariants")
+    const indexMissingRuntimeAuthorityInvariants = runtimeAuthorityInvariantsForEvidence(index.metadata, "missingRuntimeAuthorityInvariants")
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
@@ -909,6 +910,13 @@ function validateRuntimeSignalOwnerKeysMatch(
   if (JSON.stringify(actualOwners) !== JSON.stringify(expectedOwners)) {
     throw new Error(`${source}.${ownerKey} must match ${signalKey}`)
   }
+}
+
+function runtimeAuthorityInvariantsForEvidence(metadata, key) {
+  const invariants = metadataListFromMetadata(metadata, key)
+  const evidenceRepos = metadataListFromMetadata(metadata, "evidenceRepos")
+  if (evidenceRepos.length !== 1 || evidenceRepos[0] !== "cloud") return invariants
+  return invariants.map(normalizeCloudRuntimeAuthorityInvariantId)
 }
 
 function relativeArtifactPath(rootDir, artifactPath) {

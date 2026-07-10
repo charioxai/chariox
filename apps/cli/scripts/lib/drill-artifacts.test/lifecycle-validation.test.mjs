@@ -15,6 +15,7 @@ import {
   DRILL_ARTIFACT_INDEX_SCHEMA,
   diagnosticMetadataForDrillArtifactIndexAggregate,
   drillFailureTaxonomyManifest,
+  drillRuntimeAuthorityManifest,
   drillRuntimeSignalsManifest,
   emptyDrillArtifactDiagnosticDimensions,
   findDrillArtifactIndexPaths,
@@ -331,6 +332,70 @@ test("rejects validation artifacts that advertise required failure classificatio
     await assert.rejects(
       verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
       /suite-run\.json is missing manifest\.failureTaxonomyManifest/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("verifies Cloud validation artifacts with compatible contextual contracts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-cloud-contracts-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    const taxonomy = drillFailureTaxonomyManifest()
+    const authority = drillRuntimeAuthorityManifest()
+    const cloudTaxonomy = {
+      ...taxonomy,
+      classifications: taxonomy.classifications.map((classification) => {
+        if (classification.kind === "cloud-runtime") {
+          return { ...classification, nextAction: "inspect hosted Cloud deployment logs, then rerun the scenario" }
+        }
+        if (classification.kind === "docker-runtime") {
+          return {
+            ...classification,
+            owner: "worker-kernel",
+            nextAction: "inspect the slice container logs, then rerun the scenario",
+          }
+        }
+        return classification
+      }),
+    }
+    const cloudAuthority = {
+      ...authority,
+      invariants: authority.invariants.map((invariant) => invariant.id === "relay-cloud-transport-only"
+        ? { ...invariant, id: "cloud-control-plane-only", owner: "cloud-deployment" }
+        : invariant),
+    }
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
+      manifest: validationSuiteManifestArtifact({
+        failureTaxonomyManifest: cloudTaxonomy,
+        runtimeAuthorityManifest: cloudAuthority,
+      }),
+    }), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: {
+        evidenceRepos: "cloud",
+        runtimeAuthorityInvariants: cloudAuthority.invariants.map((invariant) => invariant.id).join(","),
+        requiredRuntimeAuthorityInvariants: cloudAuthority.invariants.map((invariant) => invariant.id).join(","),
+      },
+    })
+    const verifiedCloudIndex = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+    const aggregate = summarizeDrillArtifactIndexes([verifiedCloudIndex])
+    assert.equal(aggregate.runtimeAuthorityInvariants["cloud-control-plane-only"], undefined)
+    assert.equal(aggregate.runtimeAuthorityInvariants["relay-cloud-transport-only"], 1)
+    assert.equal(aggregate.requiredRuntimeAuthorityInvariants["relay-cloud-transport-only"], 1)
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: { evidenceRepos: "oss" },
+    })
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /failureTaxonomyManifest\.classifications\[1\] has invalid nextAction/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })

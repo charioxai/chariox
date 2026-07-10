@@ -279,6 +279,41 @@ test("rejects unknown deployment preset labels in report metadata", () => {
   )
 })
 
+test("accepts Cloud contextual matrix diagnostics without weakening OSS reports", () => {
+  const cloudReport = matrixReport({
+    metadata: { generatedMatrixRepos: "cloud" },
+    scenarios: [scenario("cloud-web", "passed", {
+      classification: "ui-client-projection",
+      owner: "cloud-web",
+    })],
+  })
+  assert.doesNotThrow(() => validateDrillMatrixReport(cloudReport))
+  assert.throws(
+    () => validateDrillMatrixReport({ ...cloudReport, metadata: {} }),
+    /scenarios\[0\] owner does not match classification/,
+  )
+
+  const cloudDryRun = matrixReport({
+    metadata: { generatedMatrixRepos: "cloud" },
+    scenarios: [scenario("cloud-slice", "dry-run", {
+      plannedClassification: "docker-runtime",
+      plannedOwner: "worker-kernel",
+      plannedNextAction: "inspect the slice container logs, then rerun the scenario",
+    })],
+  })
+  assert.doesNotThrow(() => validateDrillMatrixReport(cloudDryRun))
+  assert.throws(
+    () => validateDrillMatrixReport({
+      ...cloudDryRun,
+      scenarios: [{
+        ...cloudDryRun.scenarios[0],
+        plannedNextAction: "Bearer abcdefghijklmnopqrstuvwxyz",
+      }],
+    }),
+    /scenarios\[0\] has invalid plannedNextAction/,
+  )
+})
+
 test("reads and validates report files", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-report-"))
   const file = path.join(dir, "matrix.json")
@@ -685,4 +720,3 @@ test("rejects malformed matrix reports", () => {
     providers: { cdoex: 1 },
   }), /aggregate\.providers\[0\] has unknown provider "cdoex"/)
 })
-
