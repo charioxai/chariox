@@ -98,6 +98,9 @@ struct KernelRuntimeOwnedState {
     remote_home_extension_inflight:
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
+    relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    remote_prompt_projection_drains:
+        Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -330,13 +333,14 @@ impl KernelRuntimeState {
             crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let (completed_git_turn_snapshots, provider_process_projection) = {
+        let (completed_git_turn_snapshots, provider_process_projection, relay_state) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
                     break (
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
+                        app.relay_client_state(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -415,6 +419,8 @@ impl KernelRuntimeState {
                 )),
                 remote_home_extension_inflight: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
+                relay_state,
+                remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),

@@ -54,6 +54,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
             vec![RelayProjectedCompletion {
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: 1234,
+                home_prompt_id: None,
             }],
         )
         .expect("projection should succeed");
@@ -109,4 +110,88 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .get(agent.id())
         .and_then(|state| state.active_prompt())
         .is_none());
+}
+
+#[test]
+fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let first = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "first remote prompt",
+            Vec::new(),
+        )
+        .expect("first prompt should start");
+    let PromptSubmissionOutcome::Started { prompt: first } = first else {
+        panic!("first prompt should be active");
+    };
+    let stale_completion = RelayProjectedCompletion {
+        message_id: "assistant-msg-1".to_string(),
+        completed_at_ms: 1234,
+        home_prompt_id: Some(first.id().to_string()),
+    };
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![stale_completion.clone()],
+        )
+        .expect("first completion should project");
+    let _ = app
+        .terminal_mut()
+        .drain_completion_records(session.id(), attachment.id());
+
+    let second = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "second remote prompt",
+            Vec::new(),
+        )
+        .expect("second prompt should start");
+    let PromptSubmissionOutcome::Started { prompt: second } = second else {
+        panic!("second prompt should be active");
+    };
+
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![stale_completion],
+        )
+        .expect("stale replay should be ignored");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("second prompt must remain active");
+    assert_eq!(active.id(), second.id());
+    assert!(app
+        .terminal_mut()
+        .drain_completion_records(session.id(), attachment.id())
+        .is_empty());
 }

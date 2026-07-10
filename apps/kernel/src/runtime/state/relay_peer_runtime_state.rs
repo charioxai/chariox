@@ -423,14 +423,16 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
+        replay_settled_completion: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).drain_leased_runtime_projection(
+            RemoteLeaseRuntime::new(app).drain_leased_runtime_projection_with_recovery(
                 &leased_agent_id,
                 &provider_run_id,
                 pump_output,
+                replay_settled_completion,
             )
         })
         .await

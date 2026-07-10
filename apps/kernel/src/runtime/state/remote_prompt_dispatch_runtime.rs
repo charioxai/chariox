@@ -6,6 +6,35 @@
 use super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh;
 use super::*;
 
+struct RemotePromptProjectionDrainClaim {
+    key: (String, String),
+    claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
+}
+
+impl RemotePromptProjectionDrainClaim {
+    fn try_acquire(
+        claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<Self> {
+        let key = (session_id.to_string(), agent_id.to_string());
+        let inserted = claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone());
+        inserted.then_some(Self { key, claims })
+    }
+}
+
+impl Drop for RemotePromptProjectionDrainClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
         &self,
@@ -21,8 +50,16 @@ impl KernelRuntimeState {
     }
 
     fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
+        let Some(claim) = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_projection_drains),
+            &session_id,
+            &agent_id,
+        ) else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
+            let _claim = claim;
             for _ in 0..120 {
                 match state
                     .drain_remote_prompt_projection_once(&session_id, &agent_id)
@@ -112,25 +149,37 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
-        let response = self
-            .with_app_side_effect(|app| {
-                let relay_config = app.relay_config_for_remote_execution(&remote_execution);
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        ClientTarget {
-                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::DrainLeasedRuntimeProjection {
-                            leased_agent_id: remote_execution.leased_agent_id.clone(),
-                            provider_run_id: provider_run_id.clone(),
-                            pump_output: true,
-                        },
-                    ),
+        let relay_config = self
+            .with_app_side_effect(|app| app.relay_config_for_remote_execution(&remote_execution))
+            .await;
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            provider_run_id: provider_run_id.clone(),
+            pump_output: true,
+        };
+        let response = match self.connected_relay_state_for_config(&relay_config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    request,
                 )
-            })
-            .await?;
+                .await?
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    request,
+                )
+                .await?
+            }
+        };
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
                 if let Some(event) = event {
@@ -143,6 +192,38 @@ impl KernelRuntimeState {
                 message: format!("unexpected remote projection drain response: {other:?}"),
             }),
         }
+    }
+
+    async fn connected_relay_state_for_config(
+        &self,
+        relay_config: &crate::config::DaemonConfig,
+    ) -> Option<Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>> {
+        let relay_url = relay_config.relay_url.as_deref()?;
+        if self
+            .owned
+            .relay_state
+            .read()
+            .await
+            .connected_relay_url()
+            .as_deref()
+            == Some(relay_url)
+        {
+            return Some(Arc::clone(&self.owned.relay_state));
+        }
+        let slice_states = {
+            let connectors = self.owned.slice_private_relay_connectors.lock().await;
+            connectors
+                .values()
+                .filter(|connector| connector.relay_url == relay_url)
+                .map(|connector| Arc::clone(&connector.state))
+                .collect::<Vec<_>>()
+        };
+        for state in slice_states {
+            if state.read().await.connected_relay_url().as_deref() == Some(relay_url) {
+                return Some(state);
+            }
+        }
+        None
     }
 
     async fn project_remote_runtime_projection_event(
@@ -507,5 +588,34 @@ mod tests {
 
         assert_eq!(drain_target.0.leased_agent_id, "leased-agent-1");
         assert_eq!(drain_target.1, "provider-run-worker-1");
+    }
+
+    #[test]
+    fn remote_prompt_projection_drain_claims_are_single_owner_and_release_on_drop() {
+        let claims = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+        let first = RemotePromptProjectionDrainClaim::try_acquire(
+            Arc::clone(&claims),
+            "session-1",
+            "agent-1",
+        )
+        .expect("first drain should claim the agent");
+
+        assert!(
+            RemotePromptProjectionDrainClaim::try_acquire(
+                Arc::clone(&claims),
+                "session-1",
+                "agent-1",
+            )
+            .is_none(),
+            "a duplicate drain must not start while the first owner is alive"
+        );
+
+        drop(first);
+
+        assert!(
+            RemotePromptProjectionDrainClaim::try_acquire(claims, "session-1", "agent-1",)
+                .is_some(),
+            "dropping the owner must allow reconnect recovery to start a new drain"
+        );
     }
 }

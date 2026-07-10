@@ -222,7 +222,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 6);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 7);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
@@ -254,6 +254,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         completions: vec![RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
         }],
     };
     let mut snapshot =
@@ -273,12 +274,16 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         snapshot.pointer("/provider_run/resume_state/codex_thread_id"),
         Some(&serde_json::json!("thread-1"))
     );
+    assert_eq!(
+        snapshot.pointer("/completions/0/home_prompt_id"),
+        Some(&serde_json::json!("home-prompt-1"))
+    );
     let serialized =
         serde_json::to_string(&snapshot).expect("leased runtime projection should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c0dd05f046436c73aa3d85300e813eb87a700034decae92ae102b180a9a34f6a"
+        "c0cc261015a3dd203b462d597d4260554fe8217e58144e4342ae7b174e27be30"
     );
 }
 

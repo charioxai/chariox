@@ -340,12 +340,14 @@ impl CommandRouter {
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
+        replay_settled_completion: bool,
     ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
         relay_peer_runtime::drain_relay_leased_runtime_projection(
             &self.runtime_state,
             leased_agent_id,
             provider_run_id,
             pump_output,
+            replay_settled_completion,
         )
         .await
     }

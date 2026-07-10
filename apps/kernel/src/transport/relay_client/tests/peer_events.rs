@@ -71,6 +71,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
+            home_prompt_id: None,
         }],
     })
     .expect("peer event should serialize");

@@ -245,6 +245,13 @@ fn clean_provider_prompt_strips_system_wrappers_and_compacts_request_text() {
     );
     assert_eq!(
         clean_provider_prompt(
+            "<recommended_plugins>generated</recommended_plugins>\n# AGENTS.md instructions for /repo\n<environment_context><cwd>/repo</cwd></environment_context>"
+                .to_string()
+        ),
+        None
+    );
+    assert_eq!(
+        clean_provider_prompt(
             "preamble\n## My request for Codex:\n  run   the\ncheck  ".to_string()
         ),
         Some("run the check".to_string())

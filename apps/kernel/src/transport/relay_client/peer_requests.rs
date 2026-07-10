@@ -337,6 +337,7 @@ pub(super) async fn handle_daemon_peer_request(
                     &leased_agent_id,
                     &provider_run_id,
                     pump_output,
+                    true,
                 )
                 .await;
             match drained {

@@ -212,6 +212,51 @@ fn external_observed_output_requeues_replacement_for_drained_recipient() {
 }
 
 #[test]
+fn identical_external_observed_output_does_not_requeue_drained_recipient() {
+    let mut terminal = TerminalStreamService::new();
+    let (merge_key, metadata, source_attachment_id) = external_observed_metadata("assistant-1");
+    let recipients = vec!["attachment-1".to_string(), "attachment-2".to_string()];
+
+    terminal.fan_out_external_observed_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some(merge_key.clone()),
+        recipients.clone(),
+        b"same version",
+        metadata.clone(),
+        source_attachment_id.clone(),
+    );
+    assert_eq!(
+        terminal
+            .drain_output_records("session-1", "attachment-1")
+            .len(),
+        1
+    );
+
+    terminal.fan_out_external_observed_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some(merge_key),
+        recipients,
+        b"same version",
+        metadata,
+        source_attachment_id,
+    );
+
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+    let second = terminal.drain_output_records("session-1", "attachment-2");
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].bytes, b"same version");
+    assert!(terminal.output_records().is_empty());
+}
+
+#[test]
 fn output_polling_drains_single_recipient_batch_records() {
     let mut terminal = TerminalStreamService::new();
     let records = terminal.fan_out_outputs(vec![

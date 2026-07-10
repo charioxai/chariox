@@ -142,6 +142,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             git_context,
             provider_run: _,
         } = prepared;
+        let home_prompt_id = git_context
+            .as_ref()
+            .map(|context| context.home_prompt_id.clone());
         if let Some(git_context) = git_context {
             self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
         }
@@ -154,6 +157,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )?;
         if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
+            if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
+                agent.active_home_prompt_id = home_prompt_id;
+            }
         }
         if let Some(context) = workflow_context {
             self.app.leased_workflow_turns.insert(

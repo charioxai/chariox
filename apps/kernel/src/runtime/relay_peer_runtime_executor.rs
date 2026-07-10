@@ -307,9 +307,15 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
     leased_agent_id: &str,
     provider_run_id: &str,
     pump_output: bool,
+    replay_settled_completion: bool,
 ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
     runtime_state
-        .drain_relay_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)
+        .drain_relay_leased_runtime_projection(
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            replay_settled_completion,
+        )
         .await
 }
 

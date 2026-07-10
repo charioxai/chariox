@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 6;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -525,6 +525,8 @@ pub struct RelayProjectedOutputChunk {
 pub struct RelayProjectedCompletion {
     pub message_id: String,
     pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

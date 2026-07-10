@@ -26,6 +26,7 @@ pub struct RelayClientState {
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
+    peer_public_keys: BTreeMap<String, String>,
     pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
 }
@@ -41,6 +42,23 @@ impl RelayClientState {
 
     pub(crate) fn connected_relay_url(&self) -> Option<String> {
         self.connected_relay_url.clone()
+    }
+
+    pub(super) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
+        self.peer_public_keys.get(target_ref).cloned()
+    }
+
+    pub(super) fn remember_peer_public_key(
+        &mut self,
+        target_ref: impl Into<String>,
+        public_key: impl Into<String>,
+    ) {
+        self.peer_public_keys
+            .insert(target_ref.into(), public_key.into());
+    }
+
+    pub(super) fn forget_peer_public_key(&mut self, target_ref: &str) {
+        self.peer_public_keys.remove(target_ref);
     }
 
     pub(crate) fn upsert_display_tunnel(&mut self, target: RelayDisplayTunnelTarget) {
@@ -134,6 +152,7 @@ impl Default for RelayClientState {
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
+            peer_public_keys: BTreeMap::new(),
             display_tunnels: BTreeMap::new(),
             display_streams: BTreeMap::new(),
         }
@@ -237,6 +256,7 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         guard.connected = false;
         guard.connected_relay_url = None;
         guard.outgoing_tx = None;
+        guard.peer_public_keys.clear();
         guard.display_tunnels.clear();
         guard.display_streams.clear();
         std::mem::take(&mut guard.pending_peer_requests)
@@ -251,5 +271,28 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
                 true,
             )),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnect_forgets_cached_peer_keys() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .remember_peer_public_key("worker-1", "public-key-1");
+
+        assert_eq!(
+            state.read().await.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
+
+        set_disconnected(&state).await;
+
+        assert!(state.read().await.peer_public_key("worker-1").is_none());
     }
 }

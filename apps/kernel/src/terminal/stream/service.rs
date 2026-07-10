@@ -25,6 +25,22 @@ pub struct TerminalStreamService {
     health_store: TerminalStreamHealthStore,
 }
 
+fn external_observed_output_content_matches(
+    existing: &TerminalOutputRecord,
+    next: &TerminalOutputRecord,
+) -> bool {
+    existing.session_id == next.session_id
+        && existing.provider_run_id == next.provider_run_id
+        && existing.agent_id == next.agent_id
+        && existing.prompt_id == next.prompt_id
+        && existing.prompt_origin == next.prompt_origin
+        && existing.source_attachment_id == next.source_attachment_id
+        && existing.kind == next.kind
+        && existing.merge_key == next.merge_key
+        && existing.bytes == next.bytes
+        && existing.external_observation_metadata == next.external_observation_metadata
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StoredTerminalOutputRecord {
     record: TerminalOutputRecord,
@@ -379,18 +395,33 @@ impl TerminalStreamService {
         else {
             return false;
         };
-        let Some(existing) = self.output_records.get(&record_id) else {
+        let Some(existing_record) = self
+            .output_records
+            .get(&record_id)
+            .map(|stored| stored.record.clone())
+        else {
             return false;
         };
-        let pending_recipients = existing
-            .record
+        let existing_recipients = existing_record
+            .recipient_attachment_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let content_changed = !external_observed_output_content_matches(&existing_record, record);
+        let recipients_to_requeue = record
+            .recipient_attachment_ids
+            .iter()
+            .filter(|attachment_id| {
+                content_changed || !existing_recipients.contains(*attachment_id)
+            })
+            .cloned();
+        let pending_recipients = existing_record
             .pending_recipient_attachment_ids
             .iter()
             .cloned()
-            .chain(record.recipient_attachment_ids.iter().cloned())
+            .chain(recipients_to_requeue)
             .collect::<BTreeSet<_>>();
-        let recipient_attachment_ids = existing
-            .record
+        let recipient_attachment_ids = existing_record
             .recipient_attachment_ids
             .iter()
             .cloned()
@@ -403,7 +434,11 @@ impl TerminalStreamService {
                 queue.push_back(record_id);
             }
         }
-        let mut replacement = record.clone();
+        let mut replacement = if content_changed {
+            record.clone()
+        } else {
+            existing_record
+        };
         replacement.recipient_attachment_ids = recipient_attachment_ids.into_iter().collect();
         replacement.pending_recipient_attachment_ids = pending_recipients.iter().cloned().collect();
         let Some(stored) = self.output_records.get_mut(&record_id) else {
