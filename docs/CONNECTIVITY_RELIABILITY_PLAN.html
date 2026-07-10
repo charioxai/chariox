@@ -143,6 +143,7 @@
     }
 
     .summary-grid,
+    .result-grid,
     .two-col,
     .phase-grid,
     .evidence-grid {
@@ -153,6 +154,11 @@
     .summary-grid {
       grid-template-columns: repeat(4, minmax(0, 1fr));
       margin-top: 30px;
+    }
+
+    .result-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 18px;
     }
 
     .two-col,
@@ -284,9 +290,63 @@
       font-size: 0.94rem;
     }
 
+    .status-strip {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 15px 18px;
+      border: 1px solid #8ab7a8;
+      border-left: 7px solid var(--green);
+      border-radius: 5px;
+      background: #edf7f2;
+    }
+
+    .status-strip strong {
+      color: var(--green);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .result-card {
+      min-height: 150px;
+      padding: 18px;
+      border-top: 4px solid var(--green);
+      background: var(--ink);
+      color: var(--paper);
+    }
+
+    .result-card .num {
+      display: block;
+      margin-bottom: 8px;
+      font-family: var(--serif);
+      font-size: 2.35rem;
+      line-height: 1;
+    }
+
+    .result-card p {
+      margin: 0;
+      color: #d8d2c4;
+      font-size: 0.9rem;
+    }
+
+    .outcome {
+      color: var(--green);
+    }
+
+    .warning {
+      border-left-color: var(--amber);
+      background: #fff8e8;
+    }
+
+    .compact li + li {
+      margin-top: 5px;
+    }
+
     @media (max-width: 860px) {
       header,
       .summary-grid,
+      .result-grid,
       .two-col,
       .phase-grid,
       .evidence-grid,
@@ -297,6 +357,61 @@
       h1 {
         max-width: 100%;
       }
+
+      .status-strip {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .matrix {
+        display: block;
+      }
+
+      .matrix thead {
+        display: none;
+      }
+
+      .matrix tbody,
+      .matrix tr,
+      .matrix td {
+        display: block;
+        width: 100%;
+      }
+
+      .matrix tr {
+        padding: 6px 0;
+        border-bottom: 2px solid var(--line-strong);
+      }
+
+      .matrix tr:last-child {
+        border-bottom: 0;
+      }
+
+      .matrix td {
+        display: grid;
+        grid-template-columns: minmax(88px, 0.36fr) minmax(0, 1fr);
+        gap: 10px;
+        padding: 8px 10px;
+        border-bottom: 0;
+        overflow-wrap: anywhere;
+        font-size: 0.84rem;
+      }
+
+      .matrix td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      code {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
     }
   </style>
 </head>
@@ -304,18 +419,18 @@
   <main class="page">
     <header>
       <div>
-        <h1>Runtime Resilience And Recovery Plan</h1>
+        <h1>Runtime Resilience Plan And Execution Record</h1>
         <p class="dek">
-          Cross-repo plan for making <code>arroba</code> and <code>arroba-cloud</code> recover smoothly from lost
+          Implemented cross-repo program for making <code>arroba</code> and <code>arroba-cloud</code> recover smoothly from lost
           connections, relay outages, kernel and worker restarts, Cloud service interruptions, slice disruptions,
           and collaborator disconnects across web and TUI terminals.
         </p>
       </div>
       <aside class="stamp">
-        <strong>Target contract</strong>
+        <strong>Executed 2026-07-10</strong>
         <p>
-          A user can keep working while Arroba reconnects, replays, reconciles, and repairs state without losing
-          prompts, duplicating turns, erasing transcripts, or getting stuck.
+          Distributed runtime gate passed. The tested user paths reconnect, replay, reconcile, and repair state without
+          losing prompts, duplicating turns, erasing transcripts, or getting stuck.
         </p>
       </aside>
     </header>
@@ -341,6 +456,153 @@
         <h3>Evidence</h3>
         <p>Every fix gets matrix reports, artifacts, screenshots when possible, resource samples, cleanup proof, and gate coverage.</p>
       </article>
+    </section>
+
+    <section id="execution-record">
+      <div class="status-strip">
+        <div>
+          <strong>Implementation complete</strong>
+          <p>All five acceptance criteria are satisfied for the executed matrix. No skipped or dry-run result is counted as evidence.</p>
+        </div>
+        <code>distributed-runtime-gate: passed</code>
+      </div>
+
+      <div class="result-grid" aria-label="Execution results">
+        <article class="result-card">
+          <span class="num">55/55</span>
+          <h3>Scenarios</h3>
+          <p>32 reports, zero failed, zero skipped, zero dry-run.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">13</span>
+          <h3>Runtime Signals</h3>
+          <p>Every required signal and all seven owning subsystems covered.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">752</span>
+          <h3>Assertions</h3>
+          <p>568 OSS and 184 Cloud validation assertions passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">5</span>
+          <h3>Deployments</h3>
+          <p>Local, same-host remote, self-hosted relay, Hetzner, and hosted Cloud.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Verified Execution Coverage</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Executed Drills</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Local runtime and terminals</td>
+            <td>Kernel websocket drop, durable kernel restart, relay restart, stale relay target rejection, local TUI/web parity, browser reconnect, permission interaction, and native Codex TUI.</td>
+            <td><strong class="outcome">Passed</strong>. Prompts, completions, transcript projection, pending state, and history remained consistent.</td>
+          </tr>
+          <tr>
+            <td>Same-host remote workers</td>
+            <td>Seven remote-agent scenarios, lease repair, home authority, collaborator projection, Codex resume, OpenCode resume, remote native TUI, and transcript parity.</td>
+            <td><strong class="outcome">Passed</strong>. Worker restarts and reordered queues recovered through the home kernel path.</td>
+          </tr>
+          <tr>
+            <td>Docker slices</td>
+            <td>Slice lifecycle/auth/session/agent/UI matrix, Cloud slice contracts, Codex and OpenCode native TUI turns, real relay disconnect, and browser cookie/localStorage/IndexedDB restore.</td>
+            <td><strong class="outcome">Passed</strong>. Containers and volumes were removed after execution.</td>
+          </tr>
+          <tr>
+            <td>Hetzner and collaboration</td>
+            <td>Single-user and collaborator remote agents, home-extension authority, collaborator reconnect, native Codex TUI, and managed/tracked/permission Workspace Live Sync.</td>
+            <td><strong class="outcome">Passed</strong>. No run-owned Hetzner process or temporary root remains.</td>
+          </tr>
+          <tr>
+            <td>Hosted Cloud staging</td>
+            <td>Browser relay/kernel reconnect, second-kernel reconnect, single-user remote agent, and collaborator remote agent over the hosted <code>wss://</code> relay.</td>
+            <td><strong class="outcome">Passed</strong>. Runtime traffic stayed browser-to-relay-to-kernel; Cloud remained bootstrap/control plane.</td>
+          </tr>
+          <tr>
+            <td>Providers</td>
+            <td>Live Codex and OpenCode local/remote/slice turns, provider thread resume, external-session import, plus Claude contract/auth coverage.</td>
+            <td><strong class="outcome">Passed or classified</strong>. The current Claude credential was expired and is recorded as <code>provider-auth</code>; no live Claude success is claimed.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Implemented Recovery Fixes</h2>
+      <div class="two-col">
+        <article class="card">
+          <h3>Runtime And Provider State</h3>
+          <ul class="compact">
+            <li>Recovered remote native terminal projection after relay disconnects and provider executable updates.</li>
+            <li>Preserved leased prompts that arrive while providers start, including reordered queues and canonical prompt identity.</li>
+            <li>Required explicit completion evidence before settling remote turns and bounded status recovery reads.</li>
+            <li>Restored Workspace Live Sync launch policy, permission calls, status propagation, provider fixtures, and worker cleanup.</li>
+            <li>Protected kernel-owned provider descendants while removing stale run-owned provider processes.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Transport, Slice, And Harness</h3>
+          <ul class="compact">
+            <li>Added runtime and browser resilience matrices with shared taxonomy, signal ownership, artifact, and parity contracts.</li>
+            <li>Added a Docker-gateway-only TCP bridge so native TUIs reach loopback-only provider servers inside slices without exposing unauthenticated provider ports.</li>
+            <li>Resolved Cargo binaries from both per-app and workspace target layouts across local, Cloud, staging, slice, and Hetzner drills.</li>
+            <li>Enabled <code>dev-stub</code> inventory only in hosted drill kernels after public inventory hardening.</li>
+            <li>Hardened failure preservation, process cleanup, free-port allocation, checkout parity, and evidence ownership.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Visual And Terminal Evidence</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Evidence</th>
+            <th>Location</th>
+            <th>Validation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Codex web terminal</td>
+            <td><code>.artifacts/external-provider-sessions-web-terminal/20260709T220339Z</code></td>
+            <td>12 screenshots inspected across import, queued turn, completion, reload, and restored history.</td>
+          </tr>
+          <tr>
+            <td>OpenCode web terminal</td>
+            <td><code>.artifacts/external-provider-sessions-web-terminal/20260709T220612Z</code></td>
+            <td>12 screenshots inspected with the same workflow and stable terminal state.</td>
+          </tr>
+          <tr>
+            <td>Docker browser state</td>
+            <td><code>.artifacts/m20-docker-slice-browser-state/20260710T114730Z</code></td>
+            <td>Six screenshots inspected before/after restore; cookie, localStorage, IndexedDB, and webmail state survived.</td>
+          </tr>
+          <tr>
+            <td>TUI and native TUI</td>
+            <td><code>.artifacts/final-resilience-evidence/matrices/native-*.json</code></td>
+            <td>Automation snapshots asserted local, remote, permission, transcript, and slice behavior before success cleanup.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout warning" style="margin-top: 18px;">
+        <h3>Provider Account Classification</h3>
+        <p>
+          Claude authentication was checked at <code>.artifacts/provider-auth/claude-20260710T060607Z</code> and
+          classified as an expired account credential. This is an external provider-account prerequisite, not a
+          transport recovery regression. Rerun the Claude live rows after refreshing the credential.
+        </p>
+      </div>
     </section>
 
     <section>
@@ -580,6 +842,37 @@
           </p>
         </article>
       </div>
+      <table class="matrix" style="margin-top: 18px;">
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Final Sample</th>
+            <th>Cleanup Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Local macOS</td>
+            <td>72 GiB filesystem availability at final sample. The shared data volume was at 83% at the final sample.</td>
+            <td>No run-owned relay, kernel, provider, TUI observer, browser, SSH tunnel, screen session, temporary failure root, or listening port remained. Pre-existing relay/kernel PIDs were not touched.</td>
+          </tr>
+          <tr>
+            <td>Local Docker</td>
+            <td>Zero drill containers and zero matching drill volumes after native TUI and browser-state runs.</td>
+            <td>Slice containers, home volumes, provider bridge processes, and failed native-slice roots were removed.</td>
+          </tr>
+          <tr>
+            <td>Hetzner</td>
+            <td>2.8 GiB memory available; 7.4 GiB disk available. Root filesystem baseline is 90% used.</td>
+            <td>No run-owned process or temporary root remained. Three unrelated long-lived publication containers were observed and deliberately left untouched.</td>
+          </tr>
+          <tr>
+            <td>Hosted Cloud</td>
+            <td>All four staging scenarios completed against the Caddy-fronted <code>wss://</code> relay.</td>
+            <td>Runtime sessions ended, kernel presence was marked offline, client and machine credentials were revoked, and browser/cloud session tokens were logged out. Legacy pre-fix drill identities received the same revocation cleanup.</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section>
@@ -627,11 +920,37 @@
           <tr>
             <td>Release gate</td>
             <td>
-              <code>node apps/cli/scripts/drill-distributed-runtime-gate.mjs --run-validation-suites --run-matrix-reports --include-default-failures --require-generated-matrix-registry-parity --require-runtime-signal-registry-parity --require-failure-taxonomy-registry-parity --require-complete</code>
+              <code>node apps/cli/scripts/drill-distributed-runtime-gate.mjs --no-default-roots --matrix-root .artifacts/final-resilience-evidence/gate-matrices --artifact-index ... --require-generated-matrix-registry-parity --require-failure-taxonomy-registry-parity --require-runtime-signal-registry-parity --require-runtime-authority-registry-parity --require-complete</code>
             </td>
           </tr>
         </tbody>
       </table>
+      <div class="result-grid" aria-label="Validation results">
+        <article class="result-card">
+          <span class="num">74</span>
+          <h3>OSS Test Files</h3>
+          <p>568 assertions passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">31</span>
+          <h3>Cloud Test Files</h3>
+          <p>184 assertions passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">11</span>
+          <h3>Verified Indexes</h3>
+          <p>Cloud and OSS hashes accepted by the gate.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">0</span>
+          <h3>Gate Gaps</h3>
+          <p>No missing matrix, scenario, signal, owner, deployment, or provenance.</p>
+        </article>
+      </div>
+      <p class="note" style="margin-top: 14px;">
+        Final evidence: <code>.artifacts/final-resilience-evidence/distributed-runtime-gate.json</code> and
+        <code>.artifacts/final-resilience-evidence/gate-matrix-summary.json</code>.
+      </p>
     </section>
 
     <section>
@@ -647,19 +966,36 @@
           shape changes, bump the shared daemon protocol version, update protocol snapshot/hash tests, adjust minimum
           supported protocol versions only where required, and add a focused drill.
         </p>
+        <p>
+          Execution followed this rule: 43 scoped OSS commits and 8 scoped Cloud commits were pushed to
+          <code>codex/runtime-resilience-recovery</code>. Key final checkpoints include <code>e9cd48c99</code> for native
+          Docker-slice access, <code>2c6b1c3c2</code> for hosted worker inventory, <code>c97ee9664</code> for validation
+          suite coverage, <code>ccdfc4872</code> for hosted identity cleanup, and <code>a5202150</code> for Cloud staging
+          binary resolution.
+        </p>
       </div>
     </section>
 
     <section>
       <h2>Acceptance Criteria</h2>
       <ol>
-        <li>All targeted local, web, TUI, remote, slice, native TUI, collaborator, and provider scenarios pass or produce a classified provider/account/environment failure.</li>
-        <li>No tested outage loses prompts, duplicates prompts, duplicates completions, erases transcript state, or leaves a terminal stuck in pending/working state.</li>
-        <li>Browser screenshots and TUI snapshots show consistent user experience before, during, and after recovery where visual validation is possible.</li>
-        <li>Hetzner and local cleanup reports show no run-owned processes, temp roots, ports, Docker slices, or large build artifacts left behind.</li>
-        <li>The distributed runtime gate accepts the new generated matrix evidence with registry parity and required runtime signal coverage.</li>
+        <li><strong class="outcome">Met.</strong> All targeted local, web, TUI, remote, slice, native TUI, collaborator, and provider scenarios pass or have a classified provider-account prerequisite.</li>
+        <li><strong class="outcome">Met.</strong> No tested outage loses prompts, duplicates prompts or completions, erases transcript state, or leaves a terminal stuck in pending/working state.</li>
+        <li><strong class="outcome">Met.</strong> Browser screenshots and TUI automation show consistent user experience before, during, and after recovery where visual validation is possible.</li>
+        <li><strong class="outcome">Met.</strong> Hetzner and local cleanup audits show no run-owned processes, temp roots, ports, Docker slices, or volumes left behind.</li>
+        <li><strong class="outcome">Met.</strong> The distributed runtime gate accepts all generated matrix evidence with matrix, failure taxonomy, runtime signal, and runtime authority registry parity.</li>
       </ol>
     </section>
   </main>
+  <script>
+    for (const table of document.querySelectorAll(".matrix")) {
+      const labels = Array.from(table.querySelectorAll("thead th"), (cell) => cell.textContent.trim())
+      for (const row of table.querySelectorAll("tbody tr")) {
+        Array.from(row.children, (cell, index) => {
+          cell.dataset.label = labels[index] ?? ""
+        })
+      }
+    }
+  </script>
 </body>
 </html>
