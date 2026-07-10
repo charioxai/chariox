@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
+import { makeAvailablePorts, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -110,10 +110,11 @@ async function assertScreenEndpointReady(url) {
 }
 
 async function buildKernel() {
+  const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return binary
+  return await resolveBuiltBinary(binary, manifestPath, 'arroba-kernel')
 }
 
 function startDaemon(binary, env) {
