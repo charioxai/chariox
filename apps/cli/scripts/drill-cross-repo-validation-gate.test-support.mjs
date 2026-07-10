@@ -112,10 +112,12 @@ export async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = 
 
 export async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   matrices = [
+    { name: "browser-terminal-resilience-matrix", repo: "cloud" },
     { name: "cloud-slice-runtime-matrix", repo: "cloud" },
     { name: "native-provider-tui-matrix", repo: "oss" },
     { name: "remote-agent-runtime-matrix", repo: "oss" },
     { name: "remote-home-extension-matrix", repo: "oss" },
+    { name: "runtime-resilience-chaos-matrix", repo: "oss" },
     { name: "slice-runtime-matrix", repo: "oss" },
     { name: "workspace-live-sync-matrix", repo: "oss" },
   ],
