@@ -70,6 +70,10 @@ if ((runWorkspaceLiveSync || runTrackedWorkspaceLiveSync) && !runSecondKernel) {
 }
 
 async function main() {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log("Usage: node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs\n\nHosted scenario selection is controlled by ARROBA_CLOUD_HOSTED_* environment variables.")
+    return
+  }
   const ports = await makePorts()
   const runId = `hosted-cloud-relay-${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), runId)

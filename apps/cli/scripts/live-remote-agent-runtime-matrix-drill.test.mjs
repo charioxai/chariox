@@ -118,3 +118,32 @@ test("remote agent runtime matrix rejects gated scenarios without opt-in flags",
     },
   )
 })
+
+test("remote agent runtime matrix records provider binding overrides accurately", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-remote-agent-provider-override-"))
+  const reportPath = path.join(rootDir, "matrix.json")
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      "--dry-run",
+      "--only",
+      "provider-run-binding",
+      "--scenario-provider",
+      "provider-run-binding=codex",
+      "--provider-model",
+      "codex=gpt-5.4-mini",
+      "--report",
+      reportPath,
+    ])
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+    assert.equal(report.metadata.providers, "codex")
+    assert.deepEqual(report.scenarios[0].args.slice(1), [
+      "--provider",
+      "codex",
+      "--provider-model",
+      "codex=gpt-5.4-mini",
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})

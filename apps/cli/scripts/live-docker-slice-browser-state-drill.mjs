@@ -8,6 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
@@ -463,10 +464,11 @@ async function removeContainerAndHomeVolume() {
 }
 
 async function buildKernel() {
+  const manifest = path.join(repoRoot, "apps/kernel/Cargo.toml")
   const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const result = await runCommand("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"], { timeoutMs: 180_000 })
+  const result = await runCommand("cargo", ["build", "--manifest-path", manifest, "--bin", "arroba-kernel"], { timeoutMs: 180_000 })
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return binary
+  return await resolveBuiltBinary(binary, manifest, "arroba-kernel")
 }
 
 async function buildKernelClient() {

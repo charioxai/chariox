@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -172,15 +173,6 @@ const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((v)
 
 function spawnProcess(command, args, options) {
   return spawn(command, args, { ...options, stdio: ['ignore', 'ignore', 'inherit'] })
-}
-
-async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
 }
 
 async function terminateChild(child, signal = 'SIGTERM') {
@@ -373,12 +365,12 @@ async function main() {
       endSessionRequest,
       submitPromptRequest,
     } } = await loadCliModules(cliRuntimeDir))
-    const relayBinary = await resolveBinary(
+    const relayBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
       'arroba-relay',
     )
-    const daemonBinary = await resolveBinary(
+    const daemonBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
