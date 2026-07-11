@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { assertBinary, terminateChild, waitForTcpPort } from './lib/drill-runtime-helpers.mjs'
@@ -76,9 +77,11 @@ const {
   attachToSessionRequest,
   createSessionInviteRequest,
   createSessionRequest,
+  getProviderRunRequest,
   grantAgentExtensionRequest,
   joinSessionInviteRequest,
   launchProviderRunRequest,
+  listAgentsRequest,
   listRemoteMachinesRequest,
   registerConnectorAdapterRequest,
   registerConnectorRequest,
@@ -86,6 +89,7 @@ const {
   registerScriptRequest,
   revokeAgentExtensionRequest,
   spawnAgentRequest,
+  submitPromptRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
 
 const unwrap = (response, key) => response?.[key] ?? response
@@ -94,6 +98,32 @@ const unwrapVariant = (response, ...keys) => keys.map((key) => response?.[key]).
 function log(name, details = null) {
   if (details == null) console.log(`[remote-home-extension-drill] ${name}`)
   else console.log(`[remote-home-extension-drill] ${name}`, JSON.stringify(details))
+}
+
+async function waitForRemoteProviderRun(client, sessionId, agentId, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastAgent = null
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const agents = unwrapVariant(
+      await client.send(listAgentsRequest(sessionId)),
+      'AgentsListed',
+    ).agents ?? []
+    const agent = agents.find((candidate) => candidate.id === agentId) ?? null
+    lastAgent = agent
+    const remote = agent?.remote_execution
+    if (remote?.leased_agent_id && remote?.active_worker_provider_run_id) {
+      const projectedRunId = `leased:${remote.leased_agent_id}:${remote.active_worker_provider_run_id}`
+      const response = await client.send(getProviderRunRequest(projectedRunId)).catch(() => null)
+      const run = response == null
+        ? null
+        : unwrapVariant(response, 'ProviderRun').provider_run
+      lastRun = run
+      if (run?.runtime_mcp_server_url && run?.runtime_mcp_auth_token) return run
+    }
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
@@ -333,7 +363,11 @@ async function main() {
     await client.send(registerConnectorAdapterRequest(connectorAdapterPath))
     await client.send(registerConnectorRequest(connectorPath))
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, 'remote-home-extension-drill')), 'SessionCreated').session
-    await client.send(attachToSessionRequest(session.id, `remote-home-extension-${process.pid}`))
+    const ownerAttachment = unwrap(
+      await client.send(attachToSessionRequest(session.id, `remote-home-extension-${process.pid}`)),
+      'SessionAttached',
+    ).attachment
+    let collaboratorAttachment = null
     if (options.collab) {
       user2Client = await joinRemoteHomeExtensionCollaborator({
         LocalIpcClient,
@@ -344,6 +378,10 @@ async function main() {
         joinSessionInviteRequest,
         sessionId: session.id,
       })
+      collaboratorAttachment = unwrap(
+        await user2Client.send(attachToSessionRequest(session.id, `remote-home-extension-collab-${process.pid}`)),
+        'SessionAttached',
+      ).attachment
     }
     const remoteAgentClient = options.collab ? user2Client : client
     if (!options.collab) {
@@ -367,7 +405,7 @@ async function main() {
       }
       const collisionAgent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-collision-agent', 'default', workerWorktree, 'low', undefined, undefined, workerKernelRef)), 'AgentSpawned').agent
       await client.send(grantAgentExtensionRequest(workspace, collisionAgent.id, 'mcp', 'home_echo_mcp'))
-      await expectReject('home-proxy MCP collision launch', () => client.send(launchProviderRunRequest(
+      await expectReject('worker-local MCP definition mismatch launch', () => client.send(launchProviderRunRequest(
         session.id,
         'dev-stub',
         'default',
@@ -375,7 +413,7 @@ async function main() {
         'low',
         collisionAgent.id,
         { nativeTui: true },
-      )), 'collides with a worker-local MCP')
+      )), 'definition mismatch')
       if (options.hetznerWorker) {
         await runHetznerCommand(options, `rm -f ${shellQuote(path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps', 'home_echo_mcp.json'))}`)
       } else {
@@ -383,7 +421,7 @@ async function main() {
       }
     }
 
-    const agent = unwrap(await remoteAgentClient.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'default', workerWorktree, 'low', undefined, undefined, workerKernelRef)), 'AgentSpawned').agent
+    const agent = unwrap(await remoteAgentClient.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'native-tui-idle', workerWorktree, 'low', undefined, undefined, workerKernelRef)), 'AgentSpawned').agent
     if (options.collab) {
       await expectReject(
         'collaborator grant home script',
@@ -394,15 +432,15 @@ async function main() {
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'home_only_lookup', env.name))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', 'home_echo_mcp'))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'connector', 'home_local_api', null, { maxSafety: 'read' }))
-    const launch = unwrapVariant(await remoteAgentClient.send(launchProviderRunRequest(
+    const promptAttachment = collaboratorAttachment ?? ownerAttachment
+    await remoteAgentClient.send(submitPromptRequest(
       session.id,
-      'dev-stub',
-      'default',
-      'default',
-      'low',
+      promptAttachment.id,
       agent.id,
-      { nativeTui: true },
-    )), 'ProviderRunLaunched', 'ProviderRunLaunchAccepted').provider_run
+      'Initialize the home-proxy extension runtime.',
+      [],
+    ))
+    const launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id)
     if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
     if (options.collab) {
       const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
