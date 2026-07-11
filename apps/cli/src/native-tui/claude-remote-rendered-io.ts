@@ -1,4 +1,5 @@
 import process from "node:process"
+import { StringDecoder } from "node:string_decoder"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { LocalIpcClient } from "../ipc.js"
@@ -26,11 +27,28 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   debug: (label: string, payload: unknown) => void
 }): () => void {
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
-  const composer: RemoteRenderedComposerState = { text: "", escapeState: "none", swallowNextLf: false }
+  const composer = createClaudeRemoteRenderedComposerState()
   let pending = Promise.resolve()
+  let inputGeneration = 0
   const onData = (chunk: Buffer) => {
+    const generation = ++inputGeneration
     pending = pending
       .then(() => forwardRemoteRenderedInputChunk({ ...options, composer, chunk }))
+      .then(async () => {
+        if (composer.escapeState === "none") return
+        await sleep(10)
+        if (generation !== inputGeneration) return
+        const data = takeClaudeRemoteRenderedPendingControl(composer)
+        if (data) {
+          await sendRemoteRenderedInput(
+            options.client,
+            options.sessionId,
+            options.attachmentId,
+            options.providerRunId,
+            data,
+          )
+        }
+      })
       .catch(() => {})
   }
   if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
@@ -42,10 +60,126 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   }
 }
 
-type RemoteRenderedComposerState = {
+type RemoteRenderedEscapeState =
+  | "none"
+  | "esc"
+  | "csi"
+  | "ss3"
+  | "osc"
+  | "osc_esc"
+  | "st"
+  | "st_esc"
+
+export type RemoteRenderedComposerState = {
   text: string
-  escapeState: "none" | "esc" | "csi"
+  escapeState: RemoteRenderedEscapeState
+  escapeBuffer: string
   swallowNextLf: boolean
+  decoder: StringDecoder
+}
+
+export type RemoteRenderedInputAction =
+  | { type: "input"; data: string }
+  | { type: "enter"; prompt: string }
+
+export function createClaudeRemoteRenderedComposerState(): RemoteRenderedComposerState {
+  return {
+    text: "",
+    escapeState: "none",
+    escapeBuffer: "",
+    swallowNextLf: false,
+    decoder: new StringDecoder("utf8"),
+  }
+}
+
+export function planClaudeRemoteRenderedInput(
+  composer: RemoteRenderedComposerState,
+  chunk: Buffer,
+): RemoteRenderedInputAction[] {
+  const actions: RemoteRenderedInputAction[] = []
+  let outbound = ""
+  const flushOutbound = () => {
+    if (!outbound) return
+    actions.push({ type: "input", data: outbound })
+    outbound = ""
+  }
+  const text = composer.decoder.write(chunk)
+  for (const char of text) {
+    if (composer.swallowNextLf) {
+      composer.swallowNextLf = false
+      if (char === "\n") continue
+    }
+    if (composer.escapeState !== "none") {
+      const completed = appendClaudeRemoteRenderedControl(composer, char)
+      if (completed) outbound += completed
+      continue
+    }
+    if (char === "\u001b") {
+      composer.escapeState = "esc"
+      composer.escapeBuffer = char
+      continue
+    }
+    if (char === "\r" || char === "\n") {
+      if (char === "\r") composer.swallowNextLf = true
+      flushOutbound()
+      actions.push({ type: "enter", prompt: composer.text.trim() })
+      composer.text = ""
+      continue
+    }
+    if (char === "\u007f" || char === "\b") {
+      composer.text = Array.from(composer.text).slice(0, -1).join("")
+    } else if (char === "\u0015" || char === "\u0003") {
+      composer.text = ""
+    } else if (char >= " ") {
+      composer.text += char
+    }
+    outbound += char
+  }
+  flushOutbound()
+  return actions
+}
+
+function appendClaudeRemoteRenderedControl(
+  composer: RemoteRenderedComposerState,
+  char: string,
+): string | null {
+  composer.escapeBuffer += char
+  switch (composer.escapeState) {
+    case "esc":
+      if (char === "[") composer.escapeState = "csi"
+      else if (char === "O") composer.escapeState = "ss3"
+      else if (char === "]") composer.escapeState = "osc"
+      else if (["P", "X", "^", "_"].includes(char)) composer.escapeState = "st"
+      else return takeClaudeRemoteRenderedPendingControl(composer)
+      return null
+    case "csi":
+    case "ss3":
+      return /[@-~]/.test(char) ? takeClaudeRemoteRenderedPendingControl(composer) : null
+    case "osc":
+      if (char === "\u0007") return takeClaudeRemoteRenderedPendingControl(composer)
+      if (char === "\u001b") composer.escapeState = "osc_esc"
+      return null
+    case "osc_esc":
+      if (char === "\\") return takeClaudeRemoteRenderedPendingControl(composer)
+      composer.escapeState = char === "\u001b" ? "osc_esc" : "osc"
+      return null
+    case "st":
+      if (char === "\u001b") composer.escapeState = "st_esc"
+      return null
+    case "st_esc":
+      if (char === "\\") return takeClaudeRemoteRenderedPendingControl(composer)
+      composer.escapeState = char === "\u001b" ? "st_esc" : "st"
+      return null
+    case "none":
+      return null
+  }
+}
+
+function takeClaudeRemoteRenderedPendingControl(composer: RemoteRenderedComposerState): string {
+  const data = composer.escapeBuffer
+  composer.escapeBuffer = ""
+  composer.escapeState = "none"
+  return data
 }
 
 async function forwardRemoteRenderedInputChunk(options: {
@@ -60,46 +194,19 @@ async function forwardRemoteRenderedInputChunk(options: {
   composer: RemoteRenderedComposerState
   chunk: Buffer
 }) {
-  const text = options.chunk.toString("utf8")
-  for (const char of text) {
-    if (options.composer.swallowNextLf) {
-      options.composer.swallowNextLf = false
-      if (char === "\n") continue
-    }
-    if (char === "\r" || char === "\n") {
-      if (char === "\r") options.composer.swallowNextLf = true
-      await submitOrForwardRemoteRenderedEnter(options)
+  const actions = planClaudeRemoteRenderedInput(options.composer, options.chunk)
+  for (const action of actions) {
+    if (action.type === "enter") {
+      await submitOrForwardRemoteRenderedEnter(options, action.prompt)
       continue
     }
-    if (char === "\u007f" || char === "\b") {
-      options.composer.text = options.composer.text.slice(0, -1)
-      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
-      continue
-    }
-    if (char === "\u0015" || char === "\u0003") {
-      options.composer.text = ""
-      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
-      continue
-    }
-    if (char === "\u001b") {
-      options.composer.escapeState = "esc"
-      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
-      continue
-    }
-    if (options.composer.escapeState === "esc") {
-      options.composer.escapeState = char === "[" ? "csi" : "none"
-      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
-      continue
-    }
-    if (options.composer.escapeState === "csi") {
-      if (/[@-~]/.test(char)) options.composer.escapeState = "none"
-      await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
-      continue
-    }
-    if (char >= " ") {
-      options.composer.text += char
-    }
-    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, char)
+    await sendRemoteRenderedInput(
+      options.client,
+      options.sessionId,
+      options.attachmentId,
+      options.providerRunId,
+      action.data,
+    )
   }
 }
 
@@ -113,9 +220,7 @@ async function submitOrForwardRemoteRenderedEnter(options: {
   inlineLocalAttachments: boolean
   debug: (label: string, payload: unknown) => void
   composer: RemoteRenderedComposerState
-}) {
-  const prompt = options.composer.text.trim()
-  options.composer.text = ""
+}, prompt: string) {
   const references = extractClaudeNativePromptAttachmentReferences(prompt, options.worktree)
   if (references.length === 0) {
     await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\r")
