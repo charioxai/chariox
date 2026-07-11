@@ -438,18 +438,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 return Ok(());
             }
         }
+        if claude_native_marker(context_file)
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"))
+        {
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
         let recent = if visible {
             rendered.to_string()
         } else {
             update_claude_permission_recent(context_file, rendered)
         };
         if !visible && !claude_rendered_permission_visible(&recent) {
-            return Ok(());
-        }
-        if claude_native_marker(context_file)
-            .as_deref()
-            .is_some_and(|value| value.starts_with("permission:"))
-        {
             return Ok(());
         }
         let interaction_id = format!(
@@ -538,8 +539,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .get("tool_name")
             .and_then(Value::as_str)
             .unwrap_or("tool");
+        let interaction_id = format!("claude-native-permission-{provider_run_id}-{request_id}");
+        write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
+        clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
-            format!("claude-native-permission-{provider_run_id}-{request_id}"),
+            interaction_id,
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
@@ -705,6 +709,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         prompt: &ClaudeNativePromptInjection<'_>,
     ) -> Result<(), DaemonError> {
         let mut marker = claude_native_marker(context_file);
+        if marker
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"))
+        {
+            return Ok(());
+        }
         let force_post_stop_ready = provider_run.provider() == "claude-headless"
             && marker
                 .as_deref()
