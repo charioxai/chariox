@@ -225,9 +225,10 @@ impl KernelRuntimeState {
                     let recipients = owned
                         .attachment_store
                         .list_session_attachment_ids(&dispatch.session_id);
-                    owned.record_notice(
+                    owned.record_notice_for_agent(
                         &dispatch.session_id,
                         None,
+                        Some(&dispatch.agent_id),
                         recipients,
                         format!("Remote prompt dispatch failed after acknowledgement: {error}"),
                     );

@@ -351,9 +351,10 @@ impl DaemonApp {
                 );
                 let _ = crate::app::KernelSessionReadService::new(self)
                     .session_snapshot(&dispatch.session_id);
-                self.record_notice(
+                self.record_notice_for_agent(
                     &dispatch.session_id,
                     None,
+                    Some(&dispatch.agent_id),
                     self.attachments
                         .list_session_attachment_ids(&dispatch.session_id),
                     format!("Remote prompt dispatch failed after acknowledgement: {error}"),
