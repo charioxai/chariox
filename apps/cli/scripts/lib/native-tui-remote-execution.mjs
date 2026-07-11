@@ -179,6 +179,26 @@ export async function copyHetznerDirectoryToLocal(options, remoteDir, localDir) 
   ], { maxBuffer: 4 * 1024 * 1024 })
 }
 
+export async function copyLocalPathToHetzner(
+  options,
+  localPath,
+  remotePath,
+  { recursive = false } = {},
+) {
+  await runHetznerCommand(options, `mkdir -p ${shellQuote(path.posix.dirname(remotePath))}`)
+  await execFileAsync("scp", [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    ...(recursive ? ["-r"] : []),
+    localPath,
+    `${options.hetznerHost}:${remotePath}`,
+  ], { maxBuffer: 4 * 1024 * 1024 })
+}
+
 export function hetznerWorktreeCleanupCommand(remoteRepo, remoteWorktree) {
   return [
     `git -C ${shellQuote(remoteRepo)} worktree remove --force ${shellQuote(remoteWorktree)} 2>/dev/null || rm -rf -- ${shellQuote(remoteWorktree)}`,

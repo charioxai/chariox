@@ -21,6 +21,7 @@ import {
   waitForProviderRunMcpGrant,
 } from "./native-tui-capabilities.mjs"
 import {
+  copyLocalPathToHetzner,
   ensureExecutionDirectory,
   removeExecutionFile,
   shellQuote,
@@ -463,6 +464,7 @@ export async function runProviderScenario({
   relayUrl,
   relayToken,
   targetDaemonAlias,
+  workerDaemonAlias = null,
   workerKernelUrl = null,
   machineRef = null,
   sliceRef = null,
@@ -535,17 +537,31 @@ export async function runProviderScenario({
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
-    nativeCapabilities = await installNativeDrillCapabilities({
-      homeClient: client,
-      workerKernelUrl,
-      provider,
-      scenarioRoot,
-      workspace,
-      options,
-      markers,
-    })
-    await client.close().catch(() => {})
-    client = null
+    const capabilityWorkerClient = options.hetznerWorker && workerDaemonAlias
+      ? relayClient(relayUrl, relayToken, workerDaemonAlias)
+      : null
+    try {
+      nativeCapabilities = await installNativeDrillCapabilities({
+        homeClient: client,
+        workerKernelUrl,
+        workerClient: capabilityWorkerClient,
+        syncWorkerCapabilityFiles: options.hetznerWorker
+          ? async ({ mcpServerPath, skillSource }) => {
+            await copyLocalPathToHetzner(options, mcpServerPath, mcpServerPath)
+            await copyLocalPathToHetzner(options, skillSource, skillSource, { recursive: true })
+          }
+          : null,
+        provider,
+        scenarioRoot,
+        workspace,
+        options,
+        markers,
+      })
+    } finally {
+      await capabilityWorkerClient?.close().catch(() => {})
+      await client.close().catch(() => {})
+      client = null
+    }
 
     await startScreen(screenA, logs.aDir, "bun", [
       cliPath,

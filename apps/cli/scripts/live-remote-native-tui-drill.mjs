@@ -565,6 +565,7 @@ async function main() {
         relayUrl,
         relayToken,
         targetDaemonAlias,
+        workerDaemonAlias: options.standardHomeWorker ? workerDaemonAlias : null,
         workerKernelUrl,
         machineRef: options.standardHomeWorker ? workerMachineAlias : null,
         sliceRef: providerSlice ? providerSlice.id : null,
