@@ -3,6 +3,19 @@ use super::*;
 const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
 
 impl KernelRuntimeState {
+    pub(crate) fn waiting_room_auxiliary_projection(
+        &self,
+        request: &crate::local::ListExternalProviderSessionsRequest,
+    ) -> (
+        crate::local::ExternalProviderSessionPage,
+        crate::runtime::metaagent_event::MetaagentEventStore,
+    ) {
+        (
+            self.owned.external_provider_sessions.list(request),
+            self.owned.metaagent_events.clone(),
+        )
+    }
+
     pub(crate) fn durable_snapshot_scheduler(
         &self,
     ) -> Option<crate::durable_snapshot::DurableSnapshotScheduler> {

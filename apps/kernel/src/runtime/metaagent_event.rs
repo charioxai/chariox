@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,7 @@ pub(crate) struct MetaagentEventSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct MetaagentEventStore {
     state: Arc<Mutex<MetaagentEventState>>,
+    revision: Arc<AtomicU64>,
     limits: MetaagentEventStoreLimits,
 }
 
@@ -123,6 +125,7 @@ impl MetaagentEventStore {
     pub(crate) fn for_tests(max_records_per_metaagent: usize, max_detail_bytes: usize) -> Self {
         Self {
             state: Arc::new(Mutex::new(MetaagentEventState::default())),
+            revision: Arc::new(AtomicU64::new(0)),
             limits: MetaagentEventStoreLimits {
                 max_records_per_metaagent,
                 max_detail_bytes,
@@ -162,7 +165,12 @@ impl MetaagentEventStore {
         };
         state.records.insert(event_id, record.clone());
         self.prune_metaagent_records_locked(&mut state, &record.metaagent_id);
+        self.record_change();
         record
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
     }
 
     pub(crate) fn list(
@@ -231,10 +239,16 @@ impl MetaagentEventStore {
         if record.metaagent_id != metaagent_id {
             return None;
         }
-        if record.read_at_ms.is_none() {
+        let changed = record.read_at_ms.is_none();
+        if changed {
             record.read_at_ms = Some(crate::session::unix_epoch_ms());
         }
-        Some(record.clone())
+        let record = record.clone();
+        drop(state);
+        if changed {
+            self.record_change();
+        }
+        Some(record)
     }
 
     pub(crate) fn ack(
@@ -249,6 +263,7 @@ impl MetaagentEventStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = crate::session::unix_epoch_ms();
         let mut acked = Vec::new();
+        let mut changed = false;
         for record in state.records.values_mut() {
             if record.metaagent_id != metaagent_id {
                 continue;
@@ -259,11 +274,16 @@ impl MetaagentEventStore {
             let matches_sequence =
                 up_to_sequence.is_some_and(|sequence| record.sequence <= sequence);
             if matches_id || matches_sequence {
+                changed |= record.ack_at_ms.is_none();
                 record.ack_at_ms = Some(now);
                 acked.push(record.clone());
             }
         }
         acked.sort_by(|left, right| left.sequence.cmp(&right.sequence));
+        drop(state);
+        if changed {
+            self.record_change();
+        }
         acked
     }
 
@@ -316,7 +336,10 @@ impl MetaagentEventStore {
         record.prompt_delivery_status = status;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = error;
-        Some(record.clone())
+        let record = record.clone();
+        drop(state);
+        self.record_change();
+        Some(record)
     }
 
     pub(crate) fn update_prompt_delivery_status_for_prompt(
@@ -336,7 +359,10 @@ impl MetaagentEventStore {
         record.prompt_delivery_status = status;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = error;
-        Some(record.clone())
+        let record = record.clone();
+        drop(state);
+        self.record_change();
+        Some(record)
     }
 
     pub(crate) fn prepare_prompt_delivery_retry(
@@ -353,7 +379,10 @@ impl MetaagentEventStore {
         record.prompt_delivery_status = MetaagentEventPromptDeliveryStatus::Recorded;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = None;
-        Some(record.clone())
+        let record = record.clone();
+        drop(state);
+        self.record_change();
+        Some(record)
     }
 
     pub(crate) fn subscribe(
@@ -474,6 +503,8 @@ impl MetaagentEventStore {
             .collect();
         self.prune_all_metaagent_records_locked(&mut state);
         Self::refresh_sequences(&mut state);
+        drop(state);
+        self.record_change();
     }
 
     pub(crate) fn restore_record(&self, mut record: MetaagentEventRecord) {
@@ -486,6 +517,8 @@ impl MetaagentEventStore {
         state.records.insert(record.event_id.clone(), record);
         self.prune_metaagent_records_locked(&mut state, &metaagent_id);
         Self::refresh_sequences(&mut state);
+        drop(state);
+        self.record_change();
     }
 
     pub(crate) fn restore_subscription(&self, subscription: MetaagentEventSubscription) {
@@ -533,6 +566,10 @@ impl MetaagentEventStore {
             })
             .max()
             .unwrap_or_default();
+    }
+
+    fn record_change(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
     }
 
     fn prune_all_metaagent_records_locked(&self, state: &mut MetaagentEventState) {
@@ -668,6 +705,23 @@ mod tests {
 
         let next = restored.record(new_event("meta-1", serde_json::json!({ "n": 4 })));
         assert_eq!(next.sequence, third.sequence + 1);
+    }
+
+    #[test]
+    fn revision_changes_only_when_public_event_counts_can_change() {
+        let store = MetaagentEventStore::default();
+        let initial = store.revision();
+        let event = store.record(new_event("meta-1", serde_json::json!({})));
+        let recorded = store.revision();
+        assert!(recorded > initial);
+
+        store.list("meta-1", None, None, 10);
+        assert_eq!(store.revision(), recorded);
+
+        store
+            .read("meta-1", &event.event_id)
+            .expect("event should be readable");
+        assert!(store.revision() > recorded);
     }
 
     fn new_event(metaagent_id: &str, detail: serde_json::Value) -> NewMetaagentEvent {

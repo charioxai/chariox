@@ -295,9 +295,9 @@ impl CommandRouter {
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_waiting_room_request(
-                    Arc::clone(&self.app),
                     &self.runtime_state,
                     &self.session_projection,
+                    &self.waiting_room_session_summaries,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
                     self.remote_relay_inventory_projection.clone(),

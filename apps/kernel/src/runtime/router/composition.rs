@@ -272,6 +272,9 @@ pub(super) fn compose_command_router(
         metaagent_trace_subscriptions.clone(),
         workspace_coordinator.clone(),
     );
+    if session_projection.list_shared().is_none() {
+        session_projection.update_list(runtime_state.list_session_snapshots());
+    }
     install_provider_native_interaction_bridge(runtime_state.clone(), &provider_store);
     let provider_launch_pending = ProviderLaunchPendingTracker::default();
     let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
@@ -314,6 +317,7 @@ pub(super) fn compose_command_router(
         provider_runtime_lanes,
         focus_projection,
         session_projection,
+        waiting_room_session_summaries: Default::default(),
         agent_runtime_projection,
         history_store,
         operational_history_store,

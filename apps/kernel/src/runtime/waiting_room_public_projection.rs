@@ -45,6 +45,57 @@ struct CachedWorktreeLabel {
     label: Option<String>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct WaitingRoomSessionSummaryProjectionStore {
+    state: Arc<StdMutex<HashMap<String, CachedSessionSummaries>>>,
+}
+
+#[derive(Clone)]
+struct CachedSessionSummaries {
+    session_revision: u64,
+    metaagent_event_revision: u64,
+    summaries: Arc<[WaitingRoomPublicSessionSummary]>,
+}
+
+impl WaitingRoomSessionSummaryProjectionStore {
+    fn project(
+        &self,
+        runtime_sessions: &[Arc<RuntimeSession>],
+        session_revision: u64,
+        metaagent_events: &MetaagentEventStore,
+        caller_user_id: &str,
+    ) -> Arc<[WaitingRoomPublicSessionSummary]> {
+        let metaagent_event_revision = metaagent_events.revision();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cached) = state.get(caller_user_id).filter(|cached| {
+            cached.session_revision == session_revision
+                && cached.metaagent_event_revision == metaagent_event_revision
+        }) {
+            return Arc::clone(&cached.summaries);
+        }
+        let summaries = Arc::from(
+            waiting_room_session_summaries_from_refs(
+                runtime_sessions.iter().map(AsRef::as_ref),
+                metaagent_events,
+                caller_user_id,
+            )
+            .into_boxed_slice(),
+        );
+        state.insert(
+            caller_user_id.to_string(),
+            CachedSessionSummaries {
+                session_revision,
+                metaagent_event_revision,
+                summaries: Arc::clone(&summaries),
+            },
+        );
+        summaries
+    }
+}
+
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -90,6 +141,73 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     generated_at_ms: u64,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let sessions = waiting_room_session_summaries_from_refs(
+        runtime_sessions.iter().map(AsRef::as_ref),
+        metaagent_events,
+        caller_user_id,
+    );
+    build_waiting_room_public_snapshot_from_summaries(
+        sessions,
+        external_provider_sessions,
+        external_provider_sessions_has_more,
+        external_provider_sessions_next_cursor,
+        relay_status,
+        remote_machines,
+        remote_kernels,
+        terminals,
+        generated_at_ms,
+    )
+}
+
+pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
+    runtime_sessions: &[Arc<RuntimeSession>],
+    session_revision: u64,
+    summary_projection: &WaitingRoomSessionSummaryProjectionStore,
+    metaagent_events: &MetaagentEventStore,
+    external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<String>,
+    relay_status: RelayStatus,
+    remote_machines: Vec<RemoteMachineRecord>,
+    remote_kernels: Vec<RelayKernelPresence>,
+    terminals: Vec<TerminalRecord>,
+    generated_at_ms: u64,
+    caller_user_id: &str,
+) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let sessions = summary_projection
+        .project(
+            runtime_sessions,
+            session_revision,
+            metaagent_events,
+            caller_user_id,
+        )
+        .iter()
+        .cloned()
+        .collect();
+    build_waiting_room_public_snapshot_from_summaries(
+        sessions,
+        external_provider_sessions,
+        external_provider_sessions_has_more,
+        external_provider_sessions_next_cursor,
+        relay_status,
+        remote_machines,
+        remote_kernels,
+        terminals,
+        generated_at_ms,
+    )
+}
+
+fn build_waiting_room_public_snapshot_from_summaries(
+    sessions: Vec<WaitingRoomPublicSessionSummary>,
+    external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<String>,
+    relay_status: RelayStatus,
+    remote_machines: Vec<RemoteMachineRecord>,
+    remote_kernels: Vec<RelayKernelPresence>,
+    terminals: Vec<TerminalRecord>,
+    generated_at_ms: u64,
+) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let remote_machines = remote_machines
         .into_iter()
         .map(filter_remote_machine_product_providers)
@@ -98,11 +216,6 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
         .into_iter()
         .map(filter_remote_kernel_product_providers)
         .collect::<Vec<_>>();
-    let sessions = waiting_room_session_summaries_from_refs(
-        runtime_sessions.iter().map(AsRef::as_ref),
-        metaagent_events,
-        caller_user_id,
-    );
     let launch_target = infer_waiting_room_launch_target();
     let inventory_version = waiting_room_inventory_version(
         &sessions,
@@ -474,6 +587,8 @@ fn waiting_room_public_workflow_summaries(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use arroba_relay::protocol::RelayKernelPresence;
 
     use crate::agent::{AgentInstance, GridPosition};
@@ -481,6 +596,7 @@ mod tests {
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, waiting_room_session_summaries,
+        WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{RuntimeSession, WorkflowDefinition};
 
@@ -646,6 +762,42 @@ mod tests {
             summaries[0].workflows[0].prompt.as_deref(),
             Some("Shared workflow context")
         );
+    }
+
+    #[test]
+    fn session_summary_projection_builds_once_per_logical_revision() {
+        let sessions = vec![Arc::new(RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        ))];
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+
+        let first = projection.project(
+            &sessions,
+            7,
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        let same_revision = projection.project(
+            &sessions,
+            7,
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert!(Arc::ptr_eq(&first, &same_revision));
+
+        let next_session_revision = projection.project(
+            &sessions,
+            8,
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert!(!Arc::ptr_eq(&first, &next_session_revision));
     }
 
     #[test]
