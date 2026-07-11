@@ -321,6 +321,16 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
 #[test]
 fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session() {
+    std::thread::Builder::new()
+        .name("workflow-publication-materialization".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(local_request_api_materializes_workflow_publication_as_hidden_runtime_session_inner)
+        .expect("workflow publication materialization test thread should spawn")
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session_inner() {
     let harness = LocalRouterTestHarness::new();
     let source_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
