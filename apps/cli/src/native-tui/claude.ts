@@ -375,6 +375,7 @@ async function runClaudeRemoteRendered(
   let pump: { stop: () => void } | null = null
   let disposeEvents: (() => void) | null = null
   let restoreStdin: (() => void) | null = null
+  let restoreResize: (() => void) | null = null
   try {
     const created = options.sessionRef
       ? null
@@ -426,7 +427,7 @@ async function runClaudeRemoteRendered(
       inlineLocalAttachments: Boolean(options.relayUrl) || Boolean(options.machineRef) || Boolean(options.sliceRef) || promptAttachmentTransferIsForced(),
       debug: debugNativeClaude,
     })
-    installClaudeRemoteRenderedResizeForwarder(client, session.id)
+    restoreResize = installClaudeRemoteRenderedResizeForwarder(client, session.id, run.id)
     if (options.initialPrompt) {
       await sleep(2_000)
       await client.send<Record<string, unknown>>(
@@ -439,6 +440,7 @@ async function runClaudeRemoteRendered(
     }
     await waitForClaudeRemoteRenderedRunExit(client, run.id)
   } finally {
+    restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()
     pump?.stop()

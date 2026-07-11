@@ -523,6 +523,7 @@ async fn terminal_resize_errors_are_returned_through_relay() {
         &daemon_public_key,
         LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
             session_id: created_session_id,
+            provider_run_id: None,
             cols: 120,
             rows: 40,
         }),

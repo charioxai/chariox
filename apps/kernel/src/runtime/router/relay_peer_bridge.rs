@@ -220,6 +220,23 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_resize_leased_provider_terminal(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        relay_peer_runtime::resize_relay_leased_provider_terminal(
+            &self.runtime_state,
+            leased_agent_id,
+            provider_run_id,
+            cols,
+            rows,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_submit_leased_prompt(
         &self,
         leased_agent_id: &str,

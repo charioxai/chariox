@@ -1,8 +1,15 @@
 #![allow(unused_imports)]
 use super::support::*;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
+#[test]
+fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
+    run_async_with_large_test_stack(
+        "remote-agents-spawn-resize-cleanup",
+        agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async,
+    );
+}
+
+async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -206,6 +213,15 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
         );
     }
 
+    Box::pin(assert_remote_native_terminal_resize(
+        &app_home,
+        &app_worker,
+        &session_id,
+        &provider,
+        &remote_agent,
+    ))
+    .await;
+
     {
         let mut app = app_home.lock().await;
         let destroyed = crate::app::KernelSessionService::new(&mut app)
@@ -229,6 +245,74 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+async fn assert_remote_native_terminal_resize(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    app_worker: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    provider: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    let home_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let launch_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+        session_id: session_id.to_string(),
+        agent_id: Some(remote_agent.id().to_string()),
+        adapter_key: crate::provider::adapter_key_for_provider(provider).to_string(),
+        provider: provider.to_string(),
+        account_profile: "default".to_string(),
+        model: "default".to_string(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: true,
+    });
+    let launch_command = KernelCommand::from_local_request(
+        "launch-remote-native-resize",
+        None,
+        None,
+        &launch_request,
+    );
+    let home_provider_run = match home_router
+        .dispatch(launch_command, launch_request)
+        .await
+        .expect("remote native provider should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+        other => panic!("unexpected provider launch response: {other:?}"),
+    };
+    let worker_provider_run_id = {
+        let app = app_home.lock().await;
+        app.agents()
+            .get_agent(remote_agent.id())
+            .expect("remote agent should remain available")
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.clone())
+            .expect("worker provider run should be projected")
+    };
+    let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+        session_id: session_id.to_string(),
+        provider_run_id: Some(home_provider_run.id().to_string()),
+        cols: 83,
+        rows: 27,
+    });
+    let resize_command =
+        KernelCommand::from_local_request("resize-remote-native", None, None, &resize_request);
+    assert!(matches!(
+        home_router
+            .dispatch(resize_command, resize_request)
+            .await
+            .expect("remote native provider terminal should resize"),
+        LocalDaemonResponse::TerminalResized {
+            cols: 83,
+            rows: 27,
+            ..
+        }
+    ));
+    let app = app_worker.lock().await;
+    assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_execute_prompts_through_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;

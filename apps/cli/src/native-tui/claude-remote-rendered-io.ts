@@ -264,15 +264,40 @@ async function sendRemoteRenderedInput(
   )
 }
 
-export function installClaudeRemoteRenderedResizeForwarder(client: LocalIpcClient, sessionId: string) {
+export function installClaudeRemoteRenderedResizeForwarder(
+  client: LocalIpcClient,
+  sessionId: string,
+  providerRunId: string,
+): () => void {
+  let disposed = false
+  let generation = 0
   const sendResize = () => {
     const cols = process.stdout.columns
     const rows = process.stdout.rows
     if (!cols || !rows) return
-    void client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, cols, rows)).catch(() => {})
+    const resizeGeneration = ++generation
+    void (async () => {
+      let retryMs = 100
+      while (!disposed && resizeGeneration === generation) {
+        try {
+          await client.send<Record<string, unknown>>(
+            resizeTerminalRequest(sessionId, cols, rows, providerRunId),
+          )
+          return
+        } catch {
+          await sleep(retryMs)
+          retryMs = Math.min(retryMs * 2, 2_000)
+        }
+      }
+    })()
   }
   process.stdout.on("resize", sendResize)
   sendResize()
+  return () => {
+    disposed = true
+    generation += 1
+    process.stdout.off("resize", sendResize)
+  }
 }
 
 export function startClaudeRemoteRenderedPumpLoop(

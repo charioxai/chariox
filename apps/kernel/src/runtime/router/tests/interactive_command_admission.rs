@@ -561,6 +561,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
 
     let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session_id.clone(),
+        provider_run_id: None,
         cols: 120,
         rows: 40,
     });

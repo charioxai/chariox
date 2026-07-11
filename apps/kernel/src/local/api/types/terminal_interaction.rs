@@ -82,6 +82,8 @@ pub struct NativeProviderInteractionResolution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResizeTerminalRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
     pub cols: u16,
     pub rows: u16,
 }

@@ -76,7 +76,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -155,7 +155,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -230,7 +230,10 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 9);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
@@ -296,8 +299,50 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 }
 
 #[test]
+fn relay_peer_provider_terminal_resize_shape_is_versioned() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
+
+    let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
+        leased_agent_id: "leased-agent-1".to_string(),
+        provider_run_id: "worker-provider-run-1".to_string(),
+        cols: 80,
+        rows: 24,
+    };
+    let response = RelayPeerResponse::LeasedProviderTerminalResized {
+        provider_run_id: "worker-provider-run-1".to_string(),
+        cols: 80,
+        rows: 24,
+    };
+    assert_eq!(
+        serde_json::to_value((request, response))
+            .expect("terminal resize relay shape should encode"),
+        serde_json::json!([
+            {
+                "kind": "resize_leased_provider_terminal",
+                "leased_agent_id": "leased-agent-1",
+                "provider_run_id": "worker-provider-run-1",
+                "cols": 80,
+                "rows": 24
+            },
+            {
+                "kind": "leased_provider_terminal_resized",
+                "provider_run_id": "worker-provider-run-1",
+                "cols": 80,
+                "rows": 24
+            }
+        ])
+    );
+}
+
+#[test]
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 9);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -345,7 +390,7 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

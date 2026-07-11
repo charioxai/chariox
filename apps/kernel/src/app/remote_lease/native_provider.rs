@@ -161,6 +161,39 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )?;
         Ok(byte_count)
     }
+
+    pub(crate) fn resize_leased_provider_terminal(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let provider_run = self.app.providers.get_run(provider_run_id)?;
+        if provider_run.session_id() != leased_agent.backing_session_id
+            || provider_run.agent_instance_id() != Some(leased_agent.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: leased_agent.backing_session_id,
+                provider_run_id: provider_run_id.to_string(),
+            });
+        }
+        let backing_session_id = provider_run.session_id().to_string();
+        crate::app::KernelSessionService::new(self.app).resize_provider_terminal(
+            &backing_session_id,
+            provider_run_id,
+            cols,
+            rows,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +280,9 @@ mod tests {
             )
             .expect("native input should be sent");
         assert_eq!(byte_count, 1);
+        runtime
+            .resize_leased_provider_terminal(&leased_agent.id, run.id(), 80, 24)
+            .expect("native provider terminal should resize");
         drop(runtime);
 
         assert_eq!(run.mcp_servers().len(), 1);
@@ -259,6 +295,7 @@ mod tests {
                 .map(|record| record.source_attachment_id.as_str()),
             Some("home-native-attachment")
         );
+        assert_eq!(app.pty().size(run.id()), Some((80, 24)));
         assert!(crate::mcp::ArrobaMcpRegistry::user_root()
             .expect("isolated user MCP root should resolve")
             .join("browser.json")

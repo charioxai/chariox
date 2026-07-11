@@ -81,6 +81,13 @@ Suggested events:
 - `terminal.output`
 - `terminal.resize`
 
+`terminal.resize` carries the session id, dimensions, and an optional provider-run id. General
+Arroba clients may omit the provider-run id to resize the session's active run. Provider-native
+clients must target their own provider run so concurrent native terminals cannot resize each
+other. When that run is projected from a leased worker, the home kernel forwards the resize to
+the worker PTY and reports success only after the worker applies the requested dimensions.
+Clients retry the latest dimensions after a transient transport failure.
+
 OpenCode-specific note:
 
 - OpenCode should graduate from PTY-polled `terminal.output` to adapter-fed output derived from its local event stream
@@ -233,6 +240,7 @@ Remote native TUI composition:
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
 - relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
+- relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Arroba TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents

@@ -18,7 +18,12 @@ impl SessionRuntimeStore {
     ) {
         let result = self
             .state
-            .resize_terminal(&request.session_id, request.cols, request.rows)
+            .resize_terminal(
+                &request.session_id,
+                request.provider_run_id.as_deref(),
+                request.cols,
+                request.rows,
+            )
             .await
             .map(|()| LocalDaemonResponse::TerminalResized {
                 session_id: request.session_id,

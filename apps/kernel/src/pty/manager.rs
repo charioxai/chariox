@@ -270,6 +270,14 @@ impl PtyManager {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) fn size(&self, provider_run_id: &str) -> Option<(u16, u16)> {
+        let process_key = self.resolve_process_key(provider_run_id).ok()?;
+        let process = self.processes.get(&process_key)?;
+        let size = process.master.get_size().ok()?;
+        Some((size.cols, size.rows))
+    }
+
     pub fn drain_output(
         &mut self,
         provider_run_id: &str,

@@ -6,14 +6,60 @@ impl KernelRuntimeState {
     pub(crate) async fn resize_terminal(
         &self,
         session_id: &str,
+        provider_run_id: Option<&str>,
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        if let Some(provider_run_id) = self.owned.resize_terminal(session_id)? {
-            self.with_app_side_effect(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
-                .await?;
+        match self.owned.resize_terminal(session_id, provider_run_id)? {
+            super::session::ProviderTerminalResizeTarget::None => Ok(()),
+            super::session::ProviderTerminalResizeTarget::Local { provider_run_id } => {
+                self.with_app_side_effect(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
+                    .await
+            }
+            super::session::ProviderTerminalResizeTarget::Remote {
+                remote_execution,
+                worker_provider_run_id,
+            } => {
+                let mut relay_config = self.owned.config_projection.snapshot();
+                if let (Some(relay_url), Some(relay_token)) = (
+                    remote_execution.relay_url.clone(),
+                    remote_execution.relay_token.clone(),
+                ) {
+                    relay_config.apply_remote_relay_override(relay_url, relay_token);
+                }
+                let response =
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        &relay_config,
+                        ClientTarget {
+                            daemon_id: Some(remote_execution.worker_kernel_id),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::ResizeLeasedProviderTerminal {
+                            leased_agent_id: remote_execution.leased_agent_id,
+                            provider_run_id: worker_provider_run_id.clone(),
+                            cols,
+                            rows,
+                        },
+                    )
+                    .await?;
+                match response {
+                    RelayPeerResponse::LeasedProviderTerminalResized {
+                        provider_run_id,
+                        cols: resized_cols,
+                        rows: resized_rows,
+                    } if provider_run_id == worker_provider_run_id
+                        && resized_cols == cols
+                        && resized_rows == rows =>
+                    {
+                        Ok(())
+                    }
+                    other => Err(DaemonError::LocalTransport {
+                        operation: "resize remote provider terminal",
+                        message: format!("unexpected remote terminal resize response: {other:?}"),
+                    }),
+                }
+            }
         }
-        Ok(())
     }
 
     pub(crate) async fn send_terminal_input(

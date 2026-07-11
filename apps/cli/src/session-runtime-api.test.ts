@@ -16,7 +16,12 @@ test("terminal resize tolerates an attached session without an active provider r
   await withTerminalDimensions(() => resizeSessionTerminal(client, "session-remote"))
 
   assert.deepEqual(requests, [{
-    ResizeTerminal: { session_id: "session-remote", cols: 120, rows: 40 },
+    ResizeTerminal: {
+      session_id: "session-remote",
+      provider_run_id: null,
+      cols: 120,
+      rows: 40,
+    },
   }])
 })
 

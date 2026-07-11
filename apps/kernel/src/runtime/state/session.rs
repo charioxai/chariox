@@ -5,6 +5,17 @@
 
 use super::*;
 
+pub(super) enum ProviderTerminalResizeTarget {
+    None,
+    Local {
+        provider_run_id: String,
+    },
+    Remote {
+        remote_execution: crate::agent::RemoteAgentBinding,
+        worker_provider_run_id: String,
+    },
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn session_snapshot(
         &self,
@@ -192,15 +203,18 @@ impl KernelRuntimeOwnedState {
         self.session_snapshot(session_id)
     }
 
-    pub(super) fn resize_terminal(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        let provider_run_id = self
-            .session_store
-            .get_session(session_id)?
-            .active_provider_run_id()
+    pub(super) fn resize_terminal(
+        &self,
+        session_id: &str,
+        requested_provider_run_id: Option<&str>,
+    ) -> Result<ProviderTerminalResizeTarget, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let provider_run_id = requested_provider_run_id
+            .map(str::to_string)
+            .or_else(|| session.active_provider_run_id().map(str::to_string))
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
-            })?
-            .to_string();
+            })?;
 
         let _ = self
             .reconcile_provider_run_liveness_provider_phase(session_id, &provider_run_id, None)
@@ -228,7 +242,48 @@ impl KernelRuntimeOwnedState {
                         provider_run_id,
                     });
                 }
-                return Ok(None);
+                if projected.state() == crate::provider::ProviderRunState::Ended {
+                    return Err(DaemonError::InvalidProviderRunState {
+                        provider_run_id,
+                        state: projected.state(),
+                        operation: "resize terminal",
+                    });
+                }
+                if projected.endpoint_mode() == crate::provider::AgentEndpointMode::External {
+                    return Ok(ProviderTerminalResizeTarget::None);
+                }
+                let agent_id =
+                    projected
+                        .agent_instance_id()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "resize terminal",
+                            message: format!(
+                                "projected provider run `{provider_run_id}` has no agent binding"
+                            ),
+                        })?;
+                let agent = self.agent_store.get_agent(agent_id)?;
+                let remote_execution = agent.remote_execution().cloned().ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "resize terminal",
+                        message: format!(
+                            "projected provider run `{provider_run_id}` is not bound to a remote worker"
+                        ),
+                    }
+                })?;
+                let worker_provider_run_id = remote_execution
+                    .active_worker_provider_run_id
+                    .clone()
+                    .or_else(|| {
+                        crate::provider::worker_provider_run_id_from_projected_leased_id(
+                            &remote_execution.leased_agent_id,
+                            &provider_run_id,
+                        )
+                    })
+                    .unwrap_or(provider_run_id);
+                return Ok(ProviderTerminalResizeTarget::Remote {
+                    remote_execution,
+                    worker_provider_run_id,
+                });
             }
             Err(error) => return Err(error),
         };
@@ -240,9 +295,11 @@ impl KernelRuntimeOwnedState {
             });
         }
         if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
-            return Ok(None);
+            return Ok(ProviderTerminalResizeTarget::None);
         }
-        Ok(Some(provider_run.id().to_string()))
+        Ok(ProviderTerminalResizeTarget::Local {
+            provider_run_id: provider_run.id().to_string(),
+        })
     }
 
     pub(super) fn end_session(

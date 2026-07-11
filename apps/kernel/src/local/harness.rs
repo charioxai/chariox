@@ -79,6 +79,7 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
 
     let _ = client.send(LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session.id().to_string(),
+        provider_run_id: None,
         cols: 100,
         rows: 30,
     }))?;

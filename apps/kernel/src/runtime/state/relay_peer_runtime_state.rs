@@ -290,6 +290,26 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn resize_relay_leased_provider_terminal(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let provider_run_id = provider_run_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).resize_leased_provider_terminal(
+                &leased_agent_id,
+                &provider_run_id,
+                cols,
+                rows,
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn submit_relay_leased_prompt(
         &self,
         leased_agent_id: &str,

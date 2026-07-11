@@ -200,6 +200,18 @@ pub(crate) async fn send_relay_leased_native_provider_input(
         .await
 }
 
+pub(crate) async fn resize_relay_leased_provider_terminal(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .resize_relay_leased_provider_terminal(leased_agent_id, provider_run_id, cols, rows)
+        .await
+}
+
 pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,

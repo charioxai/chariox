@@ -162,7 +162,7 @@ pub(super) fn projected_resize_terminal_response(
         return None;
     };
     if let Some(session) = session_projection.get(&request.session_id) {
-        if session.active_provider_run_id().is_none() {
+        if request.provider_run_id.is_none() && session.active_provider_run_id().is_none() {
             return Some(Err(DaemonError::NoActiveProviderRun {
                 session_id: request.session_id.clone(),
             }));

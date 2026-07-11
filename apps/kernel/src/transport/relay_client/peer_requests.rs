@@ -275,6 +275,34 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ResizeLeasedProviderTerminal {
+            leased_agent_id,
+            provider_run_id,
+            cols,
+            rows,
+        } => {
+            let resized = router
+                .relay_resize_leased_provider_terminal(
+                    &leased_agent_id,
+                    &provider_run_id,
+                    cols,
+                    rows,
+                )
+                .await;
+            match resized {
+                Ok(()) => RelayPeerResponse::LeasedProviderTerminalResized {
+                    provider_run_id,
+                    cols,
+                    rows,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,
