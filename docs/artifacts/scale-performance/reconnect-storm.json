@@ -1,0 +1,97 @@
+{
+  "ok": true,
+  "clientCount": 32,
+  "cycles": 5,
+  "slowEvents": 4096,
+  "reconnectLatenciesMs": [
+    281,
+    243,
+    278,
+    235,
+    352
+  ],
+  "reconnectP95Ms": 281,
+  "healthySubscribers": 31,
+  "slowSubscriptionCloseCount": 1,
+  "targetQueueFullCount": 0,
+  "relayHealth": {
+    "backpressure": {
+      "slow_subscription_close_count": 1,
+      "target_queue_full_count": 0
+    },
+    "daemon_count": 1,
+    "display_tunnel_count": 0,
+    "draining": false,
+    "peer_count": 33,
+    "pending_request_count": 0,
+    "status": "healthy",
+    "subscription_count": 31,
+    "unix_ms": 1783795550671
+  },
+  "metrics": [
+    {
+      "pid": 35389,
+      "cpuPercent": 0.1,
+      "rssKb": 15616
+    },
+    {
+      "pid": 35390,
+      "cpuPercent": 24,
+      "rssKb": 407088
+    }
+  ],
+  "resources": {
+    "sampleCount": 6,
+    "peakKernelRssMb": 397.5,
+    "peakKernelCpuPercent": 64.7
+  },
+  "ports": {
+    "relay": 55000,
+    "kernel": 55001,
+    "mcp": 55002,
+    "opencode": 55003,
+    "codex": 55004
+  },
+  "cleanup": {
+    "rootPids": [
+      35389,
+      35390
+    ],
+    "descendantPids": [
+      35659,
+      35656,
+      35653,
+      35650,
+      35647,
+      35642,
+      35641,
+      35638,
+      35636,
+      35633,
+      35629,
+      35626,
+      35625,
+      35621,
+      35619,
+      35616,
+      35613,
+      35607,
+      35605,
+      35604,
+      35594,
+      35591,
+      35586,
+      35585,
+      35580,
+      35579,
+      35576,
+      35573,
+      35570,
+      35565,
+      35564,
+      35563
+    ],
+    "forced": [],
+    "remaining": []
+  }
+}

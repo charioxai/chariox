@@ -1,0 +1,315 @@
+{
+  "ok": true,
+  "workerCount": 10,
+  "agentsPerWorker": 50,
+  "totalAgents": 500,
+  "sessionAgentCount": 501,
+  "placementCounts": {
+    "worker-0": 50,
+    "worker-1": 50,
+    "worker-2": 50,
+    "worker-3": 50,
+    "worker-4": 50,
+    "worker-5": 50,
+    "worker-6": 50,
+    "worker-7": 50,
+    "worker-8": 50,
+    "worker-9": 50
+  },
+  "spawnMs": 9476,
+  "launchMs": 3549,
+  "promptAcceptedMs": 35,
+  "completionMs": 443,
+  "totalMs": 13605,
+  "completionCount": 10,
+  "completedPromptAgents": 10,
+  "leasedRemoteAgents": 500,
+  "runningProviderAgents": 500,
+  "syntheticProviderProcesses": 10,
+  "providerCapacityScope": "Arroba orchestration gate; provider child-process quotas and memory are measured separately",
+  "homeRelayRouteProbed": true,
+  "metrics": [
+    {
+      "pid": 94834,
+      "cpuPercent": 3,
+      "rssKb": 8608
+    },
+    {
+      "pid": 94835,
+      "cpuPercent": 31,
+      "rssKb": 389552
+    },
+    {
+      "pid": 94836,
+      "cpuPercent": 0.6,
+      "rssKb": 29680
+    },
+    {
+      "pid": 94837,
+      "cpuPercent": 0.4,
+      "rssKb": 29520
+    },
+    {
+      "pid": 94838,
+      "cpuPercent": 0.4,
+      "rssKb": 29712
+    },
+    {
+      "pid": 94839,
+      "cpuPercent": 0.4,
+      "rssKb": 29744
+    },
+    {
+      "pid": 94840,
+      "cpuPercent": 0.4,
+      "rssKb": 29840
+    },
+    {
+      "pid": 94841,
+      "cpuPercent": 0.4,
+      "rssKb": 29776
+    },
+    {
+      "pid": 94842,
+      "cpuPercent": 0.5,
+      "rssKb": 29536
+    },
+    {
+      "pid": 94843,
+      "cpuPercent": 0.5,
+      "rssKb": 29904
+    },
+    {
+      "pid": 94844,
+      "cpuPercent": 0.8,
+      "rssKb": 29424
+    },
+    {
+      "pid": 94845,
+      "cpuPercent": 1.8,
+      "rssKb": 29552
+    }
+  ],
+  "workerRelayStatuses": [
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-0",
+        "daemon_id": "worker-0",
+        "machine_alias": "worker-machine-0",
+        "machine_id": "worker-machine-0",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-1",
+        "daemon_id": "worker-1",
+        "machine_alias": "worker-machine-1",
+        "machine_id": "worker-machine-1",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-2",
+        "daemon_id": "worker-2",
+        "machine_alias": "worker-machine-2",
+        "machine_id": "worker-machine-2",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-3",
+        "daemon_id": "worker-3",
+        "machine_alias": "worker-machine-3",
+        "machine_id": "worker-machine-3",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-4",
+        "daemon_id": "worker-4",
+        "machine_alias": "worker-machine-4",
+        "machine_id": "worker-machine-4",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-5",
+        "daemon_id": "worker-5",
+        "machine_alias": "worker-machine-5",
+        "machine_id": "worker-machine-5",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-6",
+        "daemon_id": "worker-6",
+        "machine_alias": "worker-machine-6",
+        "machine_id": "worker-machine-6",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-7",
+        "daemon_id": "worker-7",
+        "machine_alias": "worker-machine-7",
+        "machine_id": "worker-machine-7",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-8",
+        "daemon_id": "worker-8",
+        "machine_alias": "worker-machine-8",
+        "machine_id": "worker-machine-8",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    },
+    {
+      "status": {
+        "configured": true,
+        "connected": true,
+        "daemon_alias": "worker-9",
+        "daemon_id": "worker-9",
+        "machine_alias": "worker-machine-9",
+        "machine_id": "worker-machine-9",
+        "relay_token_configured": true,
+        "relay_url": "ws://127.0.0.1:53000"
+      }
+    }
+  ],
+  "ports": {
+    "relay": 53000,
+    "homeKernel": 53001,
+    "homeMcp": 53002,
+    "homeOpenCode": 53003,
+    "homeCodex": 53004,
+    "workers": [
+      {
+        "kernel": 53010,
+        "mcp": 53030,
+        "opencode": 53050,
+        "codex": 53070
+      },
+      {
+        "kernel": 53011,
+        "mcp": 53031,
+        "opencode": 53051,
+        "codex": 53071
+      },
+      {
+        "kernel": 53012,
+        "mcp": 53032,
+        "opencode": 53052,
+        "codex": 53072
+      },
+      {
+        "kernel": 53013,
+        "mcp": 53033,
+        "opencode": 53053,
+        "codex": 53073
+      },
+      {
+        "kernel": 53014,
+        "mcp": 53034,
+        "opencode": 53054,
+        "codex": 53074
+      },
+      {
+        "kernel": 53015,
+        "mcp": 53035,
+        "opencode": 53055,
+        "codex": 53075
+      },
+      {
+        "kernel": 53016,
+        "mcp": 53036,
+        "opencode": 53056,
+        "codex": 53076
+      },
+      {
+        "kernel": 53017,
+        "mcp": 53037,
+        "opencode": 53057,
+        "codex": 53077
+      },
+      {
+        "kernel": 53018,
+        "mcp": 53038,
+        "opencode": 53058,
+        "codex": 53078
+      },
+      {
+        "kernel": 53019,
+        "mcp": 53039,
+        "opencode": 53059,
+        "codex": 53079
+      }
+    ]
+  },
+  "cleanup": {
+    "rootPids": [
+      94834,
+      94835,
+      94836,
+      94837,
+      94838,
+      94839,
+      94840,
+      94841,
+      94842,
+      94843,
+      94844,
+      94845
+    ],
+    "descendantPids": [
+      96270,
+      96191,
+      96092,
+      96023,
+      95938,
+      95869,
+      95794,
+      95715,
+      95574,
+      95499,
+      96461
+    ],
+    "forced": [],
+    "remaining": []
+  }
+}
