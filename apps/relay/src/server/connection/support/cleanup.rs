@@ -4,12 +4,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::protocol::RelayConnectionRole;
-use crate::registry::{DaemonKey, DisplayStreamSender, RelayRegistry, RelaySender};
+use crate::registry::{
+    DaemonKey, DisplayStreamSender, RelayRegistry, RelayRouteIndex, RelaySender,
+};
 
 use super::resolve_daemon_sender_locked;
 
 pub(in crate::server::connection) async fn remove_peer(
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
     peer_addr: SocketAddr,
     daemon_key: Option<&DaemonKey>,
 ) -> (
@@ -29,7 +32,9 @@ pub(in crate::server::connection) async fn remove_peer(
         .collect::<Vec<_>>();
     for subscription_id in client_subscription_ids {
         guard.subscriptions.remove(&subscription_id);
+        routes.remove_subscription(&subscription_id);
     }
+    routes.remove_client_sender(&peer_addr);
     let dropped_client_pending_requests = if removed_peer
         .as_ref()
         .is_some_and(|peer| peer.role == RelayConnectionRole::Client)
@@ -63,6 +68,7 @@ pub(in crate::server::connection) async fn remove_peer(
         }
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
+        routes.remove_daemon_sender(daemon_key);
         guard.remove_display_tunnels_for_daemon(daemon_key);
         let display_stream_senders = guard.remove_display_streams_for_daemon(daemon_key);
         let daemon_subscriptions = guard
@@ -79,6 +85,7 @@ pub(in crate::server::connection) async fn remove_peer(
         subscription_client_addrs.dedup();
         for (subscription_id, _) in daemon_subscriptions {
             guard.subscriptions.remove(&subscription_id);
+            routes.remove_subscription(&subscription_id);
         }
         let subscription_client_senders = subscription_client_addrs
             .into_iter()

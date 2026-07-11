@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -36,6 +36,7 @@ impl ConnectionAction {
 pub(super) async fn handle_client_packet_route_envelope(
     envelope: RelayEnvelope,
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
     peer_addr: SocketAddr,
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
@@ -135,7 +136,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                         kind: PendingRequestKind::Request,
                     },
                 );
-                resolve_daemon_sender_locked(&guard, &daemon_key)
+                routes.daemon_sender(&daemon_key)
             };
             let Some(daemon_sender) = daemon_sender else {
                 registry
@@ -363,7 +364,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                             },
                         },
                     );
-                    (false, resolve_daemon_sender_locked(&guard, &daemon_key))
+                    (false, routes.daemon_sender(&daemon_key))
                 }
             };
             if subscription_conflict {
@@ -548,7 +549,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                         },
                     },
                 );
-                resolve_daemon_sender_locked(&guard, &daemon_key)
+                routes.daemon_sender(&daemon_key)
             };
             let Some(daemon_sender) = daemon_sender else {
                 registry
@@ -709,6 +710,7 @@ pub(super) async fn connected_client_binding(
 
 pub(super) async fn close_slow_subscription(
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
     subscription_id: &str,
     daemon_key: &DaemonKey,
 ) {
@@ -721,10 +723,8 @@ pub(super) async fn close_slow_subscription(
             .filter(|active| active.daemon_key == *daemon_key);
         if let Some(active) = active {
             guard.subscriptions.remove(subscription_id);
-            guard
-                .peers
-                .get(&active.client_addr)
-                .map(|peer| peer.sender.clone())
+            routes.remove_subscription(subscription_id);
+            routes.client_sender(&active.client_addr)
         } else {
             None
         }

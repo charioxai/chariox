@@ -1,20 +1,20 @@
 use std::future::pending;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayMetadataQuery};
 use crate::registry::{
-    ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle, PendingDaemonPeerRequest,
-    PendingRequestKind, RelayRegistry,
+    ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
+    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry,
 };
 
 mod support;
@@ -46,6 +46,7 @@ pub(crate) async fn handle_connection(
         };
     let (mut writer, mut reader) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(RELAY_OUTGOING_QUEUE_CAPACITY);
+    let routes = registry.read().await.route_index();
     let mut writer_task = Some(tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
             if writer.send(message).await.is_err() {
@@ -179,7 +180,8 @@ pub(crate) async fn handle_connection(
                                 },
                             );
                             guard.daemons.insert(daemon_key.clone(), registration);
-                            guard.daemon_peers.insert(daemon_key, peer_addr);
+                            guard.daemon_peers.insert(daemon_key.clone(), peer_addr);
+                            routes.set_daemon_sender(daemon_key, outgoing_tx.clone());
                             drop(guard);
                             for sender in replaced_senders {
                                 send_close(&sender, "daemon reconnected".to_string());
@@ -284,6 +286,7 @@ pub(crate) async fn handle_connection(
                                     client_daemon_key: Some(daemon_key.clone()),
                                 },
                             );
+                            routes.set_client_sender(peer_addr, outgoing_tx.clone());
                             send_envelope(
                                 &outgoing_tx,
                                 &RelayEnvelope::ClientConnected {
@@ -423,7 +426,7 @@ pub(crate) async fn handle_connection(
                                         target_daemon_key: target_daemon_key.clone(),
                                     },
                                 );
-                                resolve_daemon_sender_locked(&guard, &target_daemon_key)
+                                routes.daemon_sender(&target_daemon_key)
                             };
                             let Some(daemon_sender) = daemon_sender else {
                                 registry
@@ -508,10 +511,7 @@ pub(crate) async fn handle_connection(
                                 .await;
                                 continue;
                             };
-                            let daemon_sender = {
-                                let guard = registry.read().await;
-                                resolve_daemon_sender_locked(&guard, &target_daemon_key)
-                            };
+                            let daemon_sender = routes.daemon_sender(&target_daemon_key);
                             if let Some(daemon_sender) = daemon_sender {
                                 if send_envelope(
                                     &daemon_sender,
@@ -537,6 +537,7 @@ pub(crate) async fn handle_connection(
                             if handle_client_packet_route_envelope(
                                 envelope,
                                 &registry,
+                                &routes,
                                 peer_addr,
                                 &outgoing_tx,
                                 &relay_request_counter,
@@ -580,16 +581,28 @@ pub(crate) async fn handle_connection(
                                                         daemon_key: pending.daemon_key.clone(),
                                                     },
                                                 );
+                                                if let Some(client_sender) =
+                                                    routes.client_sender(&pending.client_addr)
+                                                {
+                                                    routes.set_subscription(
+                                                        subscription_id.clone(),
+                                                        ActiveEventRoute {
+                                                            daemon_key: pending.daemon_key.clone(),
+                                                            client_sender,
+                                                        },
+                                                    );
+                                                }
                                             }
                                             PendingRequestKind::Unsubscribe { subscription_id } => {
                                                 guard.subscriptions.remove(subscription_id);
+                                                routes.remove_subscription(subscription_id);
                                             }
                                             PendingRequestKind::Request => {}
                                         }
                                     }
-                                    guard.peers.get(&pending.client_addr).map(|peer| {
-                                        (peer.sender.clone(), pending.client_request_id)
-                                    })
+                                    routes
+                                        .client_sender(&pending.client_addr)
+                                        .map(|sender| (sender, pending.client_request_id))
                                 })
                             };
                             if let Some((client_sender, client_request_id)) = client_target {
@@ -629,10 +642,8 @@ pub(crate) async fn handle_connection(
                                     guard.pending_daemon_peer_requests.remove(&relay_request_id);
                                 }
                                 pending.and_then(|pending| {
-                                    resolve_daemon_sender_locked(
-                                        &guard,
-                                        &pending.requester_daemon_key,
-                                    )
+                                    routes
+                                    .daemon_sender(&pending.requester_daemon_key)
                                     .map(|sender| {
                                         (
                                             sender,
@@ -800,15 +811,10 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let client_sender = {
-                                let guard = registry.read().await;
-                                guard
-                                    .subscriptions
-                                    .get(&subscription_id)
-                                    .filter(|active| active.daemon_key == current_daemon_key)
-                                    .and_then(|active| guard.peers.get(&active.client_addr))
-                                    .map(|peer| peer.sender.clone())
-                            };
+                            let client_sender = routes
+                                .subscription(&subscription_id)
+                                .filter(|route| route.daemon_key == current_daemon_key)
+                                .map(|route| route.client_sender);
                             if let Some(client_sender) = client_sender {
                                 if send_envelope(
                                     &client_sender,
@@ -822,6 +828,7 @@ pub(crate) async fn handle_connection(
                                 {
                                     close_slow_subscription(
                                         &registry,
+                                        &routes,
                                         &subscription_id,
                                         &current_daemon_key,
                                     )
@@ -869,7 +876,13 @@ pub(crate) async fn handle_connection(
         disconnect_subscription_senders,
         disconnect_display_stream_senders,
         dropped_client_pending_requests,
-    ) = remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
+    ) = remove_peer(
+        &registry,
+        &routes,
+        peer_addr,
+        registered_daemon_key.as_ref(),
+    )
+    .await;
     if connection_result.is_err()
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()

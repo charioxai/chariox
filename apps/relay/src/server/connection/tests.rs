@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 
 use super::support::*;
 use super::*;
@@ -130,9 +130,10 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
         .peers
         .insert(peer_addr, daemon_peer(sender, registration));
     registry.daemon_peers.insert(daemon_key.clone(), peer_addr);
+    let routes = registry.route_index();
     let registry = Arc::new(RwLock::new(registry));
 
-    let _ = remove_peer(&registry, peer_addr, Some(&daemon_key)).await;
+    let _ = remove_peer(&registry, &routes, peer_addr, Some(&daemon_key)).await;
 
     let guard = registry.read().await;
     assert!(!guard.daemons.contains_key(&daemon_key));
@@ -172,6 +173,15 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
             daemon_key: other_daemon_key.clone(),
         },
     );
+    let routes = registry.route_index();
+    routes.set_client_sender(client_addr, sender.clone());
+    routes.set_subscription(
+        "slow-subscription".to_string(),
+        ActiveEventRoute {
+            daemon_key: daemon_key.clone(),
+            client_sender: sender.clone(),
+        },
+    );
     let registry = Arc::new(RwLock::new(registry));
 
     let result = send_envelope(
@@ -188,7 +198,7 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
     );
     assert!(result.is_err(), "full client queue should reject event");
 
-    close_slow_subscription(&registry, "slow-subscription", &daemon_key).await;
+    close_slow_subscription(&registry, &routes, "slow-subscription", &daemon_key).await;
 
     let guard = registry.read().await;
     assert!(!guard.subscriptions.contains_key("slow-subscription"));
