@@ -279,7 +279,8 @@ fn remote_native_provider_run_response(
         },
         RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id: remote_execution.leased_agent_id.clone(),
-            adapter_key: crate::provider::adapter_key_for_provider(&request.provider).to_string(),
+            adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
+                .to_string(),
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
             model: request.model.clone(),

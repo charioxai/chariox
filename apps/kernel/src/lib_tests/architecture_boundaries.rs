@@ -47,6 +47,26 @@ fn provider_run_actors_use_async_mailboxes_and_bounded_blocking_work() {
 }
 
 #[test]
+fn remote_provider_launches_preserve_explicit_adapter_selection() {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for relative in [
+        "runtime/state/provider_launch_runtime.rs",
+        "local/provider_requests.rs",
+    ] {
+        let source = std::fs::read_to_string(src_root.join(relative))
+            .expect("remote provider launch source should be readable");
+        assert!(
+            source.contains("adapter_key_for_provider(&request.adapter_key)"),
+            "{relative} must forward the requested adapter independently from provider identity"
+        );
+        assert!(
+            !source.contains("adapter_key_for_provider(&request.provider)"),
+            "{relative} must not replace an explicit remote adapter with provider identity"
+        );
+    }
+}
+
+#[test]
 fn runtime_command_paths_do_not_lock_daemon_app() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = BTreeSet::new();
