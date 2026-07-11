@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -508,7 +508,7 @@ impl OperationalHistoryStore {
                 message: error.to_string(),
             })?;
         }
-        let connection =
+        let mut connection =
             Connection::open(&path).map_err(|error| operational_history_error("open", error))?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
@@ -516,6 +516,7 @@ impl OperationalHistoryStore {
         connection
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
+        ensure_operational_history_merge_key_index(&mut connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",
@@ -593,62 +594,32 @@ impl OperationalHistoryStore {
                     operation: "lock operational history store",
                     message: error.to_string(),
                 })?;
-        let existing = {
-            let mut statement = connection
-                .prepare(
-                    "SELECT event_json
-                     FROM history_events
-                     WHERE session_id = ?1
-                     ORDER BY sequence ASC",
-                )
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "prepare operational history replacement lookup",
-                    message: error.to_string(),
-                })?;
-            let mut rows = statement.query(params![session_id]).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "query operational history replacement lookup",
-                    message: error.to_string(),
-                }
-            })?;
-            let mut existing = None;
-            while let Some(row) =
-                rows.next()
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: Some(session_id.to_string()),
-                        operation: "read operational history replacement lookup",
-                        message: error.to_string(),
-                    })?
-            {
-                let event_json =
-                    row.get::<_, String>(0)
-                        .map_err(|error| DaemonError::SessionHistoryFailed {
-                            session_id: Some(session_id.to_string()),
-                            operation: "read operational history replacement event",
-                            message: error.to_string(),
-                        })?;
-                let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+        let existing = connection
+            .query_row(
+                "SELECT event_json
+                 FROM history_events
+                 WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+                 ORDER BY sequence ASC
+                 LIMIT 1",
+                params![session_id, agent_id, merge_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "query indexed operational history replacement lookup",
+                message: error.to_string(),
+            })?
+            .map(|event_json| {
+                serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
                     DaemonError::SessionHistoryFailed {
                         session_id: Some(session_id.to_string()),
                         operation: "decode operational history replacement event",
                         message: error.to_string(),
                     }
-                })?;
-                if event.agent_id.as_deref() == agent_id
-                    && event
-                        .metadata
-                        .get("merge_key")
-                        .and_then(|value| value.as_str())
-                        == Some(merge_key)
-                {
-                    existing = Some(event);
-                    break;
-                }
-            }
-            existing
-        };
+                })
+            })
+            .transpose()?;
         let Some(existing) = existing else {
             return Ok(None);
         };
@@ -684,7 +655,8 @@ impl OperationalHistoryStore {
                      content = ?17,
                      content_ref = ?18,
                      metadata_text = ?19,
-                     event_json = ?20
+                     merge_key = ?20,
+                     event_json = ?21
                  WHERE event_id = ?1",
                 params![
                     replacement.event_id.as_str(),
@@ -706,6 +678,7 @@ impl OperationalHistoryStore {
                     replacement.content.as_deref(),
                     replacement.content_ref.as_deref(),
                     metadata_text,
+                    history_event_merge_key(&replacement),
                     event_json,
                 ],
             )
@@ -757,7 +730,8 @@ impl OperationalHistoryStore {
             estimated_append_bytes = estimated_append_bytes.saturating_add(
                 estimate_history_event_storage_bytes(&event_json, &metadata_text),
             );
-            encoded_events.push((event, event_json, metadata_text));
+            let merge_key = history_event_merge_key(event);
+            encoded_events.push((event, event_json, metadata_text, merge_key));
         }
         let mut connection =
             self.connection
@@ -776,7 +750,7 @@ impl OperationalHistoryStore {
                 .map_err(|error| {
                     operational_history_error("prepare operational history append", error)
                 })?;
-            for (event, event_json, metadata_text) in encoded_events {
+            for (event, event_json, metadata_text, merge_key) in encoded_events {
                 statement
                     .execute(params![
                         event.event_id.as_str(),
@@ -799,6 +773,7 @@ impl OperationalHistoryStore {
                         event.content.as_deref(),
                         event.content_ref.as_deref(),
                         metadata_text,
+                        merge_key,
                         event_json,
                     ])
                     .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -838,8 +813,9 @@ const OPERATIONAL_HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO history_even
                     content,
                     content_ref,
                     metadata_text,
+                    merge_key,
                     event_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)";
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)";
 
 impl OperationalHistoryStore {
     pub fn path(&self) -> &Path {
@@ -879,6 +855,7 @@ CREATE TABLE IF NOT EXISTS history_events (
     content TEXT,
     content_ref TEXT,
     metadata_text TEXT,
+    merge_key TEXT,
     event_json TEXT NOT NULL
 );
 
@@ -915,6 +892,95 @@ CREATE TABLE IF NOT EXISTS history_session_markers (
     legacy_fallback_disabled_at_ms INTEGER
 );
 "#;
+
+fn ensure_operational_history_merge_key_index(
+    connection: &mut Connection,
+) -> Result<(), DaemonError> {
+    let has_merge_key = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(history_events)")
+            .map_err(|error| operational_history_error("inspect history schema", error))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| operational_history_error("read history schema", error))?;
+        let mut found = false;
+        for column in columns {
+            if column.map_err(|error| operational_history_error("decode history schema", error))?
+                == "merge_key"
+            {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !has_merge_key {
+        connection
+            .execute("ALTER TABLE history_events ADD COLUMN merge_key TEXT", [])
+            .map_err(|error| operational_history_error("add history merge key", error))?;
+        backfill_operational_history_merge_keys(connection)?;
+    }
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_events_session_agent_merge_sequence
+             ON history_events(session_id, agent_id, merge_key, sequence)",
+            [],
+        )
+        .map_err(|error| operational_history_error("index history merge keys", error))?;
+    Ok(())
+}
+
+fn backfill_operational_history_merge_keys(connection: &mut Connection) -> Result<(), DaemonError> {
+    let indexed_events = {
+        let mut statement = connection
+            .prepare("SELECT event_id, event_json FROM history_events")
+            .map_err(|error| {
+                operational_history_error("prepare history merge-key migration", error)
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| {
+                operational_history_error("read history merge-key migration", error)
+            })?;
+        let mut indexed_events = Vec::new();
+        for row in rows {
+            let (event_id, event_json) = row.map_err(|error| {
+                operational_history_error("decode history merge-key migration", error)
+            })?;
+            let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "decode history merge-key migration event",
+                    message: error.to_string(),
+                }
+            })?;
+            if let Some(merge_key) = history_event_merge_key(&event) {
+                indexed_events.push((event_id, merge_key.to_string()));
+            }
+        }
+        indexed_events
+    };
+    let transaction = connection
+        .transaction()
+        .map_err(|error| operational_history_error("begin history merge-key migration", error))?;
+    {
+        let mut statement = transaction
+            .prepare("UPDATE history_events SET merge_key = ?2 WHERE event_id = ?1")
+            .map_err(|error| {
+                operational_history_error("prepare history merge-key backfill", error)
+            })?;
+        for (event_id, merge_key) in indexed_events {
+            statement
+                .execute(params![event_id, merge_key])
+                .map_err(|error| operational_history_error("backfill history merge key", error))?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(|error| operational_history_error("commit history merge-key migration", error))
+}
 
 fn operational_history_error(operation: &'static str, error: rusqlite::Error) -> DaemonError {
     DaemonError::SessionHistoryFailed {
@@ -963,6 +1029,13 @@ fn searchable_metadata(event: &HistoryEvent) -> String {
     parts.extend(event.candidate_prompt_ids.iter().cloned());
     parts.extend(event.candidate_turn_ids.iter().cloned());
     parts.join("\n")
+}
+
+fn history_event_merge_key(event: &HistoryEvent) -> Option<&str> {
+    event
+        .metadata
+        .get("merge_key")
+        .and_then(serde_json::Value::as_str)
 }
 
 fn estimate_history_event_storage_bytes(event_json: &str, metadata_text: &str) -> u64 {

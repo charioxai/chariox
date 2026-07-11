@@ -465,6 +465,69 @@ fn converts_session_history_entry_to_canonical_history_event() {
 }
 
 #[test]
+fn operational_history_replaces_transcripts_through_merge_key_index() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-indexed-replace-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let original = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("provider-turn-1".to_string()),
+        "partial",
+    );
+    let event = store
+        .append_transcript(&original, HistoryEventTurnContext::default())
+        .expect("original transcript should append");
+    let replacement = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("provider-turn-1".to_string()),
+        "complete",
+    );
+    let replaced = store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "provider-turn-1",
+            &replacement,
+            HistoryEventTurnContext::default(),
+        )
+        .expect("indexed replacement should succeed")
+        .expect("indexed transcript should exist");
+    assert_eq!(replaced.event_id, event.event_id);
+    assert_eq!(replaced.sequence, event.sequence);
+    assert_eq!(replaced.content.as_deref(), Some("complete"));
+
+    let connection = store.connection.lock().expect("history lock should hold");
+    let plan = connection
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT event_json FROM history_events
+             WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+             ORDER BY sequence ASC LIMIT 1",
+            rusqlite::params!["session-1", "agent-1", "provider-turn-1"],
+            |row| row.get::<_, String>(3),
+        )
+        .expect("replacement query plan should load");
+    assert!(
+        plan.contains("idx_history_events_session_agent_merge_sequence"),
+        "replacement lookup should use the merge-key index: {plan}"
+    );
+    drop(connection);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn canonical_history_events_preserve_prompt_attachments() {
     let image_path = std::env::temp_dir().join(format!(
         "arroba-history-preview-{}-{}.png",
