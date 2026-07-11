@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -36,6 +38,9 @@ pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
+const OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT: usize = 4096;
+const OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT: usize = 256;
+const OPERATIONAL_HISTORY_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
 
 pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
     format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
@@ -473,6 +478,59 @@ fn history_event_id(sequence: u64, timestamp_ms: u64) -> String {
     format!("evt_{timestamp_ms}_{sequence}")
 }
 
+#[derive(Debug)]
+struct OperationalHistoryWriteRecord {
+    event: HistoryEvent,
+    event_json: String,
+    metadata_text: String,
+    merge_key: Option<String>,
+}
+
+#[derive(Debug)]
+struct OperationalHistoryWriteRequest {
+    records: Vec<OperationalHistoryWriteRecord>,
+    response: mpsc::Sender<Result<(), String>>,
+}
+
+#[derive(Debug)]
+struct OperationalHistoryWriter {
+    sender: Mutex<Option<SyncSender<OperationalHistoryWriteRequest>>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    health: Arc<OperationalHistoryWriterHealth>,
+}
+
+#[derive(Debug, Default)]
+struct OperationalHistoryWriterHealth {
+    committed_batches: AtomicU64,
+    committed_records: AtomicU64,
+    max_batch_records: AtomicU64,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OperationalHistoryWriterHealthSnapshot {
+    committed_batches: u64,
+    committed_records: u64,
+    max_batch_records: u64,
+}
+
+impl Drop for OperationalHistoryWriter {
+    fn drop(&mut self) {
+        self.sender
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OperationalHistoryStore {
     path: PathBuf,
@@ -484,6 +542,7 @@ pub struct OperationalHistoryStore {
     appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
     max_size_bytes: u64,
+    writer: Arc<OperationalHistoryWriter>,
 }
 
 impl OperationalHistoryStore {
@@ -517,6 +576,9 @@ impl OperationalHistoryStore {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| operational_history_error("enable WAL mode", error))?;
         connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| operational_history_error("configure busy timeout", error))?;
+        connection
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
@@ -544,6 +606,29 @@ impl OperationalHistoryStore {
                 Ok(Mutex::new(read_connection))
             })
             .collect::<Result<Vec<_>, DaemonError>>()?;
+        let writer_connection = Connection::open(&path)
+            .map_err(|error| operational_history_error("open writer", error))?;
+        writer_connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|error| operational_history_error("configure writer WAL", error))?;
+        writer_connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| operational_history_error("configure writer timeout", error))?;
+        let (writer_sender, writer_receiver) =
+            mpsc::sync_channel(OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT);
+        let writer_health = Arc::new(OperationalHistoryWriterHealth::default());
+        let worker_health = Arc::clone(&writer_health);
+        let writer_worker = thread::Builder::new()
+            .name("arroba-history-writer".to_string())
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                run_operational_history_writer(writer_connection, writer_receiver, worker_health)
+            })
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "start operational history writer",
+                message: error.to_string(),
+            })?;
         let store = Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
@@ -554,6 +639,11 @@ impl OperationalHistoryStore {
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
+            writer: Arc::new(OperationalHistoryWriter {
+                sender: Mutex::new(Some(writer_sender)),
+                worker: Mutex::new(Some(writer_worker)),
+                health: writer_health,
+            }),
         };
         store.enforce_size_budget()?;
         Ok(store)
@@ -748,6 +838,15 @@ impl OperationalHistoryStore {
         self.append_many(std::slice::from_ref(event))
     }
 
+    #[cfg(test)]
+    fn writer_health_snapshot(&self) -> OperationalHistoryWriterHealthSnapshot {
+        OperationalHistoryWriterHealthSnapshot {
+            committed_batches: self.writer.health.committed_batches.load(Ordering::Acquire),
+            committed_records: self.writer.health.committed_records.load(Ordering::Acquire),
+            max_batch_records: self.writer.health.max_batch_records.load(Ordering::Acquire),
+        }
+    }
+
     pub fn append_many(&self, events: &[HistoryEvent]) -> Result<(), DaemonError> {
         if events.is_empty() {
             return Ok(());
@@ -766,65 +865,152 @@ impl OperationalHistoryStore {
             estimated_append_bytes = estimated_append_bytes.saturating_add(
                 estimate_history_event_storage_bytes(&event_json, &metadata_text),
             );
-            let merge_key = history_event_merge_key(event);
-            encoded_events.push((event, event_json, metadata_text, merge_key));
+            let merge_key = history_event_merge_key(event).map(str::to_string);
+            encoded_events.push(OperationalHistoryWriteRecord {
+                event: event.clone(),
+                event_json,
+                metadata_text,
+                merge_key,
+            });
         }
-        let mut connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: events.first().and_then(|event| event.session_id.clone()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
-        let transaction = connection.transaction().map_err(|error| {
-            operational_history_error("begin operational history append", error)
-        })?;
-        {
-            let mut statement = transaction
-                .prepare(OPERATIONAL_HISTORY_INSERT_SQL)
-                .map_err(|error| {
-                    operational_history_error("prepare operational history append", error)
-                })?;
-            for (event, event_json, metadata_text, merge_key) in encoded_events {
-                statement
-                    .execute(params![
-                        event.event_id.as_str(),
-                        event.sequence as i64,
-                        event.timestamp_ms as i64,
-                        history_event_kind_key(event.kind),
-                        event.session_id.as_deref(),
-                        event.agent_id.as_deref(),
-                        event.provider.as_deref(),
-                        event.model.as_deref(),
-                        event.turn_id.as_deref(),
-                        event.prompt_id.as_deref(),
-                        event.provider_run_id.as_deref(),
-                        event.workflow_id.as_deref(),
-                        event.workflow_run_id.as_deref(),
-                        event.workflow_node_id.as_deref(),
-                        event.machine_id.as_deref(),
-                        event.repo_root.as_deref(),
-                        event.worktree_path.as_deref(),
-                        event.content.as_deref(),
-                        event.content_ref.as_deref(),
-                        metadata_text,
-                        merge_key,
-                        event_json,
-                    ])
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: event.session_id.clone(),
-                        operation: "append operational history event",
-                        message: error.to_string(),
-                    })?;
-            }
-        }
-        transaction.commit().map_err(|error| {
-            operational_history_error("commit operational history append", error)
-        })?;
-        drop(connection);
+        let (response, response_receiver) = mpsc::channel();
+        self.writer
+            .sender
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: events.first().and_then(|event| event.session_id.clone()),
+                operation: "lock operational history writer",
+                message: error.to_string(),
+            })?
+            .as_ref()
+            .ok_or_else(|| DaemonError::SessionHistoryFailed {
+                session_id: events.first().and_then(|event| event.session_id.clone()),
+                operation: "append operational history event",
+                message: "operational history writer stopped".to_string(),
+            })?
+            .send(OperationalHistoryWriteRequest {
+                records: encoded_events,
+                response,
+            })
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: events.first().and_then(|event| event.session_id.clone()),
+                operation: "enqueue operational history append",
+                message: error.to_string(),
+            })?;
+        response_receiver
+            .recv()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: events.first().and_then(|event| event.session_id.clone()),
+                operation: "receive operational history append acknowledgement",
+                message: error.to_string(),
+            })?
+            .map_err(|message| DaemonError::SessionHistoryFailed {
+                session_id: events.first().and_then(|event| event.session_id.clone()),
+                operation: "append operational history event",
+                message,
+            })?;
         self.enforce_size_budget_after_append(estimated_append_bytes)?;
         Ok(())
+    }
+}
+
+fn run_operational_history_writer(
+    mut connection: Connection,
+    receiver: Receiver<OperationalHistoryWriteRequest>,
+    health: Arc<OperationalHistoryWriterHealth>,
+) {
+    while let Ok(first) = receiver.recv() {
+        let mut record_count = first.records.len();
+        let mut batch = vec![first];
+        let deadline = Instant::now() + OPERATIONAL_HISTORY_WRITE_BATCH_WINDOW;
+        while record_count < OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match receiver.recv_timeout(remaining) {
+                Ok(request) => {
+                    record_count = record_count.saturating_add(request.records.len());
+                    batch.push(request);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        commit_operational_history_batch(&mut connection, batch, &health);
+    }
+}
+
+fn commit_operational_history_batch(
+    connection: &mut Connection,
+    batch: Vec<OperationalHistoryWriteRequest>,
+    health: &OperationalHistoryWriterHealth,
+) {
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            send_operational_history_batch_error(batch, error.to_string());
+            return;
+        }
+    };
+    let result = (|| -> Result<(), rusqlite::Error> {
+        let mut statement = transaction.prepare(OPERATIONAL_HISTORY_INSERT_SQL)?;
+        for record in batch.iter().flat_map(|request| request.records.iter()) {
+            let event = &record.event;
+            statement.execute(params![
+                event.event_id.as_str(),
+                event.sequence as i64,
+                event.timestamp_ms as i64,
+                history_event_kind_key(event.kind),
+                event.session_id.as_deref(),
+                event.agent_id.as_deref(),
+                event.provider.as_deref(),
+                event.model.as_deref(),
+                event.turn_id.as_deref(),
+                event.prompt_id.as_deref(),
+                event.provider_run_id.as_deref(),
+                event.workflow_id.as_deref(),
+                event.workflow_run_id.as_deref(),
+                event.workflow_node_id.as_deref(),
+                event.machine_id.as_deref(),
+                event.repo_root.as_deref(),
+                event.worktree_path.as_deref(),
+                event.content.as_deref(),
+                event.content_ref.as_deref(),
+                record.metadata_text.as_str(),
+                record.merge_key.as_deref(),
+                record.event_json.as_str(),
+            ])?;
+        }
+        drop(statement);
+        transaction.commit()
+    })();
+    match result {
+        Ok(()) => {
+            let batch_records = batch
+                .iter()
+                .map(|request| request.records.len() as u64)
+                .sum::<u64>();
+            health.committed_batches.fetch_add(1, Ordering::AcqRel);
+            health
+                .committed_records
+                .fetch_add(batch_records, Ordering::AcqRel);
+            health
+                .max_batch_records
+                .fetch_max(batch_records, Ordering::AcqRel);
+            for request in batch {
+                let _ = request.response.send(Ok(()));
+            }
+        }
+        Err(error) => send_operational_history_batch_error(batch, error.to_string()),
+    }
+}
+
+fn send_operational_history_batch_error(
+    batch: Vec<OperationalHistoryWriteRequest>,
+    message: String,
+) {
+    for request in batch {
+        let _ = request.response.send(Err(message.clone()));
     }
 }
 

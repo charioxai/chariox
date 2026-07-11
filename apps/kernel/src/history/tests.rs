@@ -1,6 +1,7 @@
 mod legacy_import;
 
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Barrier};
 
 use base64::Engine;
 
@@ -1232,6 +1233,57 @@ fn operational_history_amortizes_size_budget_checks_for_small_appends() {
         0
     );
 
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn operational_history_writer_groups_concurrent_acknowledged_appends() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-grouped-writes-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let writers = 32;
+    let barrier = Arc::new(Barrier::new(writers));
+    let mut threads = Vec::new();
+    for index in 0..writers {
+        let store = store.clone();
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            store
+                .append_operational_event(
+                    HistoryEventKind::Notice,
+                    Some(HistoryEventRole::System),
+                    Some(format!("event-{index}")),
+                    Default::default(),
+                    HistoryEventTurnContext::default(),
+                )
+                .expect("concurrent history event should append");
+        }));
+    }
+    for thread in threads {
+        thread.join().expect("history append thread should join");
+    }
+
+    let health = store.writer_health_snapshot();
+    assert_eq!(health.committed_records, writers as u64);
+    assert!(health.committed_batches < writers as u64, "{health:?}");
+    assert!(health.max_batch_records > 1, "{health:?}");
+    assert_eq!(
+        store
+            .query_events(HistoryEventQuery::default())
+            .expect("written history should query")
+            .len(),
+        writers
+    );
+
+    drop(store);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
