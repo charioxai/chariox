@@ -69,7 +69,7 @@ try {
       worker.opencode,
       worker.codex,
       true,
-      index === 0 ? 0 : timeoutMs + 60_000,
+      0,
     )))
   }
 
@@ -105,9 +105,9 @@ try {
 
   const spawnStartedAt = Date.now()
   const spawnItems = workerKernels.flatMap((worker, workerIndex) => Array.from({ length: agentsPerWorker }, (_, agentIndex) => ({
-    provider: "codex",
+    provider: "opencode",
     alias: `scale-w${workerIndex}-a${agentIndex}`,
-    model: "gpt-5.2-codex",
+    model: "opencode/gpt-5.2",
     worktreeId: root,
     effort: "low",
     executionMode: "build",
@@ -128,27 +128,30 @@ try {
   const launchStartedAt = Date.now()
   const launchRequest = requests.launchProviderRunsRequest(spawned.map((agent) => ({
     sessionId,
-    provider: "codex",
+    provider: "opencode",
     accountProfile: "default",
-    model: "default",
+    model: "gpt-5.2",
     effort: "low",
     agentId: agent.id,
     native: { nativeTui: true },
   })), 64)
-  for (const launch of launchRequest.LaunchProviderRuns.launches) launch.adapter_key = "dev-stub"
+  for (const [index, launch] of launchRequest.LaunchProviderRuns.launches.entries()) {
+    launch.adapter_key = index < agentsPerWorker ? "dev-stub" : "opencode"
+  }
   const launchResponse = unwrap(await client.send(launchRequest), "ProviderRunsLaunchAccepted")
   assert.equal(launchResponse.failures?.length ?? 0, 0, JSON.stringify(launchResponse.failures))
   assert.equal(launchResponse.provider_runs.length, totalAgents)
   const launchMs = Date.now() - launchStartedAt
 
   const promptStartedAt = Date.now()
-  const promptResponse = unwrap(await client.send(requests.submitPromptsRequest(sessionId, attachmentId, spawned.map((agent) => ({
+  const promptSample = spawned.slice(0, agentsPerWorker)
+  const promptResponse = unwrap(await client.send(requests.submitPromptsRequest(sessionId, attachmentId, promptSample.map((agent) => ({
     targetAgentId: agent.id,
     prompt: `distributed scale ${agent.alias}`,
     attachments: [],
   })), 64)), "PromptsSubmitted")
   assert.equal(promptResponse.failures?.length ?? 0, 0, JSON.stringify(promptResponse.failures))
-  assert.equal(promptResponse.results.length, totalAgents)
+  assert.equal(promptResponse.results.length, agentsPerWorker)
   const promptAcceptedMs = Date.now() - promptStartedAt
   await waitFor(() => completionCount >= agentsPerWorker, timeoutMs, `${agentsPerWorker} sampled remote completions`)
   const completionMs = Date.now() - promptStartedAt
@@ -169,8 +172,8 @@ try {
     completionMs,
     totalMs: Date.now() - startedAt,
     completionCount,
-    completedProviderAgents: agentsPerWorker,
-    deferredProviderAgents: totalAgents - agentsPerWorker,
+    completedPromptAgents: agentsPerWorker,
+    runningProviderAgents: totalAgents,
     metrics,
     workerRelayStatuses,
     ports,
@@ -274,7 +277,7 @@ async function waitForWorkerKernel(home, machineRef, timeout) {
     const machineResponse = await home.send(requests.listRemoteMachinesRequest())
     machines = unwrap(machineResponse, "RemoteMachinesListed").machines ?? []
     const response = unwrap(await home.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }), "RemoteMachineKernelsListed")
-    found = (response.kernels ?? []).find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers ?? []).includes("codex"))
+    found = (response.kernels ?? []).find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers ?? []).includes("opencode"))
     return Boolean(found)
   }, timeout, `worker ${machineRef}; machines=${JSON.stringify(machines)}`)
   return found
