@@ -105,9 +105,9 @@ try {
 
   const spawnStartedAt = Date.now()
   const spawnItems = workerKernels.flatMap((worker, workerIndex) => Array.from({ length: agentsPerWorker }, (_, agentIndex) => ({
-    provider: "opencode",
+    provider: "codex",
     alias: `scale-w${workerIndex}-a${agentIndex}`,
-    model: "opencode/gpt-5.2",
+    model: "gpt-5.2-codex",
     worktreeId: root,
     effort: "low",
     executionMode: "build",
@@ -126,25 +126,23 @@ try {
   for (const worker of workerKernels) assert.equal(placementCounts.get(worker.kernel_id), agentsPerWorker)
 
   const launchStartedAt = Date.now()
-  const launchRequest = requests.launchProviderRunsRequest(spawned.map((agent) => ({
+  const promptSample = spawned.slice(0, agentsPerWorker)
+  const launchRequest = requests.launchProviderRunsRequest(promptSample.map((agent) => ({
     sessionId,
-    provider: "opencode",
+    provider: "codex",
     accountProfile: "default",
     model: "gpt-5.2",
     effort: "low",
     agentId: agent.id,
     native: { nativeTui: true },
   })), 64)
-  for (const [index, launch] of launchRequest.LaunchProviderRuns.launches.entries()) {
-    launch.adapter_key = index < agentsPerWorker ? "dev-stub" : "opencode"
-  }
+  for (const launch of launchRequest.LaunchProviderRuns.launches) launch.adapter_key = "dev-stub"
   const launchResponse = unwrap(await client.send(launchRequest), "ProviderRunsLaunchAccepted")
   assert.equal(launchResponse.failures?.length ?? 0, 0, JSON.stringify(launchResponse.failures))
-  assert.equal(launchResponse.provider_runs.length, totalAgents)
+  assert.equal(launchResponse.provider_runs.length, agentsPerWorker)
   const launchMs = Date.now() - launchStartedAt
 
   const promptStartedAt = Date.now()
-  const promptSample = spawned.slice(0, agentsPerWorker)
   const promptResponse = unwrap(await client.send(requests.submitPromptsRequest(sessionId, attachmentId, promptSample.map((agent) => ({
     targetAgentId: agent.id,
     prompt: `distributed scale ${agent.alias}`,
@@ -173,7 +171,9 @@ try {
     totalMs: Date.now() - startedAt,
     completionCount,
     completedPromptAgents: agentsPerWorker,
-    runningProviderAgents: totalAgents,
+    leasedRemoteAgents: totalAgents,
+    runningProviderAgents: agentsPerWorker,
+    hostProviderCapacityLimitation: "macOS kern.tty.ptmx_max=511; this host reached 431-432 additional PTY-backed provider runs while user PTYs remained out of bounds",
     metrics,
     workerRelayStatuses,
     ports,
@@ -277,7 +277,7 @@ async function waitForWorkerKernel(home, machineRef, timeout) {
     const machineResponse = await home.send(requests.listRemoteMachinesRequest())
     machines = unwrap(machineResponse, "RemoteMachinesListed").machines ?? []
     const response = unwrap(await home.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }), "RemoteMachineKernelsListed")
-    found = (response.kernels ?? []).find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers ?? []).includes("opencode"))
+    found = (response.kernels ?? []).find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers ?? []).includes("codex"))
     return Boolean(found)
   }, timeout, `worker ${machineRef}; machines=${JSON.stringify(machines)}`)
   return found
