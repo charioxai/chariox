@@ -82,6 +82,25 @@ pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::RelayDisplayTunnelTarget;
 pub use connector::{run_daemon_relay_connector, run_daemon_relay_connector_with_static_relay};
 
+#[cfg(test)]
+pub(crate) async fn resolve_pending_peer_response_for_test(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    from_daemon_id: String,
+    encrypted_response: EncryptedRelayPayload,
+) {
+    resolve_pending_peer_response(
+        state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+    )
+    .await;
+}
+
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
