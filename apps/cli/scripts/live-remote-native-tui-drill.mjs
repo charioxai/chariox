@@ -43,11 +43,13 @@ import {
 import {
   copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
+  prepareHetznerClaudeWorkspaceTrust,
   prepareHetznerWorktree,
   remoteEnvCommand,
   removeExecutionFile,
   removeHetznerNativeRuntimePaths,
   removeHetznerWorktree,
+  restoreHetznerClaudeWorkspaceTrust,
   shellQuote,
   sshArgs,
   stopHetznerProcessByEnv,
@@ -342,6 +344,9 @@ async function main() {
   const remoteRuntimeRoot = options.hetznerWorker
     ? `/tmp/arb-remote-native-tui-${runId}`
     : null
+  const remoteClaudeTrustStatePath = remoteRuntimeRoot
+    ? path.posix.join(remoteRuntimeRoot, "claude-workspace-trust.json")
+    : null
   const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
@@ -361,6 +366,8 @@ async function main() {
   let kernel = null
   let workerKernel = null
   let hetznerWorktreePrepared = false
+  let hetznerClaudeTrustPrepared = false
+  let hetznerClaudeTrustRestoreFailure = null
   const managedSlices = []
   let succeeded = false
   let failure = null
@@ -397,6 +404,10 @@ async function main() {
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
       hetznerWorktreePrepared = true
+      if (options.providers.includes("claude")) {
+        await prepareHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+        hetznerClaudeTrustPrepared = true
+      }
       await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
@@ -590,6 +601,11 @@ async function main() {
       }
     }
 
+    if (hetznerClaudeTrustPrepared) {
+      await restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+      hetznerClaudeTrustPrepared = false
+    }
+
     console.log(JSON.stringify({
       status: "ok",
       mode: "remote-native-tui-relay-drill",
@@ -626,6 +642,16 @@ async function main() {
         ARROBA_RELAY_PORT: String(ports.relayPort),
         ARROBA_RELAY_TOKEN: relayToken,
       })
+      if (hetznerClaudeTrustPrepared) {
+        await restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+          .then(() => {
+            hetznerClaudeTrustPrepared = false
+          })
+          .catch((error) => {
+            hetznerClaudeTrustRestoreFailure = error
+            console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
+          })
+      }
       if (preserveFailedRun && remoteRuntimeRoot) {
         await copyHetznerDirectoryToLocal(
           options,
@@ -635,16 +661,30 @@ async function main() {
           console.error(`Hetzner worker log collection failed: ${error.message}`)
         })
       }
-      await removeHetznerNativeRuntimePaths(options, [remoteRuntimeParent, remoteRuntimeRoot])
+      const removableRuntimePaths = [remoteRuntimeParent]
+      if (!hetznerClaudeTrustRestoreFailure) {
+        removableRuntimePaths.push(remoteRuntimeRoot)
+      } else {
+        console.error(`Hetzner Claude workspace trust restoration state kept at ${remoteClaudeTrustStatePath}`)
+      }
+      await removeHetznerNativeRuntimePaths(options, removableRuntimePaths)
       if (hetznerWorktreePrepared) {
         await removeHetznerWorktree(options, worktree)
       }
     }
+    const finalFailure = hetznerClaudeTrustRestoreFailure
+      ? new AggregateError(
+        failure && failure !== hetznerClaudeTrustRestoreFailure
+          ? [failure, hetznerClaudeTrustRestoreFailure]
+          : [hetznerClaudeTrustRestoreFailure],
+        `Hetzner Claude workspace trust restoration failed; state remains at ${remoteClaudeTrustStatePath}`,
+      )
+      : failure
     await finalizeDrillArtifacts({
       rootDir: root,
-      passed: succeeded,
+      passed: succeeded && !hetznerClaudeTrustRestoreFailure,
       preserveOnFailure: options.keepArtifactsOnFailure,
-      failure,
+      failure: finalFailure,
       metadata: {
         drill: "remote-native-tui",
         providers: options.providers.join(","),
@@ -664,6 +704,9 @@ async function main() {
     })
     if (preserveFailedRun) {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
+    }
+    if (hetznerClaudeTrustRestoreFailure) {
+      throw finalFailure
     }
   }
 }

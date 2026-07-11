@@ -5,12 +5,14 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  applyClaudeWorkspaceTrust,
   assertHetznerBinaryFreshness,
   assertMatchingHetznerCheckoutCommit,
   ensureExecutionDirectory,
   hetznerNativeRuntimeCleanupCommand,
   hetznerWorktreeCleanupCommand,
   removeExecutionFile,
+  restoreClaudeWorkspaceTrust,
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 
@@ -88,6 +90,49 @@ test("rejects cleanup paths outside a native TUI runtime root", () => {
   assert.throws(
     () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
     /refusing to remove unexpected Hetzner native TUI runtime path/,
+  )
+})
+
+test("Claude workspace trust can be applied and restored without changing sibling projects", () => {
+  const original = {
+    theme: "dark",
+    projects: {
+      "/existing": {
+        allowedTools: ["Read"],
+        hasTrustDialogAccepted: true,
+        projectOnboardingSeenCount: 4,
+      },
+    },
+  }
+  const prepared = applyClaudeWorkspaceTrust(original, "/remote/worktree")
+  assert.deepEqual(prepared.config.projects["/remote/worktree"], {
+    allowedTools: ["Read"],
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: 4,
+  })
+  assert.equal(original.projects["/remote/worktree"], undefined)
+  assert.deepEqual(
+    restoreClaudeWorkspaceTrust(prepared.config, prepared.state),
+    original,
+  )
+})
+
+test("Claude workspace trust restores an existing per-worktree entry exactly", () => {
+  const original = {
+    projects: {
+      "/remote/worktree": {
+        allowedTools: [],
+        hasTrustDialogAccepted: false,
+        projectOnboardingSeenCount: 0,
+        custom: "preserve-me",
+      },
+    },
+  }
+  const prepared = applyClaudeWorkspaceTrust(original, "/remote/worktree")
+  assert.equal(prepared.config.projects["/remote/worktree"].hasTrustDialogAccepted, true)
+  assert.deepEqual(
+    restoreClaudeWorkspaceTrust(prepared.config, prepared.state),
+    original,
   )
 })
 

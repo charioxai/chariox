@@ -213,6 +213,98 @@ export async function removeHetznerWorktree(options, remoteWorktree) {
   ).catch(() => {})
 }
 
+export function applyClaudeWorkspaceTrust(configInput, workspace) {
+  const config = configInput && typeof configInput === "object"
+    ? structuredClone(configInput)
+    : {}
+  const projects = config.projects && typeof config.projects === "object"
+    ? { ...config.projects }
+    : {}
+  const hadEntry = Object.prototype.hasOwnProperty.call(projects, workspace)
+  const entry = hadEntry ? structuredClone(projects[workspace]) : null
+  const existing = entry && typeof entry === "object" ? entry : null
+  const template = existing ?? Object.values(projects).find((value) => (
+    value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "hasTrustDialogAccepted")
+  )) ?? {}
+  projects[workspace] = {
+    ...template,
+    allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
+  }
+  config.projects = projects
+  return { config, state: { workspace, hadEntry, entry } }
+}
+
+export function restoreClaudeWorkspaceTrust(configInput, state) {
+  const config = configInput && typeof configInput === "object"
+    ? structuredClone(configInput)
+    : {}
+  const projects = config.projects && typeof config.projects === "object"
+    ? { ...config.projects }
+    : {}
+  if (state.hadEntry) projects[state.workspace] = structuredClone(state.entry)
+  else delete projects[state.workspace]
+  config.projects = projects
+  return config
+}
+
+export async function prepareHetznerClaudeWorkspaceTrust(options, workspace, statePath) {
+  validateClaudeWorkspaceTrustPaths(workspace, statePath)
+  const script = `
+const fs = require("fs")
+const path = require("path")
+const applyClaudeWorkspaceTrust = ${applyClaudeWorkspaceTrust.toString()}
+const configPath = "/root/.claude.json"
+const workspace = ${JSON.stringify(workspace)}
+const statePath = ${JSON.stringify(statePath)}
+if (fs.existsSync(statePath)) throw new Error("Claude workspace trust restoration state already exists")
+const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
+const prepared = applyClaudeWorkspaceTrust(config, workspace)
+fs.mkdirSync(path.dirname(statePath), { recursive: true })
+fs.writeFileSync(statePath, JSON.stringify(prepared.state), { mode: 0o600 })
+const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+fs.writeFileSync(tempPath, JSON.stringify(prepared.config, null, 2), { mode: 0o600 })
+fs.renameSync(tempPath, configPath)
+fs.chmodSync(configPath, 0o600)
+`
+  await runHetznerCommand(options, `node -e ${shellQuote(script)}`)
+}
+
+export async function restoreHetznerClaudeWorkspaceTrust(options, workspace, statePath) {
+  validateClaudeWorkspaceTrustPaths(workspace, statePath)
+  const script = `
+const fs = require("fs")
+const restoreClaudeWorkspaceTrust = ${restoreClaudeWorkspaceTrust.toString()}
+const configPath = "/root/.claude.json"
+const workspace = ${JSON.stringify(workspace)}
+const statePath = ${JSON.stringify(statePath)}
+if (fs.existsSync(statePath)) {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"))
+  if (!state || state.workspace !== workspace || typeof state.hadEntry !== "boolean") {
+    throw new Error("Claude workspace trust restoration state does not match this drill")
+  }
+  const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
+  const restored = restoreClaudeWorkspaceTrust(config, state)
+  const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+  fs.writeFileSync(tempPath, JSON.stringify(restored, null, 2), { mode: 0o600 })
+  fs.renameSync(tempPath, configPath)
+  fs.chmodSync(configPath, 0o600)
+  fs.unlinkSync(statePath)
+}
+`
+  await runHetznerCommand(options, `node -e ${shellQuote(script)}`)
+}
+
+function validateClaudeWorkspaceTrustPaths(workspace, statePath) {
+  if (!path.posix.isAbsolute(workspace)) {
+    throw new Error(`Claude workspace trust path must be absolute: ${workspace}`)
+  }
+  if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+\/claude-workspace-trust\.json$/.test(statePath)) {
+    throw new Error(`refusing unexpected Claude workspace trust state path: ${statePath}`)
+  }
+}
+
 export function hetznerNativeRuntimeCleanupCommand(paths) {
   const uniquePaths = [...new Set(paths.filter(Boolean))]
   for (const runtimePath of uniquePaths) {
