@@ -637,7 +637,7 @@ async function providerExitWithoutFinalMarker({ provider, providerRoot, provider
   if (stdout.includes(finalMarker) || stderr.includes(finalMarker)) return null
   const combined = `${stdout}\n${stderr}`.trim()
   const tail = combined.slice(-2000)
-  const providerLimitPattern = /\b(session limit|rate limit|quota|usage limit|limit reached|resets? at|resets?\s+\d|too many requests)\b/i
+  const providerLimitPattern = /\b(session limit|rate limit|quota|usage limit|limit reached|resets? at|resets?\s+\d|too many requests|insufficient (?:balance|credits?)|credits? error|billing|token refresh failed|unauthorized|401)\b/i
   const providerLimit = providerLimitPattern.test(combined)
   const abnormalExit = Boolean(providerExit?.error || providerExit?.signal || (providerExit?.code != null && providerExit.code !== 0))
   if (!providerLimit && !abnormalExit) return null
