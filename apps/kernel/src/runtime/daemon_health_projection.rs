@@ -65,7 +65,7 @@ pub(crate) async fn build_daemon_health_projection(
         input.transport_health.snapshot(
             crate::runtime_transport::RECENT_EVENT_LIMIT,
             crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT,
-            crate::runtime_transport::INBOUND_REQUEST_LIMIT,
+            crate::runtime_transport::process_inbound_request_limit(),
         ),
         input.terminal_health.snapshot(),
         SliceLifecycleHealthSnapshot::from_slices(&input.runtime_state.list_slices()),

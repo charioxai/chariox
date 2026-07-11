@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
@@ -18,7 +18,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::runtime::command::{KernelCommand, KernelCommandSource};
+use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::projection::TransportHealthStore;
 use crate::runtime::router::CommandRouter;
@@ -52,7 +52,64 @@ const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
-pub(crate) const INBOUND_REQUEST_LIMIT: usize = 8;
+pub(crate) const CONNECTION_INBOUND_REQUEST_LIMIT: usize = 32;
+const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 32;
+const MAX_PROCESS_INBOUND_REQUEST_LIMIT: usize = 256;
+const PROCESS_INBOUND_REQUESTS_PER_CPU: usize = 8;
+const RESERVED_INTERACTIVE_REQUESTS: usize = 8;
+
+pub(crate) fn process_inbound_request_limit() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4)
+        .saturating_mul(PROCESS_INBOUND_REQUESTS_PER_CPU)
+        .clamp(
+            MIN_PROCESS_INBOUND_REQUEST_LIMIT,
+            MAX_PROCESS_INBOUND_REQUEST_LIMIT,
+        )
+}
+
+#[derive(Clone)]
+struct InboundRequestAdmission {
+    total: Arc<Semaphore>,
+    non_interactive: Arc<Semaphore>,
+}
+
+struct InboundRequestPermit {
+    _connection: OwnedSemaphorePermit,
+    _total: OwnedSemaphorePermit,
+    _non_interactive: Option<OwnedSemaphorePermit>,
+}
+
+impl InboundRequestAdmission {
+    fn new(process_limit: usize) -> Self {
+        Self {
+            total: Arc::new(Semaphore::new(process_limit)),
+            non_interactive: Arc::new(Semaphore::new(
+                process_limit.saturating_sub(RESERVED_INTERACTIVE_REQUESTS),
+            )),
+        }
+    }
+
+    fn try_acquire(
+        &self,
+        connection: &Arc<Semaphore>,
+        priority: &KernelCommandPriority,
+    ) -> Result<InboundRequestPermit, TryAcquireError> {
+        let connection = Arc::clone(connection).try_acquire_owned()?;
+        let non_interactive = if *priority == KernelCommandPriority::Interactive {
+            None
+        } else {
+            Some(Arc::clone(&self.non_interactive).try_acquire_owned()?)
+        };
+        let total = Arc::clone(&self.total).try_acquire_owned()?;
+        Ok(InboundRequestPermit {
+            _connection: connection,
+            _total: total,
+            _non_interactive: non_interactive,
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 struct KernelSubscription {
@@ -232,13 +289,17 @@ where
         transport_health.clone(),
         event_counter_path,
     )?);
+    let process_inbound_request_limit = process_inbound_request_limit();
+    let inbound_request_admission = InboundRequestAdmission::new(process_inbound_request_limit);
     crate::logging::info_with_fields(
         "daemon.startup",
         "kernel ready for local command",
         serde_json::json!({
             "kernel_websocket_addr": local_addr,
             "recent_event_limit": RECENT_EVENT_LIMIT,
-            "inbound_request_limit": INBOUND_REQUEST_LIMIT,
+            "process_inbound_request_limit": process_inbound_request_limit,
+            "connection_inbound_request_limit": CONNECTION_INBOUND_REQUEST_LIMIT,
+            "reserved_interactive_requests": RESERVED_INTERACTIVE_REQUESTS,
         }),
     );
 
@@ -292,8 +353,15 @@ where
                 })?;
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
+                let inbound_request_admission = inbound_request_admission.clone();
                 tokio::spawn(async move {
-                    let _ = handle_kernel_connection(runtime, router, stream).await;
+                    let _ = handle_kernel_connection(
+                        runtime,
+                        router,
+                        inbound_request_admission,
+                        stream,
+                    )
+                    .await;
                 });
             }
         }
@@ -343,6 +411,7 @@ impl<T> EventWriteCoalescer<T> {
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
+    inbound_request_admission: InboundRequestAdmission,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
     let socket = accept_async(stream)
@@ -364,7 +433,8 @@ async fn handle_kernel_connection(
     let (close_tx, mut close_rx) = mpsc::unbounded_channel::<ConnectionCloseCommand>();
     let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let close_requested = Arc::new(AtomicBool::new(false));
-    let inbound_request_permits = Arc::new(Semaphore::new(INBOUND_REQUEST_LIMIT));
+    let connection_inbound_request_permits =
+        Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         subscription: None,
         watch_task: None,
@@ -476,7 +546,8 @@ async fn handle_kernel_connection(
                     &runtime,
                     &router,
                     &connection_state,
-                    &inbound_request_permits,
+                    &inbound_request_admission,
+                    &connection_inbound_request_permits,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
@@ -489,7 +560,8 @@ async fn handle_kernel_connection(
                     &runtime,
                     &router,
                     &connection_state,
-                    &inbound_request_permits,
+                    &inbound_request_admission,
+                    &connection_inbound_request_permits,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
@@ -613,7 +685,8 @@ async fn handle_incoming_payload(
     runtime: &Arc<KernelTransportRuntime>,
     router: &Arc<CommandRouter>,
     connection_state: &Arc<Mutex<ConnectionState>>,
-    inbound_request_permits: &Arc<Semaphore>,
+    inbound_request_admission: &InboundRequestAdmission,
+    connection_inbound_request_permits: &Arc<Semaphore>,
     outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
@@ -741,7 +814,9 @@ async fn handle_incoming_payload(
                 }
                 CommandReservation::Dispatch => {}
             };
-            let permit = match Arc::clone(inbound_request_permits).try_acquire_owned() {
+            let permit = match inbound_request_admission
+                .try_acquire(connection_inbound_request_permits, &command.priority)
+            {
                 Ok(permit) => permit,
                 Err(error) => {
                     runtime
