@@ -14,6 +14,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const args = process.argv.slice(2)
 const durationSeconds = argNumber("--duration-seconds", 1_800)
 const bytesPerSecond = argNumber("--bytes-per-second", 1_048_576)
+const maxRssMb = argNumber("--max-rss-mb", 1_024)
+const maxCpuPercent = argNumber("--max-cpu-percent", 150)
 const output = path.resolve(argValue("--output") ?? path.join(repoRoot, ".artifacts", "stream-soak", `run-${process.pid}.json`))
 const dryRun = args.includes("--dry-run")
 const chunkBytes = 65_536
@@ -22,11 +24,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 
 if (args.includes("--help")) {
-  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--output PATH] [--dry-run]")
+  console.log("Usage: live-terminal-stream-soak.mjs [--duration-seconds 1800] [--bytes-per-second 1048576] [--max-rss-mb 1024] [--max-cpu-percent 150] [--output PATH] [--dry-run]")
   process.exit(0)
 }
 if (dryRun) {
-  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, output, release: true }, null, 2))
+  console.log(JSON.stringify({ durationSeconds, bytesPerSecond, totalBytes: durationSeconds * bytesPerSecond, maxRssMb, maxCpuPercent, output, release: true }, null, 2))
   process.exit(0)
 }
 
@@ -107,15 +109,22 @@ try {
     assert.equal(response.records.length, outputs.length)
     sentBytes += tickBytes
     latencies.push(Date.now() - tickStartedAt)
-    if (second % 30 === 0) cpuSamples.push(processMetric(kernel.pid))
+    if (second % 10 === 0) cpuSamples.push(processMetric(kernel.pid))
     const waitMs = tickDeadline - Date.now()
     if (waitMs > 0) await sleep(waitMs)
   }
   const streamElapsedMs = Date.now() - startedAt
   await sleep(1_000)
   const sorted = [...latencies].sort((left, right) => left - right)
+  const finalMetric = processMetric(kernel.pid)
+  const resourceSamples = [...cpuSamples, finalMetric]
+  const peakRssMb = Math.max(...resourceSamples.map((sample) => sample.rssKb / 1024))
+  const cpuP95Percent = percentile(
+    resourceSamples.map((sample) => sample.cpuPercent).sort((left, right) => left - right),
+    0.95,
+  )
   report = {
-    ok: true,
+    ok: peakRssMb <= maxRssMb && cpuP95Percent <= maxCpuPercent,
     durationSeconds,
     bytesPerSecond,
     sentBytes,
@@ -130,9 +139,16 @@ try {
     observedEvents,
     observedRecords,
     cpuSamples,
-    finalMetric: processMetric(kernel.pid),
+    finalMetric,
+    resourceBudget: {
+      maxRssMb,
+      maxCpuPercent,
+      peakRssMb: Math.round(peakRssMb * 10) / 10,
+      cpuP95Percent,
+    },
     port,
   }
+  if (!report.ok) process.exitCode = 1
 } catch (error) {
   report = { ok: false, error: String(error?.stack ?? error), durationSeconds, bytesPerSecond, port }
   process.exitCode = 1

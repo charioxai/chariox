@@ -297,6 +297,48 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
 }
 
 #[tokio::test]
+async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
+    let path = temp_cache_path("byte-bound-oversized-memory-results");
+    let retention = CommandResultRetentionPolicy {
+        max_entries: 512,
+        max_total_bytes: Some(700_000),
+        max_age_ms: None,
+    };
+    let cache = CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
+        .expect("cache should initialize");
+    let first = CommandResultCache::fingerprint_from_bytes_for_test(b"large-first");
+    let second = CommandResultCache::fingerprint_from_bytes_for_test(b"large-second");
+
+    cache
+        .insert_completed_for_test(
+            "command-large-first".to_string(),
+            first.clone(),
+            Some(serde_json::json!({ "payload": "x".repeat(400_000) })),
+        )
+        .await;
+    cache
+        .insert_completed_for_test(
+            "command-large-second".to_string(),
+            second.clone(),
+            Some(serde_json::json!({ "payload": "y".repeat(400_000) })),
+        )
+        .await;
+
+    assert!(matches!(
+        cache.reserve("command-large-first", &first).await,
+        CommandReservation::Dispatch
+    ));
+    cache.forget_pending("command-large-first").await;
+    assert!(matches!(
+        cache.reserve("command-large-second", &second).await,
+        CommandReservation::Wait(_)
+    ));
+    assert!(fs::read_to_string(&path).unwrap_or_default().is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
     let noisy_command_types = [
         "external_provider_session.list",

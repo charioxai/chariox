@@ -13,6 +13,7 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
+const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
 const COMMAND_RESULT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
@@ -30,7 +31,7 @@ impl CommandResultRetentionPolicy {
     fn memory() -> Self {
         Self {
             max_entries: COMMAND_RESULT_CACHE_LIMIT,
-            max_total_bytes: None,
+            max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES),
             max_age_ms: None,
         }
     }
@@ -285,21 +286,22 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        let persisted_bytes = if should_persist_completed_result(&cached.fingerprint) {
-            let persisted = PersistentCommandResult {
-                command_id: command_id.clone(),
-                completed_at_ms: cached.completed_at_ms,
-                result: cached.clone(),
-            };
-            persistent_result_jsonl_bytes(&persisted)
-                .ok()
-                .filter(|bytes| *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES)
-        } else {
-            None
+        let persisted = PersistentCommandResult {
+            command_id: command_id.clone(),
+            completed_at_ms: cached.completed_at_ms,
+            result: cached.clone(),
         };
+        // Account every completed result in memory, including responses that are too large or
+        // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
+        // so entry-count retention alone is not a meaningful memory bound.
+        let result_jsonl_bytes = persistent_result_jsonl_bytes(&persisted).ok();
+        let persisted_bytes = result_jsonl_bytes.filter(|bytes| {
+            should_persist_completed_result(&cached.fingerprint)
+                && *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES
+        });
         let should_persist = persisted_bytes.is_some();
         let compact_after_append = self
-            .apply_retention_to_completed_results(&command_id, persisted_bytes)
+            .apply_retention_to_completed_results(&command_id, result_jsonl_bytes)
             .await;
         if !should_persist {
             return;
@@ -338,7 +340,7 @@ impl CommandResultCache {
         }
         let compact_snapshot =
             if compact_after_append && persistence.should_compact_now(next_append_bytes)? {
-                Some(self.completed_results_snapshot().await)
+                Some(self.persistable_completed_results_snapshot().await)
             } else {
                 None
             };
@@ -432,6 +434,18 @@ impl CommandResultCache {
                     completed_at_ms: result.completed_at_ms,
                     result: result.clone(),
                 })
+            })
+            .collect()
+    }
+
+    async fn persistable_completed_results_snapshot(&self) -> Vec<PersistentCommandResult> {
+        self.completed_results_snapshot()
+            .await
+            .into_iter()
+            .filter(|entry| should_persist_completed_result(&entry.result.fingerprint))
+            .filter(|entry| {
+                persistent_result_jsonl_bytes(entry)
+                    .is_ok_and(|bytes| bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES)
             })
             .collect()
     }
