@@ -360,11 +360,22 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
             || claude_headless_bypass_confirmation_visible(&normalized))
 }
 
-pub(super) fn claude_headless_prompt_waiting_in_composer(text: &str) -> bool {
+pub(super) fn claude_headless_prompt_waiting_in_composer(
+    text: &str,
+    expected_prompt: &str,
+) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
     let compact = normalized_lower.replace(' ', "");
-    normalized_lower.contains("[pasted text")
+    let expected = normalize_claude_rendered_permission_text(expected_prompt)
+        .trim()
+        .to_ascii_lowercase();
+    let expected_compact = expected.replace(' ', "");
+    let direct_prompt_waiting = !expected.is_empty()
+        && (normalized_lower.trim_end().ends_with(&expected)
+            || compact.trim_end().ends_with(&expected_compact));
+    direct_prompt_waiting
+        || normalized_lower.contains("[pasted text")
         || compact.contains("[pastedtext")
         || normalized_lower.contains("paste again to expand")
         || compact.contains("pasteagaintoexpand")

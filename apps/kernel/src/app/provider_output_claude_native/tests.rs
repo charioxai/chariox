@@ -180,12 +180,29 @@ fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
 #[test]
 fn claude_headless_prompt_waiting_in_composer_detects_collapsed_paste() {
     assert!(claude_headless_prompt_waiting_in_composer(
-        "paste again to expand - [Pasted text #2]"
+        "paste again to expand - [Pasted text #2]",
+        "expected prompt",
     ));
     assert!(claude_headless_prompt_waiting_in_composer(
-        "\u{1b}[2m[Pasted text #1]\u{1b}[0m"
+        "\u{1b}[2m[Pasted text #1]\u{1b}[0m",
+        "expected prompt",
     ));
     assert!(!claude_headless_prompt_waiting_in_composer(
-        "CLAUDE-HEADLESS_WORKSPACE_LIVE_SYNC_TEXT_WRITE_DONE"
+        "CLAUDE-HEADLESS_WORKSPACE_LIVE_SYNC_TEXT_WRITE_DONE",
+        "expected prompt",
+    ));
+}
+
+#[test]
+fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
+    let prompt = "Use the native-claude-skill skill. Give the Arroba skill marker.";
+    let rendered = format!("\u{1b}[?25l\u{1b}[H\r\u{1b}[37B{prompt}\u{1b}[40;1H\u{1b}[?25h");
+
+    assert!(claude_headless_prompt_waiting_in_composer(
+        &rendered, prompt
+    ));
+    assert!(!claude_headless_prompt_waiting_in_composer(
+        &format!("{rendered} Gitifying... esc to interrupt"),
+        prompt,
     ));
 }

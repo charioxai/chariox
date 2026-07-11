@@ -833,7 +833,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             };
             if count < 3
                 && now.saturating_sub(last_attempt_ms) >= 2_000
-                && claude_headless_prompt_waiting_in_composer(&recent)
+                && claude_headless_prompt_waiting_in_composer(
+                    &recent,
+                    redact_native_hidden_instructions(prompt.prompt).trim(),
+                )
             {
                 append_claude_headless_debug(
                     context_file,
