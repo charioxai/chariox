@@ -646,6 +646,7 @@ impl KernelRuntimeState {
                             &dispatch.agent_id,
                             Some(remote_provider_run_id.clone()),
                         )?;
+                    let _ = owned.session_snapshot(&dispatch.session_id)?;
                     owned.echo_prompt_to_other_attachments(
                         &dispatch.session_id,
                         &remote_provider_run_id,
@@ -948,6 +949,84 @@ mod tests {
 
         assert_eq!(drain_target.0.leased_agent_id, "leased-agent-1");
         assert_eq!(drain_target.1, "provider-run-worker-1");
+    }
+
+    #[tokio::test]
+    async fn remote_prompt_dispatch_success_refreshes_session_projection() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-remote-dispatch-projection",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+
+        let projection_store = app.session_state_projection_store();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            "pending:remote-dispatch-projection",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should submit")
+            .expect("remote prompt should be handled");
+        let dispatch = submission
+            .remote_dispatch
+            .expect("started remote prompt should dispatch");
+
+        runtime
+            .finish_remote_prompt_dispatch(dispatch, Ok("provider-run-worker-1".to_string()))
+            .await
+            .expect("remote prompt dispatch should settle");
+
+        let projected = projection_store
+            .get(session.id())
+            .expect("session projection should remain available");
+        let projected_agent = projected
+            .agents()
+            .iter()
+            .find(|candidate| candidate.id() == agent.id())
+            .expect("remote agent should remain projected");
+        assert_eq!(
+            projected_agent
+                .remote_execution()
+                .and_then(|remote| remote.active_worker_provider_run_id.as_deref()),
+            Some("provider-run-worker-1"),
+            "dispatch settlement must refresh the warm session projection"
+        );
     }
 
     #[test]
