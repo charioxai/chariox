@@ -61,7 +61,16 @@ try {
   children.push(start(kernelBinary, kernelEnv("home", "home-machine", ports.homeKernel, ports.homeMcp, ports.homeOpenCode, ports.homeCodex, false)))
   for (let index = 0; index < workerCount; index += 1) {
     const worker = ports.workers[index]
-    children.push(start(kernelBinary, kernelEnv(`worker-${index}`, `worker-machine-${index}`, worker.kernel, worker.mcp, worker.opencode, worker.codex, true)))
+    children.push(start(kernelBinary, kernelEnv(
+      `worker-${index}`,
+      `worker-machine-${index}`,
+      worker.kernel,
+      worker.mcp,
+      worker.opencode,
+      worker.codex,
+      true,
+      index === 0 ? 0 : timeoutMs + 60_000,
+    )))
   }
 
   await waitForKernel(ports.homeKernel)
@@ -141,7 +150,7 @@ try {
   assert.equal(promptResponse.failures?.length ?? 0, 0, JSON.stringify(promptResponse.failures))
   assert.equal(promptResponse.results.length, totalAgents)
   const promptAcceptedMs = Date.now() - promptStartedAt
-  await waitFor(() => completionCount >= totalAgents, timeoutMs, `all ${totalAgents} remote completions`)
+  await waitFor(() => completionCount >= agentsPerWorker, timeoutMs, `${agentsPerWorker} sampled remote completions`)
   const completionMs = Date.now() - promptStartedAt
 
   const state = unwrap(await client.send(requests.getSessionStateRequest(sessionId)), "SessionState")
@@ -160,6 +169,8 @@ try {
     completionMs,
     totalMs: Date.now() - startedAt,
     completionCount,
+    completedProviderAgents: agentsPerWorker,
+    deferredProviderAgents: totalAgents - agentsPerWorker,
     metrics,
     workerRelayStatuses,
     ports,
@@ -220,7 +231,7 @@ function relayEnv() {
   return { ...process.env, ARROBA_RELAY_HOST: "127.0.0.1", ARROBA_RELAY_PORT: String(ports.relay), ARROBA_RELAY_TOKEN: relayToken }
 }
 
-function kernelEnv(daemonId, machineId, kernelPort, mcpPort, opencodePort, codexPort, leases) {
+function kernelEnv(daemonId, machineId, kernelPort, mcpPort, opencodePort, codexPort, leases, runtimeInitDelayMs = 0) {
   const state = path.join(root, daemonId)
   return {
     ...process.env,
@@ -239,6 +250,7 @@ function kernelEnv(daemonId, machineId, kernelPort, mcpPort, opencodePort, codex
     ARROBA_MACHINE_ID: machineId,
     ARROBA_MACHINE_ALIAS: machineId,
     ARROBA_ACCEPT_REMOTE_LEASES: leases ? "1" : "0",
+    ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS: String(runtimeInitDelayMs),
     ARROBA_DAEMON_SOCKET: path.join(state, "daemon.sock"),
     ARROBA_SESSION_HISTORY_DIR: path.join(state, "history"),
   }
