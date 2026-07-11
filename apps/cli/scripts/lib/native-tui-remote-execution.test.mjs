@@ -11,7 +11,9 @@ import {
   ensureExecutionDirectory,
   hetznerNativeRuntimeCleanupCommand,
   hetznerWorktreeCleanupCommand,
+  prepareClaudeWorkspaceTrustConfigText,
   removeExecutionFile,
+  restoreClaudeConfigText,
   restoreClaudeWorkspaceTrust,
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
@@ -134,6 +136,29 @@ test("Claude workspace trust restores an existing per-worktree entry exactly", (
     restoreClaudeWorkspaceTrust(prepared.config, prepared.state),
     original,
   )
+})
+
+test("Claude workspace trust restores the original config bytes after global mutations", () => {
+  const originalText = `${JSON.stringify({
+    numStartups: 7,
+    projects: {
+      "/existing": {
+        hasTrustDialogAccepted: true,
+        projectOnboardingSeenCount: 2,
+      },
+    },
+  }, null, 4)}\n`
+  const prepared = prepareClaudeWorkspaceTrustConfigText(originalText, "/remote/worktree")
+  prepared.config.numStartups = 99
+  prepared.config.projects["/existing"].projectOnboardingSeenCount = 8
+
+  assert.equal(restoreClaudeConfigText(prepared.state), originalText)
+})
+
+test("Claude workspace trust removes config created during a drill when none existed", () => {
+  const prepared = prepareClaudeWorkspaceTrustConfigText(null, "/remote/worktree")
+
+  assert.equal(restoreClaudeConfigText(prepared.state), null)
 })
 
 test("same-host execution artifacts stay on the local machine", async (t) => {

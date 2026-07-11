@@ -249,18 +249,46 @@ export function restoreClaudeWorkspaceTrust(configInput, state) {
   return config
 }
 
+export function prepareClaudeWorkspaceTrustConfigText(configText, workspace) {
+  const originalConfigExisted = configText !== null
+  const config = originalConfigExisted ? JSON.parse(configText) : {}
+  const prepared = applyClaudeWorkspaceTrust(config, workspace)
+  return {
+    config: prepared.config,
+    state: {
+      ...prepared.state,
+      originalConfigExisted,
+      originalConfigBase64: originalConfigExisted
+        ? Buffer.from(configText, "utf8").toString("base64")
+        : null,
+    },
+  }
+}
+
+export function restoreClaudeConfigText(state) {
+  if (typeof state?.originalConfigExisted !== "boolean") {
+    throw new Error("Claude workspace trust state is missing the original config status")
+  }
+  if (!state.originalConfigExisted) return null
+  if (typeof state.originalConfigBase64 !== "string") {
+    throw new Error("Claude workspace trust state is missing the original config bytes")
+  }
+  return Buffer.from(state.originalConfigBase64, "base64").toString("utf8")
+}
+
 export async function prepareHetznerClaudeWorkspaceTrust(options, workspace, statePath) {
   validateClaudeWorkspaceTrustPaths(workspace, statePath)
   const script = `
 const fs = require("fs")
 const path = require("path")
 const applyClaudeWorkspaceTrust = ${applyClaudeWorkspaceTrust.toString()}
+const prepareClaudeWorkspaceTrustConfigText = ${prepareClaudeWorkspaceTrustConfigText.toString()}
 const configPath = "/root/.claude.json"
 const workspace = ${JSON.stringify(workspace)}
 const statePath = ${JSON.stringify(statePath)}
 if (fs.existsSync(statePath)) throw new Error("Claude workspace trust restoration state already exists")
-const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
-const prepared = applyClaudeWorkspaceTrust(config, workspace)
+const configText = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null
+const prepared = prepareClaudeWorkspaceTrustConfigText(configText, workspace)
 fs.mkdirSync(path.dirname(statePath), { recursive: true })
 fs.writeFileSync(statePath, JSON.stringify(prepared.state), { mode: 0o600 })
 const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
@@ -276,6 +304,7 @@ export async function restoreHetznerClaudeWorkspaceTrust(options, workspace, sta
   const script = `
 const fs = require("fs")
 const restoreClaudeWorkspaceTrust = ${restoreClaudeWorkspaceTrust.toString()}
+const restoreClaudeConfigText = ${restoreClaudeConfigText.toString()}
 const configPath = "/root/.claude.json"
 const workspace = ${JSON.stringify(workspace)}
 const statePath = ${JSON.stringify(statePath)}
@@ -284,12 +313,27 @@ if (fs.existsSync(statePath)) {
   if (!state || state.workspace !== workspace || typeof state.hadEntry !== "boolean") {
     throw new Error("Claude workspace trust restoration state does not match this drill")
   }
-  const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
-  const restored = restoreClaudeWorkspaceTrust(config, state)
-  const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
-  fs.writeFileSync(tempPath, JSON.stringify(restored, null, 2), { mode: 0o600 })
-  fs.renameSync(tempPath, configPath)
-  fs.chmodSync(configPath, 0o600)
+  if (Object.prototype.hasOwnProperty.call(state, "originalConfigExisted")) {
+    const originalConfigText = restoreClaudeConfigText(state)
+    if (originalConfigText === null) {
+      fs.rmSync(configPath, { force: true })
+    } else {
+      const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+      fs.writeFileSync(tempPath, originalConfigText, { mode: 0o600 })
+      fs.renameSync(tempPath, configPath)
+      fs.chmodSync(configPath, 0o600)
+      if (fs.readFileSync(configPath, "utf8") !== originalConfigText) {
+        throw new Error("Claude config bytes did not restore exactly")
+      }
+    }
+  } else {
+    const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
+    const restored = restoreClaudeWorkspaceTrust(config, state)
+    const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+    fs.writeFileSync(tempPath, JSON.stringify(restored, null, 2), { mode: 0o600 })
+    fs.renameSync(tempPath, configPath)
+    fs.chmodSync(configPath, 0o600)
+  }
   fs.unlinkSync(statePath)
 }
 `
