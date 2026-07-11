@@ -204,10 +204,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       submitPrompt: tui.submitPrompt,
       debug: debugNativeClaude,
     })
-    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
-      intervalMs: 500,
-      pollRuntimeNotices: false,
-    })
+    pump = startNativeKernelPumpLoop(client, session.id, attachment.id)
     if (options.initialPrompt) {
       await sleep(1_000)
       await tui.submitPrompt(options.initialPrompt)

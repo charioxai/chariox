@@ -1,6 +1,70 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn relay_completes_client_websocket_close_handshake() {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut client_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("client should connect");
+    client_socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientMetadataRequest {
+                request_id: "close-handshake".to_string(),
+                auth_token: "secret".to_string(),
+                query: RelayMetadataQuery::ListLiveMachines,
+            })
+            .expect("metadata request should serialize")
+            .into(),
+        ))
+        .await
+        .expect("metadata request should send");
+    assert!(matches!(
+        client_socket.next().await,
+        Some(Ok(Message::Text(_)))
+    ));
+
+    client_socket
+        .close(None)
+        .await
+        .expect("client close should send");
+    let close = timeout(Duration::from_millis(500), client_socket.next())
+        .await
+        .expect("relay should answer close promptly");
+    assert!(
+        matches!(close, Some(Ok(Message::Close(_)))),
+        "relay should complete the websocket close handshake, received {close:?}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn runtime_client_frames_require_accepted_client_connect() {
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

@@ -50,9 +50,10 @@ export function startNativeKernelPumpLoop(
       inFlight = false
     }
   }
+  const intervalMs = options.intervalMs ?? (options.onTerminalRecords ? 250 : 10_000)
   const interval = setInterval(() => {
     void tick()
-  }, options.intervalMs ?? 250)
+  }, intervalMs)
   void tick()
   return {
     stop: () => {

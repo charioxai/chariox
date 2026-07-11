@@ -15,7 +15,7 @@ test("background poller startup waits for mounted prompt and transcript refs", (
   assert.deepEqual(harness.calls(), ["debug:ensure pollers:missing refs:false"])
 })
 
-test("background poller startup only starts once", () => {
+test("background poller startup uses the event stream without the polling watchdog", () => {
   const harness = createHarness()
 
   harness.controller.ensureStarted()
@@ -31,7 +31,6 @@ test("background poller startup only starts once", () => {
     "add-resize",
     "info:starting kernel event stream",
     "sync-events",
-    "watchdog-start",
     "debug:ensure pollers:already started",
   ])
 })

@@ -67,8 +67,8 @@ export function createBackgroundPollerStartupController(
         void deps.pollOutput()
         void deps.pollNotices()
         void deps.pollSessionState()
+        deps.startConnectionWatchdog()
       }
-      deps.startConnectionWatchdog()
     },
 
     stop() {

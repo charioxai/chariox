@@ -15,6 +15,7 @@ use crate::error::DaemonError;
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
 const RELAY_METADATA_RETRY_BASE_DELAY_MS: u64 = 250;
+const RELAY_METADATA_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub async fn list_live_machines(
     config: &DaemonConfig,
@@ -204,53 +205,65 @@ async fn query_relay_once(
         auth_token: relay_token,
         query,
     };
-    timeout(
-        request_timeout,
-        socket.send(Message::Text(
-            serde_json::to_string(&request)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "serialize relay metadata request",
-                    message: error.to_string(),
-                })?
-                .into(),
-        )),
-    )
-    .await
-    .map_err(|_| DaemonError::LocalTransport {
-        operation: "write relay metadata request",
-        message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-    })?
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "write relay metadata request",
-        message: error.to_string(),
-    })?;
-    match timeout(request_timeout, socket.next()).await.map_err(|_| {
-        DaemonError::LocalTransport {
-            operation: "read relay metadata response",
-            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-        }
-    })? {
-        Some(Ok(Message::Text(text))) => {
-            serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
+    let response =
+        async {
+            timeout(
+                request_timeout,
+                socket.send(Message::Text(
+                    serde_json::to_string(&request)
+                        .map_err(|error| DaemonError::LocalTransport {
+                            operation: "serialize relay metadata request",
+                            message: error.to_string(),
+                        })?
+                        .into(),
+                )),
+            )
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "write relay metadata request",
+                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+            })?
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "write relay metadata request",
+                message: error.to_string(),
+            })?;
+            match timeout(request_timeout, socket.next()).await.map_err(|_| {
                 DaemonError::LocalTransport {
-                    operation: "decode relay metadata response",
-                    message: error.to_string(),
+                    operation: "read relay metadata response",
+                    message: format!("timed out after {}ms", config.relay_request_timeout_ms),
                 }
-            })
+            })? {
+                Some(Ok(Message::Text(text))) => serde_json::from_str::<RelayEnvelope>(&text)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "decode relay metadata response",
+                        message: error.to_string(),
+                    }),
+                Some(Ok(Message::Close(_))) | None => Err(DaemonError::LocalTransport {
+                    operation: "read relay metadata response",
+                    message: "relay closed metadata connection".to_string(),
+                }),
+                Some(Ok(_)) => Err(DaemonError::LocalTransport {
+                    operation: "read relay metadata response",
+                    message: "relay returned a non-text metadata frame".to_string(),
+                }),
+                Some(Err(error)) => Err(DaemonError::LocalTransport {
+                    operation: "read relay metadata response",
+                    message: error.to_string(),
+                }),
+            }
         }
-        Some(Ok(Message::Close(_))) | None => Err(DaemonError::LocalTransport {
-            operation: "read relay metadata response",
-            message: "relay closed metadata connection".to_string(),
-        }),
-        Some(Ok(_)) => Err(DaemonError::LocalTransport {
-            operation: "read relay metadata response",
-            message: "relay returned a non-text metadata frame".to_string(),
-        }),
-        Some(Err(error)) => Err(DaemonError::LocalTransport {
-            operation: "read relay metadata response",
-            message: error.to_string(),
-        }),
-    }
+        .await;
+    let _ = socket.close(None).await;
+    let _ = timeout(RELAY_METADATA_CLOSE_TIMEOUT, async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    response
 }
 
 fn relay_metadata_error_is_retryable(error: &DaemonError) -> bool {
@@ -268,5 +281,81 @@ fn relay_metadata_error_is_retryable(error: &DaemonError) -> bool {
                 || message.contains("relay closed metadata connection"))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn metadata_query_closes_websocket_after_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test websocket should bind");
+        let addr = listener
+            .local_addr()
+            .expect("test websocket should have an address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("metadata client should connect");
+            let mut socket = accept_async(stream)
+                .await
+                .expect("metadata websocket should accept");
+            let request = match socket.next().await {
+                Some(Ok(Message::Text(text))) => serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("metadata request should decode"),
+                other => panic!("expected metadata request, received {other:?}"),
+            };
+            let RelayEnvelope::ClientMetadataRequest { request_id, .. } = request else {
+                panic!("expected metadata request envelope");
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::ClientMetadataResponse {
+                        request_id,
+                        machines: Some(Vec::new()),
+                        kernels: None,
+                        kernel: None,
+                        error: None,
+                    })
+                    .expect("metadata response should encode")
+                    .into(),
+                ))
+                .await
+                .expect("metadata response should send");
+
+            let close = timeout(Duration::from_secs(1), socket.next())
+                .await
+                .expect("metadata client should close promptly");
+            assert!(
+                matches!(close, Some(Ok(Message::Close(_)))),
+                "metadata client should complete a websocket close handshake, received {close:?}"
+            );
+        });
+
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-test-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+
+        let response = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+            .await
+            .expect("metadata query should succeed");
+        assert!(matches!(
+            response,
+            RelayEnvelope::ClientMetadataResponse {
+                machines: Some(machines),
+                ..
+            } if machines.is_empty()
+        ));
+        server
+            .await
+            .expect("metadata websocket server should finish");
     }
 }
