@@ -196,7 +196,7 @@ pub(super) fn projected_terminal_input_absence_response(
                 })),
             };
         }
-        if session.active_provider_run_id().is_none() {
+        if request.provider_run_id.is_none() && session.active_provider_run_id().is_none() {
             return Some(Err(DaemonError::NoActiveProviderRun {
                 session_id: request.session_id.clone(),
             }));
