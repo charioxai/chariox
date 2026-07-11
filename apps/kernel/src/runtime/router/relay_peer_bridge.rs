@@ -245,6 +245,30 @@ impl CommandRouter {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn relay_steer_leased_prompt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    ) -> Result<(String, bool), DaemonError> {
+        relay_peer_runtime::steer_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            prompt,
+            hidden_system_context,
+            attachments,
+            required_skills,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_ensure_remote_skill_packages(
         &self,
         context: crate::transport::relay_peer::RemoteSkillSyncContext,

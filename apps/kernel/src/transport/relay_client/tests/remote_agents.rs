@@ -370,6 +370,99 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         outcome,
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
+    let leased_agent_id = app_home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&remote_agent_id)
+        .expect("remote agent should still exist")
+        .remote_execution()
+        .expect("remote binding should still exist")
+        .leased_agent_id
+        .clone();
+    {
+        let mut app = app_worker.lock().await;
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent_id)
+            .expect("worker leased agent should exist");
+        let backing_active = app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("worker active prompt should load");
+        assert_eq!(
+            leased_agent.active_home_prompt_id.as_deref(),
+            Some("prompt-1"),
+            "worker backing active prompt: {backing_active:?}"
+        );
+        assert_eq!(
+            app.prompt_owner_queued_prompt_count_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("worker queue count should load"),
+            0,
+            "provider launch promotion must not leave a duplicate queued prompt"
+        );
+    }
+
+    let queued_prompt_id = match app_home
+        .lock()
+        .await
+        .submit_prompt(
+            &session_id,
+            &attachment_id,
+            Some(&remote_agent_id),
+            "REMOTE_QUEUE_STEER_DELIVERY\n",
+            Vec::new(),
+        )
+        .expect("second remote prompt should queue")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { prompt, .. } => prompt.id().to_string(),
+        other => panic!("unexpected queued prompt outcome: {other:?}"),
+    };
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
+    let request = LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: remote_agent_id.clone(),
+        prompt_id: queued_prompt_id.clone(),
+    });
+    let command =
+        KernelCommand::from_local_request("command-remote-queued-steer", None, None, &request);
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("remote queued prompt should steer through the worker");
+    let LocalDaemonResponse::QueuedPromptSteered {
+        prompt, session, ..
+    } = response
+    else {
+        panic!("unexpected remote queued prompt steer response");
+    };
+    assert_eq!(prompt.id(), queued_prompt_id);
+    assert_eq!(
+        session
+            .active_prompt_for_agent(&remote_agent_id)
+            .map(|prompt| prompt.prompt()),
+        Some("remote prompt over home session\n")
+    );
+    assert!(session
+        .queued_prompts_for_agent(&remote_agent_id)
+        .is_none_or(|prompts| prompts.is_empty()));
+    let worker_steer_deliveries = app_worker
+        .lock()
+        .await
+        .terminal()
+        .input_records()
+        .into_iter()
+        .filter(|record| {
+            String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+        })
+        .count();
+    assert_eq!(worker_steer_deliveries, 1);
 
     let completion = app_home
         .lock()

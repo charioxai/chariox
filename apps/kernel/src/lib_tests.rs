@@ -230,7 +230,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 8);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 9);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
@@ -292,6 +292,54 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "c0cc261015a3dd203b462d597d4260554fe8217e58144e4342ae7b174e27be30"
+    );
+}
+
+#[test]
+fn relay_peer_queued_prompt_steer_shape_is_versioned() {
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 9);
+
+    let request = RelayPeerRequest::SteerLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        steer_id: "home-queued-prompt-2".to_string(),
+        target_home_prompt_id: "home-active-prompt-1".to_string(),
+        prompt: "steer the active turn".to_string(),
+        hidden_system_context: "hidden steering context".to_string(),
+        attachments: vec![crate::transport::relay_peer::RelayPromptAttachment {
+            url: "file:///tmp/steer.txt".to_string(),
+            mime: "text/plain".to_string(),
+            filename: Some("steer.txt".to_string()),
+            contents_base64: Some("c3RlZXI=".to_string()),
+        }],
+        required_skills: Some(vec![crate::transport::relay_peer::RequiredRemoteSkill {
+            name: "review".to_string(),
+            version_hash: "skill-hash-1".to_string(),
+        }]),
+    };
+    let response = RelayPeerResponse::LeasedPromptSteered {
+        provider_run_id: "worker-provider-run-1".to_string(),
+        steer_id: "home-queued-prompt-2".to_string(),
+        replayed: false,
+    };
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/kind"),
+        Some(&serde_json::json!("steer_leased_prompt"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/target_home_prompt_id"),
+        Some(&serde_json::json!("home-active-prompt-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/kind"),
+        Some(&serde_json::json!("leased_prompt_steered"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("remote queued prompt steer should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "37d71e28b26468ad2e53f85c139b50156b9c20cbe7b9d6009d7337714b4f54d6"
     );
 }
 

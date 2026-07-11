@@ -506,6 +506,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn leased_agent_snapshot_for_test(
+        &self,
+        leased_agent_id: &str,
+    ) -> Option<LeasedAgent> {
+        self.app.leased_agents.get(leased_agent_id).cloned()
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_projected_output_history_key_for_test(
         &mut self,
         leased_agent_id: &str,

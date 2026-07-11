@@ -70,6 +70,8 @@ pub struct LeasedAgent {
     pub projected_output_history_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_home_steer_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayable_completion: Option<LeasedCompletionReplay>,
     pub created_at_ms: u64,
@@ -132,6 +134,7 @@ impl LeasedAgent {
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
             active_home_prompt_id: None,
+            applied_home_steer_ids: Vec::new(),
             replayable_completion: None,
             created_at_ms: unix_epoch_ms(),
         }

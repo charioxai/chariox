@@ -604,7 +604,24 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .or_else(|| self.provider_run_projection.get(provider_run_id))
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            });
+        if let Some(provider_run) = provider_run.as_ref() {
+            if provider_run.session_id() != session_id {
+                return Err(DaemonError::ProviderRunNotInSession {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run.id().to_string(),
+                });
+            }
+        }
+        let agent = self.agent_store.get_agent(agent_id)?;
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(
             "merge_key".to_string(),
@@ -630,17 +647,30 @@ impl KernelRuntimeOwnedState {
         let context = crate::history::HistoryEventTurnContext {
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
-            provider: Some(provider_run.provider().to_string()),
-            model: Some(provider_run.model().to_string()),
+            provider: Some(
+                provider_run
+                    .as_ref()
+                    .map(|run| run.provider())
+                    .unwrap_or_else(|| agent.provider())
+                    .to_string(),
+            ),
+            model: provider_run
+                .as_ref()
+                .map(|run| run.model().to_string())
+                .or_else(|| agent.model().map(str::to_string)),
             turn_id: active_turn
                 .as_ref()
                 .map(|turn| turn.trace_id.clone())
                 .or_else(|| Some(active_prompt_id.to_string())),
             prompt_id: Some(active_prompt_id.to_string()),
             provider_run_id: Some(provider_run_id.to_string()),
-            provider_session_id: provider_run.provider_session_id().map(str::to_string),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id())
+                .map(str::to_string),
             worktree_path: provider_run
-                .working_directory()
+                .as_ref()
+                .and_then(|run| run.working_directory())
                 .map(|path| path.display().to_string()),
             ..crate::history::HistoryEventTurnContext::default()
         };

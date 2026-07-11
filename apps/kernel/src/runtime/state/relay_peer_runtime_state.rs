@@ -347,6 +347,75 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn steer_relay_leased_prompt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<RelayPromptAttachment>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    ) -> Result<(String, bool), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let steer_id = steer_id.to_string();
+        let target_home_prompt_id = target_home_prompt_id.to_string();
+        let prompt = prompt.to_string();
+        let hidden_system_context = hidden_system_context.to_string();
+        loop {
+            let provider_run_id = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).leased_agent_provider_run_id(&leased_agent_id)
+                })
+                .await?
+                .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: format!("leased-agent:{leased_agent_id}"),
+                })?;
+            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
+            let (prepared_provider_run_id, dispatch) = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
+                        &leased_agent_id,
+                        &steer_id,
+                        &target_home_prompt_id,
+                        &prompt,
+                        &hidden_system_context,
+                        attachments.clone(),
+                        required_skills.clone(),
+                    )
+                })
+                .await?;
+            if prepared_provider_run_id != provider_run_id {
+                continue;
+            }
+            let Some(dispatch) = dispatch else {
+                return Ok((provider_run_id, true));
+            };
+            let reserved = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).reserve_leased_prompt_steer(
+                        &leased_agent_id,
+                        &steer_id,
+                        &target_home_prompt_id,
+                    )
+                })
+                .await?;
+            if !reserved {
+                return Ok((provider_run_id, true));
+            }
+            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                self.with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app)
+                        .rollback_leased_prompt_steer(&leased_agent_id, &steer_id);
+                })
+                .await;
+                return Err(error);
+            }
+            return Ok((provider_run_id, false));
+        }
+    }
+
     pub(crate) async fn ensure_relay_remote_skill_packages(
         &self,
         context: RemoteSkillSyncContext,

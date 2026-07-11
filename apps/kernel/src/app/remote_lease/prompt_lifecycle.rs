@@ -230,9 +230,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &hidden_system_context,
                 materialized_attachments,
             )?;
-        if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
+        let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
+        let accepted_prompt = match &outcome {
+            PromptSubmissionOutcome::Started { prompt }
+            | PromptSubmissionOutcome::Queued { prompt } => prompt,
+        };
+        let backing_active = self.app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
+        let current_submission_was_promoted = backing_active.as_ref().is_some_and(|active| {
+            active.created_at_ms() == accepted_prompt.created_at_ms()
+                && active.prompt() == accepted_prompt.prompt()
+                && active.hidden_system_context() == accepted_prompt.hidden_system_context()
+                && active.attachments() == accepted_prompt.attachments()
+        });
+        if started {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
+        }
+        if started
+            || leased_agent.active_home_prompt_id.is_none()
+            || backing_active.is_none()
+            || current_submission_was_promoted
+        {
             if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
+                if agent.active_home_prompt_id.as_deref() != home_prompt_id.as_deref() {
+                    agent.applied_home_steer_ids.clear();
+                }
                 agent.active_home_prompt_id = home_prompt_id;
             }
         }
@@ -247,6 +271,135 @@ impl<'a> RemoteLeaseRuntime<'a> {
             );
         }
         Ok((provider_run_id, outcome))
+    }
+
+    pub(crate) fn prepare_leased_prompt_steer(
+        &mut self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<RelayPromptAttachment>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    ) -> Result<(String, Option<crate::app::KernelPromptDispatch>), DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer leased prompt",
+                message: format!(
+                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
+                    leased_agent.active_home_prompt_id
+                ),
+            });
+        }
+        let provider_run = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: leased_agent.backing_session_id.clone(),
+            })?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run.id().to_string(),
+                state: provider_run.state(),
+                operation: "steer leased prompt",
+            });
+        }
+        if leased_agent
+            .applied_home_steer_ids
+            .iter()
+            .any(|applied| applied == steer_id)
+        {
+            return Ok((provider_run.id().to_string(), None));
+        }
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: leased_agent.backing_session_id.clone(),
+            })?;
+        if let Some(required_skills) = required_skills.as_deref() {
+            self.apply_required_remote_skills(&leased_agent, required_skills)?;
+        }
+        let materialized_attachments =
+            self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
+        Ok((
+            provider_run.id().to_string(),
+            Some(crate::app::KernelPromptDispatch {
+                session_id: leased_agent.backing_session_id,
+                provider_run_id: provider_run.id().to_string(),
+                agent_id: leased_agent.backing_agent_id,
+                prompt_id: format!("leased-steer:{steer_id}"),
+                target_active_prompt_id: Some(active_prompt.id().to_string()),
+                source_attachment_id: leased_agent.backing_attachment_id,
+                prompt: prompt.to_string(),
+                hidden_system_context: hidden_system_context.to_string(),
+                attachments: materialized_attachments,
+                prompt_origin: crate::session::PromptOrigin::Arroba,
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                steering: true,
+            }),
+        ))
+    }
+
+    pub(crate) fn reserve_leased_prompt_steer(
+        &mut self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get_mut(leased_agent_id)
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer leased prompt",
+                message: format!(
+                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
+                    leased_agent.active_home_prompt_id
+                ),
+            });
+        }
+        if leased_agent
+            .applied_home_steer_ids
+            .iter()
+            .any(|applied| applied == steer_id)
+        {
+            return Ok(false);
+        }
+        leased_agent
+            .applied_home_steer_ids
+            .push(steer_id.to_string());
+        Ok(true)
+    }
+
+    pub(crate) fn rollback_leased_prompt_steer(&mut self, leased_agent_id: &str, steer_id: &str) {
+        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            leased_agent
+                .applied_home_steer_ids
+                .retain(|applied| applied != steer_id);
+        }
     }
 
     pub(crate) fn complete_leased_prompt(

@@ -237,7 +237,7 @@ pub(crate) struct KernelPromptCancellation {
 pub(crate) struct KernelQueuedPromptSteer {
     pub(crate) prompt: PromptQueueItem,
     pub(crate) session: crate::session::RuntimeSession,
-    pub(crate) dispatch: KernelPromptDispatch,
+    pub(crate) dispatch: Option<KernelPromptDispatch>,
 }
 
 pub(crate) struct KernelQueuedPromptCancellation {

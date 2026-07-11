@@ -175,6 +175,7 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod provider_projection;
+    mod relay_leased_prompt_steer;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
     mod runtime_persistence;
