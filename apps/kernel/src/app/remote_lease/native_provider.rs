@@ -111,7 +111,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
-        _attachment_id: &str,
+        attachment_id: &str,
         data_base64: &str,
     ) -> Result<usize, DaemonError> {
         let leased_agent = self
@@ -152,12 +152,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message: format!("data_base64 is not valid base64: {error}"),
             })?;
         let byte_count = bytes.len();
-        self.app.send_terminal_input(
-            provider_run.session_id(),
-            &leased_agent.backing_attachment_id,
-            Some(provider_run_id),
-            &bytes,
-        )?;
+        crate::app::terminal_input::ProviderTerminalInput::new(self.app)
+            .send_remote_provider_input(
+                provider_run.session_id(),
+                provider_run_id,
+                attachment_id,
+                &bytes,
+            )?;
         Ok(byte_count)
     }
 }
@@ -237,10 +238,27 @@ mod tests {
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native run should launch");
+        let byte_count = runtime
+            .send_leased_native_provider_input(
+                &leased_agent.id,
+                run.id(),
+                "home-native-attachment",
+                "eA==",
+            )
+            .expect("native input should be sent");
+        assert_eq!(byte_count, 1);
+        drop(runtime);
 
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
         assert!(!run.client_interface().is_arroba());
+        assert_eq!(
+            app.terminal()
+                .input_records()
+                .last()
+                .map(|record| record.source_attachment_id.as_str()),
+            Some("home-native-attachment")
+        );
         assert!(crate::mcp::ArrobaMcpRegistry::user_root()
             .expect("isolated user MCP root should resolve")
             .join("browser.json")

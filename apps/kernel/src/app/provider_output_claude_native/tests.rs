@@ -2,6 +2,45 @@ use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
 #[test]
+fn native_prompt_history_uses_latest_terminal_input_attachment() {
+    let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    app.terminal().record_input(
+        "session-1",
+        "provider-run-1",
+        "attachment-native-a",
+        b"first",
+    );
+    app.terminal()
+        .record_input("session-1", "provider-run-2", "attachment-other", b"other");
+    app.terminal().record_input(
+        "session-1",
+        "provider-run-1",
+        "attachment-native-b",
+        b"second",
+    );
+
+    assert_eq!(
+        claude_native_history_source_attachment_id(
+            &app,
+            "session-1",
+            "provider-run-1",
+            "attachment-fallback",
+        ),
+        "attachment-native-b"
+    );
+    assert_eq!(
+        claude_native_history_source_attachment_id(
+            &app,
+            "session-1",
+            "provider-run-missing",
+            "attachment-fallback",
+        ),
+        "attachment-fallback"
+    );
+}
+
+#[test]
 fn submit_wait_state_defers_enter_until_delay_elapses() {
     let marker = format!("submit-wait:prompt-7:{}", 1_000);
     // Before the settle delay: keep waiting (Enter stays off the lock).

@@ -34,6 +34,7 @@ impl<'a> KernelAgentService<'a> {
         if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
             self.spawn_prompt_history_append(
                 &submitted.admission,
+                None,
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
@@ -117,6 +118,7 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        history_source_attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
         attachments: Vec<PromptAttachment>,
@@ -148,6 +150,7 @@ impl<'a> KernelAgentService<'a> {
         if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
             self.spawn_prompt_history_append(
                 &submitted.admission,
+                Some(history_source_attachment_id),
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
@@ -265,13 +268,14 @@ impl<'a> KernelAgentService<'a> {
     fn spawn_prompt_history_append(
         &self,
         admission: &KernelPromptAdmission,
+        history_source_attachment_id: Option<&str>,
         prompt_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         self.app.spawn_user_prompt_history_append_with_prompt_id(
             &admission.session_id,
-            &admission.attachment_id,
+            history_source_attachment_id.unwrap_or(&admission.attachment_id),
             &admission.target_agent_id,
             prompt,
             attachments,

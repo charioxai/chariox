@@ -80,6 +80,21 @@ pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
 
+fn claude_native_history_source_attachment_id(
+    app: &DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    fallback_attachment_id: &str,
+) -> String {
+    app.terminal()
+        .input_records()
+        .into_iter()
+        .rev()
+        .find(|record| record.session_id == session_id && record.provider_run_id == provider_run_id)
+        .map(|record| record.source_attachment_id)
+        .unwrap_or_else(|| fallback_attachment_id.to_string())
+}
+
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -125,7 +140,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
-        let attachment_id = self
+        let runtime_attachment_id = self
             .app
             .attachments
             .list_session_attachment_ids(session_id)
@@ -182,16 +197,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
-                let Some(attachment_id) = attachment_id.as_deref() else {
+                let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
                 };
+                let history_source_attachment_id = claude_native_history_source_attachment_id(
+                    self.app,
+                    session_id,
+                    provider_run_id,
+                    runtime_attachment_id,
+                );
                 let attachments = extract_claude_native_prompt_attachments(
                     prompt,
                     provider_run.working_directory().map(PathBuf::as_path),
                 );
                 let outcome = self.app.record_native_prompt_started_with_attachments(
                     session_id,
-                    attachment_id,
+                    runtime_attachment_id,
+                    &history_source_attachment_id,
                     &agent_id,
                     prompt,
                     attachments,

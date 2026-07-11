@@ -1085,4 +1085,68 @@ mod explicit_completion_tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "assistant-msg-explicit");
     }
+
+    #[test]
+    fn native_prompt_keeps_home_attachment_provenance_in_worker_projection() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let provider_run = RemoteLeaseRuntime::new(&mut app)
+            .launch_leased_native_provider_run(
+                &leased_agent.id,
+                "managed-dev-stub",
+                "managed-dev-stub",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                Vec::new(),
+                Some(Vec::new()),
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("native provider run should launch");
+        let outcome = app
+            .record_native_prompt_started_with_attachments(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+                "home-native-attachment",
+                &leased_agent.backing_agent_id,
+                "native prompt from home TUI",
+                Vec::new(),
+            )
+            .expect("native prompt should be recorded");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
+            .expect("native prompt projection should succeed")
+            .expect("native prompt should produce a projection");
+        let RelayPeerEvent::LeasedRuntimeProjection { prompts, .. } = projection.1;
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].text, "native prompt from home TUI\n");
+    }
 }

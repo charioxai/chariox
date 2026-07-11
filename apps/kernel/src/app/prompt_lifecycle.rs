@@ -280,6 +280,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        history_source_attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
         attachments: Vec<crate::session::PromptAttachment>,
@@ -287,6 +288,7 @@ impl DaemonApp {
         crate::app::KernelAgentService::new(self).record_native_prompt_started(
             session_id,
             attachment_id,
+            history_source_attachment_id,
             target_agent_id,
             prompt,
             attachments,

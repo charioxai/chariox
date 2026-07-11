@@ -27,11 +27,46 @@ impl<'a> ProviderTerminalInput<'a> {
         attachment_id: &str,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
+        self.send_provider_input_with_attachment_validation(
+            session_id,
+            provider_run_id,
+            attachment_id,
+            bytes,
+            true,
+        )
+    }
+
+    pub(crate) fn send_remote_provider_input(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        source_attachment_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        self.send_provider_input_with_attachment_validation(
+            session_id,
+            provider_run_id,
+            source_attachment_id,
+            bytes,
+            false,
+        )
+    }
+
+    fn send_provider_input_with_attachment_validation(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        source_attachment_id: &str,
+        bytes: &[u8],
+        validate_attachment_membership: bool,
+    ) -> Result<(), DaemonError> {
         let _ = ProviderRunLivenessRuntime::new(self.app)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+        if validate_attachment_membership
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(source_attachment_id)
+        {
             crate::app::KernelSessionReadService::new(self.app)
-                .ensure_attachment_in_session(session_id, attachment_id)?;
+                .ensure_attachment_in_session(session_id, source_attachment_id)?;
         }
         let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -46,7 +81,7 @@ impl<'a> ProviderTerminalInput<'a> {
 
         self.app
             .terminal
-            .record_input(session_id, provider_run_id, attachment_id, bytes);
+            .record_input(session_id, provider_run_id, source_attachment_id, bytes);
         self.app.pty.write_input(provider_run_id, bytes)
     }
 }
