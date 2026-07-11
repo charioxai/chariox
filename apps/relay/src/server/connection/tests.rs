@@ -8,6 +8,23 @@ use crate::auth::DEFAULT_RELAY_REALM_ID;
 use crate::protocol::{DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
 
+#[test]
+fn outgoing_queue_capacity_override_is_positive_and_defaults_safely() {
+    assert_eq!(parse_relay_outgoing_queue_capacity(Some("32")), 32);
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(None),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("0")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("invalid")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+}
+
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }

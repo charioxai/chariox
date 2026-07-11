@@ -3,13 +3,15 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+#[cfg(test)]
+use tokio::sync::oneshot;
+use tokio::sync::{mpsc, Mutex};
 
 pub const DEFAULT_EVENT_ID_RESERVATION_BLOCK: u64 = 100_000;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
@@ -18,6 +20,7 @@ const PERSISTENT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
 const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
 const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
+const PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY: usize = 32;
 #[cfg(test)]
 const PERSISTENT_WRITER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -163,7 +166,9 @@ impl<E: Clone + Serialize> EventLog<E> {
             (logged, compact_snapshot)
         };
         if let Some(persistence) = &self.persistence {
-            persistence.persist_event(&logged, compact_snapshot.as_deref())?;
+            persistence
+                .persist_event(&logged, compact_snapshot.as_deref())
+                .await?;
         }
         Ok(logged)
     }
@@ -214,9 +219,9 @@ impl<E: Clone + Serialize> EventLog<E> {
     }
 
     #[cfg(test)]
-    fn flush_persistence_for_tests(&self) -> io::Result<()> {
+    async fn flush_persistence_for_tests(&self) -> io::Result<()> {
         match &self.persistence {
-            Some(persistence) => persistence.flush_for_tests(),
+            Some(persistence) => persistence.flush_for_tests().await,
             None => Ok(()),
         }
     }
@@ -265,7 +270,7 @@ where
 #[derive(Debug)]
 struct PersistentEventStore {
     path: PathBuf,
-    write_tx: std_mpsc::Sender<PersistentEventWrite>,
+    write_tx: mpsc::Sender<PersistentEventWrite>,
     skipped_compactions: AtomicU64,
     max_file_bytes_before_compaction: Option<u64>,
     estimated_file_bytes: AtomicU64,
@@ -279,7 +284,7 @@ enum PersistentEventWrite {
         compact_jsonl: Option<Vec<u8>>,
     },
     #[cfg(test)]
-    Flush(std_mpsc::Sender<io::Result<()>>),
+    Flush(oneshot::Sender<io::Result<()>>),
 }
 
 impl PersistentEventStore {
@@ -289,7 +294,7 @@ impl PersistentEventStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error),
         };
-        let (write_tx, write_rx) = std_mpsc::channel();
+        let (write_tx, write_rx) = mpsc::channel(PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY);
         let last_error = Arc::new(StdMutex::new(None));
         spawn_persistent_event_writer(path.clone(), write_rx, Arc::clone(&last_error))?;
         Ok(Self {
@@ -304,7 +309,7 @@ impl PersistentEventStore {
         })
     }
 
-    fn persist_event<E>(
+    async fn persist_event<E>(
         &self,
         logged: &LoggedEvent<E>,
         compact_snapshot: Option<&[LoggedEvent<E>]>,
@@ -324,6 +329,7 @@ impl PersistentEventStore {
                 append_jsonl,
                 compact_jsonl,
             })
+            .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
         if let Some(compact_jsonl_len) = compact_jsonl_len {
             self.estimated_file_bytes
@@ -367,19 +373,22 @@ impl PersistentEventStore {
     }
 
     #[cfg(test)]
-    fn flush_for_tests(&self) -> io::Result<()> {
-        let (tx, rx) = std_mpsc::channel();
+    async fn flush_for_tests(&self) -> io::Result<()> {
+        let (tx, rx) = oneshot::channel();
         self.write_tx
             .send(PersistentEventWrite::Flush(tx))
+            .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
-        rx.recv_timeout(PERSISTENT_WRITER_FLUSH_TIMEOUT)
+        tokio::time::timeout(PERSISTENT_WRITER_FLUSH_TIMEOUT, rx)
+            .await
             .map_err(|_| io::Error::other("persistent event writer flush timed out"))?
+            .map_err(|_| io::Error::other("persistent event writer stopped before flush"))?
     }
 }
 
 fn spawn_persistent_event_writer(
     path: PathBuf,
-    write_rx: std_mpsc::Receiver<PersistentEventWrite>,
+    write_rx: mpsc::Receiver<PersistentEventWrite>,
     last_error: Arc<StdMutex<Option<String>>>,
 ) -> io::Result<()> {
     thread::Builder::new()
@@ -390,10 +399,10 @@ fn spawn_persistent_event_writer(
 
 fn run_persistent_event_writer(
     path: PathBuf,
-    write_rx: std_mpsc::Receiver<PersistentEventWrite>,
+    mut write_rx: mpsc::Receiver<PersistentEventWrite>,
     last_error: Arc<StdMutex<Option<String>>>,
 ) {
-    for write in write_rx {
+    while let Some(write) = write_rx.blocking_recv() {
         let result = match write {
             PersistentEventWrite::Append {
                 append_jsonl,

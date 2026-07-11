@@ -1,7 +1,7 @@
 use std::future::pending;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -23,7 +23,7 @@ mod tests;
 
 use support::*;
 
-const RELAY_OUTGOING_QUEUE_CAPACITY: usize = 1024;
+const DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY: usize = 1024;
 const RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -45,7 +45,7 @@ pub(crate) async fn handle_connection(
             Err(_) => return Ok(()),
         };
     let (mut writer, mut reader) = socket.split();
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(RELAY_OUTGOING_QUEUE_CAPACITY);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
     let mut writer_task = Some(tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
@@ -941,4 +941,22 @@ pub(crate) async fn handle_connection(
         let _ = writer_task.await;
     }
     connection_result
+}
+
+fn relay_outgoing_queue_capacity() -> usize {
+    static CAPACITY: OnceLock<usize> = OnceLock::new();
+    *CAPACITY.get_or_init(|| {
+        parse_relay_outgoing_queue_capacity(
+            std::env::var("ARROBA_RELAY_OUTGOING_QUEUE_CAPACITY")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn parse_relay_outgoing_queue_capacity(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or(DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY)
 }
