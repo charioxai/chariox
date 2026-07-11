@@ -104,6 +104,7 @@ pub(crate) use provider_first_output_watchdog::{
     provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
     provider_inactivity_timeout_candidates, provider_inactivity_timeout_diagnostic,
     ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
+    PROVIDER_OUTPUT_TIMEOUT_MS,
 };
 pub(crate) use provider_launch_policy::{
     apply_metaagent_launch_policy, failed_provider_resume_state_replacement,

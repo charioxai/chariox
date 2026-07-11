@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -47,6 +47,9 @@ pub(crate) struct PtyOutputSignal {
 struct PtyOutputSignalState {
     sequence: AtomicU64,
     notify: Notify,
+    provider_runs_by_process: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    preferred_provider_run_by_process: Mutex<BTreeMap<String, String>>,
+    ready_processes: Mutex<BTreeSet<String>>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -78,7 +81,8 @@ impl PtyManager {
     }
 
     pub fn spawn_for_run(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
-        if self.process_aliases.contains_key(run.id()) {
+        if let Some(process_key) = self.process_aliases.get(run.id()) {
+            self.output_signal.prefer_alias(process_key, run.id());
             return Ok(());
         }
 
@@ -87,6 +91,8 @@ impl PtyManager {
             process.reference_count += 1;
             self.process_aliases
                 .insert(run.id().to_string(), process_key.clone());
+            self.output_signal
+                .register_alias(&process_key, run.id().to_string());
             return Ok(());
         }
 
@@ -122,13 +128,17 @@ impl PtyManager {
     }
 
     pub fn spawn(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
-        if self.process_aliases.contains_key(&request.provider_run_id) {
+        if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
+            self.output_signal
+                .prefer_alias(process_key, &request.provider_run_id);
             return Ok(());
         }
         if let Some(process) = self.processes.get_mut(&request.process_key) {
             process.reference_count += 1;
             self.process_aliases
-                .insert(request.provider_run_id, request.process_key);
+                .insert(request.provider_run_id.clone(), request.process_key.clone());
+            self.output_signal
+                .register_alias(&request.process_key, request.provider_run_id);
             return Ok(());
         }
 
@@ -189,7 +199,10 @@ impl PtyManager {
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
 
+        self.output_signal
+            .register_alias(&request.process_key, request.provider_run_id.clone());
         let output_signal = self.output_signal.clone();
+        let output_process_key = request.process_key.clone();
         thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
 
@@ -201,9 +214,9 @@ impl PtyManager {
                 if output_tx.send(buffer[..size].to_vec()).is_err() {
                     break;
                 }
-                output_signal.record_output();
+                output_signal.record_output(&output_process_key);
             }
-            output_signal.record_output();
+            output_signal.record_output(&output_process_key);
         });
 
         self.processes.insert(
@@ -347,6 +360,8 @@ impl PtyManager {
         let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
             return Ok(false);
         };
+        self.output_signal
+            .unregister_alias(&process_key, provider_run_id);
 
         self.remove_process_by_key(&process_key, Some(provider_run_id))
     }
@@ -364,6 +379,7 @@ impl PtyManager {
             return Ok(true);
         }
 
+        self.output_signal.unregister_process(process_key);
         self.process_aliases
             .retain(|_, alias_process_key| alias_process_key != process_key);
         let mut process =
@@ -427,7 +443,105 @@ impl PtyOutputSignal {
         notified.await;
     }
 
-    fn record_output(&self) {
+    pub(crate) fn take_ready_provider_run_ids(&self) -> BTreeSet<String> {
+        let ready_processes = {
+            let mut ready = self
+                .inner
+                .ready_processes
+                .lock()
+                .expect("PTY ready-process set poisoned");
+            std::mem::take(&mut *ready)
+        };
+        let preferred = self
+            .inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned");
+        ready_processes
+            .into_iter()
+            .filter_map(|process_key| preferred.get(&process_key).cloned())
+            .collect()
+    }
+
+    fn register_alias(&self, process_key: &str, provider_run_id: String) {
+        self.inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned")
+            .entry(process_key.to_string())
+            .or_default()
+            .insert(provider_run_id.clone());
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .insert(process_key.to_string(), provider_run_id);
+    }
+
+    fn prefer_alias(&self, process_key: &str, provider_run_id: &str) {
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .insert(process_key.to_string(), provider_run_id.to_string());
+    }
+
+    fn unregister_alias(&self, process_key: &str, provider_run_id: &str) {
+        let mut aliases = self
+            .inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned");
+        let fallback = if let Some(provider_runs) = aliases.get_mut(process_key) {
+            provider_runs.remove(provider_run_id);
+            if provider_runs.is_empty() {
+                aliases.remove(process_key);
+                None
+            } else {
+                provider_runs.last().cloned()
+            }
+        } else {
+            None
+        };
+        drop(aliases);
+        let mut preferred = self
+            .inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned");
+        if preferred.get(process_key).map(String::as_str) == Some(provider_run_id) {
+            if let Some(fallback) = fallback {
+                preferred.insert(process_key.to_string(), fallback);
+            } else {
+                preferred.remove(process_key);
+            }
+        }
+    }
+
+    fn unregister_process(&self, process_key: &str) {
+        self.inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned")
+            .remove(process_key);
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .remove(process_key);
+        self.inner
+            .ready_processes
+            .lock()
+            .expect("PTY ready-process set poisoned")
+            .remove(process_key);
+    }
+
+    fn record_output(&self, process_key: &str) {
+        self.inner
+            .ready_processes
+            .lock()
+            .expect("PTY ready-process set poisoned")
+            .insert(process_key.to_string());
         self.inner.sequence.fetch_add(1, Ordering::AcqRel);
         self.inner.notify.notify_waiters();
     }
@@ -549,6 +663,11 @@ mod tests {
         )
         .await
         .expect("PTY output signal should wake after reader enqueues bytes");
+        assert_eq!(
+            signal.take_ready_provider_run_ids(),
+            [run.id().to_string()].into_iter().collect()
+        );
+        assert!(signal.take_ready_provider_run_ids().is_empty());
 
         let output = wait_for_output(&mut manager, run.id());
         let combined = output
@@ -587,6 +706,10 @@ mod tests {
             .flat_map(|chunk| chunk.bytes)
             .collect::<Vec<u8>>();
         assert!(String::from_utf8_lossy(&combined).contains("shared pty"));
+        assert_eq!(
+            manager.output_signal().take_ready_provider_run_ids(),
+            [second_run.id().to_string()].into_iter().collect()
+        );
 
         manager
             .remove_process(first_run.id())

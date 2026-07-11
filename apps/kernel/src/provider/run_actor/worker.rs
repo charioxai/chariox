@@ -92,12 +92,12 @@ impl ProviderRunWorkerDeps {
                         self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptSubmitJob {
                             session_id,
-                            provider_run_id,
+                            provider_run_id: provider_run_id.clone(),
                             agent_id,
                             result,
                         };
                         push_finished_submit(&self.finished_submits, finished);
-                        self.completion_signal.record_completion();
+                        self.completion_signal.record_completion(&provider_run_id);
                     }
                     ProviderRunActorCommand::Abort {
                         session_id,
@@ -108,11 +108,11 @@ impl ProviderRunWorkerDeps {
                         self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptAbortJob {
                             session_id,
-                            provider_run_id,
+                            provider_run_id: provider_run_id.clone(),
                             result,
                         };
                         push_finished_abort(&self.finished_aborts, finished);
-                        self.completion_signal.record_completion();
+                        self.completion_signal.record_completion(&provider_run_id);
                     }
                     ProviderRunActorCommand::Utility {
                         provider_run_id,
@@ -161,11 +161,11 @@ impl ProviderRunWorkerDeps {
                             &run,
                         );
                         let finished = FinishedProviderRunSelectionSyncJob {
-                            provider_run_id,
+                            provider_run_id: provider_run_id.clone(),
                             result,
                         };
                         push_finished_selection_sync(&self.finished_selection_syncs, finished);
-                        self.completion_signal.record_completion();
+                        self.completion_signal.record_completion(&provider_run_id);
                     }
                     ProviderRunActorCommand::PollOutput {
                         provider_run_id,
@@ -180,11 +180,11 @@ impl ProviderRunWorkerDeps {
                         );
                         self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                         let finished = FinishedProviderOutputPollJob {
-                            provider_run_id,
+                            provider_run_id: provider_run_id.clone(),
                             result,
                         };
                         push_finished_output_poll(&self.finished_output_polls, finished);
-                        self.completion_signal.record_completion();
+                        self.completion_signal.record_completion(&provider_run_id);
                     }
                     ProviderRunActorCommand::Stop => break,
                 }

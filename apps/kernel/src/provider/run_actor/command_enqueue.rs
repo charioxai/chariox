@@ -289,8 +289,9 @@ impl ProviderRunActorMailbox {
         &self,
         finished: FinishedProviderOutputPollJob,
     ) {
+        let provider_run_id = finished.provider_run_id.clone();
         push_finished_output_poll(&self.finished_output_polls, finished);
-        self.completion_signal.record_completion();
+        self.completion_signal.record_completion(&provider_run_id);
     }
 
     pub(super) fn worker_for_run(
@@ -400,6 +401,11 @@ mod tests {
         )
         .await
         .expect("finished structured output poll should wake completion waiters");
+        assert_eq!(
+            signal.take_ready_provider_run_ids(),
+            ["run-1".to_string()].into_iter().collect()
+        );
+        assert!(signal.take_ready_provider_run_ids().is_empty());
         assert_eq!(mailbox.drain_finished_output_polls().len(), 1);
     }
 

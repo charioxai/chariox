@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -65,6 +65,7 @@ pub(crate) struct ProviderRunActorCompletionSignal {
 struct ProviderRunActorCompletionSignalState {
     sequence: AtomicU64,
     notify: Notify,
+    ready_provider_runs: Mutex<BTreeSet<String>>,
 }
 
 impl ProviderRunActorMailbox {
@@ -170,7 +171,21 @@ impl ProviderRunActorCompletionSignal {
         notified.await;
     }
 
-    pub(super) fn record_completion(&self) {
+    pub(crate) fn take_ready_provider_run_ids(&self) -> BTreeSet<String> {
+        let mut ready = self
+            .inner
+            .ready_provider_runs
+            .lock()
+            .expect("provider run completion ready set poisoned");
+        std::mem::take(&mut *ready)
+    }
+
+    pub(super) fn record_completion(&self, provider_run_id: &str) {
+        self.inner
+            .ready_provider_runs
+            .lock()
+            .expect("provider run completion ready set poisoned")
+            .insert(provider_run_id.to_string());
         self.inner.sequence.fetch_add(1, Ordering::AcqRel);
         self.inner.notify.notify_waiters();
     }

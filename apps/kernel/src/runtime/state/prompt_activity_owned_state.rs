@@ -119,6 +119,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
+        self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
         let active_turn = self.active_turns.get(provider_run_id);
         if prompt_activity.is_some() || active_turn.is_some() {
@@ -218,14 +219,21 @@ impl KernelRuntimeOwnedState {
             self.active_turns.start(turn);
             self.active_turns
                 .mark_awaiting_first_output(provider_run_id);
+            self.schedule_provider_output_deadline(provider_run_id);
         }
     }
 
     pub(super) fn note_prompt_output(&self, provider_run_id: &str) {
-        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+        let tracked = if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.last_output_at = Some(Instant::now());
-        }
+            true
+        } else {
+            false
+        };
         self.active_turns.mark_streaming(provider_run_id);
+        if tracked {
+            self.schedule_provider_output_deadline(provider_run_id);
+        }
     }
 
     pub(super) fn note_prompt_response_content(&self, provider_run_id: &str) {
@@ -250,6 +258,9 @@ impl KernelRuntimeOwnedState {
                 );
             }
         }
+        if self.prompt_activity.read().contains_key(provider_run_id) {
+            self.schedule_provider_output_deadline(provider_run_id);
+        }
     }
 
     pub(super) fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
@@ -268,6 +279,14 @@ impl KernelRuntimeOwnedState {
                 completion_recorded: false,
                 settlement_requested: true,
             });
+        self.schedule_provider_output_deadline(provider_run_id);
+    }
+
+    fn schedule_provider_output_deadline(&self, provider_run_id: &str) {
+        self.provider_output_deadlines.schedule(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
+        );
     }
 
     pub(super) fn acquire_workflow_node_workspace_claim(

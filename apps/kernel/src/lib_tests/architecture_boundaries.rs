@@ -2,6 +2,34 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn transport_output_pump_is_ready_run_driven() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/state/transport_runtime_state.rs"),
+    )
+    .expect("transport runtime source should be readable");
+    let pump = source
+        .split("pub(crate) async fn pump_transport_runtime")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) async fn record_terminal_attachment_heartbeat")
+                .next()
+        })
+        .expect("transport output pump should remain discoverable");
+    for forbidden in [
+        "pump_active_prompt_outputs",
+        "list_sessions",
+        "list_non_ended_sessions_including_hidden",
+    ] {
+        assert!(
+            !pump.contains(forbidden),
+            "transport output pump must consume ready-run identities, not `{forbidden}`"
+        );
+    }
+    assert!(pump.contains("take_ready_provider_run_ids"));
+    assert!(pump.contains("take_due_provider_run_ids"));
+}
+
+#[test]
 fn runtime_command_paths_do_not_lock_daemon_app() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = BTreeSet::new();
