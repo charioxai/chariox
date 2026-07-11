@@ -75,10 +75,19 @@ try {
 
   await waitForKernel(ports.homeKernel)
   for (const worker of ports.workers) await waitForKernel(worker.kernel)
-  client = new LocalIpcClient(`ws://127.0.0.1:${ports.relay}`, {
+  const relayProbe = new LocalIpcClient(`ws://127.0.0.1:${ports.relay}`, {
     relayAuthToken: relayToken,
     targetDaemonAlias: "home",
   })
+  try {
+    await waitFor(async () => {
+      await relayProbe.send(requests.listSessionsRequest())
+      return true
+    }, 30_000, "home kernel relay route")
+  } finally {
+    await relayProbe.close().catch(() => undefined)
+  }
+  client = new LocalIpcClient(`ws://127.0.0.1:${ports.homeKernel}`)
   for (const worker of ports.workers) {
     const workerClient = new LocalIpcClient(`ws://127.0.0.1:${worker.kernel}`)
     try {
@@ -182,6 +191,7 @@ try {
     runningProviderAgents: totalAgents,
     syntheticProviderProcesses: workerCount,
     providerCapacityScope: "Arroba orchestration gate; provider child-process quotas and memory are measured separately",
+    homeRelayRouteProbed: true,
     metrics,
     workerRelayStatuses,
     ports,
