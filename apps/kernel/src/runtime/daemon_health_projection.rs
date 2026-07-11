@@ -61,7 +61,7 @@ pub(crate) async fn build_daemon_health_projection(
             .health_snapshot(PROVIDER_CATALOG_CACHE_TTL),
         input
             .provider_run_projection
-            .health_snapshot(input.session_projection.projected_sessions()),
+            .health_snapshot(input.runtime_state.list_session_health_snapshots()),
         input.transport_health.snapshot(
             crate::runtime_transport::RECENT_EVENT_LIMIT,
             crate::runtime_transport::COMMAND_RESULT_CACHE_LIMIT,

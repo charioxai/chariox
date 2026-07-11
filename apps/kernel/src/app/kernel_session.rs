@@ -135,6 +135,8 @@ impl<'a> KernelSessionService<'a> {
             }),
         );
 
+        self.app.update_session_projection(session.clone());
+
         Ok((session, agent))
     }
 

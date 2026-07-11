@@ -74,6 +74,18 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    pub(crate) fn list_session_health_snapshots(&self) -> Vec<crate::session::RuntimeSession> {
+        self.owned
+            .session_store
+            .list_sessions()
+            .into_iter()
+            .map(|mut session| {
+                session.set_agents(self.owned.agent_store.get_session_agents(session.id()));
+                session
+            })
+            .collect()
+    }
+
     pub(crate) fn resolve_session_snapshot(
         &self,
         request: crate::local::ResolveSessionRequest,
