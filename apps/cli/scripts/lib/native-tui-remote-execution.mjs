@@ -371,6 +371,13 @@ export function hetznerNativeRuntimeCleanupCommand(paths) {
     : null
 }
 
+export function hetznerNativeRuntimeTempDir(runtimeRoot) {
+  if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+$/.test(runtimeRoot)) {
+    throw new Error(`refusing unexpected Hetzner native TUI runtime root: ${runtimeRoot}`)
+  }
+  return path.posix.join(runtimeRoot, "tmp")
+}
+
 export async function removeHetznerNativeRuntimePaths(options, paths) {
   const command = hetznerNativeRuntimeCleanupCommand(paths)
   if (command) await runHetznerCommand(options, command).catch(() => {})

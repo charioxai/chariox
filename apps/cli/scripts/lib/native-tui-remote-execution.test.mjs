@@ -10,6 +10,7 @@ import {
   assertMatchingHetznerCheckoutCommit,
   ensureExecutionDirectory,
   hetznerNativeRuntimeCleanupCommand,
+  hetznerNativeRuntimeTempDir,
   hetznerWorktreeCleanupCommand,
   prepareClaudeWorkspaceTrustConfigText,
   removeExecutionFile,
@@ -93,6 +94,17 @@ test("rejects cleanup paths outside a native TUI runtime root", () => {
   assert.throws(
     () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
     /refusing to remove unexpected Hetzner native TUI runtime path/,
+  )
+})
+
+test("scopes the Hetzner worker temp directory to its removable runtime root", () => {
+  assert.equal(
+    hetznerNativeRuntimeTempDir("/tmp/arb-remote-native-tui-42-123456789"),
+    "/tmp/arb-remote-native-tui-42-123456789/tmp",
+  )
+  assert.throws(
+    () => hetznerNativeRuntimeTempDir("/tmp"),
+    /refusing unexpected Hetzner native TUI runtime root/,
   )
 })
 

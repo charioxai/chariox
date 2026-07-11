@@ -43,6 +43,7 @@ import {
 import {
   copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
+  hetznerNativeRuntimeTempDir,
   prepareHetznerClaudeWorkspaceTrust,
   prepareHetznerWorktree,
   remoteEnvCommand,
@@ -348,6 +349,9 @@ async function main() {
   const remoteClaudeTrustStatePath = remoteRuntimeRoot
     ? path.posix.join(remoteRuntimeRoot, "claude-workspace-trust.json")
     : null
+  const remoteTempDir = remoteRuntimeRoot
+    ? hetznerNativeRuntimeTempDir(remoteRuntimeRoot)
+    : null
   const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
@@ -521,6 +525,7 @@ async function main() {
           ARROBA_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, "worker.sock"),
           ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, "worker-history"),
           ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
+          TMPDIR: remoteTempDir,
         }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/arroba-kernel`)), {
           stdio: ["ignore", "ignore", "inherit"],
         })
