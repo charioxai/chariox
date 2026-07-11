@@ -64,6 +64,12 @@ fn remote_provider_launches_preserve_explicit_adapter_selection() {
             "{relative} must not replace an explicit remote adapter with provider identity"
         );
     }
+    let peer_dispatch =
+        std::fs::read_to_string(src_root.join("transport/relay_client/peer_requests.rs"))
+            .expect("relay peer dispatch source should be readable");
+    assert!(peer_dispatch.contains("adapter_key,"));
+    assert!(!peer_dispatch.contains("adapter_key: _,"));
+    assert!(!peer_dispatch.contains("adapter_key_for_provider(&provider)"));
 }
 
 #[test]
