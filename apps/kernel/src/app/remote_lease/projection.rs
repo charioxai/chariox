@@ -244,7 +244,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let provider_run = self.app.providers.get_run(provider_run_id).ok();
         let requires_explicit_completion = leased_provider_requires_explicit_completion(
             &leased_agent.provider,
-            provider_run.as_ref().map(|run| run.provider()),
+            provider_run.as_ref(),
         );
         let has_settleable_output_history =
             current_batch_has_provider_output && !requires_explicit_completion;
@@ -411,7 +411,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let provider_run = self.app.providers.get_run(provider_run_id).ok();
         if leased_provider_requires_explicit_completion(
             &leased_agent.provider,
-            provider_run.as_ref().map(|run| run.provider()),
+            provider_run.as_ref(),
         ) {
             return Ok(false);
         }
@@ -927,9 +927,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
 fn leased_provider_requires_explicit_completion(
     provider: &str,
-    worker_provider: Option<&str>,
+    worker_provider_run: Option<&crate::provider::RuntimeProviderRun>,
 ) -> bool {
-    if worker_provider == Some("claude-headless") {
+    if worker_provider_run.is_some_and(crate::provider::provider_run_uses_claude_native_bridge) {
         return true;
     }
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
@@ -1013,7 +1013,45 @@ fn stable_prompt_hash(text: &str) -> u64 {
 mod explicit_completion_tests {
     use super::*;
     use crate::config::DaemonConfig;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
+        RuntimeProviderRun,
+    };
     use crate::session::PromptSubmissionOutcome;
+
+    fn provider_run(
+        id: &str,
+        session_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        client_interface: ProviderClientInterface,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            session_id,
+            adapter_key,
+            provider,
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_agent_id(agent_id)
+        .with_client_interface(client_interface);
+        RuntimeProviderRun::new(
+            id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: format!("{adapter_key}:{provider}:claude-sonnet-4-6"),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
 
     #[test]
     fn commentary_output_does_not_complete_an_explicit_codex_turn() {
@@ -1163,18 +1201,53 @@ mod explicit_completion_tests {
 
     #[test]
     fn claude_headless_leased_runs_require_explicit_completion() {
+        let headless = provider_run(
+            "provider-run-headless-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude-headless",
+            ProviderClientInterface::Arroba,
+        );
+        let structured = provider_run(
+            "provider-run-structured-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude",
+            ProviderClientInterface::Arroba,
+        );
         assert!(leased_provider_requires_explicit_completion(
             "claude",
-            Some("claude-headless"),
+            Some(&headless),
         ));
         assert!(!leased_provider_requires_explicit_completion(
             "claude",
-            Some("claude"),
+            Some(&structured),
         ));
     }
 
     #[test]
-    fn claude_headless_composer_output_does_not_complete_a_leased_prompt() {
+    fn claude_native_tui_leased_runs_require_explicit_completion() {
+        let run = provider_run(
+            "provider-run-native-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        assert!(crate::provider::provider_run_uses_claude_native_bridge(
+            &run
+        ));
+        assert!(leased_provider_requires_explicit_completion(
+            "claude",
+            Some(&run),
+        ));
+    }
+
+    #[test]
+    fn claude_native_composer_output_does_not_complete_a_leased_prompt() {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app =
@@ -1201,21 +1274,17 @@ mod explicit_completion_tests {
                 None,
             )
             .expect("leased agent should be created");
-        let provider_run = RemoteLeaseRuntime::new(&mut app)
-            .launch_leased_native_provider_run(
-                &leased_agent.id,
-                "managed-dev-stub",
-                "claude-headless",
-                "default",
-                "default",
-                None,
-                None,
-                None,
-                Vec::new(),
-                Some(Vec::new()),
-                crate::extension::RemoteExtensionManifest::default(),
-            )
-            .expect("headless provider run should launch");
+        let mut provider_run = provider_run(
+            "provider-run-native-claude",
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        provider_run.mark_running();
+        app.providers_mut()
+            .insert_run_for_test(provider_run.clone());
         let outcome = app
             .record_native_prompt_started_with_attachments(
                 &leased_agent.backing_session_id,
