@@ -241,15 +241,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let current_batch_has_provider_output = output_chunks
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput);
-        let requires_explicit_completion =
-            leased_provider_requires_explicit_completion(&leased_agent.provider);
+        let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        let requires_explicit_completion = leased_provider_requires_explicit_completion(
+            &leased_agent.provider,
+            provider_run.as_ref().map(|run| run.provider()),
+        );
         let has_settleable_output_history =
             current_batch_has_provider_output && !requires_explicit_completion;
-        let provider_run_ended = self
-            .app
-            .providers
-            .get_run(provider_run_id)
-            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+        let provider_run_ended = provider_run
+            .as_ref()
+            .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
         let should_complete_from_history = completions.is_empty()
             && prompts.is_empty()
             && backing_active_prompt
@@ -407,7 +408,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        if leased_provider_requires_explicit_completion(&leased_agent.provider) {
+        let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        if leased_provider_requires_explicit_completion(
+            &leased_agent.provider,
+            provider_run.as_ref().map(|run| run.provider()),
+        ) {
             return Ok(false);
         }
         let Some(active_prompt) = self.app.prompt_owner_active_prompt_for_agent(
@@ -920,7 +925,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-fn leased_provider_requires_explicit_completion(provider: &str) -> bool {
+fn leased_provider_requires_explicit_completion(
+    provider: &str,
+    worker_provider: Option<&str>,
+) -> bool {
+    if worker_provider == Some("claude-headless") {
+        return true;
+    }
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
     crate::provider::ExternalProviderObservationPolicy::for_provider(adapter_key)
         .uses_explicit_completion()
@@ -1148,5 +1159,96 @@ mod explicit_completion_tests {
         let RelayPeerEvent::LeasedRuntimeProjection { prompts, .. } = projection.1;
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].text, "native prompt from home TUI\n");
+    }
+
+    #[test]
+    fn claude_headless_leased_runs_require_explicit_completion() {
+        assert!(leased_provider_requires_explicit_completion(
+            "claude",
+            Some("claude-headless"),
+        ));
+        assert!(!leased_provider_requires_explicit_completion(
+            "claude",
+            Some("claude"),
+        ));
+    }
+
+    #[test]
+    fn claude_headless_composer_output_does_not_complete_a_leased_prompt() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let provider_run = RemoteLeaseRuntime::new(&mut app)
+            .launch_leased_native_provider_run(
+                &leased_agent.id,
+                "managed-dev-stub",
+                "claude-headless",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                Vec::new(),
+                Some(Vec::new()),
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("headless provider run should launch");
+        let outcome = app
+            .record_native_prompt_started_with_attachments(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+                "home-native-attachment",
+                &leased_agent.backing_agent_id,
+                "prompt waiting for Enter",
+                Vec::new(),
+            )
+            .expect("native prompt should be recorded");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        app.terminal_mut().fan_out_output(
+            &leased_agent.backing_session_id,
+            provider_run.id(),
+            Some(&leased_agent.backing_agent_id),
+            TerminalOutputKind::ProviderOutput,
+            Some("composer-redraw".to_string()),
+            vec![leased_agent.backing_attachment_id.clone()],
+            b"prompt waiting for Enter",
+        );
+
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
+            .expect("composer projection should succeed")
+            .expect("composer output should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projection.1;
+        assert!(completions.is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
     }
 }
