@@ -1,11 +1,16 @@
 import assert from "node:assert/strict"
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises"
 import net from "node:net"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 
 import {
   findMatchingProcessIdsFromPsOutput,
   formatDrillCommandLine,
   providerAuthFailureFromTerminalText,
+  resolveBuiltBinary,
+  resolveBuiltBinarySync,
   runLogged,
   waitForCondition,
   waitForTcpPort,
@@ -84,6 +89,30 @@ test("dev-stub drill inventory is enabled explicitly without mutating the source
 
   assert.deepEqual(enabled, { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "1" })
   assert.equal(source.ARROBA_PROVIDER_DEV_STUB, "0")
+})
+
+test("built binary resolution chooses the newest Cargo target candidate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-binary-"))
+  const manifestPath = path.join(root, "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "arroba-kernel")
+  const workspaceBinary = path.join(root, "target", "debug", "arroba-kernel")
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(workspaceBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(workspaceBinary, "current")
+    await utimes(crateBinary, new Date(1_000), new Date(1_000))
+    await utimes(workspaceBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
+
+    await utimes(crateBinary, new Date(3_000), new Date(3_000))
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("detects ANSI-rendered provider authentication failures", () => {

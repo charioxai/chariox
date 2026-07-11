@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process"
-import { existsSync } from "node:fs"
+import { statSync } from "node:fs"
 import net from "node:net"
 import { access, readFile } from "node:fs/promises"
 import path from "node:path"
@@ -70,34 +70,33 @@ export async function assertBinary(binaryPath, manifestPath, binName) {
 }
 
 export async function resolveBuiltBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch (error) {
-    const workspaceBinaryPath = path.join(
-      path.dirname(path.dirname(path.dirname(manifestPath))),
-      "target",
-      "debug",
-      binName,
-    )
-    try {
-      await access(workspaceBinaryPath)
-      return workspaceBinaryPath
-    } catch {}
-    throw error
-  }
+  const resolved = newestBuiltBinary(binaryPath, manifestPath, binName)
+  if (resolved) return resolved
+  await access(binaryPath)
+  return binaryPath
 }
 
 export function resolveBuiltBinarySync(binaryPath, manifestPath, binName) {
-  if (existsSync(binaryPath)) return binaryPath
+  return newestBuiltBinary(binaryPath, manifestPath, binName) ?? binaryPath
+}
+
+function newestBuiltBinary(binaryPath, manifestPath, binName) {
   const workspaceBinaryPath = path.join(
     path.dirname(path.dirname(path.dirname(manifestPath))),
     "target",
     "debug",
     binName,
   )
-  if (existsSync(workspaceBinaryPath)) return workspaceBinaryPath
-  return binaryPath
+  let newest = null
+  for (const candidate of new Set([binaryPath, workspaceBinaryPath])) {
+    try {
+      const modifiedAtMs = statSync(candidate).mtimeMs
+      if (!newest || modifiedAtMs > newest.modifiedAtMs) {
+        newest = { path: candidate, modifiedAtMs }
+      }
+    } catch {}
+  }
+  return newest?.path ?? null
 }
 
 export async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 15_000) {
