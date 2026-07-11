@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -12,6 +15,54 @@ use crate::error::DaemonError;
 pub struct DurableKernelStateStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    writer: Arc<DurableStateWriter>,
+}
+
+const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
+const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
+const DURABLE_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
+
+#[derive(Debug)]
+struct DurableStateWriter {
+    sender: Mutex<Option<SyncSender<DurableWriteRequest>>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    health: Arc<DurableWriterHealth>,
+}
+
+#[derive(Debug, Default)]
+struct DurableWriterHealth {
+    committed_batches: AtomicU64,
+    committed_records: AtomicU64,
+    max_batch_records: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DurableWriterHealthSnapshot {
+    pub(crate) committed_batches: u64,
+    pub(crate) committed_records: u64,
+    pub(crate) max_batch_records: u64,
+}
+
+#[derive(Debug)]
+struct DurableWriteRequest {
+    operation: DurableWriteOperation,
+    response: mpsc::Sender<Result<u64, String>>,
+}
+
+#[derive(Debug)]
+enum DurableWriteOperation {
+    Event {
+        event_id: String,
+        kind: String,
+        subject_id: Option<String>,
+        timestamp_ms: u64,
+        payload_json: String,
+    },
+    Snapshot {
+        sequence: u64,
+        timestamp_ms: u64,
+        payload_json: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,9 +106,17 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        let writer = DurableStateWriter::start(&path)?;
+        connection
+            .pragma_update(None, "query_only", true)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.read_only",
+                message: error.to_string(),
+            })?;
         Ok(Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
+            writer: Arc::new(writer),
         })
     }
 
@@ -75,29 +134,13 @@ impl DurableKernelStateStore {
                 operation: "durable_state.encode_event",
                 message: error.to_string(),
             })?;
-        let connection = self.lock_connection("durable_state.append_event")?;
-        connection
-            .execute(
-                "INSERT INTO durable_state_events (
-                    event_id,
-                    kind,
-                    subject_id,
-                    timestamp_ms,
-                    payload_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    event_id.as_str(),
-                    kind.as_str(),
-                    subject_id.as_deref(),
-                    timestamp_ms as i64,
-                    payload_json,
-                ],
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.append_event",
-                message: error.to_string(),
-            })?;
-        let sequence = connection.last_insert_rowid().max(0) as u64;
+        let sequence = self.writer.execute(DurableWriteOperation::Event {
+            event_id: event_id.clone(),
+            kind: kind.clone(),
+            subject_id: subject_id.clone(),
+            timestamp_ms,
+            payload_json,
+        })?;
         Ok(DurableStateEvent {
             sequence,
             event_id,
@@ -305,20 +348,11 @@ impl DurableKernelStateStore {
                 operation: "durable_state.encode_snapshot",
                 message: error.to_string(),
             })?;
-        let connection = self.lock_connection("durable_state.save_snapshot")?;
-        connection
-            .execute(
-                "INSERT INTO durable_state_snapshots (
-                    sequence,
-                    timestamp_ms,
-                    payload_json
-                ) VALUES (?1, ?2, ?3)",
-                params![sequence as i64, timestamp_ms as i64, payload_json],
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.save_snapshot",
-                message: error.to_string(),
-            })?;
+        self.writer.execute(DurableWriteOperation::Snapshot {
+            sequence,
+            timestamp_ms,
+            payload_json,
+        })?;
         Ok(DurableStateSnapshot {
             sequence,
             timestamp_ms,
@@ -372,6 +406,10 @@ impl DurableKernelStateStore {
         &self.path
     }
 
+    pub(crate) fn writer_health_snapshot(&self) -> DurableWriterHealthSnapshot {
+        self.writer.health_snapshot()
+    }
+
     fn lock_connection(
         &self,
         operation: &'static str,
@@ -382,6 +420,204 @@ impl DurableKernelStateStore {
                 operation,
                 message: error.to_string(),
             })
+    }
+}
+
+impl DurableStateWriter {
+    fn start(path: &Path) -> Result<Self, DaemonError> {
+        let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.open_writer",
+            message: error.to_string(),
+        })?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.writer_wal",
+                message: error.to_string(),
+            })?;
+        let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
+        let health = Arc::new(DurableWriterHealth::default());
+        let worker_health = Arc::clone(&health);
+        let worker = std::thread::Builder::new()
+            .name("arroba-durable-writer".to_string())
+            .stack_size(512 * 1024)
+            .spawn(move || run_durable_writer(connection, receiver, worker_health))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.spawn_writer",
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            sender: Mutex::new(Some(sender)),
+            worker: Mutex::new(Some(worker)),
+            health,
+        })
+    }
+
+    fn execute(&self, operation: DurableWriteOperation) -> Result<u64, DaemonError> {
+        let (response_tx, response_rx) = mpsc::channel();
+        let sender = self
+            .sender
+            .lock()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.lock_writer",
+                message: error.to_string(),
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "durable_state.enqueue_write",
+                message: "durable writer is shutting down".to_string(),
+            })?;
+        sender
+            .send(DurableWriteRequest {
+                operation,
+                response: response_tx,
+            })
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.enqueue_write",
+                message: error.to_string(),
+            })?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.await_write",
+                message: error.to_string(),
+            })?
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "durable_state.commit_write",
+                message,
+            })
+    }
+
+    fn health_snapshot(&self) -> DurableWriterHealthSnapshot {
+        DurableWriterHealthSnapshot {
+            committed_batches: self.health.committed_batches.load(Ordering::Acquire),
+            committed_records: self.health.committed_records.load(Ordering::Acquire),
+            max_batch_records: self.health.max_batch_records.load(Ordering::Acquire),
+        }
+    }
+}
+
+impl Drop for DurableStateWriter {
+    fn drop(&mut self) {
+        self.sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn run_durable_writer(
+    mut connection: Connection,
+    receiver: Receiver<DurableWriteRequest>,
+    health: Arc<DurableWriterHealth>,
+) {
+    while let Ok(first) = receiver.recv() {
+        let mut batch = vec![first];
+        let deadline = Instant::now() + DURABLE_WRITE_BATCH_WINDOW;
+        while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match receiver.recv_timeout(remaining) {
+                Ok(request) => batch.push(request),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        commit_durable_write_batch(&mut connection, batch, &health);
+    }
+}
+
+fn commit_durable_write_batch(
+    connection: &mut Connection,
+    batch: Vec<DurableWriteRequest>,
+    health: &DurableWriterHealth,
+) {
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            send_durable_batch_error(batch, error.to_string());
+            return;
+        }
+    };
+    let mut results = Vec::with_capacity(batch.len());
+    let mut failure = None;
+    for request in &batch {
+        let result = match &request.operation {
+            DurableWriteOperation::Event {
+                event_id,
+                kind,
+                subject_id,
+                timestamp_ms,
+                payload_json,
+            } => transaction
+                .execute(
+                    "INSERT INTO durable_state_events (
+                        event_id, kind, subject_id, timestamp_ms, payload_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        event_id,
+                        kind,
+                        subject_id,
+                        *timestamp_ms as i64,
+                        payload_json
+                    ],
+                )
+                .map(|_| transaction.last_insert_rowid().max(0) as u64),
+            DurableWriteOperation::Snapshot {
+                sequence,
+                timestamp_ms,
+                payload_json,
+            } => transaction
+                .execute(
+                    "INSERT INTO durable_state_snapshots (sequence, timestamp_ms, payload_json)
+                     VALUES (?1, ?2, ?3)",
+                    params![*sequence as i64, *timestamp_ms as i64, payload_json],
+                )
+                .map(|_| *sequence),
+        };
+        match result {
+            Ok(sequence) => results.push(sequence),
+            Err(error) => {
+                failure = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    if let Some(message) = failure {
+        drop(transaction);
+        send_durable_batch_error(batch, message);
+        return;
+    }
+    if let Err(error) = transaction.commit() {
+        send_durable_batch_error(batch, error.to_string());
+        return;
+    }
+    let batch_len = batch.len() as u64;
+    health.committed_batches.fetch_add(1, Ordering::AcqRel);
+    health
+        .committed_records
+        .fetch_add(batch_len, Ordering::AcqRel);
+    health
+        .max_batch_records
+        .fetch_max(batch_len, Ordering::AcqRel);
+    for (request, sequence) in batch.into_iter().zip(results) {
+        let _ = request.response.send(Ok(sequence));
+    }
+}
+
+fn send_durable_batch_error(batch: Vec<DurableWriteRequest>, message: String) {
+    for request in batch {
+        let _ = request.response.send(Err(message.clone()));
     }
 }
 
@@ -425,6 +661,73 @@ fn rand_suffix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_writer_groups_concurrent_acknowledged_events() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-batch-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let barrier = Arc::new(std::sync::Barrier::new(33));
+        let handles = (0..32)
+            .map(|index| {
+                let store = store.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .append_event(
+                            "agent.updated",
+                            Some(format!("agent-{index}")),
+                            serde_json::json!({"index": index}),
+                        )
+                        .expect("batched event should commit")
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let mut sequences = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("append thread should join").sequence)
+            .collect::<Vec<_>>();
+        sequences.sort_unstable();
+        sequences.dedup();
+        assert_eq!(sequences.len(), 32);
+        let health = store.writer_health_snapshot();
+        assert_eq!(health.committed_records, 32);
+        assert!(health.committed_batches < health.committed_records);
+        assert!(health.max_batch_records > 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn durable_writer_does_not_wait_for_read_connection_mutex() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-read-isolation-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let read_guard = store
+            .connection
+            .lock()
+            .expect("read connection should lock");
+        store
+            .append_event("session.updated", None, serde_json::json!({"ok": true}))
+            .expect("writer should commit while reader mutex is held");
+        drop(read_guard);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
 
     #[test]
     fn durable_state_store_appends_events_and_loads_latest_snapshot() {
