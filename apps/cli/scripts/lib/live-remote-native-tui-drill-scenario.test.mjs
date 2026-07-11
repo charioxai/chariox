@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   attachSubscribedTerminalClient,
+  permissionInteractionForAlias,
 } from "./live-remote-native-tui-drill-scenario.mjs"
 
 test("remote native drill subscribes its terminal attachment before using it", async () => {
@@ -45,4 +46,27 @@ test("remote native drill subscribes its terminal attachment before using it", a
       attachmentId: "attachment-observer",
     },
   ])
+})
+
+test("remote native drill finds permission interactions for the requested agent only", () => {
+  const snapshot = {
+    session: {
+      agents: [
+        { id: "agent-a", alias: "worker-a" },
+        { id: "agent-b", alias: "worker-b" },
+      ],
+    },
+    interactions: [
+      { id: "request-a", agentId: "agent-a", kind: "user_request" },
+      { id: "permission-b", agentId: "agent-b", kind: "permission" },
+      { id: "permission-a", agentId: "agent-a", kind: "permission" },
+    ],
+  }
+
+  assert.deepEqual(permissionInteractionForAlias(snapshot, "worker-a"), {
+    snapshot,
+    agent: snapshot.session.agents[0],
+    interaction: snapshot.interactions[2],
+  })
+  assert.equal(permissionInteractionForAlias(snapshot, "missing"), null)
 })

@@ -224,7 +224,14 @@ async function waitForActiveProviderRun(client, sessionId) {
   throw new Error("timed out waiting for an active provider run")
 }
 
-async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, expectedByAgent) {
+async function waitForHistoryMarkers(
+  client,
+  sessionId,
+  attachmentId,
+  agents,
+  expectedByAgent,
+  { onPending } = {},
+) {
   const deadline = Date.now() + 300_000
   let lastHistories = {}
   let lastMissing = {}
@@ -263,6 +270,7 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
     if (ok) return histories
     lastHistories = histories
     lastMissing = missing
+    await onPending?.({ histories, missing })
     await sleep(1_000)
   }
   const seen = Object.fromEntries(Object.entries(lastHistories).map(([alias, history]) => [
@@ -295,12 +303,20 @@ async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
   while (Date.now() < deadline) {
     const snapshot = await automationRequest(socketPath, { action: "snapshot" })
     last = snapshot
-    const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
-    const interaction = snapshot.interactions?.find((entry) => entry.agentId === agent?.id && entry.kind === "permission")
-    if (agent && interaction) return { snapshot, agent, interaction }
+    const pending = permissionInteractionForAlias(snapshot, alias)
+    if (pending) return pending
     await sleep(250)
   }
   throw new Error(`timed out waiting for permission interaction for ${alias}; last=${JSON.stringify(last)}`)
+}
+
+export function permissionInteractionForAlias(snapshot, alias) {
+  const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
+  if (!agent) return null
+  const interaction = snapshot.interactions?.find((entry) =>
+    entry.agentId === agent.id && entry.kind === "permission"
+  )
+  return interaction ? { snapshot, agent, interaction } : null
 }
 
 async function waitForInteractionFocused(socketPath, interactionId, timeoutMs = 20_000) {
@@ -329,8 +345,7 @@ async function waitForInteractionCleared(socketPath, interactionId, timeoutMs = 
   throw new Error(`timed out waiting for interaction ${interactionId} to clear; last=${JSON.stringify(last)}`)
 }
 
-async function answerPermissionFromCli(socketPath, alias) {
-  const pending = await waitForInteraction(socketPath, alias)
+async function submitPermissionFromCli(socketPath, pending) {
   if (!pending.interaction.focused) {
     await automationRequest(socketPath, {
       action: "workspace_shell_exec",
@@ -353,6 +368,16 @@ async function answerPermissionFromCli(socketPath, alias) {
   }
   await waitForInteractionCleared(socketPath, pending.interaction.id)
   return pending.interaction
+}
+
+async function answerPermissionFromCli(socketPath, alias) {
+  return submitPermissionFromCli(socketPath, await waitForInteraction(socketPath, alias))
+}
+
+async function answerPermissionIfPresentFromCli(socketPath, alias) {
+  const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+  const pending = permissionInteractionForAlias(snapshot, alias)
+  return pending ? submitPermissionFromCli(socketPath, pending) : null
 }
 
 async function waitForClaudeProviderRunId(logFile) {
@@ -830,6 +855,13 @@ export async function runProviderScenario({
     if (nativeCapabilities) {
       let nativeSkillCheck = "validated"
       let skillPromptContext = "validated_native_and_arroba_origin"
+      const capabilityPermissionInteractionIds = new Set()
+      const settleCapabilityPermission = provider === "claude" && options.includePermissions
+        ? async () => {
+          const interaction = await answerPermissionIfPresentFromCli(automationSocket, aliases[0])
+          if (interaction) capabilityPermissionInteractionIds.add(interaction.id)
+        }
+        : undefined
       if (provider !== "claude") {
         const nativeSkillPrompt = `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`
         if (provider === "opencode") {
@@ -864,7 +896,7 @@ export async function runProviderScenario({
         )
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
-        })
+        }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
@@ -876,7 +908,7 @@ export async function runProviderScenario({
         })
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
-        })
+        }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
         const claudeScreenLog = await readFile(logs.a, "utf8").catch(() => "")
         if (claudeScreenLog.includes("Full instructions for explicitly requested Arroba skills")) {
@@ -889,6 +921,7 @@ export async function runProviderScenario({
         providerRunMcpConfig: provider === "codex" && !remotePlacement ? "not directly observable before local codex bind" : "validated",
         skillPromptContext,
         nativeSkillCheck,
+        capabilityPermissionInteractions: capabilityPermissionInteractionIds.size,
       }
     }
 
