@@ -81,6 +81,7 @@ pub(super) fn dispatch_workflow_prompt(
                         ),
                     }),
                     required_mcps: Vec::new(),
+                    required_skills: None,
                     remote_extension_manifest,
                 },
                 LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,

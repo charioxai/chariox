@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 7;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -89,6 +89,12 @@ pub struct RemoteNativeInteractionContext {
 pub struct RequiredRemoteMcp {
     pub config: ArrobaMcpServerConfig,
     pub definition_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredRemoteSkill {
+    pub name: String,
+    pub version_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +275,8 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -292,6 +300,8 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"

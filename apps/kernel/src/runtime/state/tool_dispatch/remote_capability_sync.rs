@@ -59,6 +59,56 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(in crate::runtime::state) fn required_remote_skills_for_native_provider_launch(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteSkill>, DaemonError> {
+        let skill_grants = agent.skill_grants();
+        if skill_grants.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let registry = skill_registry_for_workspace(session.workspace_id());
+        package_granted_skills(&registry, &skill_grants).map(|packages| {
+            packages
+                .into_iter()
+                .map(
+                    |package| crate::transport::relay_peer::RequiredRemoteSkill {
+                        name: package.metadata.name,
+                        version_hash: package.version_hash,
+                    },
+                )
+                .collect()
+        })
+    }
+
+    pub(in crate::runtime::state) async fn prepare_remote_prompt_skill_context(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        prompt: &str,
+    ) -> Result<
+        (
+            String,
+            Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+        ),
+        DaemonError,
+    > {
+        if self.remote_agent_has_native_provider_run(agent) {
+            if self.remote_agent_is_home_managed_slice(agent) {
+                self.ensure_remote_skill_packages_for_agent(agent).await?;
+            }
+            return Ok((
+                prompt.to_string(),
+                Some(self.required_remote_skills_for_native_provider_launch(agent)?),
+            ));
+        }
+        let materialized = self.ensure_remote_skill_packages_for_agent(agent).await?;
+        Ok((
+            self.apply_remote_materialized_skill_prompt_context(agent, prompt, &materialized)?,
+            None,
+        ))
+    }
+
     pub(in crate::runtime::state) fn required_remote_mcps_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
@@ -66,6 +116,13 @@ impl KernelRuntimeState {
         if agent.remote_execution().is_some() {
             return Ok(Vec::new());
         }
+        self.required_remote_mcps_for_native_provider_launch(agent)
+    }
+
+    pub(in crate::runtime::state) fn required_remote_mcps_for_native_provider_launch(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
         let mcp_grants = agent.mcp_grants();
         if mcp_grants.is_empty() {
             return Ok(Vec::new());
@@ -178,14 +235,62 @@ impl KernelRuntimeState {
         Ok(crate::extension::RemoteExtensionManifest { tools })
     }
 
+    pub(in crate::runtime::state) fn remote_prompt_mcp_capabilities_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<
+        (
+            Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+            crate::extension::RemoteExtensionManifest,
+        ),
+        DaemonError,
+    > {
+        let manifest = self.remote_extension_manifest_for_agent(agent)?;
+        if self.remote_agent_has_native_provider_run(agent) {
+            return Ok((
+                self.required_remote_mcps_for_native_provider_launch(agent)?,
+                manifest.without_mcp_tools(),
+            ));
+        }
+        Ok((self.required_remote_mcps_for_agent(agent)?, manifest))
+    }
+
+    pub(in crate::runtime::state) fn remote_agent_has_native_provider_run(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> bool {
+        self.owned
+            .provider_run_projection
+            .get_for_agent(agent.session_id(), agent.id())
+            .is_some_and(|run| !run.client_interface().is_arroba())
+    }
+
+    pub(in crate::runtime::state) fn remote_agent_is_home_managed_slice(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> bool {
+        agent.remote_execution().is_some_and(|remote_execution| {
+            remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some()
+        })
+    }
+
     pub(in crate::runtime::state) async fn ensure_remote_mcp_availability_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<(), DaemonError> {
+        let required_mcps = self.required_remote_mcps_for_agent(agent)?;
+        self.ensure_remote_mcp_requirements_available_for_agent(agent, required_mcps)
+            .await
+    }
+
+    pub(in crate::runtime::state) async fn ensure_remote_mcp_requirements_available_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    ) -> Result<(), DaemonError> {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(());
         };
-        let required_mcps = self.required_remote_mcps_for_agent(agent)?;
         if required_mcps.is_empty() {
             return Ok(());
         }

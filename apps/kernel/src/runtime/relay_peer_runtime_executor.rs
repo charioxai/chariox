@@ -163,6 +163,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     structured_endpoint: Option<String>,
     provider_session_id: Option<String>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     runtime_state
@@ -176,6 +177,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )
         .await
@@ -206,6 +208,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     workflow_context: Option<RemoteWorkflowTurnContext>,
     git_context: Option<RemoteGitTurnContext>,
     required_mcps: Vec<RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
     runtime_state
@@ -216,6 +219,7 @@ pub(crate) async fn submit_relay_leased_prompt(
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )
         .await

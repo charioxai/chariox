@@ -242,6 +242,7 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
@@ -260,6 +261,7 @@ impl KernelRuntimeState {
                 structured_endpoint,
                 provider_session_id,
                 required_mcps,
+                required_skills,
                 remote_extension_manifest,
             )
         })
@@ -296,6 +298,7 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
@@ -309,6 +312,7 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
             })

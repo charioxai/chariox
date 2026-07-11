@@ -348,40 +348,11 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let materialized = match state.ensure_remote_skill_packages_for_agent(&agent).await {
-                Ok(materialized) => materialized,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let prompt = match state.apply_remote_materialized_skill_prompt_context(
-                &agent,
-                &dispatch.prompt,
-                &materialized,
-            ) {
-                Ok(prompt) => prompt,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let required_mcps = match state.required_remote_mcps_for_agent(&agent) {
-                Ok(required_mcps) => required_mcps,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let remote_extension_manifest = match state.remote_extension_manifest_for_agent(&agent)
+            let (prompt, required_skills) = match state
+                .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
+                .await
             {
-                Ok(manifest) => manifest,
+                Ok(context) => context,
                 Err(error) => {
                     let _ = state
                         .finish_remote_prompt_dispatch(dispatch, Err(error))
@@ -389,6 +360,16 @@ impl KernelRuntimeState {
                     return;
                 }
             };
+            let (required_mcps, remote_extension_manifest) =
+                match state.remote_prompt_mcp_capabilities_for_agent(&agent) {
+                    Ok(capabilities) => capabilities,
+                    Err(error) => {
+                        let _ = state
+                            .finish_remote_prompt_dispatch(dispatch, Err(error))
+                            .await;
+                        return;
+                    }
+                };
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -416,6 +397,7 @@ impl KernelRuntimeState {
                 prompt,
                 attachments,
                 required_mcps,
+                required_skills,
                 remote_extension_manifest,
             )
             .await;

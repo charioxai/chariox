@@ -187,6 +187,10 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             prompt_summary: "edit a file".to_string(),
         }),
         required_mcps: Vec::new(),
+        required_skills: Some(vec![crate::transport::relay_peer::RequiredRemoteSkill {
+            name: "review".to_string(),
+            version_hash: "skill-hash-1".to_string(),
+        }]),
         remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
     };
     let snapshot = serde_json::json!([spawn, submit]);
@@ -218,11 +222,15 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         snapshot.pointer("/1/git_context/external_provider_turn_id"),
         Some(&serde_json::json!("codex-turn-1"))
     );
+    assert_eq!(
+        snapshot.pointer("/1/required_skills/0/name"),
+        Some(&serde_json::json!("review"))
+    );
 }
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 7);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 8);
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")

@@ -62,6 +62,62 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /prompt policy:  native prompts pass through/)
 })
 
+test("remote native TUI banner keeps MCPs and skills worker-local while scripts stay home-proxied", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "opencode native-tui",
+    session: session({ workspace_live_sync_mode: "tracked" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [
+        { kind: "mcp", name: "filesystem" },
+        { kind: "skill", name: "review" },
+        { kind: "script", name: "release" },
+      ],
+    }),
+    worktree: "/repo",
+    run: providerRun("native-run-1", { client_interface: "native_tui" }),
+    grantedMcps: ["filesystem"],
+    grantedSkills: ["review"],
+  })
+
+  assert.match(banner, /extensions:     mcp=filesystem \(worker-local, hash-validated\); skill=review \(worker-local, hash-validated\)/)
+  assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied/)
+  assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials/)
+  assert.match(banner, /remote ext sync: pending/)
+})
+
+test("remote native TUI banner does not invent manifest sync for worker-local MCPs and skills", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "tracked" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [
+        { kind: "mcp", name: "filesystem" },
+        { kind: "skill", name: "review" },
+      ],
+    }),
+    worktree: "/repo",
+    run: providerRun("native-run-1", { client_interface: "native_tui" }),
+    grantedMcps: ["filesystem"],
+    grantedSkills: ["review"],
+  })
+
+  assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs/)
+  assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; provider credentials and execution stay on the worker/)
+  assert.doesNotMatch(banner, /remote ext sync:/)
+})
+
 test("native TUI runtime banner calls out missing slice provider auth", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "opencode native-tui",

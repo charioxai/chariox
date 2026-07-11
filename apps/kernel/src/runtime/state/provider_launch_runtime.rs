@@ -134,13 +134,16 @@ impl KernelRuntimeState {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(None);
         };
-        let required_mcps = self.required_remote_mcps_for_agent(&agent)?;
-        let remote_extension_manifest = self.remote_extension_manifest_for_agent(&agent)?;
+        let required_mcps = self.required_remote_mcps_for_native_provider_launch(&agent)?;
+        let required_skills = self.required_remote_skills_for_native_provider_launch(&agent)?;
+        let remote_extension_manifest = self
+            .remote_extension_manifest_for_agent(&agent)?
+            .without_mcp_tools();
         if !required_mcps.is_empty() {
-            self.ensure_remote_mcp_availability_for_agent(&agent)
+            self.ensure_remote_mcp_requirements_available_for_agent(&agent, required_mcps.clone())
                 .await?;
         }
-        if native_remote_execution_is_home_managed_slice(&remote_execution) {
+        if self.remote_agent_is_home_managed_slice(&agent) {
             self.ensure_remote_skill_packages_for_agent(&agent).await?;
         }
         let mut relay_config = self.owned.config_projection.snapshot();
@@ -168,6 +171,7 @@ impl KernelRuntimeState {
                 structured_endpoint: request.structured_endpoint.clone(),
                 provider_session_id: request.provider_session_id.clone(),
                 required_mcps,
+                required_skills: Some(required_skills),
                 remote_extension_manifest,
             },
         )
@@ -388,10 +392,4 @@ impl KernelRuntimeState {
             }
         }
     }
-}
-
-fn native_remote_execution_is_home_managed_slice(
-    remote_execution: &crate::agent::RemoteAgentBinding,
-) -> bool {
-    remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some()
 }

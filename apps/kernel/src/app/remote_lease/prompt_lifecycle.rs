@@ -17,6 +17,7 @@ pub(crate) enum PreparedLeasedProviderRun {
 pub(crate) struct PreparedLeasedPromptSubmission {
     pub(crate) leased_agent: LeasedAgent,
     pub(crate) prompt: String,
+    pub(crate) hidden_system_context: String,
     pub(crate) materialized_attachments: Vec<PromptAttachment>,
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
     pub(crate) git_context: Option<RemoteGitTurnContext>,
@@ -38,6 +39,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             None,
             None,
             Vec::new(),
+            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
     }
@@ -51,6 +53,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let prepared = self.prepare_leased_prompt_submission(
@@ -60,6 +63,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )?;
         let provider_run_id = match &prepared.provider_run {
@@ -79,6 +83,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<PreparedLeasedPromptSubmission, DaemonError> {
         let leased_agent = self
@@ -91,6 +96,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })?;
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
+        let hidden_system_context = if let Some(required_skills) = required_skills.as_deref() {
+            self.apply_required_remote_skills(&leased_agent, required_skills)?;
+            self.required_remote_skill_prompt_context(&leased_agent, prompt)?
+        } else {
+            String::new()
+        };
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         if let Some(mode) = git_context
             .as_ref()
@@ -122,6 +133,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(PreparedLeasedPromptSubmission {
             leased_agent,
             prompt: prompt.to_string(),
+            hidden_system_context,
             materialized_attachments,
             workflow_context,
             git_context,
@@ -137,6 +149,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let PreparedLeasedPromptSubmission {
             leased_agent,
             prompt,
+            hidden_system_context,
             materialized_attachments,
             workflow_context,
             git_context,
@@ -148,13 +161,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(git_context) = git_context {
             self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
         }
-        let outcome = self.app.submit_prompt(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_attachment_id,
-            Some(&leased_agent.backing_agent_id),
-            &prompt,
-            materialized_attachments,
-        )?;
+        let outcome = crate::app::KernelAgentService::new(self.app)
+            .submit_prompt_with_hidden_system_context(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+                Some(&leased_agent.backing_agent_id),
+                &prompt,
+                &hidden_system_context,
+                materialized_attachments,
+            )?;
         if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
             if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {

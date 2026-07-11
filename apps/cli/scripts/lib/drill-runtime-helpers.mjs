@@ -246,6 +246,28 @@ export async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
   throw new Error(`timed out waiting for ${pattern} in ${file}\n${text.slice(-4000)}`)
 }
 
+export async function waitForScreenMatch(screenName, hardcopyFile, pattern, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let text = ""
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      await screen(screenName, ["-p", "0", "-X", "hardcopy", "-h", hardcopyFile])
+      text = await readFile(hardcopyFile, "utf8")
+      const match = text.match(pattern)
+      if (match) return { match, text }
+      lastError = null
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(250)
+  }
+  const errorDetail = lastError ? `\nlast_error=${lastError}` : ""
+  throw new Error(
+    `timed out waiting for rendered ${pattern} in screen ${screenName}${errorDetail}\n${text.slice(-4000)}`,
+  )
+}
+
 export async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs
   let text = ""

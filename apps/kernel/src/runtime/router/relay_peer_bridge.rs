@@ -183,6 +183,7 @@ impl CommandRouter {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         relay_peer_runtime::launch_relay_leased_native_provider_run(
@@ -196,6 +197,7 @@ impl CommandRouter {
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )
         .await
@@ -226,6 +228,7 @@ impl CommandRouter {
         workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
         git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         relay_peer_runtime::submit_relay_leased_prompt(
@@ -236,6 +239,7 @@ impl CommandRouter {
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )
         .await

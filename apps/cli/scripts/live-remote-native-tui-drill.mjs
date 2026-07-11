@@ -350,6 +350,10 @@ async function main() {
   const xdgStateHome = path.join(root, "xdg-state")
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
+  const homeCapabilityRoot = path.join(root, "home-capabilities")
+  const workerCapabilityRoot = options.hetznerWorker
+    ? path.posix.join(remoteRuntimeRoot, "worker-capabilities")
+    : path.join(root, "worker-capabilities")
   const sliceBuildImagePolicy = process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
   const rustMinStack = process.env.RUST_MIN_STACK ?? "16777216"
   let relay = null
@@ -471,6 +475,7 @@ async function main() {
         ARROBA_ACCEPT_REMOTE_LEASES: "0",
         ARROBA_DAEMON_SOCKET: path.join(root, "home.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
         RUST_MIN_STACK: rustMinStack,
       },
       stdio: ["ignore", "ignore", "inherit"],
@@ -503,6 +508,7 @@ async function main() {
           ARROBA_ACCEPT_REMOTE_LEASES: "1",
           ARROBA_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, "worker.sock"),
           ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, "worker-history"),
+          ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
         }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/arroba-kernel`)), {
           stdio: ["ignore", "ignore", "inherit"],
         })
@@ -530,6 +536,7 @@ async function main() {
             ARROBA_ACCEPT_REMOTE_LEASES: "1",
             ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
             ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
+            ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
             RUST_MIN_STACK: rustMinStack,
           },
           stdio: ["ignore", "ignore", "inherit"],

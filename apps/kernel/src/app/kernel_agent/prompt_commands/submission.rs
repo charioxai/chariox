@@ -58,6 +58,25 @@ impl<'a> KernelAgentService<'a> {
         prompt: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prompt_with_hidden_system_context(
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            "",
+            attachments,
+        )
+    }
+
+    pub(crate) fn submit_prompt_with_hidden_system_context(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: Option<&str>,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = match target_agent_id {
@@ -79,7 +98,8 @@ impl<'a> KernelAgentService<'a> {
             prompt,
             PromptStatus::Queued,
         )
-        .with_attachments(attachments);
+        .with_attachments(attachments)
+        .with_hidden_system_context(hidden_system_context);
         let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,

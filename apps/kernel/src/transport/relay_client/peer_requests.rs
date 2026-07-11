@@ -220,6 +220,7 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         } => {
             let adapter_key = crate::provider::adapter_key_for_provider(&provider).to_string();
@@ -234,6 +235,7 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
                 .await;
@@ -280,6 +282,7 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         } => {
             let submitted = router
@@ -290,6 +293,7 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
                 .await;

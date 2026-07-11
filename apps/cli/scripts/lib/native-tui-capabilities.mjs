@@ -47,6 +47,13 @@ export async function installNativeDrillCapabilities({
     })
     try {
       await workerClient.send(installMcpServerRequest(workspace, mcpConfig))
+      const workerSkill = unwrapVariant(
+        await workerClient.send(installSkillRequest(workspace, skillSource)),
+        "SkillInstalled",
+      ).skill
+      if (workerSkill?.name !== installedSkill?.name) {
+        throw new Error(`worker skill install returned ${workerSkill?.name ?? "no name"}; expected ${installedSkill?.name ?? skillName}`)
+      }
     } finally {
       await workerClient.close().catch(() => {})
     }

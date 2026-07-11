@@ -35,6 +35,7 @@ import {
   terminateMatchingProcesses,
   waitForFileMatch,
   waitForLogOccurrences,
+  waitForScreenMatch,
 } from "./drill-runtime-helpers.mjs"
 import {
   runNativeCodexPrompt,
@@ -522,6 +523,8 @@ export async function runProviderScenario({
     nativeB: path.join(scenarioRoot, "native-b-run.log"),
     proxyA: path.join(scenarioRoot, "native-a.proxy.log"),
     proxyB: path.join(scenarioRoot, "native-b.proxy.log"),
+    renderedA: path.join(scenarioRoot, "native-a-rendered.txt"),
+    renderedB: path.join(scenarioRoot, "native-b-rendered.txt"),
   }
   const automationSocket = path.join("/tmp", `arb-rnt-${provider}-${process.pid}.sock`)
   let client = null
@@ -749,10 +752,10 @@ export async function runProviderScenario({
       await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
       await sleep(1_000)
       for (const expected of [markers.arrobaA, markers.nativeA]) {
-        await waitForFileMatch(logs.a, new RegExp(expected), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(expected), 90_000)
       }
       for (const expected of [markers.arrobaB, markers.nativeB]) {
-        await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
+        await waitForScreenMatch(screenB, logs.renderedB, new RegExp(expected), 90_000)
       }
     } else if (provider === "claude") {
       const providerRunB = await waitForClaudeProviderRunId(logs.b)
@@ -778,8 +781,8 @@ export async function runProviderScenario({
       if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
         throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
       }
-      await waitForFileMatch(logs.b, new RegExp(markers.nativeB), 90_000)
-      await waitForFileMatch(logs.b, new RegExp(markers.arrobaB), 90_000)
+      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.nativeB), 90_000)
+      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.arrobaB), 90_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
@@ -811,7 +814,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
           command: `agent focus ${agents[0].id}`,
@@ -823,7 +826,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
       } else {
         const providerRunA = await waitForClaudeProviderRunId(logs.a)
         await sendClaudeRenderedPromptViaKernelInput(
@@ -836,7 +839,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
           command: `agent focus ${agents[0].id}`,
@@ -848,7 +851,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
         const claudeScreenLog = await readFile(logs.a, "utf8").catch(() => "")
         if (claudeScreenLog.includes("Full instructions for explicitly requested Arroba skills")) {
           throw new Error("Claude native TUI displayed hidden Arroba skill context")
@@ -908,9 +911,9 @@ export async function runProviderScenario({
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
-      await waitForFileMatch(logs.a, new RegExp(markers.nativeAttachment), 60_000)
+      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /native-attach/, 60_000)
+        await waitForScreenMatch(screenA, logs.renderedA, /native-attach/, 60_000)
       }
 
       await automationRequest(automationSocket, {
@@ -933,9 +936,9 @@ export async function runProviderScenario({
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
       })
-      await waitForFileMatch(logs.a, new RegExp(markers.arrobaAttachment), 60_000)
+      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /arroba-attach/, 60_000)
+        await waitForScreenMatch(screenA, logs.renderedA, /arroba-attach/, 60_000)
       }
       extendedChecks.attachments = "validated"
     }

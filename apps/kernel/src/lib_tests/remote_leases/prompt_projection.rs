@@ -186,6 +186,7 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
             None,
             None,
             Vec::new(),
+            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should prepare");
@@ -384,6 +385,7 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
                 prompt_summary: "remote leased prompt".to_string(),
             }),
             Vec::new(),
+            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
