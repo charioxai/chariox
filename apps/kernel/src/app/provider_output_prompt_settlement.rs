@@ -91,6 +91,10 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
+        let provider_run = self.provider_store.get_run(provider_run_id)?;
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            return Ok(());
+        }
         if !crate::transport::flow_control::prompt_output_quiet_after_response(
             self.app,
             provider_run_id,
@@ -316,5 +320,93 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
 
     fn clear_active_turn(&self, provider_run_id: &str) {
         self.active_turns.clear(provider_run_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_native_composer_quiet_does_not_settle_the_active_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-native-claude-settlement",
+                "worktree-native-claude-settlement",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-native-claude-settlement",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-native-claude-settlement",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude:claude:claude-sonnet-4-6".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "prompt waiting in the Claude composer\n",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+        app.prompt_activity
+            .write()
+            .get_mut(run.id())
+            .expect("prompt activity should exist")
+            .last_output_at = Some(Instant::now() - Duration::from_millis(100));
+
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        ProviderOutputPromptSettlement::new(
+            &mut app,
+            provider_store,
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .settle_pty_if_quiet(session.id(), run.id())
+        .expect("quiet settlement should succeed");
+
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .is_some());
     }
 }
