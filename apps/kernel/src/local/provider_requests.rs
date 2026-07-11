@@ -267,10 +267,8 @@ fn remote_native_provider_run_response(
     let Some(remote_execution) = agent.remote_execution().cloned() else {
         return Ok(None);
     };
-    let required_mcps =
-        required_remote_mcps_for_native_provider_launch(app, &request.session_id, &agent)?;
-    let required_skills =
-        required_remote_skills_for_native_provider_launch(app, &request.session_id, &agent)?;
+    let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
+    let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
     let remote_extension_manifest = app
         .remote_extension_manifest_for_agent(&agent)?
         .without_mcp_tools();
@@ -345,69 +343,6 @@ fn remote_native_provider_run_response(
             message: format!("unexpected remote native provider launch response: {other:?}"),
         }),
     }
-}
-
-fn required_remote_mcps_for_native_provider_launch(
-    app: &DaemonApp,
-    session_id: &str,
-    agent: &crate::agent::AgentInstance,
-) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
-    let mcp_grants = agent.mcp_grants();
-    if mcp_grants.is_empty() {
-        return Ok(Vec::new());
-    }
-    let _ = app.sessions().get_session(session_id)?;
-    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
-    let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-    mcp_grants
-        .iter()
-        .map(|grant| {
-            let config = registry
-                .get(grant)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "launch remote native provider run",
-                    message: format!("MCP `{grant}` is granted but is not installed"),
-                })?;
-            Ok(crate::transport::relay_peer::RequiredRemoteMcp {
-                definition_hash: config.definition_hash()?,
-                config,
-            })
-        })
-        .collect()
-}
-
-fn required_remote_skills_for_native_provider_launch(
-    app: &DaemonApp,
-    session_id: &str,
-    agent: &crate::agent::AgentInstance,
-) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteSkill>, DaemonError> {
-    let skill_grants = agent.skill_grants();
-    if skill_grants.is_empty() {
-        return Ok(Vec::new());
-    }
-    let _ = app.sessions().get_session(session_id)?;
-    let registry = crate::skill::ArrobaSkillRegistry::new(
-        crate::skill::ArrobaSkillRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default(),
-    );
-    skill_grants
-        .iter()
-        .map(|grant| {
-            let package = registry
-                .package(grant)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "launch remote native provider run",
-                    message: format!("skill `{grant}` is granted but is not installed"),
-                })?;
-            Ok(crate::transport::relay_peer::RequiredRemoteSkill {
-                name: package.metadata.name,
-                version_hash: package.version_hash,
-            })
-        })
-        .collect()
 }
 
 pub(crate) fn launch_provider_request_from_local(

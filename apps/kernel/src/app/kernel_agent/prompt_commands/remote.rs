@@ -187,7 +187,8 @@ impl<'a> KernelAgentService<'a> {
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
         let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
-        let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
+        let (required_mcps, required_skills, remote_extension_manifest) =
+            self.app.remote_prompt_capabilities_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
         let result = match self.app.block_on_relay_future(
             send_peer_request_via_temporary_connection_with_timeout(
@@ -202,8 +203,8 @@ impl<'a> KernelAgentService<'a> {
                     attachments,
                     workflow_context: dispatch.workflow_context.clone(),
                     git_context: Some(remote_git_turn_context(&dispatch)),
-                    required_mcps: Vec::new(),
-                    required_skills: None,
+                    required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 },
                 crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
@@ -422,7 +423,8 @@ impl<'a> KernelAgentService<'a> {
                 }
             }
             let agent = self.app.agents().get_agent(agent_id)?;
-            let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
+            let (required_mcps, required_skills, remote_extension_manifest) =
+                self.app.remote_prompt_capabilities_for_agent(&agent)?;
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
             let response = self.app.block_on_relay_future(
                 send_peer_request_via_temporary_connection_with_timeout(
@@ -454,8 +456,8 @@ impl<'a> KernelAgentService<'a> {
                             &peeked,
                             &home_prompt_id,
                         )),
-                        required_mcps: Vec::new(),
-                        required_skills: None,
+                        required_mcps,
+                        required_skills,
                         remote_extension_manifest,
                     },
                     crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
