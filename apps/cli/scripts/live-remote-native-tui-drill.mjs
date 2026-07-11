@@ -41,6 +41,7 @@ import {
   waitForProviderRunMcpGrant,
 } from "./lib/native-tui-capabilities.mjs"
 import {
+  assertHetznerTcpPortAvailable,
   copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
   hetznerNativeRuntimeTempDir,
@@ -119,6 +120,24 @@ async function disableWorkspaceLiveSync(kernelUrl) {
   } finally {
     await client.close().catch(() => {})
   }
+}
+
+async function hetznerNativePortsAreAvailable(options, ports) {
+  for (const [label, port] of [
+    ["relay", ports.relayPort],
+    ["worker kernel", ports.workerKernelPort],
+    ["worker MCP", ports.workerMcpPort],
+  ]) {
+    try {
+      await assertHetznerTcpPortAvailable(options, port, `Hetzner ${label} port`)
+    } catch (error) {
+      if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) {
+        return false
+      }
+      throw error
+    }
+  }
+  return true
 }
 
 function parseArgs(argv) {
@@ -333,7 +352,11 @@ async function main() {
   }
   const runId = `${process.pid}-${Date.now()}`
   const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
-  const ports = await makeAvailablePorts()
+  const ports = await makeAvailablePorts({
+    additionalAvailability: options.hetznerWorker
+      ? (candidate) => hetznerNativePortsAreAvailable(options, candidate)
+      : undefined,
+  })
   const relayToken = `remote-native-token-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.kernelPort}`

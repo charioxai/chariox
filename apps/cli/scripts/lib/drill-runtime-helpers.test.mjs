@@ -8,6 +8,8 @@ import test from "node:test"
 import {
   findMatchingProcessIdsFromPsOutput,
   formatDrillCommandLine,
+  makeAvailablePorts,
+  makePorts,
   providerAuthFailureFromTerminalText,
   resolveBuiltBinary,
   resolveBuiltBinarySync,
@@ -89,6 +91,23 @@ test("dev-stub drill inventory is enabled explicitly without mutating the source
 
   assert.deepEqual(enabled, { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "1" })
   assert.equal(source.ARROBA_PROVIDER_DEV_STUB, "0")
+})
+
+test("available port selection retries when another host rejects the first candidate", async () => {
+  const candidates = [makePorts(32000), makePorts(36000)]
+  const checked = []
+  const selected = await makeAvailablePorts({
+    candidateFactory: () => candidates[checked.length],
+    localAvailability: async () => true,
+    additionalAvailability: async (ports) => {
+      checked.push(ports)
+      return checked.length > 1
+    },
+    maxAttempts: candidates.length,
+  })
+
+  assert.deepEqual(checked, candidates)
+  assert.equal(selected, candidates[1])
 })
 
 test("built binary resolution chooses the newest Cargo target candidate", async () => {

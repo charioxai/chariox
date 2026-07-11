@@ -27,10 +27,16 @@ export function withDevStubProviderInventory(env) {
   }
 }
 
-export async function makeAvailablePorts() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const ports = makePorts()
-    if (await portsAreAvailable(ports)) return ports
+export async function makeAvailablePorts({
+  candidateFactory = makePorts,
+  localAvailability = portsAreAvailable,
+  additionalAvailability = async () => true,
+  maxAttempts = 80,
+} = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const ports = candidateFactory()
+    if (!(await localAvailability(ports))) continue
+    if (await additionalAvailability(ports)) return ports
   }
   throw new Error("could not find available drill ports")
 }
