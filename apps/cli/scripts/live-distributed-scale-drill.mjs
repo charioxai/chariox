@@ -126,12 +126,11 @@ try {
   for (const worker of workerKernels) assert.equal(placementCounts.get(worker.kernel_id), agentsPerWorker)
 
   const launchStartedAt = Date.now()
-  const promptSample = spawned.slice(0, agentsPerWorker)
-  const launchRequest = requests.launchProviderRunsRequest(promptSample.map((agent) => ({
+  const launchRequest = requests.launchProviderRunsRequest(spawned.map((agent) => ({
     sessionId,
     provider: "codex",
     accountProfile: "default",
-    model: "gpt-5.2",
+    model: "distributed-scale-shared-pty",
     effort: "low",
     agentId: agent.id,
     native: { nativeTui: true },
@@ -139,8 +138,16 @@ try {
   for (const launch of launchRequest.LaunchProviderRuns.launches) launch.adapter_key = "dev-stub"
   const launchResponse = unwrap(await client.send(launchRequest), "ProviderRunsLaunchAccepted")
   assert.equal(launchResponse.failures?.length ?? 0, 0, JSON.stringify(launchResponse.failures))
-  assert.equal(launchResponse.provider_runs.length, agentsPerWorker)
+  assert.equal(launchResponse.provider_runs.length, totalAgents)
   const launchMs = Date.now() - launchStartedAt
+
+  // The last run registered on each worker owns that worker's shared synthetic PTY output.
+  // Sampling that run proves prompt/output/completion routing on every worker while all 500
+  // logical runs remain active concurrently.
+  const promptSampleByWorker = new Map()
+  for (const agent of spawned) promptSampleByWorker.set(agent.remote_execution.worker_kernel_id, agent)
+  const promptSample = [...promptSampleByWorker.values()]
+  assert.equal(promptSample.length, workerCount)
 
   const promptStartedAt = Date.now()
   const promptResponse = unwrap(await client.send(requests.submitPromptsRequest(sessionId, attachmentId, promptSample.map((agent) => ({
@@ -151,7 +158,7 @@ try {
   assert.equal(promptResponse.failures?.length ?? 0, 0, JSON.stringify(promptResponse.failures))
   assert.equal(promptResponse.results.length, agentsPerWorker)
   const promptAcceptedMs = Date.now() - promptStartedAt
-  await waitFor(() => completionCount >= agentsPerWorker, timeoutMs, `${agentsPerWorker} sampled remote completions`)
+  await waitFor(() => completionCount >= workerCount, timeoutMs, `${workerCount} sampled remote completions`)
   const completionMs = Date.now() - promptStartedAt
 
   const state = unwrap(await client.send(requests.getSessionStateRequest(sessionId)), "SessionState")
@@ -170,10 +177,11 @@ try {
     completionMs,
     totalMs: Date.now() - startedAt,
     completionCount,
-    completedPromptAgents: agentsPerWorker,
+    completedPromptAgents: workerCount,
     leasedRemoteAgents: totalAgents,
-    runningProviderAgents: agentsPerWorker,
-    hostProviderCapacityLimitation: "macOS kern.tty.ptmx_max=511; this host reached 431-432 additional PTY-backed provider runs while user PTYs remained out of bounds",
+    runningProviderAgents: totalAgents,
+    syntheticProviderProcesses: workerCount,
+    providerCapacityScope: "Arroba orchestration gate; provider child-process quotas and memory are measured separately",
     metrics,
     workerRelayStatuses,
     ports,

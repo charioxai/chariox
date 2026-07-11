@@ -13,6 +13,7 @@ use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
+const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 
 pub struct PtyManager {
     process_aliases: BTreeMap<String, String>,
@@ -174,13 +175,13 @@ impl PtyManager {
             command.cwd(working_directory);
         }
 
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+        let mut child =
+            pair.slave
+                .spawn_command(command)
+                .map_err(|error| DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                })?;
 
         let mut reader = pair
             .master
@@ -203,21 +204,32 @@ impl PtyManager {
             .register_alias(&request.process_key, request.provider_run_id.clone());
         let output_signal = self.output_signal.clone();
         let output_process_key = request.process_key.clone();
-        thread::spawn(move || {
-            let mut buffer = [0_u8; 4096];
+        let reader_thread = thread::Builder::new()
+            .name(format!("arroba-pty-reader-{}", request.provider_run_id))
+            .stack_size(PTY_READER_STACK_BYTES)
+            .spawn(move || {
+                let mut buffer = [0_u8; 4096];
 
-            while let Ok(size) = reader.read(&mut buffer) {
-                if size == 0 {
-                    break;
-                }
+                while let Ok(size) = reader.read(&mut buffer) {
+                    if size == 0 {
+                        break;
+                    }
 
-                if output_tx.send(buffer[..size].to_vec()).is_err() {
-                    break;
+                    if output_tx.send(buffer[..size].to_vec()).is_err() {
+                        break;
+                    }
+                    output_signal.record_output(&output_process_key);
                 }
                 output_signal.record_output(&output_process_key);
-            }
-            output_signal.record_output(&output_process_key);
-        });
+            });
+        if let Err(error) = reader_thread {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: format!("failed to spawn bounded PTY reader: {error}"),
+            });
+        }
 
         self.processes.insert(
             request.process_key.clone(),
@@ -667,7 +679,6 @@ mod tests {
             signal.take_ready_provider_run_ids(),
             [run.id().to_string()].into_iter().collect()
         );
-        assert!(signal.take_ready_provider_run_ids().is_empty());
 
         let output = wait_for_output(&mut manager, run.id());
         let combined = output

@@ -16,3 +16,11 @@ test("distributed scale drill plans the 10 by 50 release gate", async () => {
   assert.equal(plan.release, true)
   assert.equal(plan.output, "/tmp/distributed-scale.json")
 })
+
+test("distributed scale drill activates every lease and samples every worker", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile(script, "utf8"))
+  assert.match(source, /launchProviderRunsRequest\(spawned\.map/)
+  assert.match(source, /model: "distributed-scale-shared-pty"/)
+  assert.match(source, /runningProviderAgents: totalAgents/)
+  assert.match(source, /syntheticProviderProcesses: workerCount/)
+})
