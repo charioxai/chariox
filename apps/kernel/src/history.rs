@@ -528,6 +528,18 @@ impl Drop for OperationalHistoryWriter {
         {
             let _ = worker.join();
         }
+        let committed_records = self.health.committed_records.load(Ordering::Acquire);
+        if committed_records > 0 {
+            crate::logging::info_with_fields(
+                "daemon.history_writer",
+                "operational history writer stopped",
+                serde_json::json!({
+                    "committed_batches": self.health.committed_batches.load(Ordering::Acquire),
+                    "committed_records": committed_records,
+                    "max_batch_records": self.health.max_batch_records.load(Ordering::Acquire),
+                }),
+            );
+        }
     }
 }
 

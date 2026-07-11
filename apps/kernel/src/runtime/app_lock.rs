@@ -78,6 +78,9 @@ fn registry() -> &'static StdMutex<BTreeMap<&'static str, SiteStats>> {
 }
 
 fn record(site: &'static str, wait: Duration, hold: Duration) {
+    if !performance_diagnostics_enabled() {
+        return;
+    }
     let wait_us = u64::try_from(wait.as_micros()).unwrap_or(u64::MAX);
     let hold_us = u64::try_from(hold.as_micros()).unwrap_or(u64::MAX);
     let mut sites = registry().lock().unwrap_or_else(PoisonError::into_inner);
@@ -93,6 +96,18 @@ fn record(site: &'static str, wait: Duration, hold: Duration) {
     if hold_us >= STALL_HOLD_THRESHOLD_MS * 1_000 {
         stats.holds_over_500ms = stats.holds_over_500ms.saturating_add(1);
     }
+}
+
+fn performance_diagnostics_enabled() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ARROBA_PERF_DIAGNOSTICS")
+            .ok()
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+    })
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
