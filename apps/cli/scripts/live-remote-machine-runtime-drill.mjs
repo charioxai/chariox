@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
 import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -337,6 +338,16 @@ async function main() {
     opencodePort: ports.workerOpenCodePort,
     codexPort: ports.workerCodexPort,
   })
+  await Promise.all([
+    writeIsolatedKernelConfig({
+      xdgConfigHome: homeEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(rootDir, 'home-kernel-storage'),
+    }),
+    writeIsolatedKernelConfig({
+      xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(rootDir, 'worker-kernel-storage'),
+    }),
+  ])
 
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`

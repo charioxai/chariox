@@ -15,6 +15,7 @@ import {
   makeAvailablePorts,
   terminateChild,
 } from "./lib/drill-runtime-helpers.mjs"
+import { writeIsolatedKernelConfig } from "./lib/drill-kernel-storage.mjs"
 import {
   RELAY_ISSUER,
   RELAY_SECRET,
@@ -115,6 +116,16 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
     codexPort: ports.workerCodexPort,
     providerEnv: workerProvider,
   })
+  await Promise.all([
+    writeIsolatedKernelConfig({
+      xdgConfigHome: homeEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(root, "home-kernel-storage"),
+    }),
+    writeIsolatedKernelConfig({
+      xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(root, "worker-kernel-storage"),
+    }),
+  ])
 
   let relayChild = null
   let homeChild = null
@@ -181,6 +192,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
           provider,
           root,
           kernelUrl: homeKernelUrl,
+          historyDir: homeEnv.ARROBA_SESSION_HISTORY_DIR,
           workerMachineId,
           workerKernelId: workerKernel.kernel_id,
           options,
@@ -239,22 +251,22 @@ async function main() {
   options.historyDir = historyDir
   let sliceImageBuild = null
   if (sliceMode) {
-    await mkdir(path.join(sliceXdgConfigHome, "arroba"), { recursive: true })
     await mkdir(sliceXdgStateHome, { recursive: true })
     await mkdir(sliceXdgDataHome, { recursive: true })
     await mkdir(sliceXdgCacheHome, { recursive: true })
     await mkdir(sliceRoot, { recursive: true })
-    await writeFile(path.join(sliceXdgConfigHome, "arroba", "config.toml"), [
-      "version = 1",
-      "",
-      "[slices]",
-      `root = ${JSON.stringify(sliceRoot)}`,
-      "",
-      "[slices.linux]",
-      `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
-      `build_image = ${JSON.stringify(options.sliceBuildImage === "always" ? "auto" : options.sliceBuildImage)}`,
-      "",
-    ].join("\n"), "utf8")
+    await writeIsolatedKernelConfig({
+      xdgConfigHome: sliceXdgConfigHome,
+      storageRoot: path.join(root, "home-kernel-storage"),
+      extraToml: [
+        "[slices]",
+        `root = ${JSON.stringify(sliceRoot)}`,
+        "",
+        "[slices.linux]",
+        `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
+        `build_image = ${JSON.stringify(options.sliceBuildImage === "always" ? "auto" : options.sliceBuildImage)}`,
+      ],
+    })
     console.log(`slice-restart: prebuild image policy ${options.sliceBuildImage}`)
     sliceImageBuild = await prebuildLocalDockerSliceImageIfNeeded(root, options.sliceBuildImage, options.timeoutMs)
   }

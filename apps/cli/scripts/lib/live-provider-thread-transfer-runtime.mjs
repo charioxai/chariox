@@ -528,6 +528,8 @@ export function workerResumeDaemonEnv({
   return {
     ...process.env,
     ...providerEnv,
+    XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(openCodePort),

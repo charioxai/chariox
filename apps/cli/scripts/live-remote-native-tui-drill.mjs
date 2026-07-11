@@ -8,6 +8,10 @@ import os from "node:os"
 import { promisify } from "node:util"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import {
+  isolatedKernelConfigToml,
+  writeIsolatedKernelConfig,
+} from "./lib/drill-kernel-storage.mjs"
+import {
   runProviderScenario,
   waitForLocalDaemon,
   waitForRelayTarget,
@@ -228,6 +232,27 @@ async function syncHetznerCodexAuth(options) {
   await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
 }
 
+async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
+  const localConfigPath = path.join(root, "hetzner-worker-config.toml")
+  const remoteConfigDir = path.posix.join(remoteRuntimeRoot, "xdg-config", "arroba")
+  await writeFile(
+    localConfigPath,
+    isolatedKernelConfigToml(path.posix.join(remoteRuntimeRoot, "worker-kernel-storage")),
+    { mode: 0o600 },
+  )
+  await execFileAsync("ssh", sshArgs(options, `mkdir -p ${shellQuote(remoteConfigDir)}`))
+  await execFileAsync("scp", [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    localConfigPath,
+    `${options.hetznerHost}:${path.posix.join(remoteConfigDir, "config.toml")}`,
+  ])
+}
+
 async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers }) {
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
@@ -344,25 +369,31 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
-    if (options.homeManagedSliceLocalDocker) {
-      await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
-      const configDir = path.join(xdgConfigHome, "arroba")
-      await mkdir(configDir, { recursive: true })
-      await writeFile(path.join(configDir, "config.toml"), [
-        "version = 1",
-        "",
+    await writeIsolatedKernelConfig({
+      xdgConfigHome,
+      storageRoot: path.join(root, "home-kernel-storage"),
+      extraToml: options.homeManagedSliceLocalDocker ? [
         "[slices]",
         `root = ${JSON.stringify(path.join(root, "slices"))}`,
         "",
         "[slices.linux]",
         `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
         `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
-        "",
-      ].join("\n"))
+      ] : [],
+    })
+    if (options.standardHomeWorker && !options.hetznerWorker) {
+      await writeIsolatedKernelConfig({
+        xdgConfigHome: path.join(root, "worker-xdg-config"),
+        storageRoot: path.join(root, "worker-kernel-storage"),
+      })
+    }
+    if (options.homeManagedSliceLocalDocker) {
+      await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
     }
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
       hetznerWorktreePrepared = true
+      await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
@@ -454,10 +485,10 @@ async function main() {
           RUST_MIN_STACK: rustMinStack,
           PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
           HOME: "/root",
-          XDG_CONFIG_HOME: "/root/.config",
-          XDG_STATE_HOME: "/root/.local/state",
-          XDG_DATA_HOME: "/root/.local/share",
-          XDG_CACHE_HOME: "/root/.cache",
+          XDG_CONFIG_HOME: path.posix.join(remoteRuntimeRoot, "xdg-config"),
+          XDG_STATE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-state"),
+          XDG_DATA_HOME: path.posix.join(remoteRuntimeRoot, "xdg-data"),
+          XDG_CACHE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-cache"),
           CODEX_HOME: "/root/.codex",
           OPENCODE_CONFIG_DIR: "/root/.config/opencode",
           ARROBA_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
