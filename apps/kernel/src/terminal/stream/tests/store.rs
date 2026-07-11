@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn terminal_stream_store_isolates_session_lock_contention() {
+    let first_session = "session-one";
+    let second_session = (0..1_000)
+        .map(|index| format!("session-{index}"))
+        .find(|candidate| {
+            TerminalStreamStore::shard_index_for_test(candidate)
+                != TerminalStreamStore::shard_index_for_test(first_session)
+        })
+        .expect("a session assigned to another terminal shard");
+    let store = TerminalStreamStore::new();
+    let holder = store.clone();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let holder_release = release.clone();
+    let thread = std::thread::spawn(move || {
+        holder.hold_session_shard_for_test(first_session, &holder_release);
+    });
+    release.wait();
+
+    store.record_input(&second_session, "run-two", "attachment-two", b"input");
+    release.wait();
+    thread.join().expect("terminal shard holder joins");
+    assert_eq!(store.input_records().len(), 1);
+}
+
 #[tokio::test]
 async fn terminal_stream_store_notifies_waiters_on_output() {
     let terminal = TerminalStreamStore::new();

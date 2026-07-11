@@ -118,23 +118,59 @@ pub struct TerminalStreamHealthSnapshot {
     pub trimmed_pending_output_recipients: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TerminalStreamHealthStore {
-    snapshot: Arc<StdMutex<TerminalStreamHealthSnapshot>>,
+    snapshots: Arc<Vec<Arc<StdMutex<TerminalStreamHealthSnapshot>>>>,
+}
+
+impl Default for TerminalStreamHealthStore {
+    fn default() -> Self {
+        Self {
+            snapshots: Arc::new(vec![Arc::new(StdMutex::new(
+                TerminalStreamHealthSnapshot::default(),
+            ))]),
+        }
+    }
 }
 
 impl TerminalStreamHealthStore {
     pub fn snapshot(&self) -> TerminalStreamHealthSnapshot {
-        self.snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.snapshots.iter().fold(
+            TerminalStreamHealthSnapshot::default(),
+            |mut aggregate, snapshot| {
+                let snapshot = snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                aggregate.pending_output_records += snapshot.pending_output_records;
+                aggregate.pending_notice_records += snapshot.pending_notice_records;
+                aggregate.pending_completion_records += snapshot.pending_completion_records;
+                aggregate.pending_output_record_limit_per_attachment = aggregate
+                    .pending_output_record_limit_per_attachment
+                    .max(snapshot.pending_output_record_limit_per_attachment);
+                aggregate.trimmed_pending_output_recipients +=
+                    snapshot.trimmed_pending_output_recipients;
+                aggregate
+            },
+        )
     }
 
     pub(super) fn update(&self, snapshot: TerminalStreamHealthSnapshot) {
-        *self
-            .snapshot
+        let Some(current) = self.snapshots.first() else {
+            return;
+        };
+        *current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+    }
+
+    pub(super) fn aggregate(stores: impl IntoIterator<Item = Self>) -> Self {
+        Self {
+            snapshots: Arc::new(
+                stores
+                    .into_iter()
+                    .flat_map(|store| store.snapshots.iter().cloned().collect::<Vec<_>>())
+                    .collect(),
+            ),
+        }
     }
 }
