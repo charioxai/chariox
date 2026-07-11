@@ -55,11 +55,16 @@ impl KernelRuntimeOwnedState {
         request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
         let session_id = request.session_id.clone();
-        let previous_active_run_id = self
+        let active_run_id = self
             .session_store
             .get_session(&session_id)?
             .active_provider_run_id()
             .map(str::to_owned);
+        let previous_active_run_id = active_run_id
+            .as_deref()
+            .and_then(|run_id| self.provider_store.get_run(run_id).ok())
+            .filter(|run| run.agent_instance_id() == request.agent_id.as_deref())
+            .map(|run| run.id().to_string());
 
         if let Some(active_run_id) = previous_active_run_id.as_deref() {
             let active_run = self.provider_store.get_run(active_run_id)?;
