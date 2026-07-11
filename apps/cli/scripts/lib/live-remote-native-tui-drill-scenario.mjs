@@ -458,6 +458,15 @@ function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   })
 }
 
+export async function attachSubscribedTerminalClient(client, sessionId, clientId) {
+  const attachment = unwrap(
+    await client.send(attachToSessionRequest(sessionId, clientId)),
+    "SessionAttached",
+  ).attachment
+  await client.subscribeToKernelEvents(sessionId, attachment.id)
+  return attachment
+}
+
 export async function runProviderScenario({
   provider,
   root,
@@ -661,10 +670,11 @@ export async function runProviderScenario({
     }
 
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
-    const attachment = unwrap(
-      await client.send(attachToSessionRequest(sessionId, `remote-native-${provider}-drill-${process.pid}`)),
-      "SessionAttached",
-    ).attachment
+    const attachment = await attachSubscribedTerminalClient(
+      client,
+      sessionId,
+      `remote-native-${provider}-drill-${process.pid}`,
+    )
     const agents = await waitForNamedAgents(client, sessionId, aliases)
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
