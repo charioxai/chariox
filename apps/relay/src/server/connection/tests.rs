@@ -220,8 +220,8 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_006);
     let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
-    let mut registry = RelayRegistry::default();
-    registry.pending_requests.insert(
+    let registry = RelayRegistry::default();
+    registry.route_index().insert_pending_client(
         "relay-request-1".to_string(),
         PendingClientRequest {
             client_addr,
@@ -273,8 +273,8 @@ async fn target_backpressure_rejects_peer_pending_request_without_requester_clos
     let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
-    let mut registry = RelayRegistry::default();
-    registry.pending_daemon_peer_requests.insert(
+    let registry = RelayRegistry::default();
+    registry.route_index().insert_pending_daemon(
         "relay-peer-request-1".to_string(),
         PendingDaemonPeerRequest {
             requester_daemon_key: requester_key,

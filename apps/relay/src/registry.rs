@@ -52,7 +52,7 @@ impl<K, V> Default for ShardedRouteMap<K, V> {
 
 impl<K, V> ShardedRouteMap<K, V>
 where
-    K: Eq + Hash,
+    K: Clone + Eq + Hash,
     V: Clone,
 {
     fn shard_index(key: &K) -> usize {
@@ -81,6 +81,59 @@ where
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(key)
+    }
+
+    fn remove_if(&self, key: &K, predicate: impl FnOnce(&V) -> bool) -> Option<V> {
+        let mut shard = self.shards[Self::shard_index(key)]
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shard.get(key).is_some_and(predicate) {
+            shard.remove(key)
+        } else {
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
+    }
+
+    fn values(&self) -> Vec<V> {
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn drain_where(&self, predicate: impl Fn(&V) -> bool) -> Vec<V> {
+        let mut removed = Vec::new();
+        for shard in self.shards.iter() {
+            let mut shard = shard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let keys = shard
+                .iter()
+                .filter(|(_, value)| predicate(value))
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            removed.extend(keys.into_iter().filter_map(|key| shard.remove(&key)));
+        }
+        removed
     }
 }
 
@@ -116,6 +169,8 @@ pub(crate) struct RelayRouteIndex {
     daemon_senders: ShardedRouteMap<DaemonKey, RelaySender>,
     client_senders: ShardedRouteMap<SocketAddr, RelaySender>,
     subscriptions: ShardedRouteMap<String, ActiveEventRoute>,
+    pending_client_requests: ShardedRouteMap<String, PendingClientRequest>,
+    pending_daemon_requests: ShardedRouteMap<String, PendingDaemonPeerRequest>,
 }
 
 impl RelayRouteIndex {
@@ -153,6 +208,78 @@ impl RelayRouteIndex {
 
     pub(crate) fn remove_subscription(&self, subscription_id: &str) {
         self.subscriptions.remove_str(subscription_id);
+    }
+
+    pub(crate) fn insert_pending_client(
+        &self,
+        relay_request_id: String,
+        pending: PendingClientRequest,
+    ) {
+        self.pending_client_requests
+            .insert(relay_request_id, pending);
+    }
+
+    pub(crate) fn remove_pending_client(
+        &self,
+        relay_request_id: &str,
+    ) -> Option<PendingClientRequest> {
+        self.pending_client_requests.remove_str(relay_request_id)
+    }
+
+    pub(crate) fn take_pending_client_if(
+        &self,
+        relay_request_id: &str,
+        predicate: impl FnOnce(&PendingClientRequest) -> bool,
+    ) -> Option<PendingClientRequest> {
+        let key = relay_request_id.to_string();
+        self.pending_client_requests.remove_if(&key, predicate)
+    }
+
+    pub(crate) fn pending_clients(&self) -> Vec<PendingClientRequest> {
+        self.pending_client_requests.values()
+    }
+
+    pub(crate) fn drain_pending_clients_where(
+        &self,
+        predicate: impl Fn(&PendingClientRequest) -> bool,
+    ) -> Vec<PendingClientRequest> {
+        self.pending_client_requests.drain_where(predicate)
+    }
+
+    pub(crate) fn insert_pending_daemon(
+        &self,
+        relay_request_id: String,
+        pending: PendingDaemonPeerRequest,
+    ) {
+        self.pending_daemon_requests
+            .insert(relay_request_id, pending);
+    }
+
+    pub(crate) fn remove_pending_daemon(
+        &self,
+        relay_request_id: &str,
+    ) -> Option<PendingDaemonPeerRequest> {
+        self.pending_daemon_requests.remove_str(relay_request_id)
+    }
+
+    pub(crate) fn take_pending_daemon_if(
+        &self,
+        relay_request_id: &str,
+        predicate: impl FnOnce(&PendingDaemonPeerRequest) -> bool,
+    ) -> Option<PendingDaemonPeerRequest> {
+        let key = relay_request_id.to_string();
+        self.pending_daemon_requests.remove_if(&key, predicate)
+    }
+
+    pub(crate) fn drain_pending_daemons_where(
+        &self,
+        predicate: impl Fn(&PendingDaemonPeerRequest) -> bool,
+    ) -> Vec<PendingDaemonPeerRequest> {
+        self.pending_daemon_requests.drain_where(predicate)
+    }
+
+    pub(crate) fn pending_request_count(&self) -> usize {
+        self.pending_client_requests.len() + self.pending_daemon_requests.len()
     }
 }
 
@@ -249,8 +376,6 @@ pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
     pub(crate) daemons: BTreeMap<DaemonKey, DaemonRegistration>,
     pub(crate) daemon_peers: BTreeMap<DaemonKey, SocketAddr>,
-    pub(crate) pending_requests: BTreeMap<String, PendingClientRequest>,
-    pub(crate) pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
     pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
     pub(crate) pending_display_streams: BTreeMap<String, PendingDisplayStream>,
@@ -264,8 +389,6 @@ impl Default for RelayRegistry {
             peers: BTreeMap::new(),
             daemons: BTreeMap::new(),
             daemon_peers: BTreeMap::new(),
-            pending_requests: BTreeMap::new(),
-            pending_daemon_peer_requests: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             display_tunnels: BTreeMap::new(),
             pending_display_streams: BTreeMap::new(),
@@ -297,7 +420,7 @@ impl RelayRegistry {
     }
 
     pub fn pending_request_count(&self) -> usize {
-        self.pending_requests.len() + self.pending_daemon_peer_requests.len()
+        self.routes.pending_request_count()
     }
 
     pub fn subscription_count(&self) -> usize {

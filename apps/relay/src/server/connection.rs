@@ -416,24 +416,17 @@ pub(crate) async fn handle_connection(
                                 "relay-peer-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
                             );
-                            let daemon_sender = {
-                                let mut guard = registry.write().await;
-                                guard.pending_daemon_peer_requests.insert(
-                                    relay_request_id.clone(),
-                                    PendingDaemonPeerRequest {
-                                        requester_daemon_key: requester_daemon_key.clone(),
-                                        requester_request_id: request_id.clone(),
-                                        target_daemon_key: target_daemon_key.clone(),
-                                    },
-                                );
-                                routes.daemon_sender(&target_daemon_key)
-                            };
+                            routes.insert_pending_daemon(
+                                relay_request_id.clone(),
+                                PendingDaemonPeerRequest {
+                                    requester_daemon_key: requester_daemon_key.clone(),
+                                    requester_request_id: request_id.clone(),
+                                    target_daemon_key: target_daemon_key.clone(),
+                                },
+                            );
+                            let daemon_sender = routes.daemon_sender(&target_daemon_key);
                             let Some(daemon_sender) = daemon_sender else {
-                                registry
-                                    .write()
-                                    .await
-                                    .pending_daemon_peer_requests
-                                    .remove(&relay_request_id);
+                                routes.remove_pending_daemon(&relay_request_id);
                                 log_daemon_sender_missing(
                                     "daemon_peer_request",
                                     &registry,
@@ -560,20 +553,15 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let client_target = {
-                                let mut guard = registry.write().await;
-                                let pending = guard
-                                    .pending_requests
-                                    .get(&relay_request_id)
-                                    .filter(|pending| pending.daemon_key == current_daemon_key)
-                                    .cloned();
-                                if pending.is_some() {
-                                    guard.pending_requests.remove(&relay_request_id);
-                                }
-                                pending.and_then(|pending| {
+                            let pending = routes.take_pending_client_if(
+                                &relay_request_id,
+                                |pending| pending.daemon_key == current_daemon_key,
+                            );
+                            let client_target = if let Some(pending) = pending {
                                     if error.is_none() {
                                         match &pending.kind {
                                             PendingRequestKind::Subscribe { subscription_id } => {
+                                                let mut guard = registry.write().await;
                                                 guard.subscriptions.insert(
                                                     subscription_id.clone(),
                                                     ActiveSubscription {
@@ -594,6 +582,7 @@ pub(crate) async fn handle_connection(
                                                 }
                                             }
                                             PendingRequestKind::Unsubscribe { subscription_id } => {
+                                                let mut guard = registry.write().await;
                                                 guard.subscriptions.remove(subscription_id);
                                                 routes.remove_subscription(subscription_id);
                                             }
@@ -603,7 +592,8 @@ pub(crate) async fn handle_connection(
                                     routes
                                         .client_sender(&pending.client_addr)
                                         .map(|sender| (sender, pending.client_request_id))
-                                })
+                                } else {
+                                    None
                             };
                             if let Some((client_sender, client_request_id)) = client_target {
                                 send_envelope(
@@ -629,19 +619,11 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let daemon_target = {
-                                let mut guard = registry.write().await;
-                                let pending = guard
-                                    .pending_daemon_peer_requests
-                                    .get(&relay_request_id)
-                                    .filter(|pending| {
-                                        pending.target_daemon_key == current_daemon_key
-                                    })
-                                    .cloned();
-                                if pending.is_some() {
-                                    guard.pending_daemon_peer_requests.remove(&relay_request_id);
-                                }
-                                pending.and_then(|pending| {
+                            let daemon_target = routes
+                                .take_pending_daemon_if(&relay_request_id, |pending| {
+                                    pending.target_daemon_key == current_daemon_key
+                                })
+                                .and_then(|pending| {
                                     routes
                                     .daemon_sender(&pending.requester_daemon_key)
                                     .map(|sender| {
@@ -651,8 +633,7 @@ pub(crate) async fn handle_connection(
                                             pending.target_daemon_key.daemon_id,
                                         )
                                     })
-                                })
-                            };
+                                });
                             if let Some((daemon_sender, requester_request_id, target_daemon_id)) =
                                 daemon_target
                             {
