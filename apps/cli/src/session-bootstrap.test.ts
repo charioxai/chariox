@@ -5,6 +5,7 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
+import type { RuntimeSession } from "./cli-types.js"
 
 function terminalCatalog() {
   return {
@@ -430,6 +431,113 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
   assert.deepEqual(warnings, [{
     session_id: "session-1",
     focused_agent_id: "missing-agent",
+  }])
+})
+
+test("bootstrapSession recovers when the launch target moves remote during attach", async () => {
+  const agent = {
+    id: "agent-a",
+    agent_ref: "agent-a",
+    session_id: "session-1",
+    alias: null,
+    provider: "claude",
+    model: "sonnet",
+    effort: "medium",
+    worktree_id: null,
+    state: "Idle" as const,
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
+  }
+  const localSession: RuntimeSession = {
+    id: "session-1",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: agent.id,
+    max_agents: 8,
+    agents: [agent],
+    config_state: { version: 1, values: {} },
+  }
+  const remoteSession: RuntimeSession = {
+    ...localSession,
+    agents: [{
+      ...agent,
+      remote_execution: {
+        worker_kernel_id: "worker-1",
+        worker_machine_id: "machine-1",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    }],
+  }
+  const launchError = new Error("agent became remote-backed")
+  const info: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
+  let stateReads = 0
+  let catchUpSession: RuntimeSession = localSession
+
+  const bootstrap = await bootstrapSession(
+    {} as never,
+    {
+      clientId: "cli-1",
+      sessionId: "session-1",
+      provider: "claude",
+      model: "sonnet",
+      accountProfile: "default",
+      effort: "medium",
+    },
+    "/workspace",
+    "/workspace",
+    {},
+    {
+      logger: {
+        info: (message: string, fields?: Record<string, unknown>) => info.push({ message, fields }),
+      } as never,
+      listSessions: async () => [localSession],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => localSession,
+      attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+      getSessionState: async () => {
+        stateReads += 1
+        return stateReads === 1 ? localSession : remoteSession
+      },
+      launchProviderRun: async (_client, _sessionId, _provider, _accountProfile, _model, _effort, agentId) => {
+        assert.equal(agentId, agent.id)
+        throw launchError
+      },
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async (_client, _sessionId, _attachmentId, session) => {
+        catchUpSession = session
+      },
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => agent.id,
+      prepareHistoryOutlineAgent: () => [],
+    },
+  )
+
+  assert.equal(bootstrap.binding?.providerRun, null)
+  assert.equal(bootstrap.binding?.session.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
+  assert.equal(catchUpSession.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
+  assert.equal(stateReads, 3)
+  assert.deepEqual(info, [{
+    message: "recovered attach-time provider launch after agent moved remote",
+    fields: {
+      session_id: "session-1",
+      agent_id: "agent-a",
+      worker_kernel_id: "worker-1",
+    },
   }])
 })
 

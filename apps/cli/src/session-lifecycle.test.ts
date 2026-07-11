@@ -387,6 +387,139 @@ test("attachBinding launches a provider run with provider and effort in the corr
   ])
 })
 
+test("attachBinding recovers when its launch target moves remote", async () => {
+  const localSession: RuntimeSession = {
+    id: "session-moving",
+    alias: "moving",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-moving"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-moving",
+    max_agents: 6,
+    agents: [{
+      id: "agent-moving",
+      agent_ref: "agent-moving",
+      session_id: "session-moving",
+      alias: null,
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      worktree_id: "/tmp/workspace",
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+  const remoteSession: RuntimeSession = {
+    ...localSession,
+    agents: [{
+      ...localSession.agents[0]!,
+      remote_execution: {
+        worker_kernel_id: "worker-1",
+        worker_machine_id: "machine-1",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    }],
+  }
+  const appliedSessions: RuntimeSession[] = []
+  const warnings: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
+  let stateReads = 0
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-moving", session_id: "session-moving" }),
+    getSessionState: async () => {
+      stateReads += 1
+      return stateReads === 1 ? localSession : remoteSession
+    },
+    launchProviderRun: async () => {
+      throw new Error("agent became remote-backed")
+    },
+    setSessionState: (session: RuntimeSession) => { appliedSessions.push(session) },
+    setProviderRunState: () => {},
+    setProviderCatalogState: () => {},
+    getProviderCatalog: async () => ({}),
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
+    setAvailableSessions: () => {},
+    listSessions: async () => [],
+    logWarning: (message: string, fields?: Record<string, unknown>) => warnings.push({ message, fields }),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-moving" }, false)
+
+  assert.equal(stateReads, 2)
+  assert.equal(appliedSessions.at(-1)?.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
+  assert.deepEqual(warnings, [{
+    message: "recovered attach-time provider launch after agent moved remote",
+    fields: {
+      session_id: "session-moving",
+      agent_id: "agent-moving",
+      worker_kernel_id: "worker-1",
+    },
+  }])
+})
+
+test("attachBinding does not mask unrelated provider launch failures", async () => {
+  const attachedSession: RuntimeSession = {
+    id: "session-launch-failure",
+    alias: "failure",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-failure"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-local",
+    max_agents: 6,
+    agents: [{
+      id: "agent-local",
+      agent_ref: "agent-local",
+      session_id: "session-launch-failure",
+      alias: null,
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      worktree_id: "/tmp/workspace",
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+  const launchError = new Error("provider authentication failed")
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-failure", session_id: "session-launch-failure" }),
+    getSessionState: async () => attachedSession,
+    launchProviderRun: async () => { throw launchError },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await assert.rejects(
+    controller.attachBinding({ id: "session-launch-failure" }, false),
+    (error) => error === launchError,
+  )
+})
+
 test("attachBinding skips provider launch when existing session exposes no visible agents", async () => {
   const attachedSession: RuntimeSession = {
     id: "session-hidden-focus",
