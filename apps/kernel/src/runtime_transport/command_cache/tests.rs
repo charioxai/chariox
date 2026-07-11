@@ -1,6 +1,18 @@
 use super::*;
 use crate::local::ListSessionsRequest;
 
+#[test]
+fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
+    let byte_count = 64 * 1024;
+    let value = serde_json::to_value(vec![7_u8; byte_count]).expect("bytes should serialize");
+    let estimated = value_heap_bytes(&value);
+
+    assert!(
+        estimated >= (byte_count * std::mem::size_of::<Value>()) as u64,
+        "JSON byte arrays must be charged for each heap-resident Value: {estimated}"
+    );
+}
+
 #[tokio::test]
 async fn persistent_command_cache_recovers_completed_results() {
     let path = temp_cache_path("recover-completed");
@@ -109,6 +121,7 @@ async fn persistent_command_cache_compacts_by_age_on_load() {
     rewrite_persistent_results(&path, &[old, fresh]).expect("cache fixture should write");
     let retention = CommandResultRetentionPolicy {
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
+        max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: None,
         max_age_ms: Some(1_000),
     };
@@ -151,6 +164,7 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
     );
     let retention = CommandResultRetentionPolicy {
         max_entries: COMMAND_RESULT_CACHE_LIMIT,
+        max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: Some(
             persistent_result_jsonl_bytes(&second_entry).expect("entry should serialize"),
         ),
@@ -180,9 +194,8 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
     );
     assert!(matches!(
         cache.reserve("command-first", &first_fingerprint).await,
-        CommandReservation::Dispatch
+        CommandReservation::Wait(_)
     ));
-    cache.forget_pending("command-first").await;
     assert!(matches!(
         cache.reserve("command-second", &second_fingerprint).await,
         CommandReservation::Wait(_)
@@ -206,16 +219,37 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
     assert!(!stored.contains("command-first"));
     assert!(!stored.contains("command-second"));
     assert!(stored.contains("command-third"));
+
+    // Disk retention must not evict valid replay entries from the live memory cache.
     assert!(matches!(
         cache.reserve("command-first", &first_fingerprint).await,
-        CommandReservation::Dispatch
+        CommandReservation::Wait(_)
     ));
     assert!(matches!(
         cache.reserve("command-second", &second_fingerprint).await,
-        CommandReservation::Dispatch
+        CommandReservation::Wait(_)
     ));
     assert!(matches!(
         cache.reserve("command-third", &third_fingerprint).await,
+        CommandReservation::Wait(_)
+    ));
+
+    // A restart restores only the disk-retained tail.
+    let restored =
+        CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
+            .expect("persistent cache should reload");
+    assert!(matches!(
+        restored.reserve("command-first", &first_fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    assert!(matches!(
+        restored
+            .reserve("command-second", &second_fingerprint)
+            .await,
+        CommandReservation::Dispatch
+    ));
+    assert!(matches!(
+        restored.reserve("command-third", &third_fingerprint).await,
         CommandReservation::Wait(_)
     ));
 
@@ -301,7 +335,8 @@ async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
     let path = temp_cache_path("byte-bound-oversized-memory-results");
     let retention = CommandResultRetentionPolicy {
         max_entries: 512,
-        max_total_bytes: Some(700_000),
+        max_memory_bytes: 700_000,
+        max_total_bytes: None,
         max_age_ms: None,
     };
     let cache = CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
