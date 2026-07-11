@@ -68,6 +68,7 @@ function parseArgs(argv) {
     dryRun: false,
     skipWeb: false,
     skipTui: false,
+    skipKernelHistory: false,
     keepArtifactsOnSuccess: true,
   }
   for (let index = 2; index < argv.length; index += 1) {
@@ -99,6 +100,8 @@ function parseArgs(argv) {
       options.skipWeb = true
     } else if (arg === "--skip-tui") {
       options.skipTui = true
+    } else if (arg === "--skip-kernel-history") {
+      options.skipKernelHistory = true
     } else if (arg === "--keep-artifacts-on-success") {
       options.keepArtifactsOnSuccess = true
     } else if (arg === "--help" || arg === "-h") {
@@ -139,6 +142,7 @@ Options:
   --dry-run
   --skip-web
   --skip-tui
+  --skip-kernel-history  Validate provider-native transcript parity without attached-history observation
   --keep-artifacts-on-success  Preserve artifacts after successful runs (default)
 
 Provider command overrides:
@@ -408,7 +412,9 @@ async function runProviderDrill(provider, options) {
     result.assertions.push(pass("external provider session imported into Arroba session"))
 
     const monitors = []
-    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
+    if (!options.skipKernelHistory) {
+      monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
+    }
     if (!options.skipTui) {
       const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
       tuiProcess = tui.process
@@ -440,7 +446,9 @@ async function runProviderDrill(provider, options) {
       result.providerLimitations.push(providerExitIssue)
       throw new Error(providerExitIssue.note)
     }
-    await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
+    if (!options.skipKernelHistory) {
+      await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
+    }
     if (page) {
       await waitForSurfaceFinalIdle({
         surface: "web",
@@ -480,13 +488,13 @@ async function runProviderDrill(provider, options) {
     const tui = monitorResults.find((entry) => entry.surface === "tui")
 
     assertProviderTranscript(result, providerTranscript, "provider transcript")
-    assertSurface(result, kernel, "kernel history")
+    if (!options.skipKernelHistory) assertSurface(result, kernel, "kernel history")
     if (!options.skipWeb) assertSurface(result, web, "product web terminal")
     if (!options.skipTui) assertSurface(result, tui, "TUI")
-    assertLiveObservation(result, kernel, "kernel", { requireContent: false })
+    if (!options.skipKernelHistory) assertLiveObservation(result, kernel, "kernel", { requireContent: false })
     if (web) assertLiveObservation(result, web, "web")
     if (tui) assertLiveObservation(result, tui, "tui")
-    assertBadgeLifecycle(result, kernel, "kernel")
+    if (!options.skipKernelHistory) assertBadgeLifecycle(result, kernel, "kernel")
     if (web) assertBadgeLifecycle(result, web, "web")
     if (tui) assertBadgeLifecycle(result, tui, "tui")
     if (web) assertWebTurnCollapse(result, web)
