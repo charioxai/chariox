@@ -25,6 +25,31 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 }
 
 #[test]
+fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
+    let mcp_permission = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-mcp",
+        "tool_name": "mcp__native_test__echo_marker",
+        "tool_input": { "marker": "native-skill-marker" },
+    });
+    assert!(should_bridge_claude_permission(&mcp_permission));
+    assert!(claude_rendered_permission_visible(
+        "Tool use native-test - echo_marker(marker: native-skill-marker) (MCP)\n\
+         Do you want to proceed?\n1. Yes\n2. Yes, and don't ask again\n3. No",
+    ));
+
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "mcp__arroba__session_status",
+    })));
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "Bash",
+    })));
+}
+
+#[test]
 fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");

@@ -486,8 +486,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id,
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some("Approve Claude Code Bash?".to_string()),
-            "Claude Code is showing a native Bash permission prompt.",
+            Some("Approve Claude Code tool?".to_string()),
+            "Claude Code is showing a native tool permission prompt.",
             vec![
                 RuntimeInteractionChoice::new(
                     "allow_once",

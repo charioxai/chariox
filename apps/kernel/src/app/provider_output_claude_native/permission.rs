@@ -277,13 +277,19 @@ pub(super) fn timestamp_millis() -> u128 {
 }
 
 pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
-    let Some(tool_name) = event.get("tool_name").and_then(Value::as_str) else {
+    let Some(tool_name) = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return false;
     };
-    matches!(
-        tool_name,
-        "Bash" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit"
-    )
+    if tool_name.starts_with("mcp__arroba__") || tool_name.starts_with("arroba.") {
+        return false;
+    }
+    !(event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions"))
 }
 
 pub(super) fn format_claude_permission_message(event: &Value) -> String {
@@ -333,9 +339,7 @@ fn format_claude_tool_input(input: &Value) -> String {
 pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let compact = normalized.replace(' ', "");
-    (normalized.contains("Bash command") || compact.contains("Bashcommand"))
-        && (normalized.contains("Do you want to proceed?")
-            || compact.contains("Doyouwanttoproceed?"))
+    (normalized.contains("Do you want to proceed?") || compact.contains("Doyouwanttoproceed?"))
         && (normalized.contains("1. Yes") || compact.contains("1.Yes"))
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
