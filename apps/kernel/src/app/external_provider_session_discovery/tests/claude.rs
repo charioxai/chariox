@@ -65,19 +65,19 @@ fn reads_changed_claude_observed_turns_reuses_cached_user_anchor() {
     let root = temp.path();
     let session_dir = root.join("projects").join("-repo");
     fs::create_dir_all(&session_dir).unwrap();
-    let transcript = session_dir.join("session-1.jsonl");
+    let transcript = session_dir.join("session-cached-user.jsonl");
     let mut lines = vec![
-            "{\"type\":\"user\",\"uuid\":\"u-window\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run a long cached Claude external drill.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}".to_string(),
+            "{\"type\":\"user\",\"uuid\":\"u-window\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run a long cached Claude external drill.\"}]},\"sessionId\":\"session-cached-user\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}".to_string(),
         ];
     for index in 0..MAX_JSONL_LINES + 25 {
         lines.push(format!(
-                "{{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:02.{index:03}Z\"}}"
+                "{{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"session-cached-user\",\"timestamp\":\"2026-02-01T00:00:02.{index:03}Z\"}}"
             ));
     }
     fs::write(&transcript, format!("{}\n", lines.join("\n"))).unwrap();
 
     reset_jsonl_read_counts();
-    let first = read_claude_observed_turns(root, "session-1");
+    let first = read_claude_observed_turns(root, "session-cached-user");
     assert_eq!(jsonl_prefix_read_count(), 2);
     assert_eq!(jsonl_recent_read_count(), 1);
     assert_eq!(jsonl_incremental_read_count(), 0);
@@ -87,12 +87,12 @@ fn reads_changed_claude_observed_turns_reuses_cached_user_anchor() {
     let mut file = OpenOptions::new().append(true).open(&transcript).unwrap();
     writeln!(
             file,
-            "{{\"type\":\"assistant\",\"uuid\":\"a-after-cache\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{{\"type\":\"text\",\"text\":\"CACHE_REUSED_CLAUDE_REPLY\"}}]}},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}}"
+            "{{\"type\":\"assistant\",\"uuid\":\"a-after-cache\",\"message\":{{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{{\"type\":\"text\",\"text\":\"CACHE_REUSED_CLAUDE_REPLY\"}}]}},\"sessionId\":\"session-cached-user\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}}"
         )
         .unwrap();
 
     reset_jsonl_read_counts();
-    let appended = read_claude_observed_turns(root, "session-1");
+    let appended = read_claude_observed_turns(root, "session-cached-user");
     assert_eq!(jsonl_prefix_read_count(), 0);
     assert_eq!(jsonl_recent_read_count(), 0);
     assert_eq!(jsonl_incremental_read_count(), 1);

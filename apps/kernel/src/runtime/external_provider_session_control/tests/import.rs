@@ -84,7 +84,7 @@ fn persist_external_import_metadata_refreshes_runtime_session_projection() {
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
             "workspace-import-projection",
-            "worktree-import-projection",
+            std::env::temp_dir().display().to_string(),
         ))
         .expect("session should create");
     let run = app
