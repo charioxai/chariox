@@ -39,8 +39,12 @@ pub(super) fn relay_subscription_task_key(
     session_id: &str,
     attachment_id: &str,
     subscription_scope: Option<&str>,
+    relay_subscription_id: &str,
 ) -> String {
     let scope = subscription_scope.unwrap_or("session");
+    if scope == WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE {
+        return format!("{scope}\u{1f}{relay_subscription_id}");
+    }
     format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}")
 }
 
@@ -165,8 +169,12 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
-    let task_key =
-        relay_subscription_task_key(&session_id, &attachment_id, subscription_scope.as_deref());
+    let task_key = relay_subscription_task_key(
+        &session_id,
+        &attachment_id,
+        subscription_scope.as_deref(),
+        &relay_subscription_id,
+    );
     let ack = match encrypt_json_response(
         router,
         &client_public_key,
@@ -695,6 +703,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut previous_slices = resumed.then(|| router.transport_slices_snapshot());
     let mut inventory_dirty = !resumed;
     let mut tick: u64 = 0;
+    let mut next_heartbeat_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         if inventory_dirty
@@ -733,7 +742,23 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 }
             }
         }
-        if tick.is_multiple_of(RELAY_HEARTBEAT_INTERVAL_TICKS) {
+        if Instant::now() >= next_heartbeat_at {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                KernelEvent::Heartbeat {
+                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
             let status = router.transport_relay_status_snapshot().await;
             if previous_relay_status.as_ref() != Some(&status) {
                 previous_relay_status = Some(status.clone());
@@ -752,6 +777,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
+            next_heartbeat_at = advance_relay_subscription_deadline(
+                next_heartbeat_at,
+                relay_subscription_heartbeat_interval(),
+            );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();
@@ -818,7 +847,9 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
         }
         let wait_started = Instant::now();
         let wait_result = timeout(
-            Duration::from_millis(WATCH_INTERVAL_MS * RELAY_HEARTBEAT_INTERVAL_TICKS),
+            next_heartbeat_at
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO),
             router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
         )
         .await;
@@ -837,6 +868,7 @@ mod tests {
     use super::{
         relay_subscription_task_key, relay_subscription_task_matches,
         remove_relay_subscription_task_by_relay_id, RelaySubscriptionTask, RelaySubscriptionTasks,
+        WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
     };
 
     use std::collections::BTreeMap;
@@ -848,8 +880,10 @@ mod tests {
     #[tokio::test]
     async fn relay_subscription_tasks_are_owned_by_logical_attachment_subscription() {
         let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
-        let first_key = relay_subscription_task_key("session-1", "attachment-1", None);
-        let second_key = relay_subscription_task_key("session-1", "attachment-1", None);
+        let first_key =
+            relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-1");
+        let second_key =
+            relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-2");
         assert_eq!(first_key, second_key);
 
         let first_handle = tokio::spawn(async {
@@ -884,6 +918,23 @@ mod tests {
             remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
         assert!(removed.is_some());
         assert!(tasks.lock().await.is_empty());
+    }
+
+    #[test]
+    fn waiting_room_inventory_tasks_are_owned_by_relay_subscription() {
+        let first_key = relay_subscription_task_key(
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            "relay-subscription-1",
+        );
+        let second_key = relay_subscription_task_key(
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            "relay-subscription-2",
+        );
+        assert_ne!(first_key, second_key);
     }
 
     #[tokio::test]

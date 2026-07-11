@@ -19,7 +19,7 @@ use crate::transport::kernel_protocol::{
     runtime_interactions_changed_event, session_metadata_changed_event,
     subscription_event_stream_id, waiting_room_rows_changed_event, workflow_run_only_changed,
     workflow_run_updated_events, KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope,
-    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
@@ -748,6 +748,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     let mut previous_slices = None;
     let mut inventory_dirty = true;
     let mut tick: u64 = 0;
+    let mut next_heartbeat_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
@@ -784,7 +785,23 @@ async fn run_waiting_room_inventory_subscription_loop(
                 }
             }
         }
-        if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS) {
+        if Instant::now() >= next_heartbeat_at {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::Heartbeat {
+                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
             let status = router.transport_relay_status_snapshot().await;
             if previous_relay_status.as_ref() != Some(&status) {
                 previous_relay_status = Some(status.clone());
@@ -803,6 +820,8 @@ async fn run_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
+            next_heartbeat_at =
+                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();
@@ -869,7 +888,9 @@ async fn run_waiting_room_inventory_subscription_loop(
         }
         let wait_started = Instant::now();
         let wait_result = timeout(
-            Duration::from_millis(WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS),
+            next_heartbeat_at
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO),
             router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
         )
         .await;

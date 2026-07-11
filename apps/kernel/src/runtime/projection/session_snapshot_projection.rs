@@ -102,7 +102,7 @@ impl SessionSnapshotProjection {
         last_event_id: u64,
         unread_for_user_id: Option<&str>,
     ) -> Result<Self, DaemonError> {
-        let mut session = app.sessions().get_session(session_id)?;
+        let mut session = app.session_state_store().get_session(session_id)?;
         let agents = app.agents().get_session_agents(session_id);
         session.set_agents(agents);
         app.project_session_runtime_view(&mut session);
