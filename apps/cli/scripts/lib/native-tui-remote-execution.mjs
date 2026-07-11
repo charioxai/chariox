@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir } from "node:fs/promises"
+import { mkdir, readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -213,12 +213,16 @@ export async function removeHetznerNativeRuntimePaths(options, paths) {
 export async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
   if (remoteExecution) {
     await runHetznerCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
+  } else {
+    await mkdir(dirPath, { recursive: true })
   }
 }
 
 export async function removeExecutionFile(options, remoteExecution, filePath) {
   if (remoteExecution) {
     await runHetznerCommand(options, `rm -f ${shellQuote(filePath)}`).catch(() => {})
+  } else {
+    await rm(filePath, { force: true })
   }
 }
 
@@ -226,12 +230,15 @@ export async function waitForExecutionFileContent(options, remoteExecution, file
   const deadline = Date.now() + timeoutMs
   let last = ""
   while (Date.now() < deadline) {
-    const content = await runHetznerCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
+    const content = remoteExecution
+      ? await runHetznerCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
+      : await readFile(filePath, "utf8").catch(() => "")
     last = content
     if (content.includes(expected)) return content
     await sleep(1_000)
   }
-  throw new Error(`timed out waiting for remote file ${filePath} to contain ${expected}; last=${last}`)
+  const location = remoteExecution ? "remote" : "local"
+  throw new Error(`timed out waiting for ${location} file ${filePath} to contain ${expected}; last=${last}`)
 }
 
 export function shellQuote(value) {

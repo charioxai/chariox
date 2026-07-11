@@ -1,11 +1,17 @@
 import assert from "node:assert/strict"
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 
 import {
   assertHetznerBinaryFreshness,
   assertMatchingHetznerCheckoutCommit,
+  ensureExecutionDirectory,
   hetznerNativeRuntimeCleanupCommand,
   hetznerWorktreeCleanupCommand,
+  removeExecutionFile,
+  waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 
 const LOCAL_COMMIT = "1111111111111111111111111111111111111111"
@@ -83,4 +89,22 @@ test("rejects cleanup paths outside a native TUI runtime root", () => {
     () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
     /refusing to remove unexpected Hetzner native TUI runtime path/,
   )
+})
+
+test("same-host execution artifacts stay on the local machine", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-native-execution-test-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const outputDir = path.join(root, "nested", "outputs")
+  const outputFile = path.join(outputDir, "permission.txt")
+
+  await ensureExecutionDirectory({}, false, outputDir)
+  await access(outputDir)
+  await writeFile(outputFile, "permission-approved\n", "utf8")
+
+  assert.equal(
+    await waitForExecutionFileContent({}, false, outputFile, "permission-approved", 10),
+    "permission-approved\n",
+  )
+  await removeExecutionFile({}, false, outputFile)
+  assert.equal(await readFile(outputFile, "utf8").catch(() => null), null)
 })
