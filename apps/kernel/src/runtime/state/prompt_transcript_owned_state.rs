@@ -708,6 +708,7 @@ impl KernelRuntimeOwnedState {
         self.echo_prompt_to_attachments(
             session_id,
             provider_run_id,
+            None,
             prompt_id,
             source_attachment_id,
             prompt,
@@ -733,6 +734,7 @@ impl KernelRuntimeOwnedState {
         self.echo_prompt_to_attachments(
             session_id,
             provider_run_id,
+            None,
             prompt_id,
             source_attachment_id,
             prompt,
@@ -748,6 +750,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         provider_run_id: &str,
+        agent_id: &str,
         prompt_id: &str,
         prompt_source_attachment_id: &str,
         steering_attachment_id: &str,
@@ -764,6 +767,7 @@ impl KernelRuntimeOwnedState {
         self.echo_prompt_to_attachments(
             session_id,
             provider_run_id,
+            Some(agent_id),
             prompt_id,
             prompt_source_attachment_id,
             prompt,
@@ -779,6 +783,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         provider_run_id: &str,
+        agent_id_override: Option<&str>,
         prompt_id: &str,
         source_attachment_id: &str,
         prompt: &str,
@@ -795,11 +800,12 @@ impl KernelRuntimeOwnedState {
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }
-        let agent_id = self
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let agent_id = agent_id_override.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run(provider_run_id)
+                .ok()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
         let prompt_origin = prompt_origin_override.or_else(|| {
             agent_id.as_deref().and_then(|agent_id| {
                 self.session_store

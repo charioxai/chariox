@@ -325,7 +325,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         .await
         .expect("home remote inventory should refresh");
 
-    let (session_id, attachment_id) = {
+    let (session_id, attachment_id, steering_attachment_id) = {
         let mut app_home = app_home.lock().await;
         let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
             .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
@@ -337,7 +337,18 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
                 ClientCapabilityLevel::InteractiveStructured,
             ))
             .expect("home attachment should attach");
-        (session.id().to_string(), attachment.id().to_string())
+        let steering_attachment = crate::app::KernelSessionService::new(&mut app_home)
+            .attach(AttachRequest::new(
+                session.id(),
+                "home-steering-client",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("home steering attachment should attach");
+        (
+            session.id().to_string(),
+            attachment.id().to_string(),
+            steering_attachment.id().to_string(),
+        )
     };
 
     let remote_agent_id = {
@@ -510,7 +521,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
     };
     let request = LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
         session_id: session_id.clone(),
-        attachment_id: attachment_id.clone(),
+        attachment_id: steering_attachment_id,
         target_agent_id: remote_agent_id.clone(),
         prompt_id: queued_prompt_id.clone(),
     });
@@ -547,6 +558,21 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         })
         .count();
     assert_eq!(worker_steer_deliveries, 1);
+    let browser_steering_echo = app_home
+        .lock()
+        .await
+        .terminal_mut()
+        .drain_output_records(&session_id, &attachment_id)
+        .into_iter()
+        .find(|record| {
+            String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+        })
+        .expect("queued steering should echo to the prompt source attachment");
+    assert_eq!(
+        browser_steering_echo.agent_id.as_deref(),
+        Some(remote_agent_id.as_str()),
+        "remote steering echoes must stay scoped to the target agent"
+    );
 
     let completion = app_home
         .lock()

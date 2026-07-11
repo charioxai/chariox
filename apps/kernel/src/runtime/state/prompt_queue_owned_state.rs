@@ -381,6 +381,7 @@ impl KernelRuntimeOwnedState {
         self.echo_steering_prompt_to_other_attachments(
             session_id,
             &context.provider_run_id,
+            agent_id,
             prompt.id(),
             &source_attachment_id,
             attachment_id,
