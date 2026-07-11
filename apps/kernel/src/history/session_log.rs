@@ -614,6 +614,8 @@ pub struct SessionHistoryStore {
     root: PathBuf,
     read_delay_ms: u64,
     write_lock: Arc<Mutex<()>>,
+    merge_keys: Arc<Mutex<HashMap<PathBuf, HashSet<String>>>>,
+    indexed_paths: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl SessionHistoryStore {
@@ -631,6 +633,8 @@ impl SessionHistoryStore {
             root,
             read_delay_ms,
             write_lock: Arc::new(Mutex::new(())),
+            merge_keys: Arc::new(Mutex::new(HashMap::new())),
+            indexed_paths: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -650,6 +654,8 @@ impl SessionHistoryStore {
         })?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
+        let mut merge_key_positions = HashMap::<String, usize>::new();
+        let mut merge_keys = HashSet::new();
         for line in reader.lines() {
             let line = line.map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),
@@ -659,20 +665,38 @@ impl SessionHistoryStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let mut entry =
-                serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
-                    DaemonError::SessionHistoryFailed {
-                        session_id: Some(session.id().to_string()),
-                        operation: "decode session history",
-                        message: error.to_string(),
-                    }
-                })?;
-            entry.rehydrate_attachment_preview_urls();
-            if !entry.is_external_provider_observed_state_signal() {
-                entries.push(entry);
+            let entry = serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "decode session history",
+                    message: error.to_string(),
+                }
+            })?;
+            if let Some(merge_key) = entry.merge_key.clone() {
+                merge_keys.insert(merge_key.clone());
+                if let Some(position) = merge_key_positions.get(&merge_key).copied() {
+                    entries[position] = entry;
+                    continue;
+                }
+                merge_key_positions.insert(merge_key, entries.len());
             }
+            entries.push(entry);
         }
-        Ok(entries)
+        self.merge_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.clone(), merge_keys);
+        self.indexed_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path);
+        entries.iter_mut().for_each(|entry| {
+            entry.rehydrate_attachment_preview_urls();
+        });
+        Ok(entries
+            .into_iter()
+            .filter(|entry| !entry.is_external_provider_observed_state_signal())
+            .collect())
     }
 
     pub fn append(
@@ -696,6 +720,7 @@ impl SessionHistoryStore {
         }
 
         let path = self.path_for_session(session);
+        let path_existed = path.exists();
         let _guard = self
             .write_lock
             .lock()
@@ -737,6 +762,20 @@ impl SessionHistoryStore {
                 })?;
         }
         drop(file);
+        {
+            let mut merge_keys = self
+                .merge_keys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let indexed = merge_keys.entry(path.clone()).or_default();
+            indexed.extend(entries.iter().filter_map(|entry| entry.merge_key.clone()));
+        }
+        if !path_existed {
+            self.indexed_paths
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(path.clone());
+        }
         self.enforce_size_budget(session, &path)
     }
 }
@@ -760,84 +799,85 @@ impl SessionHistoryStore {
             return Ok(false);
         }
         validate_session_history_entry_for_append(session, entry)?;
+        self.ensure_merge_key_index(session, &path)?;
+        let replaced = self
+            .merge_keys
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "read session history merge-key index",
+                message: error.to_string(),
+            })?
+            .get(&path)
+            .is_some_and(|merge_keys| merge_keys.contains(merge_key));
+        if !replaced {
+            return Ok(false);
+        }
+        self.append(session, entry)?;
+        Ok(true)
+    }
+
+    fn ensure_merge_key_index(
+        &self,
+        session: &RuntimeSession,
+        path: &Path,
+    ) -> Result<(), DaemonError> {
+        if self
+            .indexed_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(path)
+        {
+            return Ok(());
+        }
         let _guard = self
             .write_lock
             .lock()
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),
-                operation: "lock session history replace",
+                operation: "lock legacy session history merge-key index",
                 message: error.to_string(),
             })?;
-        let input = fs::File::open(&path).map_err(|error| DaemonError::SessionHistoryFailed {
+        if self
+            .indexed_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(path)
+        {
+            return Ok(());
+        }
+        let input = fs::File::open(path).map_err(|error| DaemonError::SessionHistoryFailed {
             session_id: Some(session.id().to_string()),
-            operation: "open session history for replace",
+            operation: "open legacy session history merge-key index",
             message: error.to_string(),
         })?;
-        let mut entries = Vec::new();
-        let mut replaced = false;
+        let mut keys = HashSet::new();
         for line in BufReader::new(input).lines() {
             let line = line.map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),
-                operation: "read session history for replace",
+                operation: "read legacy session history merge-key index",
                 message: error.to_string(),
             })?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let mut decoded =
-                serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
-                    DaemonError::SessionHistoryFailed {
-                        session_id: Some(session.id().to_string()),
-                        operation: "decode session history for replace",
-                        message: error.to_string(),
-                    }
-                })?;
-            if decoded.merge_key.as_deref() == Some(merge_key) {
-                decoded = entry.clone();
-                replaced = true;
-            }
-            entries.push(decoded);
-        }
-        if !replaced {
-            return Ok(false);
-        }
-        let temp_path = path.with_extension("jsonl.replace");
-        let mut output =
-            fs::File::create(&temp_path).map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session.id().to_string()),
-                operation: "create replacement session history",
-                message: error.to_string(),
-            })?;
-        for entry in entries {
-            let encoded = serde_json::to_string(&entry).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session.id().to_string()),
-                    operation: "encode replacement session history",
-                    message: error.to_string(),
-                }
-            })?;
-            output
-                .write_all(encoded.as_bytes())
-                .and_then(|_| output.write_all(b"\n"))
+            if let Some(merge_key) = serde_json::from_str::<SessionHistoryEntry>(&line)
                 .map_err(|error| DaemonError::SessionHistoryFailed {
                     session_id: Some(session.id().to_string()),
-                    operation: "write replacement session history",
+                    operation: "decode legacy session history merge-key index",
                     message: error.to_string(),
-                })?;
+                })?
+                .merge_key
+            {
+                keys.insert(merge_key);
+            }
         }
-        output
-            .flush()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session.id().to_string()),
-                operation: "flush replacement session history",
-                message: error.to_string(),
-            })?;
-        fs::rename(&temp_path, &path).map_err(|error| DaemonError::SessionHistoryFailed {
-            session_id: Some(session.id().to_string()),
-            operation: "replace session history",
-            message: error.to_string(),
-        })?;
-        Ok(true)
+        self.merge_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.to_path_buf(), keys);
+        self.indexed_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.to_path_buf());
+        Ok(())
     }
 
     pub fn path_for_session(&self, session: &RuntimeSession) -> PathBuf {
@@ -908,6 +948,14 @@ impl SessionHistoryStore {
             operation: "replace pruned session history",
             message: error.to_string(),
         })?;
+        self.merge_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(path);
+        self.indexed_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(path);
         crate::logging::warn_with_fields(
             "daemon.history",
             "pruned session history to enforce hard size budget",
@@ -1051,3 +1099,4 @@ mod tests {
         );
     }
 }
+use std::collections::{HashMap, HashSet};

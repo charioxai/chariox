@@ -246,6 +246,39 @@ fn session_history_replace_rejects_external_provider_observed_without_complete_i
 }
 
 #[test]
+fn session_history_replacement_appends_and_deduplicates_without_rewriting_the_file() {
+    let config = DaemonConfig::for_tests();
+    let mut sessions = SessionService::new(&config);
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let store = SessionHistoryStore::new(config.session_history_root.clone())
+        .expect("history store should initialize");
+    let original = external_observed_entry(session.id());
+    let merge_key = original.merge_key.clone().expect("merge key");
+    store
+        .append(&session, &original)
+        .expect("original history should append");
+    let path = store.path_for_session(&session);
+    let original_bytes = std::fs::metadata(&path).expect("history metadata").len();
+    let mut replacement = original.clone();
+    replacement.text = "replacement output".to_string();
+
+    assert!(store
+        .replace_by_merge_key(&session, &merge_key, &replacement)
+        .expect("history replacement should append"));
+
+    assert!(
+        std::fs::metadata(&path).expect("history metadata").len() > original_bytes,
+        "legacy replacement should be append-only"
+    );
+    assert_eq!(
+        store.load(&session).expect("history should load"),
+        vec![replacement]
+    );
+}
+
+#[test]
 fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
     let path = std::env::temp_dir().join(format!(
         "arroba-operational-history-prompt-owned-validation-{}-{}.db",
