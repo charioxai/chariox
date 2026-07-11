@@ -175,6 +175,7 @@ export function startClaudeRemoteRenderedPumpLoop(
   sessionId: string,
   attachmentId: string,
   providerRunId: string,
+  agentId: string,
 ): { stop: () => void } {
   let stopped = false
   const loop = async () => {
@@ -183,7 +184,7 @@ export function startClaudeRemoteRenderedPumpLoop(
         .send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
         .catch(() => ({}))
       const records = "TerminalOutput" in response ? (response.TerminalOutput as { records?: unknown[] }).records : null
-      writeClaudeRemoteRenderedTerminalRecords(records, providerRunId)
+      writeClaudeRemoteRenderedTerminalRecords(records, providerRunId, agentId)
       await sleep(250)
     }
   }
@@ -195,12 +196,16 @@ export function startClaudeRemoteRenderedPumpLoop(
   }
 }
 
-export function writeClaudeRemoteRenderedTerminalRecords(records: unknown, providerRunId: string) {
+export function writeClaudeRemoteRenderedTerminalRecords(
+  records: unknown,
+  providerRunId: string,
+  agentId: string,
+) {
   if (!Array.isArray(records)) return
   for (const record of records) {
     if (!record || typeof record !== "object") continue
-    const payload = record as { provider_run_id?: unknown; bytes?: unknown }
-    if (payload.provider_run_id !== providerRunId) continue
+    const payload = record as { provider_run_id?: unknown; agent_id?: unknown; bytes?: unknown }
+    if (payload.provider_run_id !== providerRunId && payload.agent_id !== agentId) continue
     const bytes = Array.isArray(payload.bytes) ? Buffer.from(payload.bytes as number[]) : null
     if (bytes?.length) process.stdout.write(bytes)
   }

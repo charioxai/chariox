@@ -412,10 +412,10 @@ async function runClaudeRemoteRendered(
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return
-      writeClaudeRemoteRenderedTerminalRecords(event.records, run.id)
+      writeClaudeRemoteRenderedTerminalRecords(event.records, run.id, agent.id)
     })
     await client.subscribeToKernelEvents(session.id, attachment.id)
-    pump = startClaudeRemoteRenderedPumpLoop(client, session.id, attachment.id, run.id)
+    pump = startClaudeRemoteRenderedPumpLoop(client, session.id, attachment.id, run.id, agent.id)
     restoreStdin = forwardClaudeRemoteRenderedStdin({
       client,
       sessionId: session.id,
