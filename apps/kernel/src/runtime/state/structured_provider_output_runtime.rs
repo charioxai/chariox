@@ -13,7 +13,9 @@ impl KernelRuntimeState {
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
             if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
-                return Ok(Vec::new());
+                return Ok(owned
+                    .structured_output_records
+                    .take_and_stop_polling(provider_run_id));
             }
             provider_run = owned.provider_store.resume_run_detached(provider_run_id)?;
             owned.provider_run_projection.update(provider_run.clone());
@@ -29,8 +31,9 @@ impl KernelRuntimeState {
                     .reconcile_provider_run_exit(session_id, provider_run_id)
                     .await?
                 {
-                    owned.structured_output_records.clear(provider_run_id);
-                    return Ok(Vec::new());
+                    return Ok(owned
+                        .structured_output_records
+                        .take_and_stop_polling(provider_run_id));
                 }
                 if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
                     return Err(error);
@@ -77,7 +80,9 @@ impl KernelRuntimeState {
                     };
                     match reconcile_result {
                         Ok(true) => {
-                            owned.structured_output_records.clear(&finished_run_id);
+                            owned
+                                .structured_output_records
+                                .stop_polling(&finished_run_id);
                             continue;
                         }
                         Ok(false) if is_requested_run => return Err(error),

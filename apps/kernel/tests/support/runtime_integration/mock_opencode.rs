@@ -20,6 +20,7 @@ struct MockOpenCodeState {
     message_response_delay: Duration,
     response_delay: Duration,
     omit_session_status: bool,
+    prompt_requests: Vec<(String, String)>,
     sessions: BTreeMap<String, MockOpenCodeSessionState>,
     next_session_number: u64,
     next_message_number: u64,
@@ -55,6 +56,7 @@ impl MockOpenCodeServer {
             message_response_delay: Duration::ZERO,
             response_delay,
             omit_session_status: false,
+            prompt_requests: Vec::new(),
             sessions: BTreeMap::new(),
             next_session_number: 0,
             next_message_number: 0,
@@ -107,6 +109,41 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .abort_count
+    }
+
+    pub fn prompt_requests(&self) -> Vec<(String, String)> {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .prompt_requests
+            .clone()
+    }
+
+    pub fn session_response_text(&self) -> BTreeMap<String, Vec<String>> {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .sessions
+            .iter()
+            .map(|(session_id, session)| {
+                let responses = session
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        message.pointer("/info/role").and_then(Value::as_str) == Some("assistant")
+                    })
+                    .flat_map(|message| {
+                        message
+                            .get("parts")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                    })
+                    .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
+                    .collect();
+                (session_id.clone(), responses)
+            })
+            .collect()
     }
 
     pub fn disconnect_next_event_stream(&self) {
@@ -269,6 +306,11 @@ fn handle_mock_opencode_request(
                 .and_then(|value| value.strip_suffix("/prompt_async"))
                 .expect("prompt path should include a session id")
                 .to_string();
+            state
+                .lock()
+                .expect("mock state should not be poisoned")
+                .prompt_requests
+                .push((session_id.clone(), prompt.clone()));
             schedule_mock_response(state.clone(), session_id, user_message_id, prompt);
             let response_delay = state
                 .lock()

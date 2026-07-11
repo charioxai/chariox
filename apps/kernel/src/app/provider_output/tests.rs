@@ -71,6 +71,70 @@ fn pump_structured_test_run(
     let _ = attachment_id;
 }
 
+fn pending_structured_output_record(
+    session_id: &str,
+    provider_run_id: &str,
+    attachment_id: &str,
+) -> TerminalOutputRecord {
+    TerminalOutputRecord {
+        record_id: None,
+        timestamp_ms: 1_000,
+        session_id: session_id.to_string(),
+        provider_run_id: provider_run_id.to_string(),
+        agent_id: None,
+        prompt_id: None,
+        prompt_origin: None,
+        source_attachment_id: None,
+        kind: TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        recipient_attachment_ids: vec![attachment_id.to_string()],
+        bytes: b"completed output".to_vec(),
+        pending_recipient_attachment_ids: vec![attachment_id.to_string()],
+        external_observation_metadata: None,
+    }
+}
+
+fn assert_pending_structured_output_drains_after_state_change(
+    transition: impl FnOnce(&mut crate::provider::RuntimeProviderRun),
+) {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let expected = pending_structured_output_record(&session_id, &provider_run_id, &attachment_id);
+    app.structured_output_record_store()
+        .append(provider_run_id.clone(), vec![expected.clone()]);
+    let mut run = app
+        .providers()
+        .get_run(&provider_run_id)
+        .expect("provider run should exist");
+    transition(&mut run);
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run);
+
+    let records = ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: &session_id,
+            provider_run_id: &provider_run_id,
+            recipient_attachment_ids: vec![attachment_id],
+            initial_liveness_already_checked: true,
+        })
+        .expect("structured provider output pump should succeed");
+
+    assert_eq!(records, vec![expected]);
+    assert!(app
+        .structured_output_record_store()
+        .take(&provider_run_id)
+        .is_empty());
+}
+
+#[test]
+fn parked_structured_run_drains_completed_pending_output() {
+    assert_pending_structured_output_drains_after_state_change(|run| run.mark_parked());
+}
+
+#[test]
+fn ended_structured_run_drains_completed_pending_output() {
+    assert_pending_structured_output_drains_after_state_change(|run| run.mark_ended());
+}
+
 #[test]
 fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
