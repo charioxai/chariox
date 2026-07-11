@@ -63,6 +63,11 @@ enum DurableWriteOperation {
         timestamp_ms: u64,
         payload_json: String,
     },
+    EntityCheckpoint {
+        sequence: u64,
+        timestamp_ms: u64,
+        entities: Vec<DurableCheckpointEntity>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +85,13 @@ pub struct DurableStateSnapshot {
     pub sequence: u64,
     pub timestamp_ms: u64,
     pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DurableCheckpointEntity {
+    pub(crate) kind: String,
+    pub(crate) id: String,
+    pub(crate) payload_json: String,
 }
 
 impl DurableKernelStateStore {
@@ -326,7 +338,11 @@ impl DurableKernelStateStore {
         let connection = self.lock_connection("durable_state.latest_snapshot_sequence")?;
         let sequence = connection
             .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) FROM durable_state_snapshots",
+                "SELECT COALESCE(MAX(sequence), 0) FROM (
+                    SELECT sequence FROM durable_state_snapshots
+                    UNION ALL
+                    SELECT sequence FROM durable_state_checkpoint_manifest
+                 )",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -361,6 +377,9 @@ impl DurableKernelStateStore {
     }
 
     pub fn latest_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
+        if let Some(snapshot) = self.latest_entity_checkpoint()? {
+            return Ok(Some(snapshot));
+        }
         let connection = self.lock_connection("durable_state.latest_snapshot")?;
         let mut statement = connection
             .prepare(
@@ -399,6 +418,106 @@ impl DurableKernelStateStore {
                     message: error.to_string(),
                 }
             })?,
+        }))
+    }
+
+    pub(crate) fn save_entity_checkpoint(
+        &self,
+        sequence: u64,
+        entities: Vec<DurableCheckpointEntity>,
+    ) -> Result<DurableStateSnapshot, DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        self.writer
+            .execute(DurableWriteOperation::EntityCheckpoint {
+                sequence,
+                timestamp_ms,
+                entities,
+            })?;
+        self.latest_entity_checkpoint()?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "durable_state.load_saved_entity_checkpoint",
+                message: "entity checkpoint manifest was not visible after commit".to_string(),
+            })
+    }
+
+    fn latest_entity_checkpoint(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
+        let connection = self.lock_connection("durable_state.latest_entity_checkpoint")?;
+        let manifest = connection.query_row(
+            "SELECT sequence, timestamp_ms FROM durable_state_checkpoint_manifest
+             ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        );
+        let (sequence, timestamp_ms) = match manifest {
+            Ok(manifest) => manifest,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "durable_state.latest_entity_checkpoint",
+                    message: error.to_string(),
+                })
+            }
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT entity_kind, payload_json
+                 FROM durable_state_checkpoint_entities
+                 ORDER BY entity_kind ASC, entity_id ASC",
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.prepare_entity_checkpoint",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query([])
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.query_entity_checkpoint",
+                message: error.to_string(),
+            })?;
+        let mut payload = [
+            "sessions",
+            "agents",
+            "slices",
+            "slice_saved_states",
+            "slice_backups",
+            "metaagent_event_records",
+            "metaagent_event_subscriptions",
+        ]
+        .into_iter()
+        .map(|kind| (kind.to_string(), serde_json::Value::Array(Vec::new())))
+        .collect::<serde_json::Map<_, _>>();
+        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.read_entity_checkpoint",
+            message: error.to_string(),
+        })? {
+            let kind = row
+                .get::<_, String>(0)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.decode_entity_checkpoint_kind",
+                    message: error.to_string(),
+                })?;
+            let encoded = row
+                .get::<_, String>(1)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.decode_entity_checkpoint_payload",
+                    message: error.to_string(),
+                })?;
+            let value =
+                serde_json::from_str(&encoded).map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.decode_entity_checkpoint_json",
+                    message: error.to_string(),
+                })?;
+            payload
+                .entry(kind)
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                .as_array_mut()
+                .expect("checkpoint entity group should be an array")
+                .push(value);
+        }
+        Ok(Some(DurableStateSnapshot {
+            sequence: sequence.max(0) as u64,
+            timestamp_ms: timestamp_ms.max(0) as u64,
+            payload: serde_json::Value::Object(payload),
         }))
     }
 
@@ -584,6 +703,12 @@ fn commit_durable_write_batch(
                     params![*sequence as i64, *timestamp_ms as i64, payload_json],
                 )
                 .map(|_| *sequence),
+            DurableWriteOperation::EntityCheckpoint {
+                sequence,
+                timestamp_ms,
+                entities,
+            } => write_entity_checkpoint(&transaction, *sequence, *timestamp_ms, entities)
+                .map(|_| *sequence),
         };
         match result {
             Ok(sequence) => results.push(sequence),
@@ -621,6 +746,69 @@ fn send_durable_batch_error(batch: Vec<DurableWriteRequest>, message: String) {
     }
 }
 
+fn write_entity_checkpoint(
+    transaction: &rusqlite::Transaction<'_>,
+    sequence: u64,
+    timestamp_ms: u64,
+    entities: &[DurableCheckpointEntity],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS durable_checkpoint_current_keys (
+            entity_kind TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            PRIMARY KEY(entity_kind, entity_id)
+         );
+         DELETE FROM durable_checkpoint_current_keys;",
+    )?;
+    {
+        let mut key_statement = transaction.prepare(
+            "INSERT INTO durable_checkpoint_current_keys (entity_kind, entity_id) VALUES (?1, ?2)",
+        )?;
+        let mut entity_statement = transaction.prepare(
+            "INSERT INTO durable_state_checkpoint_entities (
+                entity_kind, entity_id, checkpoint_sequence, payload_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(entity_kind, entity_id) DO UPDATE SET
+                checkpoint_sequence = excluded.checkpoint_sequence,
+                payload_json = excluded.payload_json
+             WHERE durable_state_checkpoint_entities.payload_json <> excluded.payload_json",
+        )?;
+        for entity in entities {
+            key_statement.execute(params![entity.kind, entity.id])?;
+            entity_statement.execute(params![
+                entity.kind,
+                entity.id,
+                sequence as i64,
+                entity.payload_json,
+            ])?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM durable_state_checkpoint_entities
+         WHERE NOT EXISTS (
+            SELECT 1 FROM durable_checkpoint_current_keys current
+            WHERE current.entity_kind = durable_state_checkpoint_entities.entity_kind
+              AND current.entity_id = durable_state_checkpoint_entities.entity_id
+         )",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT INTO durable_state_checkpoint_manifest (sequence, timestamp_ms)
+         VALUES (?1, ?2)
+         ON CONFLICT(sequence) DO UPDATE SET timestamp_ms = excluded.timestamp_ms",
+        params![sequence as i64, timestamp_ms as i64],
+    )?;
+    transaction.execute(
+        "DELETE FROM durable_state_checkpoint_manifest WHERE sequence <> ?1",
+        params![sequence as i64],
+    )?;
+    transaction.execute(
+        "DELETE FROM durable_state_snapshots WHERE sequence <= ?1",
+        params![sequence as i64],
+    )?;
+    Ok(())
+}
+
 const DURABLE_STATE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS durable_state_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -643,6 +831,22 @@ CREATE TABLE IF NOT EXISTS durable_state_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_durable_state_snapshots_sequence
     ON durable_state_snapshots(sequence);
+
+CREATE TABLE IF NOT EXISTS durable_state_checkpoint_manifest (
+    sequence INTEGER PRIMARY KEY,
+    timestamp_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS durable_state_checkpoint_entities (
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    checkpoint_sequence INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(entity_kind, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_durable_checkpoint_entities_sequence
+    ON durable_state_checkpoint_entities(checkpoint_sequence, entity_kind);
 "#;
 
 fn unix_epoch_ms() -> u64 {
@@ -722,6 +926,84 @@ mod tests {
             .append_event("session.updated", None, serde_json::json!({"ok": true}))
             .expect("writer should commit while reader mutex is held");
         drop(read_guard);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn entity_checkpoints_are_incremental_atomic_and_supersede_legacy_snapshots() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-entity-checkpoint-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        store
+            .save_snapshot(1, serde_json::json!({"sessions": [{"id": "legacy"}]}))
+            .expect("legacy snapshot should save");
+        let session = DurableCheckpointEntity {
+            kind: "sessions".to_string(),
+            id: "session-1".to_string(),
+            payload_json: serde_json::json!({"id": "session-1"}).to_string(),
+        };
+        store
+            .save_entity_checkpoint(2, vec![session.clone()])
+            .expect("entity checkpoint should save");
+        store
+            .save_entity_checkpoint(
+                3,
+                vec![
+                    session,
+                    DurableCheckpointEntity {
+                        kind: "agents".to_string(),
+                        id: "agent-1".to_string(),
+                        payload_json: serde_json::json!({"id": "agent-1"}).to_string(),
+                    },
+                ],
+            )
+            .expect("incremental entity checkpoint should save");
+        let snapshot = store
+            .latest_snapshot()
+            .expect("checkpoint should load")
+            .expect("checkpoint should exist");
+        assert_eq!(snapshot.sequence, 3);
+        assert_eq!(snapshot.payload["sessions"][0]["id"], "session-1");
+        assert_eq!(snapshot.payload["agents"][0]["id"], "agent-1");
+        assert_eq!(
+            store
+                .latest_snapshot_sequence()
+                .expect("sequence should load"),
+            3
+        );
+        let connection = store
+            .connection
+            .lock()
+            .expect("read connection should lock");
+        let session_changed_at = connection
+            .query_row(
+                "SELECT checkpoint_sequence FROM durable_state_checkpoint_entities
+                 WHERE entity_kind = 'sessions' AND entity_id = 'session-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("session checkpoint sequence should load");
+        let legacy_snapshot_count = connection
+            .query_row("SELECT COUNT(*) FROM durable_state_snapshots", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("legacy snapshot count should load");
+        assert_eq!(
+            session_changed_at, 2,
+            "unchanged entities must not be rewritten"
+        );
+        assert_eq!(
+            legacy_snapshot_count, 0,
+            "writer-thread compaction should remove superseded snapshots"
+        );
+        drop(connection);
 
         drop(store);
         let _ = std::fs::remove_file(&path);

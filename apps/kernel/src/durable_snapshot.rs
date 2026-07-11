@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use crate::agent::{AgentInstance, AgentServiceStore};
-use crate::durable_state::DurableKernelStateStore;
+use crate::durable_state::{DurableCheckpointEntity, DurableKernelStateStore};
 use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
@@ -106,13 +106,8 @@ impl DurableSnapshotScheduler {
             &self.slices,
             &self.metaagent_events,
         );
-        let payload =
-            serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.encode_snapshot_payload",
-                message: error.to_string(),
-            })?;
         self.durable_state
-            .save_snapshot(latest_event_sequence, payload)?;
+            .save_entity_checkpoint(latest_event_sequence, checkpoint_entities(&payload)?)?;
 
         Ok(DurableSnapshotTickOutcome {
             latest_event_sequence,
@@ -126,12 +121,16 @@ impl DurableSnapshotScheduler {
             sleep(poll_interval).await;
             match self.tick_once() {
                 Ok(outcome) if outcome.wrote_snapshot => {
+                    let writer = self.durable_state.writer_health_snapshot();
                     crate::logging::debug_with_fields(
                         "durable_state.snapshot",
                         "saved durable state snapshot",
                         serde_json::json!({
                             "sequence": outcome.latest_event_sequence,
                             "previous_snapshot_sequence": outcome.latest_snapshot_sequence,
+                            "writer_committed_batches": writer.committed_batches,
+                            "writer_committed_records": writer.committed_records,
+                            "writer_max_batch_records": writer.max_batch_records,
                         }),
                     );
                 }
@@ -148,6 +147,48 @@ impl DurableSnapshotScheduler {
             }
         }
     }
+}
+
+fn checkpoint_entities(
+    payload: &DurableKernelSnapshotPayload,
+) -> Result<Vec<DurableCheckpointEntity>, DaemonError> {
+    let payload = serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "durable_state.encode_checkpoint_payload",
+        message: error.to_string(),
+    })?;
+    let object = payload
+        .as_object()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "durable_state.encode_checkpoint_payload",
+            message: "durable checkpoint payload must be an object".to_string(),
+        })?;
+    let mut entities = Vec::new();
+    for (kind, values) in object {
+        let values = values
+            .as_array()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "durable_state.encode_checkpoint_payload",
+                message: format!("durable checkpoint group `{kind}` must be an array"),
+            })?;
+        for (index, value) in values.iter().enumerate() {
+            let id = ["id", "event_id", "subscription_id", "slice_id", "backup_id"]
+                .into_iter()
+                .find_map(|field| value.get(field).and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{index:020}"));
+            entities.push(DurableCheckpointEntity {
+                kind: kind.clone(),
+                id,
+                payload_json: serde_json::to_string(value).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "durable_state.encode_checkpoint_entity",
+                        message: error.to_string(),
+                    }
+                })?,
+            });
+        }
+    }
+    Ok(entities)
 }
 
 #[cfg(test)]
