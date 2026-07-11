@@ -147,6 +147,80 @@ fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist()
 }
 
 #[test]
+fn timestamp_less_external_turn_is_stable_across_repeated_polls() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-observed".to_string(),
+        "claude".to_string(),
+        "thread-observed".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    let turn = ObservedExternalProviderTurn {
+        provider_turn_id: Some("permission-mode-session-thread-observed".to_string()),
+        role: ObservedExternalProviderTurnRole::Status,
+        text: "claude permission-mode".to_string(),
+        observed_at_ms: None,
+    };
+
+    let first = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: target.clone(),
+            turns: vec![turn.clone()],
+        },
+    )
+    .expect("first poll should append");
+    assert_eq!(first.changed_count, 1);
+    assert_eq!(
+        app.terminal_stream_store()
+            .drain_output_records(session.id(), attachment.id())
+            .len(),
+        1,
+    );
+    let first_observed_at_ms = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load")[0]
+        .observed_at_ms;
+
+    let second = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![turn],
+        },
+    )
+    .expect("second poll should be a no-op");
+    assert_eq!(second.changed_count, 0);
+    assert!(app
+        .terminal_stream_store()
+        .drain_output_records(session.id(), attachment.id())
+        .is_empty());
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].observed_at_ms, first_observed_at_ms);
+}
+
+#[test]
 fn observed_live_external_user_turn_starts_active_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

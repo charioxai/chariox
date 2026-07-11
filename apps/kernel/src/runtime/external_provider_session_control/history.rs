@@ -99,6 +99,11 @@ pub(super) fn append_observed_external_turns_for_attached_target(
         if observed.is_arroba_owned {
             continue;
         }
+        let observed_at_ms = turn.observed_at_ms.or_else(|| {
+            existing_entries_by_merge_key
+                .get(&observed.merge_key)
+                .and_then(|existing| existing.observed_at_ms)
+        });
         let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
             &read.target.session_id,
             provider_run_id.as_deref(),
@@ -109,7 +114,7 @@ pub(super) fn append_observed_external_turns_for_attached_target(
             &provider_session_id,
             Some(observed.merge_key.clone()),
             Some(observed.provider_turn_id.clone()),
-            turn.observed_at_ms,
+            observed_at_ms,
         );
         entry.external_observation =
             ExternalProviderObservationPolicy::for_provider(&provider).observation_for_turn(turn);
