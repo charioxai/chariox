@@ -36,25 +36,27 @@ impl CommandRouter {
                 return result;
             }
         };
-        if let Some((session_id, attachment_id)) = terminal_poll_attachment(&request) {
-            if let Err(error) = self
-                .record_terminal_attachment_heartbeat(
-                    session_id,
-                    attachment_id,
-                    crate::session::unix_epoch_ms(),
-                )
-                .await
-            {
-                let result = Err(error);
-                log_command_completed(&command_trace, &result);
-                return result;
-            }
-        }
         match self
             .dispatch_pre_lane(&command, &request, &caller_user_id)
             .await
         {
             Ok(Some(response)) => {
+                if let Some((session_id, attachment_id)) =
+                    projected_terminal_output_attachment(&request)
+                {
+                    if let Err(error) = self
+                        .record_terminal_attachment_heartbeat(
+                            session_id,
+                            attachment_id,
+                            crate::session::unix_epoch_ms(),
+                        )
+                        .await
+                    {
+                        let result = Err(error);
+                        log_command_completed(&command_trace, &result);
+                        return result;
+                    }
+                }
                 let result = Ok(response);
                 log_command_completed(&command_trace, &result);
                 return result;
@@ -92,12 +94,9 @@ impl CommandRouter {
     }
 }
 
-fn terminal_poll_attachment(request: &LocalDaemonRequest) -> Option<(&str, &str)> {
+fn projected_terminal_output_attachment(request: &LocalDaemonRequest) -> Option<(&str, &str)> {
     match request {
         LocalDaemonRequest::PumpTerminalOutput(request) => {
-            Some((&request.session_id, &request.attachment_id))
-        }
-        LocalDaemonRequest::PollRuntimeNotices(request) => {
             Some((&request.session_id, &request.attachment_id))
         }
         _ => None,

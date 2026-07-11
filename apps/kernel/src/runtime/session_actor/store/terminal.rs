@@ -63,12 +63,7 @@ impl SessionRuntimeStore {
             self.state
                 .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
                 .await?;
-            self.state
-                .record_terminal_attachment_heartbeat(
-                    &request.session_id,
-                    &request.attachment_id,
-                    crate::session::unix_epoch_ms(),
-                )
+            self.record_terminal_attachment_heartbeat(&request.session_id, &request.attachment_id)
                 .await?;
             Ok(LocalDaemonResponse::RuntimeNotices {
                 notices: self
@@ -79,5 +74,19 @@ impl SessionRuntimeStore {
         }
         .await;
         self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.state
+            .record_terminal_attachment_heartbeat(
+                session_id,
+                attachment_id,
+                crate::session::unix_epoch_ms(),
+            )
+            .await
     }
 }
