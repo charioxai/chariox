@@ -31,7 +31,10 @@ export function normalizeRelayRequest(
   if (!daemonPublicKey) {
     throw new Error("relay daemon public key is required")
   }
-  const plaintext = Buffer.from(JSON.stringify(request), "utf8")
+  const plaintext = Buffer.from(JSON.stringify({
+    command_id: requestId,
+    request,
+  }), "utf8")
   const { privateKey, payload } = encryptRelayPayload(daemonPublicKey, plaintext)
   return {
     frame: {
