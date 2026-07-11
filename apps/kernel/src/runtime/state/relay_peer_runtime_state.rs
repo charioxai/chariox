@@ -303,6 +303,19 @@ impl KernelRuntimeState {
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
+        let replay_leased_agent_id = leased_agent_id.clone();
+        let replay_git_context = git_context.clone();
+        if let Some(replayed) = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).replay_active_leased_prompt_submission(
+                    &replay_leased_agent_id,
+                    replay_git_context.as_ref(),
+                )
+            })
+            .await?
+        {
+            return Ok(replayed);
+        }
         let prepared = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(

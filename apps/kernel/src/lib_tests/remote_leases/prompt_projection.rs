@@ -77,6 +77,97 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
 }
 
 #[test]
+fn leased_prompt_submit_replays_the_active_run_for_the_same_home_prompt_id() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-idempotent-submit",
+            "agent-home-idempotent-submit",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "session-idempotent-submit".to_string(),
+        home_agent_id: "agent-home-idempotent-submit".to_string(),
+        home_prompt_id: "home-prompt-idempotent".to_string(),
+        home_turn_id: "home-prompt-idempotent".to_string(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: Some(PromptOrigin::Arroba),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "idempotent remote prompt".to_string(),
+    };
+
+    let (first_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "idempotent remote prompt\n",
+            Vec::new(),
+            None,
+            Some(git_context.clone()),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("first leased prompt should submit");
+    let PromptSubmissionOutcome::Started {
+        prompt: first_prompt,
+    } = first_outcome
+    else {
+        panic!("first leased prompt should start");
+    };
+
+    let (replayed_run_id, replayed_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "idempotent remote prompt\n",
+            Vec::new(),
+            None,
+            Some(git_context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("duplicate leased prompt should replay its accepted result");
+    let PromptSubmissionOutcome::Started {
+        prompt: replayed_prompt,
+    } = replayed_outcome
+    else {
+        panic!("duplicate leased prompt should replay the active outcome");
+    };
+
+    assert_eq!(replayed_run_id, first_run_id);
+    assert_eq!(replayed_prompt.id(), first_prompt.id());
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queue count should load"),
+        0,
+    );
+}
+
+#[test]
 fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

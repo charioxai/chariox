@@ -41,13 +41,14 @@ function isTransientRuntimeMcpRelayError(error) {
 }
 
 export async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {}) {
+  let result
   try {
-    const result = await callRuntimeMcp(serverUrl, authToken, method, params)
-    if (result?.isError) return result
-    throw new Error(`runtime MCP ${method} unexpectedly succeeded: ${JSON.stringify(result)}`)
+    result = await callRuntimeMcp(serverUrl, authToken, method, params)
   } catch (error) {
     return { error: String(error?.message ?? error) }
   }
+  if (result?.isError) return result
+  throw new Error(`runtime MCP ${method} unexpectedly succeeded: ${JSON.stringify(result)}`)
 }
 
 export async function waitForRuntimeTool(serverUrl, authToken, name, present) {

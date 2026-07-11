@@ -56,6 +56,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
+        if let Some(replayed) =
+            self.replay_active_leased_prompt_submission(leased_agent_id, git_context.as_ref())?
+        {
+            return Ok(replayed);
+        }
         let prepared = self.prepare_leased_prompt_submission(
             leased_agent_id,
             prompt,
@@ -73,6 +78,61 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         };
         self.finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+    }
+
+    pub(crate) fn replay_active_leased_prompt_submission(
+        &mut self,
+        leased_agent_id: &str,
+        git_context: Option<&RemoteGitTurnContext>,
+    ) -> Result<Option<(String, PromptSubmissionOutcome)>, DaemonError> {
+        let Some(home_prompt_id) = git_context.map(|context| context.home_prompt_id.as_str())
+        else {
+            return Ok(None);
+        };
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(home_prompt_id) {
+            return Ok(None);
+        }
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "replay active leased prompt submission",
+                message: format!(
+                    "leased agent `{leased_agent_id}` remembers home prompt `{home_prompt_id}` but has no active backing prompt"
+                ),
+            })?;
+        let provider_run = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: leased_agent.backing_session_id.clone(),
+            })?;
+        if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::NoActiveProviderRun {
+                session_id: leased_agent.backing_session_id,
+            });
+        }
+        Ok(Some((
+            provider_run.id().to_string(),
+            PromptSubmissionOutcome::Started {
+                prompt: active_prompt,
+            },
+        )))
     }
 
     pub(crate) fn prepare_leased_prompt_submission(

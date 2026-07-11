@@ -36,6 +36,8 @@ function parseArgs(argv) {
   const options = {
     hetznerWorker: false,
     collab: false,
+    restartRelay: false,
+    restartWorker: false,
     hetznerHost: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
     hetznerKey: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh', 'arroba_hetzner_staging'),
     hetznerRepo: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
@@ -44,6 +46,8 @@ function parseArgs(argv) {
     const arg = argv[i]
     if (arg === '--hetzner-worker') options.hetznerWorker = true
     else if (arg === '--collab') options.collab = true
+    else if (arg === '--restart-relay') options.restartRelay = true
+    else if (arg === '--restart-worker') options.restartWorker = true
     else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
     else if (arg === '--hetzner-key') options.hetznerKey = argv[++i]
     else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++i]
@@ -55,7 +59,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log([
-    'Usage: node apps/cli/scripts/live-remote-home-extension-drill.mjs [--hetzner-worker]',
+    'Usage: node apps/cli/scripts/live-remote-home-extension-drill.mjs [--hetzner-worker] [--collab] [--restart-relay] [--restart-worker]',
     '',
     'Runs a home-owned remote extension drill with home/worker kernels:',
     '- projects home-owned script, MCP, and connector tools to a remote agent',
@@ -63,9 +67,12 @@ function printHelp() {
     '- verifies revoke stops worker advertisement and stale calls',
     '- verifies worker-local MCP name collision fails before launch',
     '- with --collab, verifies a collaborator-owned remote agent can invoke home grants but cannot grant/revoke/request them',
+    '- with restart flags, verifies home authority after relay and worker loss',
     '',
     '  --hetzner-worker       Run relay and worker kernel on the configured Hetzner host',
     '  --collab              Run the main agent path as user-2 over a scoped relay',
+    '  --restart-relay       Restart the relay during the active prompt',
+    '  --restart-worker      Restart the worker and repair the lease before revocation',
     '  --hetzner-host HOST    SSH host for --hetzner-worker',
     '  --hetzner-key PATH     SSH key for --hetzner-worker',
     '  --hetzner-repo PATH    Remote Arroba checkout containing built binaries',
@@ -83,6 +90,7 @@ const {
   launchProviderRunRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
+  pumpTerminalOutputRequest,
   registerConnectorAdapterRequest,
   registerConnectorRequest,
   registerEnvironmentRequest,
@@ -100,7 +108,10 @@ function log(name, details = null) {
   else console.log(`[remote-home-extension-drill] ${name}`, JSON.stringify(details))
 }
 
-async function waitForRemoteProviderRun(client, sessionId, agentId, timeoutMs = 90_000) {
+async function waitForRemoteProviderRun(client, sessionId, agentId, {
+  excludeProviderRunId = null,
+  timeoutMs = 90_000,
+} = {}) {
   const deadline = Date.now() + timeoutMs
   let lastAgent = null
   let lastRun = null
@@ -119,11 +130,138 @@ async function waitForRemoteProviderRun(client, sessionId, agentId, timeoutMs = 
         ? null
         : unwrapVariant(response, 'ProviderRun').provider_run
       lastRun = run
-      if (run?.runtime_mcp_server_url && run?.runtime_mcp_auth_token) return run
+      if (
+        run?.runtime_mcp_server_url
+        && run?.runtime_mcp_auth_token
+        && run.id !== excludeProviderRunId
+      ) return run
     }
     await sleep(250)
   }
   throw new Error(`timed out waiting for remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
+}
+
+async function waitForRelayTargetUnavailable(
+  LocalIpcClient,
+  relayUrl,
+  relayToken,
+  targetDaemonAlias,
+) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const probe = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await Promise.race([
+        probe.send(listRemoteMachinesRequest()),
+        sleep(1_000).then(() => {
+          throw new Error('probe timeout')
+        }),
+      ])
+    } catch {
+      await probe.close().catch(() => {})
+      return
+    }
+    await probe.close().catch(() => {})
+    await sleep(250)
+  }
+  throw new Error(`relay target ${targetDaemonAlias} remained reachable after shutdown`)
+}
+
+function startAttachmentPump(client, sessionId, getAttachment) {
+  const controller = new AbortController()
+  const done = (async () => {
+    while (!controller.signal.aborted) {
+      const attachment = getAttachment()
+      if (attachment) {
+        await Promise.race([
+          client.send(pumpTerminalOutputRequest(sessionId, attachment.id)),
+          sleep(2_000).then(() => {
+            throw new Error('attachment pump timeout')
+          }),
+        ]).catch(() => {})
+      }
+      await sleep(5_000, undefined, { signal: controller.signal }).catch(() => {})
+    }
+  })()
+  return async () => {
+    controller.abort()
+    await done
+  }
+}
+
+async function exerciseHomeProxyExtensions({
+  launch,
+  collab,
+  environmentName,
+  homeMarker,
+  homeMcpMarker,
+  homeConnectorMarker,
+  tag,
+}) {
+  if (collab) {
+    const deniedRequest = await callRuntimeMcp(
+      launch.runtime_mcp_server_url,
+      launch.runtime_mcp_auth_token,
+      'tools/call',
+      {
+        name: 'arroba.request_extension',
+        arguments: { kind: 'script', name: 'home_only_lookup', environment: environmentName },
+      },
+    )
+    const deniedText = JSON.stringify(deniedRequest)
+    if (!deniedText.includes('home-owned extensions for collaborator remote agents')) {
+      throw new Error(`collaborator runtime request_extension returned unexpected result: ${deniedText}`)
+    }
+  }
+
+  await waitForRuntimeTool(
+    launch.runtime_mcp_server_url,
+    launch.runtime_mcp_auth_token,
+    'home_only_lookup',
+    true,
+  )
+  const scriptCall = await callRuntimeMcp(
+    launch.runtime_mcp_server_url,
+    launch.runtime_mcp_auth_token,
+    'tools/call',
+    { name: 'home_only_lookup', arguments: { query: tag } },
+  )
+  if (scriptCall.isError) throw new Error(`home proxy script returned error: ${JSON.stringify(scriptCall)}`)
+  const scriptMarker = await readFile(homeMarker, 'utf8')
+  if (scriptMarker !== `HOME_SCRIPT_EXECUTED:${tag}`) throw new Error(`home marker mismatch: ${JSON.stringify(scriptMarker)}`)
+
+  const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, '/mcp/proxy/home_echo_mcp')
+  const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/list')
+  if (!mcpTools.tools.some((tool) => tool.name === 'home_echo')) throw new Error(`home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
+  const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
+    name: 'home_echo',
+    arguments: { text: tag },
+  })
+  if (mcpCall.isError) throw new Error(`home MCP returned error: ${JSON.stringify(mcpCall)}`)
+  const mcpMarker = await readFile(homeMcpMarker, 'utf8')
+  if (mcpMarker !== `HOME_MCP_EXECUTED:${tag}`) throw new Error(`home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
+
+  await waitForRuntimeTool(
+    launch.runtime_mcp_server_url,
+    launch.runtime_mcp_auth_token,
+    'home_local_api_public_echo',
+    true,
+  )
+  const connectorCall = await callRuntimeMcp(
+    launch.runtime_mcp_server_url,
+    launch.runtime_mcp_auth_token,
+    'tools/call',
+    { name: 'home_local_api_public_echo', arguments: { q: tag } },
+  )
+  if (connectorCall.isError) throw new Error(`home connector returned error: ${JSON.stringify(connectorCall)}`)
+  const connectorMarker = await readFile(homeConnectorMarker, 'utf8')
+  if (connectorMarker !== `HOME_CONNECTOR_EXECUTED:${tag}`) throw new Error(`home connector marker mismatch: ${JSON.stringify(connectorMarker)}`)
+
+  return { proxyUrl, scriptMarker, mcpMarker, connectorMarker }
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
@@ -231,6 +369,8 @@ async function main() {
   let homeOnlyMcp = null
   let client = null
   let user2Client = null
+  let stopOwnerPump = null
+  let stopCollaboratorPump = null
   let succeeded = false
   let failure = null
   try {
@@ -256,6 +396,16 @@ async function main() {
       ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay')
       : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
     const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
+    const localRelayEnv = {
+      ...process.env,
+      ARROBA_RELAY_HOST: '127.0.0.1',
+      ARROBA_RELAY_PORT: String(relayPort),
+      ARROBA_RELAY_TOKEN: sharedRelayToken,
+      ...(options.collab ? {
+        ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+        ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      } : {}),
+    }
     if (options.hetznerWorker) {
       await ensureRemoteHomeExtensionHetznerWorkspace(options, {
         remoteRoot,
@@ -277,16 +427,7 @@ async function main() {
     } else {
       relay = spawn(relayBinary, [], {
         cwd: repoRoot,
-        env: {
-          ...process.env,
-          ARROBA_RELAY_HOST: '127.0.0.1',
-          ARROBA_RELAY_PORT: String(relayPort),
-          ARROBA_RELAY_TOKEN: sharedRelayToken,
-          ...(options.collab ? {
-            ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-            ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-          } : {}),
-        },
+        env: localRelayEnv,
         stdio: ['ignore', 'ignore', 'inherit'],
       })
       await waitForTcpPort(relayPort)
@@ -310,6 +451,20 @@ async function main() {
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
+    const localWorkerEnv = daemonEnv({
+      rootDir,
+      relayUrl,
+      relayToken: workerRelayToken,
+      daemonId: workerDaemonId,
+      daemonAlias: 'worker',
+      machineId: workerMachineId,
+      machineAlias: workerAlias,
+      kernelPort: workerKernelPort,
+      mcpPort: workerMcpPort,
+      acceptRemoteLeases: true,
+      capabilityRoot: workerCapabilityRoot,
+      socketName: 'worker.sock',
+    })
     if (options.hetznerWorker) {
       worker = spawnRemoteHomeExtensionHetznerWorker({
         options,
@@ -326,20 +481,7 @@ async function main() {
     } else {
       worker = spawn(daemonBinary, [], {
         cwd: repoRoot,
-        env: daemonEnv({
-          rootDir,
-          relayUrl,
-          relayToken: workerRelayToken,
-          daemonId: workerDaemonId,
-          daemonAlias: 'worker',
-          machineId: workerMachineId,
-          machineAlias: workerAlias,
-          kernelPort: workerKernelPort,
-          mcpPort: workerMcpPort,
-          acceptRemoteLeases: true,
-          capabilityRoot: workerCapabilityRoot,
-          socketName: 'worker.sock',
-        }),
+        env: localWorkerEnv,
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     }
@@ -382,6 +524,10 @@ async function main() {
         await user2Client.send(attachToSessionRequest(session.id, `remote-home-extension-collab-${process.pid}`)),
         'SessionAttached',
       ).attachment
+    }
+    stopOwnerPump = startAttachmentPump(client, session.id, () => ownerAttachment)
+    if (options.collab) {
+      stopCollaboratorPump = startAttachmentPump(user2Client, session.id, () => collaboratorAttachment)
     }
     const remoteAgentClient = options.collab ? user2Client : client
     if (!options.collab) {
@@ -432,7 +578,7 @@ async function main() {
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'home_only_lookup', env.name))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', 'home_echo_mcp'))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'connector', 'home_local_api', null, { maxSafety: 'read' }))
-    const promptAttachment = collaboratorAttachment ?? ownerAttachment
+    let promptAttachment = collaboratorAttachment ?? ownerAttachment
     await remoteAgentClient.send(submitPromptRequest(
       session.id,
       promptAttachment.id,
@@ -440,47 +586,153 @@ async function main() {
       'Initialize the home-proxy extension runtime.',
       [],
     ))
-    const launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id)
+    let launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id)
     if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
-    if (options.collab) {
-      const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
-        name: 'arroba.request_extension',
-        arguments: { kind: 'script', name: 'home_only_lookup', environment: env.name },
-      })
-      if (!deniedRequest.isError) {
-        const deniedText = JSON.stringify(deniedRequest)
-        if (!deniedText.includes('home-owned extensions for collaborator remote agents')) {
-          throw new Error(`collaborator runtime request_extension returned unexpected result: ${deniedText}`)
-        }
+    let evidence = await exerciseHomeProxyExtensions({
+      launch,
+      collab: options.collab,
+      environmentName: env.name,
+      homeMarker,
+      homeMcpMarker,
+      homeConnectorMarker,
+      tag: 'before-restart',
+    })
+
+    if (options.restartRelay) {
+      log('relay-restart-starting')
+      if (options.hetznerWorker) {
+        await stopRemoteHomeExtensionHetznerRelay(options, remoteRoot)
+        await terminateChild(relayTunnel)
+        relayTunnel = null
+        await terminateChild(relay)
+        relay = null
+      } else {
+        await terminateChild(relay)
+        relay = null
       }
+      await waitForRelayTargetUnavailable(LocalIpcClient, relayUrl, probeRelayToken, 'home')
+      await sleep(500)
+      if (options.hetznerWorker) {
+        const restartedRelay = await startRemoteHomeExtensionHetznerRelay({
+          options,
+          relayPort,
+          workerMcpPort,
+          sharedRelayToken,
+          collab: options.collab,
+          issuer: RELAY_ISSUER,
+          secret: RELAY_SECRET,
+          remoteRoot,
+        })
+        relay = restartedRelay.relay
+        relayTunnel = restartedRelay.tunnel
+      } else {
+        relay = spawn(relayBinary, [], {
+          cwd: repoRoot,
+          env: localRelayEnv,
+          stdio: ['ignore', 'ignore', 'inherit'],
+        })
+        await waitForTcpPort(relayPort)
+      }
+      await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'home', listRemoteMachinesRequest)
+      await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'worker', listRemoteMachinesRequest)
+      if (options.collab) {
+        const previousAttachmentId = collaboratorAttachment.id
+        collaboratorAttachment = unwrap(
+          await user2Client.send(attachToSessionRequest(session.id, `remote-home-extension-collab-${process.pid}`)),
+          'SessionAttached',
+        ).attachment
+        promptAttachment = collaboratorAttachment
+        log('collaborator-reattached', {
+          previousAttachmentId,
+          attachmentId: collaboratorAttachment.id,
+        })
+      }
+      evidence = await exerciseHomeProxyExtensions({
+        launch,
+        collab: options.collab,
+        environmentName: env.name,
+        homeMarker,
+        homeMcpMarker,
+        homeConnectorMarker,
+        tag: 'after-relay-restart',
+      })
+      log('relay-restart-recovered')
     }
 
-    await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'home_only_lookup', true)
-    const call = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
-      name: 'home_only_lookup',
-      arguments: { query: 'remote-agent' },
-    })
-    if (call.isError) throw new Error(`home proxy script returned error: ${JSON.stringify(call)}`)
-    const marker = await readFile(homeMarker, 'utf8')
-    if (marker !== 'HOME_SCRIPT_EXECUTED:remote-agent') throw new Error(`home marker mismatch: ${JSON.stringify(marker)}`)
-    const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, '/mcp/proxy/home_echo_mcp')
-    const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/list')
-    if (!mcpTools.tools.some((tool) => tool.name === 'home_echo')) throw new Error(`home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
-    const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
-      name: 'home_echo',
-      arguments: { text: 'remote-mcp' },
-    })
-    if (mcpCall.isError) throw new Error(`home MCP returned error: ${JSON.stringify(mcpCall)}`)
-    const mcpMarker = await readFile(homeMcpMarker, 'utf8')
-    if (mcpMarker !== 'HOME_MCP_EXECUTED:remote-mcp') throw new Error(`home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
-    await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'home_local_api_public_echo', true)
-    const connectorCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
-      name: 'home_local_api_public_echo',
-      arguments: { q: 'remote-connector' },
-    })
-    if (connectorCall.isError) throw new Error(`home connector returned error: ${JSON.stringify(connectorCall)}`)
-    const connectorMarker = await readFile(homeConnectorMarker, 'utf8')
-    if (connectorMarker !== 'HOME_CONNECTOR_EXECUTED:remote-connector') throw new Error(`home connector marker mismatch: ${JSON.stringify(connectorMarker)}`)
+    if (options.restartWorker) {
+      const previousLaunch = launch
+      const previousLeaseId = unwrapVariant(
+        await remoteAgentClient.send(listAgentsRequest(session.id)),
+        'AgentsListed',
+      ).agents.find((candidate) => candidate.id === agent.id)?.remote_execution?.leased_agent_id
+      log('worker-restart-starting', { previousLeaseId, previousProviderRunId: previousLaunch.id })
+      if (options.hetznerWorker) {
+        await stopRemoteHomeExtensionHetznerWorker(options, { remoteRoot, workerDaemonId })
+      }
+      await terminateChild(worker)
+      worker = null
+      await waitForRelayTargetUnavailable(LocalIpcClient, relayUrl, probeRelayToken, 'worker')
+      if (options.hetznerWorker) {
+        worker = spawnRemoteHomeExtensionHetznerWorker({
+          options,
+          remoteRoot,
+          workerWorktree,
+          relayPort,
+          workerRelayToken,
+          workerDaemonId,
+          workerMachineId,
+          workerAlias,
+          workerKernelPort,
+          workerMcpPort,
+        })
+      } else {
+        worker = spawn(daemonBinary, [], {
+          cwd: repoRoot,
+          env: localWorkerEnv,
+          stdio: ['ignore', 'ignore', 'inherit'],
+        })
+      }
+      await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'worker', listRemoteMachinesRequest)
+      await waitForRemoteMachine(client, workerMachineId, listRemoteMachinesRequest)
+      await expectRuntimeMcpReject(
+        previousLaunch.runtime_mcp_server_url,
+        previousLaunch.runtime_mcp_auth_token,
+        'tools/call',
+        { name: 'home_only_lookup', arguments: { query: 'stale-worker-run' } },
+      )
+      const afterStaleRunMarker = await readFile(homeMarker, 'utf8')
+      if (afterStaleRunMarker !== evidence.scriptMarker) {
+        throw new Error('stale worker runtime executed a home extension after worker restart')
+      }
+      await remoteAgentClient.send(submitPromptRequest(
+        session.id,
+        promptAttachment.id,
+        agent.id,
+        'Repair the worker lease and initialize a fresh home-proxy extension runtime.',
+        [],
+      ))
+      launch = await waitForRemoteProviderRun(remoteAgentClient, session.id, agent.id, {
+        excludeProviderRunId: previousLaunch.id,
+      })
+      const repairedAgent = unwrapVariant(
+        await remoteAgentClient.send(listAgentsRequest(session.id)),
+        'AgentsListed',
+      ).agents.find((candidate) => candidate.id === agent.id)
+      const repairedLeaseId = repairedAgent?.remote_execution?.leased_agent_id
+      if (!repairedLeaseId || repairedLeaseId === previousLeaseId) {
+        throw new Error(`worker restart did not repair the leased agent binding: ${JSON.stringify(repairedAgent)}`)
+      }
+      evidence = await exerciseHomeProxyExtensions({
+        launch,
+        collab: options.collab,
+        environmentName: env.name,
+        homeMarker,
+        homeMcpMarker,
+        homeConnectorMarker,
+        tag: 'after-worker-restart',
+      })
+      log('worker-restart-recovered', { repairedLeaseId, providerRunId: launch.id })
+    }
 
     await client.send(revokeAgentExtensionRequest(agent.id, 'script', 'home_only_lookup'))
     if (options.collab) {
@@ -496,14 +748,14 @@ async function main() {
       arguments: { query: 'after-revoke' },
     })
     const afterRevokeMarker = await readFile(homeMarker, 'utf8')
-    if (afterRevokeMarker !== marker) throw new Error('revoked home-proxy script executed after revoke')
+    if (afterRevokeMarker !== evidence.scriptMarker) throw new Error('revoked home-proxy script executed after revoke')
     await client.send(revokeAgentExtensionRequest(agent.id, 'mcp', 'home_echo_mcp'))
-    await expectRuntimeMcpReject(proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
+    await expectRuntimeMcpReject(evidence.proxyUrl, launch.runtime_mcp_auth_token, 'tools/call', {
       name: 'home_echo',
       arguments: { text: 'after-mcp-revoke' },
     })
     const afterMcpRevokeMarker = await readFile(homeMcpMarker, 'utf8')
-    if (afterMcpRevokeMarker !== mcpMarker) throw new Error('revoked home-proxy MCP executed after revoke')
+    if (afterMcpRevokeMarker !== evidence.mcpMarker) throw new Error('revoked home-proxy MCP executed after revoke')
     await client.send(revokeAgentExtensionRequest(agent.id, 'connector', 'home_local_api'))
     await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'home_local_api_public_echo', false)
     await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, 'tools/call', {
@@ -511,14 +763,16 @@ async function main() {
       arguments: { q: 'after-connector-revoke' },
     })
     const afterConnectorRevokeMarker = await readFile(homeConnectorMarker, 'utf8')
-    if (afterConnectorRevokeMarker !== connectorMarker) throw new Error('revoked home-proxy connector executed after revoke')
+    if (afterConnectorRevokeMarker !== evidence.connectorMarker) throw new Error('revoked home-proxy connector executed after revoke')
 
     succeeded = true
-    console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker', collab: options.collab, script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
+    console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker', collab: options.collab, restartRelay: options.restartRelay, restartWorker: options.restartWorker, script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
   } catch (error) {
     failure = error
     throw error
   } finally {
+    await stopCollaboratorPump?.().catch(() => {})
+    await stopOwnerPump?.().catch(() => {})
     await user2Client?.close?.().catch(() => {})
     await client?.close?.().catch(() => {})
     await terminateChild(worker)
@@ -539,6 +793,8 @@ async function main() {
         drill: 'remote-home-extension',
         mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker',
         collab: options.collab,
+        restartRelay: options.restartRelay,
+        restartWorker: options.restartWorker,
       },
       log,
     })

@@ -172,17 +172,17 @@ const MATRIX = [
   }),
   scenario({
     id: "hetzner-collaborator-reconnect-authority",
-    description: "Hetzner collaborator remote agent recovers while home authority remains enforced",
+    description: "Hetzner collaborator remote agent survives relay loss and repairs after worker loss while home authority remains enforced",
     script: remoteHomeExtensionDrill,
-    args: ["--hetzner-worker", "--collab"],
+    args: ["--hetzner-worker", "--collab", "--restart-relay", "--restart-worker"],
     requires: ["hetzner"],
     classification: "kernel-authority",
     runtimeSignals: ["home-extension-manifest-sync", "lease-health", "session-authority"],
     deployment: "hetzner",
     provider: "dev-stub",
     exitCriteria: [
-      "collaborator remote agent runs on the Hetzner worker through the home session",
-      "grant/revoke and stale invocation checks remain home-kernel-owned after reconnect",
+      "the active collaborator runtime resumes through a restarted relay without losing its home extension grants",
+      "worker restart repairs the stale lease and grant/revoke plus stale invocation checks remain home-kernel-owned",
     ],
   }),
   scenario({

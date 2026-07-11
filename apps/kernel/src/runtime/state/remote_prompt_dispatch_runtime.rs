@@ -3,15 +3,17 @@
 //! This module owns leased-agent prompt submission, binding refresh, and remote dispatch result
 //! settlement after owned prompt state has already admitted the prompt.
 
-use super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh;
+use super::remote_prompt_worker_submission_runtime::{
+    remote_prompt_error_should_refresh_binding, submit_remote_prompt_to_worker_with_binding_refresh,
+};
 use super::*;
 
-struct RemotePromptProjectionDrainClaim {
+struct RemotePromptAgentClaim {
     key: (String, String),
     claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
 }
 
-impl RemotePromptProjectionDrainClaim {
+impl RemotePromptAgentClaim {
     fn try_acquire(
         claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
         session_id: &str,
@@ -26,7 +28,7 @@ impl RemotePromptProjectionDrainClaim {
     }
 }
 
-impl Drop for RemotePromptProjectionDrainClaim {
+impl Drop for RemotePromptAgentClaim {
     fn drop(&mut self) {
         self.claims
             .lock()
@@ -50,7 +52,7 @@ impl KernelRuntimeState {
     }
 
     fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
-        let Some(claim) = RemotePromptProjectionDrainClaim::try_acquire(
+        let Some(claim) = RemotePromptAgentClaim::try_acquire(
             Arc::clone(&self.owned.remote_prompt_projection_drains),
             &session_id,
             &agent_id,
@@ -169,7 +171,7 @@ impl KernelRuntimeState {
                     target,
                     request,
                 )
-                .await?
+                .await
             }
             None => {
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
@@ -177,8 +179,22 @@ impl KernelRuntimeState {
                     target,
                     request,
                 )
-                .await?
+                .await
             }
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(error) if remote_prompt_error_should_refresh_binding(&error) => {
+                self.spawn_stale_remote_prompt_recovery(
+                    session_id.to_string(),
+                    agent_id.to_string(),
+                    remote_execution,
+                    provider_run_id,
+                    error.to_string(),
+                );
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
         };
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
@@ -191,6 +207,363 @@ impl KernelRuntimeState {
                 operation: "drain remote prompt projection",
                 message: format!("unexpected remote projection drain response: {other:?}"),
             }),
+        }
+    }
+
+    fn spawn_stale_remote_prompt_recovery(
+        &self,
+        session_id: String,
+        agent_id: String,
+        stale_binding: crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: String,
+        trigger_error: String,
+    ) {
+        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_recoveries),
+            &session_id,
+            &agent_id,
+        ) else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _claim = claim;
+            if let Err(error) = state
+                .recover_stale_remote_prompt(
+                    &session_id,
+                    &agent_id,
+                    &stale_binding,
+                    &stale_provider_run_id,
+                    &trigger_error,
+                )
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "stale remote prompt recovery stopped",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "worker_kernel_id": stale_binding.worker_kernel_id,
+                        "leased_agent_id": stale_binding.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        });
+    }
+
+    async fn recover_stale_remote_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
+        let rebound = self
+            .with_app_side_effect(|app| {
+                let agent = app.agents().get_agent(agent_id)?;
+                let Some(current_binding) = agent.remote_execution() else {
+                    return Ok(None);
+                };
+                if current_binding.leased_agent_id != stale_binding.leased_agent_id
+                    || current_binding.active_worker_provider_run_id.as_deref()
+                        != Some(stale_provider_run_id)
+                {
+                    return Ok(None);
+                }
+                app.refresh_remote_agent_binding(agent_id).map(Some)
+            })
+            .await?;
+        let Some(rebound) = rebound else {
+            return Ok(());
+        };
+        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch(&rebound)? else {
+            return Ok(());
+        };
+        self.populate_remote_prompt_recovery_workflow_context(&mut dispatch)
+            .await?;
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "replaying active prompt after stale worker binding",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "previous_worker_kernel_id": stale_binding.worker_kernel_id,
+                "previous_leased_agent_id": stale_binding.leased_agent_id,
+                "worker_kernel_id": dispatch.worker_kernel_id,
+                "leased_agent_id": dispatch.leased_agent_id,
+                "prompt_id": dispatch.prompt_id,
+                "trigger_error": trigger_error,
+            }),
+        );
+
+        let prompt_id = dispatch.prompt_id.clone();
+        let mut attempt = 0_u32;
+        loop {
+            if !self.remote_prompt_recovery_is_current(
+                session_id,
+                agent_id,
+                &prompt_id,
+                &dispatch.leased_agent_id,
+            )? {
+                return Ok(());
+            }
+            let agent = self.owned.agent_store.get_agent(agent_id)?;
+            let (prompt, required_skills) = match self
+                .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
+                .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    attempt = attempt.saturating_add(1);
+                    self.log_remote_prompt_recovery_retry(
+                        session_id, agent_id, &dispatch, attempt, &error,
+                    );
+                    tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
+                    continue;
+                }
+            };
+            let (required_mcps, remote_extension_manifest) =
+                match self.remote_prompt_mcp_capabilities_for_agent(&agent) {
+                    Ok(capabilities) => capabilities,
+                    Err(error) => {
+                        attempt = attempt.saturating_add(1);
+                        self.log_remote_prompt_recovery_retry(
+                            session_id, agent_id, &dispatch, attempt, &error,
+                        );
+                        tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
+                        continue;
+                    }
+                };
+            let attachments = dispatch.attachments.clone();
+            let attachments = match tokio::task::spawn_blocking(move || {
+                crate::app::serialize_remote_prompt_attachments(&attachments)
+            })
+            .await
+            {
+                Ok(Ok(attachments)) => attachments,
+                Ok(Err(error)) => return Err(error),
+                Err(error) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "serialize recovered remote prompt attachments",
+                        message: error.to_string(),
+                    });
+                }
+            };
+            let result = submit_remote_prompt_to_worker_with_binding_refresh(
+                self,
+                &mut dispatch,
+                prompt,
+                attachments,
+                required_mcps,
+                required_skills,
+                remote_extension_manifest,
+            )
+            .await;
+            match result {
+                Ok(provider_run_id) => {
+                    self.finish_stale_remote_prompt_recovery(
+                        session_id,
+                        agent_id,
+                        stale_binding,
+                        stale_provider_run_id,
+                        &dispatch,
+                        &provider_run_id,
+                    )?;
+                    crate::logging::info_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "active remote prompt recovered on refreshed worker binding",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "worker_kernel_id": dispatch.worker_kernel_id,
+                            "leased_agent_id": dispatch.leased_agent_id,
+                            "provider_run_id": provider_run_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "attempt": attempt + 1,
+                        }),
+                    );
+                    let state = self.clone();
+                    let session_id = session_id.to_string();
+                    let agent_id = agent_id.to_string();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        state.spawn_remote_prompt_projection_drain(session_id, agent_id);
+                    });
+                    return Ok(());
+                }
+                Err(error) => {
+                    attempt = attempt.saturating_add(1);
+                    self.log_remote_prompt_recovery_retry(
+                        session_id, agent_id, &dispatch, attempt, &error,
+                    );
+                    tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
+                }
+            }
+        }
+    }
+
+    fn remote_prompt_recovery_dispatch(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Option<crate::app::KernelRemotePromptDispatch>, DaemonError> {
+        let Some(remote_execution) = agent.remote_execution() else {
+            return Ok(None);
+        };
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let Some(active_prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent.id())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(crate::app::KernelRemotePromptDispatch {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            prompt_id: active_prompt.id().to_string(),
+            worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            relay_url: remote_execution.relay_url.clone(),
+            relay_token: remote_execution.relay_token.clone(),
+            source_attachment_id: active_prompt.source_attachment_id().to_string(),
+            prompt: active_prompt.prompt().to_string(),
+            attachments: active_prompt.attachments().to_vec(),
+            workspace_live_sync_mode: Some(
+                crate::provider::provider_workspace_live_sync_mode_for_session(
+                    agent.provider(),
+                    &self.owned.config_projection.snapshot(),
+                    Some(&session),
+                ),
+            ),
+            prompt_origin: active_prompt.prompt_origin(),
+            external_provider: active_prompt.external_provider().map(str::to_string),
+            external_provider_session_id: active_prompt
+                .external_provider_session_id()
+                .map(str::to_string),
+            external_provider_turn_id: active_prompt
+                .external_provider_turn_id()
+                .map(str::to_string),
+            workflow_context: None,
+        }))
+    }
+
+    async fn populate_remote_prompt_recovery_workflow_context(
+        &self,
+        dispatch: &mut crate::app::KernelRemotePromptDispatch,
+    ) -> Result<(), DaemonError> {
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
+        {
+            return Ok(());
+        }
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: dispatch.session_id.clone(),
+            })?;
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        dispatch.workflow_context = Some(
+            self.with_app_side_effect(move |app| {
+                crate::app::RemoteWorkflowTurnContextResolver::new(app)
+                    .remote_workflow_turn_context_for_prompt(&session_id, &agent_id, &prompt)
+            })
+            .await?,
+        );
+        Ok(())
+    }
+
+    fn remote_prompt_recovery_is_current(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let prompt_is_current = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some_and(|prompt| prompt.id() == prompt_id);
+        let binding_is_current = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_some_and(|binding| binding.leased_agent_id == leased_agent_id);
+        Ok(prompt_is_current && binding_is_current)
+    }
+
+    fn finish_stale_remote_prompt_recovery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        recovered_dispatch: &crate::app::KernelRemotePromptDispatch,
+        recovered_provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if !self.remote_prompt_recovery_is_current(
+            session_id,
+            agent_id,
+            &recovered_dispatch.prompt_id,
+            &recovered_dispatch.leased_agent_id,
+        )? {
+            return Ok(());
+        }
+        let stale_projected_run_id = crate::provider::projected_leased_provider_run_id(
+            &stale_binding.leased_agent_id,
+            stale_provider_run_id,
+        );
+        if let Some(mut stale_run) = self
+            .owned
+            .provider_run_projection
+            .get(&stale_projected_run_id)
+        {
+            stale_run.mark_ended();
+            self.owned
+                .clear_active_provider_run_session_pointer(session_id, stale_run.id())?;
+            self.owned.clear_prompt_activity(stale_run.id());
+            self.owned.provider_run_projection.update(stale_run);
+        }
+        self.owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                agent_id,
+                Some(recovered_provider_run_id.to_string()),
+            )?;
+        let _ = self.owned.session_snapshot(session_id)?;
+        Ok(())
+    }
+
+    fn log_remote_prompt_recovery_retry(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        attempt: u32,
+        error: &DaemonError,
+    ) {
+        if attempt == 1 || attempt % 12 == 0 {
+            crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "active remote prompt recovery retrying",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "worker_kernel_id": dispatch.worker_kernel_id,
+                    "leased_agent_id": dispatch.leased_agent_id,
+                    "prompt_id": dispatch.prompt_id,
+                    "attempt": attempt,
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 
@@ -430,6 +803,11 @@ impl KernelRuntimeState {
     }
 }
 
+fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {
+    let multiplier = 1_u64 << attempt.saturating_sub(1).min(3);
+    std::time::Duration::from_millis(500_u64.saturating_mul(multiplier))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,28 +953,20 @@ mod tests {
     #[test]
     fn remote_prompt_projection_drain_claims_are_single_owner_and_release_on_drop() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
-        let first = RemotePromptProjectionDrainClaim::try_acquire(
-            Arc::clone(&claims),
-            "session-1",
-            "agent-1",
-        )
-        .expect("first drain should claim the agent");
+        let first =
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
+                .expect("first drain should claim the agent");
 
         assert!(
-            RemotePromptProjectionDrainClaim::try_acquire(
-                Arc::clone(&claims),
-                "session-1",
-                "agent-1",
-            )
-            .is_none(),
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
+                .is_none(),
             "a duplicate drain must not start while the first owner is alive"
         );
 
         drop(first);
 
         assert!(
-            RemotePromptProjectionDrainClaim::try_acquire(claims, "session-1", "agent-1",)
-                .is_some(),
+            RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
             "dropping the owner must allow reconnect recovery to start a new drain"
         );
     }
