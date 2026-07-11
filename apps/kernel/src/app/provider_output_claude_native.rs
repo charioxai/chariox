@@ -31,14 +31,16 @@ use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_composer_visible, claude_headless_prompt_waiting_in_composer,
     claude_headless_workspace_trust_visible, claude_native_marker, claude_permission_recent_file,
-    claude_rendered_permission_visible, clear_claude_permission_recent,
-    extract_native_hidden_instructions, format_claude_permission_message,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
-    write_claude_hook_context_response, write_claude_native_marker, write_claude_permission_input,
-    write_claude_permission_response,
+    claude_rendered_permission_visible, clear_claude_hook_permission_tombstone,
+    clear_claude_permission_recent, extract_native_hidden_instructions,
+    format_claude_permission_message, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_startup_wait_marker,
+    write_claude_headless_submit_retry, write_claude_hook_context_response,
+    write_claude_hook_permission_tombstone, write_claude_native_marker,
+    write_claude_permission_input, write_claude_permission_response,
 };
 use transcript::{
     drain_claude_transcript_file, known_claude_transcript_paths, load_claude_transcript_cursor,
@@ -171,6 +173,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if event_name == "UserPromptSubmit" {
+                clear_claude_hook_permission_tombstone(context_file);
                 let Some(prompt) = event
                     .get("prompt")
                     .and_then(Value::as_str)
@@ -453,6 +456,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if !visible && !claude_rendered_permission_visible(&recent) {
             return Ok(());
         }
+        if take_matching_claude_hook_permission_tombstone(context_file, &recent) {
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
         let interaction_id = format!(
             "claude-rendered-permission-{provider_run_id}-{}",
             timestamp_millis()
@@ -541,6 +548,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .unwrap_or("tool");
         let interaction_id = format!("claude-native-permission-{provider_run_id}-{request_id}");
         write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
+        write_claude_hook_permission_tombstone(context_file, event);
         clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
             interaction_id,

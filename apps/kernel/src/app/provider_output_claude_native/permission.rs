@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::session::unix_epoch_ms;
 
+const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     fs::read_to_string(marker)
@@ -92,6 +94,93 @@ pub(super) fn claude_permission_recent_file(context_file: &str) -> Option<PathBu
     std::path::Path::new(context_file)
         .parent()
         .map(|root| root.join("permission-recent.txt"))
+}
+
+fn claude_hook_permission_tombstone_file(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("hook-permission-tombstone.json"))
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ClaudeHookPermissionTombstone {
+    recorded_at_ms: u64,
+    tool_name: String,
+    detail: String,
+}
+
+pub(super) fn write_claude_hook_permission_tombstone(context_file: &str, event: &Value) {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return;
+    };
+    let tool_name = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    let detail = event
+        .get("tool_input")
+        .and_then(Value::as_object)
+        .and_then(|input| {
+            input
+                .get("command")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_string();
+    let tombstone = ClaudeHookPermissionTombstone {
+        recorded_at_ms: unix_epoch_ms(),
+        tool_name,
+        detail,
+    };
+    if let Ok(raw) = serde_json::to_string(&tombstone) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn clear_claude_hook_permission_tombstone(context_file: &str) {
+    if let Some(path) = claude_hook_permission_tombstone_file(context_file) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+pub(super) fn take_matching_claude_hook_permission_tombstone(
+    context_file: &str,
+    rendered: &str,
+) -> bool {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return false;
+    };
+    let Some(tombstone) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClaudeHookPermissionTombstone>(&raw).ok())
+    else {
+        let _ = fs::remove_file(path);
+        return false;
+    };
+    if unix_epoch_ms().saturating_sub(tombstone.recorded_at_ms)
+        > CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS
+    {
+        let _ = fs::remove_file(path);
+        return false;
+    }
+    let rendered = compact_claude_permission_text(rendered);
+    let tool_name = compact_claude_permission_text(&tombstone.tool_name);
+    let detail = compact_claude_permission_text(&tombstone.detail);
+    if !rendered.contains(&tool_name) || (!detail.is_empty() && !rendered.contains(&detail)) {
+        return false;
+    }
+    let _ = fs::remove_file(path);
+    true
+}
+
+fn compact_claude_permission_text(value: &str) -> String {
+    normalize_claude_rendered_permission_text(value)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 pub(super) fn write_claude_hook_context_response(

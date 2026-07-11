@@ -25,7 +25,7 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 }
 
 #[test]
-fn hook_permission_suppresses_stale_rendered_permission_fallback() {
+fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let root = std::env::temp_dir().join(format!(
@@ -101,6 +101,8 @@ fn hook_permission_suppresses_stale_rendered_permission_fallback() {
             },
         )
         .expect("pending permission must not reinject the active prompt");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    write_claude_native_marker(&context_file, "");
     output
         .process_terminal_output(
             "session-1",
@@ -109,7 +111,7 @@ fn hook_permission_suppresses_stale_rendered_permission_fallback() {
             Some(bridge_ref),
             "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
         )
-        .expect("stale rendered permission should be ignored");
+        .expect("post-Stop stale rendered permission should be ignored");
 
     std::thread::sleep(std::time::Duration::from_millis(100));
     let interaction_ids = bridge
@@ -122,6 +124,41 @@ fn hook_permission_suppresses_stale_rendered_permission_fallback() {
         vec!["claude-native-permission-provider-run-1-request-1"],
         "one Claude permission must project exactly once across hook and rendered output"
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn hook_permission_tombstone_only_consumes_matching_rendered_frame() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-permission-tombstone-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    write_claude_hook_permission_tombstone(
+        &context_file,
+        &serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "echo first" },
+        }),
+    );
+
+    assert!(!take_matching_claude_hook_permission_tombstone(
+        &context_file,
+        "Bash command\necho second\nDo you want to proceed?\n1. Yes\n3. No",
+    ));
+    assert!(take_matching_claude_hook_permission_tombstone(
+        &context_file,
+        "Bash command\necho first\nDo you want to proceed?\n1. Yes\n3. No",
+    ));
+    assert!(!take_matching_claude_hook_permission_tombstone(
+        &context_file,
+        "Bash command\necho first\nDo you want to proceed?\n1. Yes\n3. No",
+    ));
 
     let _ = fs::remove_dir_all(root);
 }
