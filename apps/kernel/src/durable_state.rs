@@ -1012,6 +1012,76 @@ mod tests {
     }
 
     #[test]
+    fn entity_checkpoint_recovers_before_during_and_after_transaction_commit() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-checkpoint-crash-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let before = DurableCheckpointEntity {
+            kind: "sessions".to_string(),
+            id: "session-1".to_string(),
+            payload_json: serde_json::json!({"id": "session-1", "revision": 1}).to_string(),
+        };
+        store
+            .save_entity_checkpoint(1, vec![before])
+            .expect("checkpoint before crash should commit");
+
+        {
+            let mut connection =
+                rusqlite::Connection::open(&path).expect("crash-simulation connection should open");
+            let transaction = connection.transaction().expect("transaction should begin");
+            transaction
+                .execute(
+                    "UPDATE durable_state_checkpoint_entities
+                     SET checkpoint_sequence = 2, payload_json = ?1
+                     WHERE entity_kind = 'sessions' AND entity_id = 'session-1'",
+                    [serde_json::json!({"id": "session-1", "revision": 2}).to_string()],
+                )
+                .expect("in-flight entity update should apply");
+            transaction
+                .execute(
+                    "INSERT INTO durable_state_checkpoint_manifest (sequence, timestamp_ms)
+                     VALUES (2, ?1)",
+                    [unix_epoch_ms() as i64],
+                )
+                .expect("in-flight manifest should apply");
+            // Dropping an uncommitted transaction models process loss during the batch.
+        }
+        let recovered = store
+            .latest_snapshot()
+            .expect("checkpoint should load after rollback")
+            .expect("checkpoint should exist");
+        assert_eq!(recovered.sequence, 1);
+        assert_eq!(recovered.payload["sessions"][0]["revision"], 1);
+
+        store
+            .save_entity_checkpoint(
+                2,
+                vec![DurableCheckpointEntity {
+                    kind: "sessions".to_string(),
+                    id: "session-1".to_string(),
+                    payload_json: serde_json::json!({"id": "session-1", "revision": 2}).to_string(),
+                }],
+            )
+            .expect("checkpoint after restart should commit");
+        drop(store);
+
+        let reopened = DurableKernelStateStore::open(path.clone()).expect("store should reopen");
+        let after = reopened
+            .latest_snapshot()
+            .expect("committed checkpoint should load")
+            .expect("committed checkpoint should exist");
+        assert_eq!(after.sequence, 2);
+        assert_eq!(after.payload["sessions"][0]["revision"], 2);
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn durable_state_store_appends_events_and_loads_latest_snapshot() {
         let path = std::env::temp_dir().join(format!(
             "arroba-durable-state-{}-{}.db",

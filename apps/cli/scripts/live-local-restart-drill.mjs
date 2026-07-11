@@ -85,7 +85,7 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'target/debug/arroba-kernel')
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)

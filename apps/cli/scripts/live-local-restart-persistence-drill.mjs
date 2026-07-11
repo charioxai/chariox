@@ -81,7 +81,7 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const existingBinary = path.join(repoRoot, 'target/debug/arroba-kernel')
   const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
   if (existing) return existingBinary
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
