@@ -74,7 +74,7 @@ Per the plan assumptions, provider quotas and credentials are outside the Arroba
 - `distributed-500-pass-{1,2,3}.json`: full distributed orchestration reports and cleanup audits.
 - `stream-soak-pass-{1,2,3}.json`: raw 30-minute stream metrics.
 - `reconnect-storm.json`: slow-subscriber and reconnect-isolation report.
-- `restart-persistence-pass-{1,2,3}.log`: live stop/restart verification records.
+- `restart-persistence-pass-{1,2,3}.txt`: live stop/restart verification records.
 - `single-500-terminal.png`: final visual validation.
 
 Temporary provider transcripts are deliberately not committed because they can contain provider-native prompt and account metadata.
