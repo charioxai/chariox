@@ -255,6 +255,7 @@ impl<'a> KernelAgentService<'a> {
             &admission.target_agent_id,
             prompt,
             attachments,
+            admission.prompt.prompt_origin(),
             prompt_id,
             admission.prompt.workflow_run_id(),
             admission.prompt.workflow_node_run_id(),

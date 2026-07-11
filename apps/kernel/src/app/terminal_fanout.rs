@@ -55,6 +55,7 @@ impl DaemonApp {
         agent_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
         prompt_id: &str,
         _workflow_run_id: Option<&str>,
         _workflow_node_run_id: Option<&str>,
@@ -67,7 +68,8 @@ impl DaemonApp {
             agent_id,
             render_prompt_transcript(prompt, attachments),
             attachments,
-        );
+        )
+        .with_prompt_origin(prompt_origin);
         entry.merge_key = Some(format!("prompt:{prompt_id}"));
         self.spawn_history_append(session, entry);
         Ok(())
@@ -607,6 +609,7 @@ mod tests {
             agent.id(),
             "history without projection churn",
             &[],
+            crate::session::PromptOrigin::Arroba,
             "prompt-history-read-only",
             None,
             None,
@@ -626,6 +629,10 @@ mod tests {
                 .iter()
                 .any(|entry| entry.text.contains("history without projection churn")),
             "prompt history should still be persisted: {entries:?}"
+        );
+        assert_eq!(
+            entries[0].prompt_origin,
+            Some(crate::session::PromptOrigin::Arroba)
         );
     }
 

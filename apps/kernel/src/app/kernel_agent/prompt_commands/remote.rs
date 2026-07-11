@@ -481,27 +481,19 @@ impl<'a> KernelAgentService<'a> {
             let Some(active) = next_candidate else {
                 continue;
             };
-            self.app.echo_promoted_queued_prompt_to_attachments(
+            let _ = self
+                .app
+                .agents()
+                .set_remote_execution_active_worker_provider_run_id(
+                    agent_id,
+                    Some(remote_provider_run_id.clone()),
+                )?;
+            let active = self.finish_promoted_queued_prompt_start(
                 session_id,
                 &remote_provider_run_id,
+                agent_id,
                 active.id(),
-                active.source_attachment_id(),
-                active.prompt(),
-                active.attachments(),
-            );
-            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-                (active.workflow_run_id(), active.workflow_node_run_id())
-            {
-                self.app.sessions_mut().mark_workflow_turn_dispatched(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                )?;
-            }
-            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                self.app, session_id, &active,
             )?;
-            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
     }
@@ -515,7 +507,7 @@ mod tests {
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
 
     #[test]
-    fn queued_remote_prompt_keeps_reserved_home_prompt_id_after_activation() {
+    fn queued_remote_prompt_persists_reserved_home_prompt_after_activation() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -579,9 +571,41 @@ mod tests {
             )
             .expect("queued prompt should activate with the reserved id");
         let active = active.expect("queued prompt should become active");
+        let active = KernelAgentService::new(&mut app)
+            .finish_promoted_queued_prompt_start(
+                session.id(),
+                "worker-provider-run-2",
+                agent.id(),
+                active.id(),
+            )
+            .expect("queued remote prompt should finish activation");
 
         assert_ne!(queued.id(), active.id());
         assert_eq!(context.home_prompt_id, active.id());
         assert_eq!(context.home_turn_id, active.id());
+        assert_eq!(active.status(), PromptStatus::Running);
+        let history = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("promoted prompt history should load");
+        let entry = history
+            .iter()
+            .find(|entry| entry.text.contains("second"))
+            .expect("promoted prompt should persist in home history");
+        let expected_merge_key = format!("prompt:{}", active.id());
+        assert_eq!(entry.source_attachment_id.as_deref(), Some(attachment.id()));
+        assert_eq!(
+            entry.merge_key.as_deref(),
+            Some(expected_merge_key.as_str())
+        );
+        assert_eq!(
+            entry.prompt_origin,
+            Some(crate::session::PromptOrigin::Arroba)
+        );
+        assert!(app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should load")
+            .last_prompt_sent_at_ms()
+            .is_some());
     }
 }
