@@ -156,7 +156,7 @@ try {
     attachments: [],
   })), 64)), "PromptsSubmitted")
   assert.equal(promptResponse.failures?.length ?? 0, 0, JSON.stringify(promptResponse.failures))
-  assert.equal(promptResponse.results.length, agentsPerWorker)
+  assert.equal(promptResponse.results.length, workerCount)
   const promptAcceptedMs = Date.now() - promptStartedAt
   await waitFor(() => completionCount >= workerCount, timeoutMs, `${workerCount} sampled remote completions`)
   const completionMs = Date.now() - promptStartedAt
