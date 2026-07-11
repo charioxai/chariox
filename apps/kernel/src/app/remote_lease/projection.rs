@@ -352,6 +352,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             home_prompt_id: completion.home_prompt_id.clone(),
                         });
                 }
+                if agent.active_home_prompt_id.as_deref() == home_prompt_id.as_deref() {
+                    agent.active_home_prompt_id = None;
+                    agent.applied_home_steer_ids.clear();
+                }
             }
             self.app.leased_workflow_turns.remove(provider_run_id);
         }

@@ -545,6 +545,120 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
 }
 
 #[test]
+fn native_completion_does_not_reuse_prior_home_prompt_identity() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let home_prompt_id = "home-prompt-1";
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "home-origin prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-1".to_string(),
+                home_agent_id: "agent-home-1".to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "home-origin prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("home prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("home prompt should complete");
+
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("home completion projection should succeed")
+        .expect("home completion should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = first.1;
+    assert!(completions
+        .iter()
+        .all(|completion| completion.home_prompt_id.as_deref() == Some(home_prompt_id)));
+    assert!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent.id)
+            .expect("leased agent should remain registered")
+            .active_home_prompt_id
+            .is_none(),
+        "the completed home prompt identity must not leak into a later turn",
+    );
+
+    let native = app
+        .record_native_prompt_started_with_attachments(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_attachment_id,
+            "native-terminal-attachment",
+            &leased_agent.backing_agent_id,
+            "native-origin prompt",
+            Vec::new(),
+        )
+        .expect("native prompt should be recorded");
+    assert!(matches!(native, PromptSubmissionOutcome::Started { .. }));
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("native prompt should complete");
+
+    let second = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("native completion projection should succeed")
+        .expect("native prompt and completion should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        prompts,
+        completions,
+        ..
+    } = second.1;
+    assert_eq!(prompts.len(), 1);
+    assert!(!completions.is_empty());
+    assert!(
+        completions
+            .iter()
+            .all(|completion| completion.home_prompt_id.is_none()),
+        "native-origin completion must not carry a stale home prompt identity",
+    );
+}
+
+#[test]
 fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
