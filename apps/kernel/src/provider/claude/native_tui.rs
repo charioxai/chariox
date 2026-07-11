@@ -260,10 +260,7 @@ pub(super) fn claude_native_tui_args(
         args.extend(["--mcp-config".to_string(), config]);
         args.push("--strict-mcp-config".to_string());
         if request.runtime_mcp_binding.is_some() {
-            args.extend([
-                "--allowedTools".to_string(),
-                "mcp__arroba__*,arroba-*,arroba.*,*_artifact,validate_*,ack_workflow_turn,workflow_console_*".to_string(),
-            ]);
+            args.extend(["--allowedTools".to_string(), "mcp__arroba__*".to_string()]);
         }
     }
     Ok(args)
