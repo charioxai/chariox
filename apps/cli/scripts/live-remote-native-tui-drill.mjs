@@ -53,6 +53,7 @@ import {
   shellQuote,
   sshArgs,
   stopHetznerProcessByEnv,
+  stopHetznerRuntimeBeforeClaudeTrustRestore,
   waitForExecutionFileContent,
 } from "./lib/native-tui-remote-execution.mjs"
 import {
@@ -601,11 +602,6 @@ async function main() {
       }
     }
 
-    if (hetznerClaudeTrustPrepared) {
-      await restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
-      hetznerClaudeTrustPrepared = false
-    }
-
     console.log(JSON.stringify({
       status: "ok",
       mode: "remote-native-tui-relay-drill",
@@ -634,24 +630,24 @@ async function main() {
     await terminateChild(relayTunnel)
     await terminateChild(relay)
     if (options.hetznerWorker) {
-      await stopHetznerProcessByEnv(options, {
-        ARROBA_DAEMON_ID: workerDaemonId,
-        ARROBA_RELAY_TOKEN: relayToken,
+      await stopHetznerRuntimeBeforeClaudeTrustRestore({
+        stopWorker: () => stopHetznerProcessByEnv(options, {
+          ARROBA_DAEMON_ID: workerDaemonId,
+          ARROBA_RELAY_TOKEN: relayToken,
+        }),
+        stopRelay: () => stopHetznerProcessByEnv(options, {
+          ARROBA_RELAY_PORT: String(ports.relayPort),
+          ARROBA_RELAY_TOKEN: relayToken,
+        }),
+        restoreTrust: hetznerClaudeTrustPrepared
+          ? () => restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+          : null,
+      }).then(() => {
+        hetznerClaudeTrustPrepared = false
+      }).catch((error) => {
+        hetznerClaudeTrustRestoreFailure = error
+        console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
       })
-      await stopHetznerProcessByEnv(options, {
-        ARROBA_RELAY_PORT: String(ports.relayPort),
-        ARROBA_RELAY_TOKEN: relayToken,
-      })
-      if (hetznerClaudeTrustPrepared) {
-        await restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
-          .then(() => {
-            hetznerClaudeTrustPrepared = false
-          })
-          .catch((error) => {
-            hetznerClaudeTrustRestoreFailure = error
-            console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
-          })
-      }
       if (preserveFailedRun && remoteRuntimeRoot) {
         await copyHetznerDirectoryToLocal(
           options,

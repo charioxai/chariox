@@ -164,6 +164,16 @@ export async function stopHetznerProcessByEnv(options, expectedEnv) {
   ].join(' ')).catch(() => {})
 }
 
+export async function stopHetznerRuntimeBeforeClaudeTrustRestore({
+  stopWorker,
+  stopRelay,
+  restoreTrust,
+}) {
+  await stopWorker()
+  await stopRelay()
+  if (restoreTrust) await restoreTrust()
+}
+
 export async function copyHetznerDirectoryToLocal(options, remoteDir, localDir) {
   await mkdir(localDir, { recursive: true })
   await execFileAsync("scp", [

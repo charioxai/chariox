@@ -336,6 +336,10 @@ impl PtyManager {
         self.process_aliases.contains_key(provider_run_id)
     }
 
+    pub(crate) fn has_process_key(&self, process_key: &str) -> bool {
+        self.processes.contains_key(process_key)
+    }
+
     pub fn process_key(&self, provider_run_id: &str) -> Result<String, DaemonError> {
         self.resolve_process_key(provider_run_id)
     }

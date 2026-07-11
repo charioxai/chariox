@@ -15,6 +15,7 @@ import {
   removeExecutionFile,
   restoreClaudeConfigText,
   restoreClaudeWorkspaceTrust,
+  stopHetznerRuntimeBeforeClaudeTrustRestore,
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 
@@ -93,6 +94,18 @@ test("rejects cleanup paths outside a native TUI runtime root", () => {
     () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
     /refusing to remove unexpected Hetzner native TUI runtime path/,
   )
+})
+
+test("stops the Hetzner runtime before restoring Claude trust", async () => {
+  const calls = []
+
+  await stopHetznerRuntimeBeforeClaudeTrustRestore({
+    stopWorker: async () => calls.push("worker-stopped"),
+    stopRelay: async () => calls.push("relay-stopped"),
+    restoreTrust: async () => calls.push("trust-restored"),
+  })
+
+  assert.deepEqual(calls, ["worker-stopped", "relay-stopped", "trust-restored"])
 })
 
 test("Claude workspace trust can be applied and restored without changing sibling projects", () => {

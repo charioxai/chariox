@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::config::DaemonConfig;
@@ -36,9 +37,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         &mut self,
         provider_run_id: &str,
     ) -> Result<(bool, Option<String>), DaemonError> {
-        let process_key = self.app.pty.process_key(provider_run_id).ok();
-        let removed = self.app.pty.remove_process(provider_run_id)?;
-        Ok((removed, process_key))
+        remove_provider_pty_process(self.app, provider_run_id)
     }
 
     pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
@@ -95,15 +94,15 @@ impl<'a> ProviderProcessTracker<'a> {
     }
 
     pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        let process_key = self
+        let tracked_process_key = self
             .app
             .provider_process_tracking
             .read()
             .run_processes
             .get(provider_run_id)
-            .cloned()
-            .or_else(|| self.app.pty.process_key(provider_run_id).ok());
-        let removed = self.app.pty.remove_process(provider_run_id)?;
+            .cloned();
+        let (removed, process_key) = remove_provider_pty_process(self.app, provider_run_id)?;
+        let process_key = tracked_process_key.or(process_key);
         let Some(process_key) = process_key else {
             return Ok(removed);
         };
@@ -388,6 +387,56 @@ impl<'a> ProviderProcessTracker<'a> {
         }
         processes
     }
+}
+
+fn remove_provider_pty_process(
+    app: &mut DaemonApp,
+    provider_run_id: &str,
+) -> Result<(bool, Option<String>), DaemonError> {
+    let process_key = app.pty.process_key(provider_run_id).ok();
+    let cleanup_root = app
+        .providers
+        .get_run(provider_run_id)
+        .ok()
+        .and_then(|run| claude_native_tui_cleanup_root(&run));
+    let removed = app.pty.remove_process(provider_run_id)?;
+    let process_still_running = process_key
+        .as_deref()
+        .is_some_and(|key| app.pty.has_process_key(key));
+    if !process_still_running {
+        if let Some(root) = cleanup_root {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+    Ok((removed, process_key))
+}
+
+fn claude_native_tui_cleanup_root(run: &RuntimeProviderRun) -> Option<PathBuf> {
+    if run.endpoint_mode() != AgentEndpointMode::Managed
+        || !run.process_label().starts_with("claude:")
+    {
+        return None;
+    }
+    let events_file = PathBuf::from(run.pty_env().get("ARROBA_CLAUDE_NATIVE_EVENTS")?);
+    let root = events_file.parent()?;
+    if root.parent() != Some(std::env::temp_dir().as_path())
+        || !root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("arroba-claude-remote-native-"))
+    {
+        return None;
+    }
+    for key in [
+        "ARROBA_CLAUDE_NATIVE_CONTEXT",
+        "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+        "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+    ] {
+        if Path::new(run.pty_env().get(key)?).parent() != Some(root) {
+            return None;
+        }
+    }
+    Some(root.to_path_buf())
 }
 
 fn tracked_provider_pids(app: &DaemonApp) -> BTreeSet<u32> {
