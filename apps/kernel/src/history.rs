@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -35,6 +35,7 @@ pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
+const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
 
 pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
     format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
@@ -476,6 +477,8 @@ fn history_event_id(sequence: u64, timestamp_ms: u64) -> String {
 pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    read_connections: Arc<Vec<Mutex<Connection>>>,
+    next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
     reclaim_in_progress: Arc<AtomicBool>,
     appended_bytes_since_size_check: Arc<AtomicU64>,
@@ -525,9 +528,27 @@ impl OperationalHistoryStore {
             )
             .map(|value| value.max(0) as u64)
             .map_err(|error| operational_history_error("load max sequence", error))?;
+        let read_connections = (0..OPERATIONAL_HISTORY_READ_CONNECTIONS)
+            .map(|_| {
+                let read_connection =
+                    Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(
+                        |error| {
+                            operational_history_error("open read-only history connection", error)
+                        },
+                    )?;
+                read_connection
+                    .pragma_update(None, "query_only", true)
+                    .map_err(|error| {
+                        operational_history_error("configure read-only history connection", error)
+                    })?;
+                Ok(Mutex::new(read_connection))
+            })
+            .collect::<Result<Vec<_>, DaemonError>>()?;
         let store = Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
+            read_connections: Arc::new(read_connections),
+            next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
@@ -542,6 +563,21 @@ impl OperationalHistoryStore {
         if self.read_delay_ms > 0 {
             thread::sleep(Duration::from_millis(self.read_delay_ms));
         }
+    }
+
+    pub(crate) fn lock_read_connection(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<MutexGuard<'_, Connection>, DaemonError> {
+        let index = self.next_read_connection.fetch_add(1, Ordering::Relaxed) as usize
+            % self.read_connections.len();
+        self.read_connections[index]
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: session_id.map(str::to_string),
+                operation: "lock read-only operational history connection",
+                message: error.to_string(),
+            })
     }
 
     pub fn append_transcript(

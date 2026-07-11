@@ -31,14 +31,7 @@ pub struct ExternalImportHistoryEntry {
 
 impl OperationalHistoryStore {
     pub fn max_prompt_number(&self) -> Result<u64, DaemonError> {
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: None,
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(None)?;
         let mut statement = connection
             .prepare(
                 "SELECT DISTINCT prompt_id
@@ -85,14 +78,7 @@ impl OperationalHistoryStore {
         session_id: &str,
     ) -> Result<Vec<String>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
                 "SELECT agent_id
@@ -141,14 +127,7 @@ impl OperationalHistoryStore {
         limit: usize,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
                 "SELECT event_json
@@ -190,14 +169,7 @@ impl OperationalHistoryStore {
         sequence_end: u64,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
                 "SELECT event_json
@@ -234,14 +206,7 @@ impl OperationalHistoryStore {
         agent_id: Option<&str>,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let sql = if agent_id.is_some() {
             "SELECT event_json FROM history_events WHERE session_id = ?1 AND agent_id = ?2 ORDER BY sequence ASC"
         } else {
@@ -288,14 +253,7 @@ impl OperationalHistoryStore {
         external_merge_key_prefix: &str,
     ) -> Result<ExternalImportHistoryIndex, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let like_pattern = format!("%{external_merge_key_prefix}%");
         let mut statement = connection
             .prepare(
@@ -421,14 +379,7 @@ impl OperationalHistoryStore {
         agent_id: &str,
     ) -> Result<Vec<String>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
                 "SELECT content, metadata_text, event_json
@@ -495,14 +446,7 @@ impl OperationalHistoryStore {
     }
 
     pub fn has_session_events(&self, session_id: &str) -> Result<bool, DaemonError> {
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM history_events WHERE session_id = ?1 LIMIT 1)",
@@ -518,14 +462,7 @@ impl OperationalHistoryStore {
     }
 
     pub fn legacy_fallback_disabled(&self, session_id: &str) -> Result<bool, DaemonError> {
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(Some(session_id))?;
         connection
             .query_row(
                 "SELECT legacy_fallback_disabled_at_ms IS NOT NULL

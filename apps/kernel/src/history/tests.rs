@@ -528,6 +528,39 @@ fn operational_history_replaces_transcripts_through_merge_key_index() {
 }
 
 #[test]
+fn operational_history_reads_do_not_hold_the_writer_connection() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-read-write-isolation-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let read_connection = store
+        .lock_read_connection(Some("session-1"))
+        .expect("read connection should lock");
+    let entry = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "output while hydration holds a reader",
+    );
+    store
+        .append_transcript(&entry, HistoryEventTurnContext::default())
+        .expect("writer should remain independent from hydration readers");
+    drop(read_connection);
+    assert!(store
+        .has_session_events("session-1")
+        .expect("session history should remain readable"));
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn canonical_history_events_preserve_prompt_attachments() {
     let image_path = std::env::temp_dir().join(format!(
         "arroba-history-preview-{}-{}.png",

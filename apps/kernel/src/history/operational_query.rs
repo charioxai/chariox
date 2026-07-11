@@ -5,14 +5,7 @@ use super::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
 impl OperationalHistoryStore {
     pub fn query_events(&self, query: HistoryEventQuery) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
-        let connection =
-            self.connection
-                .lock()
-                .map_err(|error| DaemonError::SessionHistoryFailed {
-                    session_id: query.session_id.clone(),
-                    operation: "lock operational history store",
-                    message: error.to_string(),
-                })?;
+        let connection = self.lock_read_connection(query.session_id.as_deref())?;
         let mut sql = String::from("SELECT event_json FROM history_events WHERE 1 = 1");
         let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         push_optional_filter(&mut sql, &mut values, "session_id", query.session_id);
