@@ -3,215 +3,601 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Scale &amp; Performance Plan</title>
+  <meta name="color-scheme" content="light">
+  <title>Arroba 500-Agent Efficiency Plan</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f7f8f5; --panel: #ffffff; --ink: #151714; --muted: #586057;
-      --line: #d9ded2; --strong-line: #aab4a1; --accent: #0d6b57; --accent-soft: #e5f1ec;
-      --warn: #9a6517; --warn-soft: #fff3d8; --bad: #a23a28; --bad-soft: #fae6e1;
-      --code: #eef1ea; --shadow: 0 16px 42px rgba(26,35,22,0.08);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --paper: #f2efe5;
+      --paper-deep: #e6dfcf;
+      --ink: #17201b;
+      --muted: #62695f;
+      --line: #b9b4a7;
+      --signal: #d76028;
+      --signal-dark: #8d3517;
+      --moss: #315b45;
+      --moss-soft: #dbe5dc;
+      --panel: rgba(255, 253, 247, 0.72);
+      --code: #202820;
+      --code-ink: #e7eddf;
+      --shadow: 0 18px 48px rgba(40, 36, 26, 0.1);
     }
+
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.55; }
-    main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; padding: 44px 0 72px; }
-    header { border-top: 6px solid var(--ink); padding-top: 22px; margin-bottom: 30px; }
-    h1 { margin: 0 0 12px; max-width: 860px; font-size: clamp(2.2rem, 5vw, 4rem); line-height: 0.98; }
-    h2 { margin: 40px 0 14px; font-size: clamp(1.4rem, 2vw, 2rem); border-bottom: 2px solid var(--strong-line); padding-bottom: 8px; }
-    h3 { margin: 24px 0 8px; font-size: 1.1rem; }
-    p.lede { max-width: 820px; font-size: 1.06rem; color: var(--muted); margin: 0 0 10px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-    .meta span { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 14px; font-size: 0.85rem; color: var(--muted); }
-    section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 24px 26px; margin-bottom: 24px; }
-    section > h2:first-child { margin-top: 0; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 12px 0; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-    .table-scroll { overflow-x: auto; }
-    code { background: var(--code); border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; word-break: break-word; }
-    .finding { border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: 10px; padding: 14px 18px; margin: 14px 0; background: #fcfdfb; }
-    .finding.p2 { border-left-color: var(--warn); }
-    .finding.p3 { border-left-color: var(--accent); }
-    .finding h4 { margin: 0 0 6px; font-size: 1rem; }
-    .finding .where { font-size: 0.84rem; color: var(--muted); margin-bottom: 8px; }
-    .finding ul { margin: 6px 0 6px 20px; padding: 0; }
-    .finding li { margin: 4px 0; }
-    .finding .fix { margin-top: 10px; background: var(--accent-soft); border-radius: 8px; padding: 8px 12px; font-size: 0.9rem; }
-    .fix strong { color: var(--accent); }
-    .pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-left: 8px; vertical-align: middle; }
-    .pill.p1 { background: var(--bad-soft); color: var(--bad); }
-    .pill.p2 { background: var(--warn-soft); color: var(--warn); }
-    .pill.p3 { background: var(--accent-soft); color: var(--accent); }
-    .data { background: #10231c; color: #d7efe6; border-radius: 10px; padding: 14px 16px; font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; overflow-x: auto; margin: 12px 0; }
-    .data .k { color: #7fd7bd; }
-    .callout { border: 1px solid var(--strong-line); border-radius: 10px; background: var(--warn-soft); padding: 12px 16px; font-size: 0.94rem; margin: 14px 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(23, 32, 27, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 32, 27, 0.025) 1px, transparent 1px),
+        var(--paper);
+      background-size: 28px 28px;
+      font-family: Charter, "Bitstream Charter", Georgia, serif;
+      line-height: 1.56;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 8px;
+      background: var(--signal);
+      z-index: 5;
+    }
+
+    a { color: var(--signal-dark); text-underline-offset: 0.16em; }
+
+    code, pre, .eyebrow, .metric, th, .phase-number, .status {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 52px 0 80px;
+    }
+
+    header {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 48px;
+      padding: 30px 0 38px;
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+    }
+
+    header::after {
+      content: "500";
+      position: absolute;
+      right: 0;
+      top: -42px;
+      color: rgba(215, 96, 40, 0.1);
+      font: 700 clamp(7rem, 17vw, 13rem)/1 "Arial Narrow", Impact, sans-serif;
+      letter-spacing: -0.08em;
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--signal-dark);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 {
+      font-family: "Arial Narrow", "Avenir Next Condensed", Impact, sans-serif;
+      text-transform: uppercase;
+      letter-spacing: -0.025em;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin: 0;
+      font-size: clamp(3.2rem, 7vw, 6.6rem);
+      line-height: 0.88;
+    }
+
+    .lede {
+      max-width: 760px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: 1.15rem;
+    }
+
+    .document-meta {
+      align-self: end;
+      position: relative;
+      z-index: 1;
+      border-left: 3px solid var(--signal);
+      padding-left: 18px;
+      font-size: 0.88rem;
+    }
+
+    .document-meta dl { margin: 0; }
+    .document-meta div { margin: 0 0 12px; }
+    .document-meta dt { color: var(--muted); }
+    .document-meta dd { margin: 1px 0 0; font-weight: 700; }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .summary-strip > div {
+      min-height: 116px;
+      padding: 22px 18px 18px 0;
+      border-right: 1px solid var(--line);
+    }
+
+    .summary-strip > div + div { padding-left: 18px; }
+    .summary-strip > div:last-child { border-right: 0; }
+    .metric { display: block; color: var(--signal-dark); font-size: 1.55rem; font-weight: 800; }
+    .metric-label { display: block; margin-top: 4px; color: var(--muted); font-size: 0.86rem; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 46px;
+      margin-top: 44px;
+    }
+
+    nav {
+      position: sticky;
+      top: 22px;
+      align-self: start;
+      font-size: 0.84rem;
+    }
+
+    nav strong {
+      display: block;
+      margin-bottom: 10px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    nav ol { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+    nav li { border-bottom: 1px solid var(--line); }
+    nav a { display: block; padding: 9px 2px; color: var(--ink); text-decoration: none; }
+    nav a:hover { color: var(--signal-dark); padding-left: 5px; }
+
+    main { min-width: 0; }
+
+    section {
+      scroll-margin-top: 24px;
+      margin-bottom: 46px;
+    }
+
+    h2 {
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      align-items: end;
+      gap: 14px;
+      margin: 0 0 18px;
+      padding-bottom: 9px;
+      border-bottom: 2px solid var(--ink);
+      font-size: clamp(1.65rem, 3vw, 2.45rem);
+      line-height: 1;
+    }
+
+    .phase-number {
+      color: var(--signal);
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 1.14rem;
+      letter-spacing: 0.01em;
+    }
+
+    p { max-width: 82ch; }
+    ul, ol { padding-left: 1.25rem; }
+    li { margin: 0.38rem 0; }
+    li::marker { color: var(--signal-dark); font-weight: 700; }
+
+    .rulebook {
+      position: relative;
+      overflow: hidden;
+      background: var(--code);
+      color: var(--code-ink);
+      border-radius: 3px;
+      box-shadow: var(--shadow);
+      padding: 26px 28px;
+    }
+
+    .rulebook::before {
+      content: "OPERATIONS";
+      position: absolute;
+      right: -12px;
+      top: 24px;
+      color: rgba(255,255,255,0.055);
+      font: 800 4.2rem/1 "Arial Narrow", Impact, sans-serif;
+      transform: rotate(-4deg);
+    }
+
+    .rulebook h3 { color: #f1b28e; }
+    .rulebook code { color: #fff2c9; }
+    .rulebook li::marker { color: #f1b28e; }
+
+    pre {
+      position: relative;
+      z-index: 1;
+      margin: 14px 0;
+      padding: 16px 18px;
+      overflow-x: auto;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(0,0,0,0.2);
+      color: #eef5e8;
+      font-size: 0.78rem;
+      line-height: 1.62;
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 15px 18px;
+      border-left: 5px solid var(--signal);
+      background: #f7ddcb;
+    }
+
+    .finding-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .finding {
+      min-height: 150px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .finding b { display: block; margin-bottom: 5px; font-family: "Arial Narrow", sans-serif; text-transform: uppercase; }
+    .finding p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+    .phase {
+      margin: 20px 0;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 7px 7px 0 var(--paper-deep);
+    }
+
+    .phase h3 { margin-top: 0; }
+
+    .status {
+      display: inline-block;
+      margin-bottom: 8px;
+      padding: 2px 7px;
+      color: #fff;
+      background: var(--moss);
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 0.87rem; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--moss); color: #fff; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+
+    .checklist {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .checklist div {
+      padding: 12px 14px 12px 38px;
+      border: 1px solid var(--line);
+      background: var(--moss-soft);
+      position: relative;
+    }
+
+    .checklist div::before {
+      content: "□";
+      position: absolute;
+      left: 14px;
+      top: 10px;
+      color: var(--moss);
+      font: 700 1.1rem/1 monospace;
+    }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      margin-top: 60px;
+      padding-top: 16px;
+      border-top: 2px solid var(--ink);
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    @media (max-width: 860px) {
+      header { grid-template-columns: 1fr; }
+      .document-meta { max-width: 420px; }
+      .summary-strip { grid-template-columns: repeat(2, 1fr); }
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; }
+      .finding-grid, .checklist { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 520px) {
+      .page { width: min(100% - 28px, 1180px); padding-top: 28px; }
+      h1 { font-size: 3.1rem; }
+      .summary-strip { grid-template-columns: 1fr; }
+      .summary-strip > div { border-right: 0; border-bottom: 1px solid var(--line); padding-left: 0 !important; }
+      h2 { grid-template-columns: 38px 1fr; }
+      .rulebook { padding: 20px 18px; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      body::before, header::after, nav { display: none; }
+      .page { width: 100%; padding: 0; }
+      .layout { display: block; }
+      section, .phase, .finding { break-inside: avoid; }
+      .rulebook { color: #111; background: #fff; border: 2px solid #111; box-shadow: none; }
+      .rulebook h3, .rulebook code { color: #111; }
+      pre { color: #111; background: #f4f4f4; border-color: #888; }
+    }
   </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Scale &amp; Performance Plan</h1>
-    <p class="lede">
-      A measured, root-caused assessment of what stops Arroba from supporting hundreds of
-      sessions and agents across many terminals and multiple machines, with a prioritized
-      set of changes. Findings come from live benchmarks against a debug kernel plus source
-      analysis of <code>arroba</code> (kernel, relay) and <code>arroba-cloud</code>.
-    </p>
-    <div class="meta">
-      <span>Drafted: 2026-07-07</span>
-      <span>Method: live load benchmarks + code root-cause</span>
-      <span>Target: 100s of sessions/agents, many terminals, multi-machine</span>
-    </div>
-  </header>
-
-  <section>
-    <h2>The headline: reads are O(n) full-clones behind one exclusive lock</h2>
-    <p>
-      The single most important result. A <em>read-only</em> <code>ListSessions</code> — the
-      call the web waiting room and session lists poll — scales linearly with the number of
-      sessions, at roughly <strong>1.1&nbsp;ms per session</strong>, on a single client with
-      no concurrency:
-    </p>
-    <div class="data">
-<span class="k">sessions</span>    2 → ListSessions median  <span class="k">2.7 ms</span>
-<span class="k">sessions</span>   52 → ListSessions median <span class="k">68.9 ms</span>
-<span class="k">sessions</span>  102 → ListSessions median <span class="k">125.4 ms</span>
-<span class="k">sessions</span>  152 → ListSessions median <span class="k">168.0 ms</span>
-    </div>
-    <p>
-      At 300 sessions a single list read is ~330&nbsp;ms. Now add concurrency. Throughput of
-      the same read across N parallel clients <strong>plateaus at ~300&nbsp;req/s</strong> and
-      per-request latency grows <strong>linearly with N</strong> — the textbook signature of a
-      single lock serializing everything:
-    </p>
-    <div class="data">
-<span class="k">N=1</span>  clients → p50   3 ms   165 req/s
-<span class="k">N=4</span>  clients → p50  18 ms   134 req/s
-<span class="k">N=8</span>  clients → p50  29 ms   274 req/s
-<span class="k">N=16</span> clients → p50  57 ms   276 req/s
-<span class="k">N=24</span> clients → p50  75 ms   301 req/s   (throughput flat)
-    </div>
-    <div class="callout">
-      Effective concurrency is ~1 despite an 8-permit admission semaphore: the reads serialize
-      on an exclusive mutex <em>before</em> the semaphore can help. Fix the lock and the clone
-      first; the semaphore is the next ceiling, not the current one.
-    </div>
-  </section>
-
-  <section>
-    <h2>Root causes (kernel)</h2>
-
-    <div class="finding">
-      <h4>1. Session store is a single exclusive mutex; list reads clone every session <span class="pill p1">P1</span></h4>
-      <div class="where">
-        <code>session/owner.rs</code> (<code>SessionStateStore { inner: Arc&lt;Mutex&lt;SessionService&gt;&gt; }</code>);
-        <code>runtime/state/session_lookup_state.rs</code> (<code>list_session_snapshots</code>)
+  <div class="page">
+    <header>
+      <div>
+        <p class="eyebrow">Runtime engineering / execution plan</p>
+        <h1>500-Agent Efficiency</h1>
+        <p class="lede">A measured path from Arroba's current actor-and-projection foundation to hundreds of concurrently active agents, without trading away ordering, durability, reconnect behavior, or a responsive terminal.</p>
       </div>
-      <ul>
-        <li><code>SessionStateStore</code> guards all session state behind one <code>std::sync::Mutex</code>. Both <code>read()</code> and <code>write()</code> take the same exclusive lock, so reads cannot run concurrently — with each other or with writes.</li>
-        <li><code>list_session_snapshots()</code> calls <code>list_sessions()</code> (clones every <code>RuntimeSession</code>) and then <code>session_snapshot(id)</code> per session — O(n) full clones plus per-session lookups, on every call, under the lock. This is the ~1.1&nbsp;ms/session measured above.</li>
-        <li>The session-state <em>projection</em> (<code>runtime/projection/session_state_projection.rs</code>) is also an exclusive <code>std::sync::Mutex</code>, so warmed-list reads serialize too.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> serve list/read views from a warmed projection that stores an <code>Arc</code>-shared, pre-rendered snapshot updated on change, handed out by cloning an <code>Arc</code> (O(1)) rather than deep-cloning n sessions per call. Move the projection and session-store read paths to <code>RwLock</code> (or <code>parking_lot::RwLock</code>) so reads are concurrent. Return lightweight list summaries (id, title, agent count, status, revision) for list endpoints; keep full snapshots for single-session reads only.</div>
+      <aside class="document-meta" aria-label="Document metadata">
+        <dl>
+          <div><dt>Status</dt><dd>Approved implementation plan</dd></div>
+          <div><dt>Repositories</dt><dd>arroba + arroba-cloud</dd></div>
+          <div><dt>Reference target</dt><dd>500 active agents</dd></div>
+          <div><dt>Updated</dt><dd>11 July 2026</dd></div>
+        </dl>
+      </aside>
+    </header>
+
+    <div class="summary-strip" aria-label="Headline targets">
+      <div><span class="metric">500</span><span class="metric-label">active agents across 10 worker kernels</span></div>
+      <div><span class="metric">≤250 ms</span><span class="metric-label">visible output p95</span></div>
+      <div><span class="metric">0</span><span class="metric-label">drops, overflows, or reconnect loops</span></div>
+      <div><span class="metric">30 min</span><span class="metric-label">sustained final soak</span></div>
     </div>
 
-    <div class="finding">
-      <h4>2. Provider-output streaming pumps through the global app lock <span class="pill p1">P1</span></h4>
-      <div class="where"><code>runtime/state/provider_output_runtime.rs</code> (repeated <code>with_app_side_effect</code> per pump cycle); <code>Arc&lt;Mutex&lt;DaemonApp&gt;&gt;</code></div>
-      <ul>
-        <li>Every provider-run output pump acquires the one global <code>DaemonApp</code> mutex multiple times per cycle (drain PTY, process bridge, settle prompts). With hundreds of agents streaming, every pump contends on the same lock — the streaming hot path serializes against all commands and all other agents.</li>
-        <li>This is the same global lock the earlier remediation plan (B1–B3) instrumented and began unblocking; at scale it is the dominant steady-state contention point, not just a tail-latency one.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> give each provider run / session actor ownership of its own output state so pumping does not touch the global app lock (continue the M4.5 ownership migration for the output path specifically). Where shared state must be read, use per-session/per-agent locks or lock-free projections, not the daemon-wide mutex. Batch the per-cycle lock acquisitions into one short critical section.</div>
+    <div class="layout">
+      <nav aria-label="Plan sections">
+        <strong>Field index</strong>
+        <ol>
+          <li><a href="#operating-protocol">00 / Operating protocol</a></li>
+          <li><a href="#assessment">01 / Current assessment</a></li>
+          <li><a href="#contract">02 / Performance contract</a></li>
+          <li><a href="#kernel">03 / Kernel efficiency</a></li>
+          <li><a href="#persistence">04 / Persistence</a></li>
+          <li><a href="#browser">05 / Browser and Cloud</a></li>
+          <li><a href="#relay">06 / Relay</a></li>
+          <li><a href="#compatibility">07 / Compatibility</a></li>
+          <li><a href="#validation">08 / Validation</a></li>
+          <li><a href="#completion">09 / Completion</a></li>
+        </ol>
+      </nav>
+
+      <main>
+        <section id="operating-protocol">
+          <h2><span class="phase-number">00</span><span>Operating protocol</span></h2>
+          <div class="rulebook">
+            <span class="status">Mandatory first action</span>
+            <h3>Create two isolated worktrees before changing code</h3>
+            <p>Do not implement this plan in the user's active checkouts. Start both worktrees from fresh <code>origin/main</code> and perform all code changes, builds, drills, and commits inside them.</p>
+            <pre><code>git -C /Users/miguel/arroba fetch origin
+git -C /Users/miguel/arroba worktree add \
+  -b codex/scale-efficiency-500 \
+  /Users/miguel/arroba-scale-efficiency origin/main
+
+git -C /Users/miguel/arroba-cloud fetch origin
+git -C /Users/miguel/arroba-cloud worktree add \
+  -b codex/scale-efficiency-500 \
+  /Users/miguel/arroba-cloud-scale-efficiency origin/main</code></pre>
+
+            <h3>Own every process and every port used by the work</h3>
+            <ul>
+              <li>Launch a dedicated relay, home kernel, worker kernels, Cloud API, and web server for these drills. Never attach the scale work to the user's existing development or staging processes.</li>
+              <li>Choose empty ports at runtime. Check every candidate with <code>lsof -nP -iTCP:&lt;port&gt;</code> before binding, reserve the complete port band for the run, and record the resolved ports in the run manifest.</li>
+              <li>Use a unique temporary <code>ARROBA_HOME</code>, kernel state directory, database, relay token, browser profile, artifact directory, and port offset for every run.</li>
+              <li>Track the process group and every child PID. Install <code>EXIT</code>, <code>INT</code>, and <code>TERM</code> traps before launching the first service. Never use broad <code>pkill</code> patterns that could terminate user processes.</li>
+            </ul>
+
+            <h3>Clean up after every drill, including failures</h3>
+            <ul>
+              <li>Stop only the owned browser, servers, relay, kernels, provider stubs, screen/tmux sessions, and child process groups. Wait for exit, then force-kill only owned PIDs that fail the grace period.</li>
+              <li>Delete temporary kernel homes, SQLite/WAL files, browser profiles, sockets, logs, and intermediate artifacts. Preserve only the compact final manifest, summary, and profiles required as evidence.</li>
+              <li>Verify cleanup with <code>ps</code> and <code>lsof</code>. A drill is not complete while an owned listener, child process, or temporary state directory remains.</li>
+              <li>At final handoff, confirm both worktrees are committed and clean, push their branches, then remove the worktrees and prune worktree metadata. Keep the branches until the changes are merged.</li>
+            </ul>
+          </div>
+          <div class="callout"><strong>Resource rule:</strong> do not start a new scale run until the previous run's process group and temporary state have been removed. Failed drills count too.</div>
+        </section>
+
+        <section id="assessment">
+          <h2><span class="phase-number">01</span><span>Current assessment</span></h2>
+          <p>The actor/projection direction is correct, and the browser already bounds visible terminal panes. The unfinished ownership migration still leaves several costs proportional to total sessions, total agents, subscribers, or historical output.</p>
+          <div class="finding-grid">
+            <article class="finding"><b>Serialized session reads</b><p>Session lists and projections still deep-clone state behind exclusive mutexes. Prior measurements reached roughly 1.1 ms per session for a read-only list.</p></article>
+            <article class="finding"><b>Global output sweep</b><p>The transport pump still scans all sessions and enters the global <code>DaemonApp</code> lock to find work that is already identifiable by provider-run readiness.</p></article>
+            <article class="finding"><b>Shared storage locks</b><p>Terminal output, durable state, and operational history serialize through process-wide mutexes and synchronous SQLite work.</p></article>
+            <article class="finding"><b>Repeated inventory work</b><p>Each local or relay inventory subscriber can rebuild and compare the same waiting-room snapshot independently.</p></article>
+            <article class="finding"><b>Sequential browser hydration</b><p>Initial history hydration is configured as one agent per request and renders each agent repeatedly, which turns a 500-agent reload into a request/render train.</p></article>
+            <article class="finding"><b>Coarse relay registry</b><p>Routes, presence, pending requests, and subscriptions share one relay registry lock even though they have different write patterns.</p></article>
+          </div>
+        </section>
+
+        <section id="contract">
+          <h2><span class="phase-number">02</span><span>Performance contract</span></h2>
+          <div class="phase">
+            <span class="status">Phase 1</span>
+            <h3>Instrument before restructuring</h3>
+            <ul>
+              <li>Add interval histograms and high-water marks for command latency, projection builds, app-lock wait/hold time, terminal queue records and bytes, SQLite batches/fsync, relay queues, and browser event/render/hydration work.</li>
+              <li>Record projection builds per logical revision and browser history requests per visible agent. Diagnostics remain sampled and off by default.</li>
+              <li>Run release-build baselines at 10, 100, 200, and 500 agents plus 20×50, 50×20, and 100×10 session layouts before changing behavior.</li>
+            </ul>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Signal</th><th>Acceptance budget</th><th>Failure condition</th></tr></thead>
+              <tbody>
+                <tr><td>Prompt/control latency</td><td>p95 ≤100 ms, p99 ≤250 ms</td><td>Interactive work waits behind history, discovery, or output fanout</td></tr>
+                <tr><td>Visible output latency</td><td>p95 ≤250 ms, p99 ≤500 ms</td><td>Mounted panes fall behind background agents</td></tr>
+                <tr><td>Waiting-room delta</td><td>Visible ≤500 ms</td><td>Full inventory rebuilds or repeated subscriber projections dominate</td></tr>
+                <tr><td>Reconnect/recovery</td><td>Visible state ≤2 s</td><td>Broad history recovery or watchdog loops occur</td></tr>
+                <tr><td>Home kernel</td><td>Idle CPU ≤10%; active p95 ≤150%; RSS ≤1 GB</td><td>Measured on an 8-vCPU reference host, excluding provider children</td></tr>
+                <tr><td>Correctness</td><td>Zero drops, overflows, reconnect loops, incomplete batches</td><td>Any loss, reordering, projection drift, or sustained saturated lane</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="kernel">
+          <h2><span class="phase-number">03</span><span>Kernel efficiency</span></h2>
+          <div class="phase">
+            <span class="status">Phase 2</span>
+            <h3>Make reads immutable and constant-cost</h3>
+            <ul>
+              <li>Replace the global session-service mutex with a small create/delete/index registry plus actor-owned mutable state per session.</li>
+              <li>Publish versioned <code>Arc</code> session snapshots, lightweight session-directory summaries, and a shared waiting-room projection after canonical mutations.</li>
+              <li>Serve <code>ListSessions</code>, <code>GetSessionState</code>, waiting-room reads, and every subscriber from those immutable projections. Readers clone handles, not full runtime graphs.</li>
+              <li>Build waiting-room state once per coalesced revision. Local and relay subscribers use the same projection and existing row-delta contract.</li>
+              <li>Add an architecture test forbidding owner-store reads, full session-list cloning, or <code>DaemonApp</code> locking in hot transport, output, waiting-room, and subscription modules.</li>
+            </ul>
+          </div>
+          <div class="phase">
+            <span class="status">Phase 3</span>
+            <h3>Process only ready provider runs</h3>
+            <ul>
+              <li>Replace the all-session pump with a deduplicated ready-run queue fed by PTY readers and structured-provider callbacks. Use a deadline heap for first-output, inactivity, and cleanup timers.</li>
+              <li>Use async FIFO mailboxes per provider run and one bounded blocking executor for unavoidable synchronous adapter work.</li>
+              <li>Keep required PTY readers bounded, with explicit small thread stacks and byte queues.</li>
+              <li>Shard terminal stream ownership by session, store output bytes once as shared immutable buffers, and track recipient cursors separately.</li>
+              <li>Replace the global eight-request semaphore with a process limit of <code>min(256, max(32, CPU_COUNT × 8))</code>, a 32-request per-connection limit, bounded session/agent lanes, and reserved capacity for prompt, cancel, approval, and reconnect commands.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="persistence">
+          <h2><span class="phase-number">04</span><span>Persistence off the stream path</span></h2>
+          <div class="phase">
+            <span class="status">Phase 4</span>
+            <ul>
+              <li>Give durable state and operational history independent bounded writer actors. Group up to 256 records or five milliseconds of work into one transaction.</li>
+              <li>Backpressure writers instead of dropping. Preserve sequence assignment, return acknowledgements where durability is part of command acceptance, and flush on graceful shutdown.</li>
+              <li>Use dedicated read-only WAL connections so history hydration never waits on the writer mutex.</li>
+              <li>Store and index history merge keys by <code>(session_id, agent_id, merge_key, sequence)</code>; remove scan-and-decode replacement lookups.</li>
+              <li>Replace full-state JSON checkpoints with incremental entity checkpoints and an atomic manifest sequence. Read old snapshots as a migration fallback, then compact asynchronously after a successful new-format checkpoint.</li>
+              <li>Test crash recovery before, during, and after every batch/checkpoint boundary.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="browser">
+          <h2><span class="phase-number">05</span><span>Browser and Cloud efficiency</span></h2>
+          <div class="phase">
+            <span class="status">Phase 5</span>
+            <ul>
+              <li>Hydrate history initially only for the current desk's mounted agents, in one existing multi-agent outline request. Background agents remain summary-only until focused or explicitly opened.</li>
+              <li>For unmounted completion events, mark history stale without reading it. Replay gaps recover visible agents first; ordinary transport resume stays read-free.</li>
+              <li>Virtualize expanded agent/workflow trees beyond 100 rows, memoize rows by revision, and keep at most six terminal panes mounted.</li>
+              <li>Use mounted-pane and sidebar-row registries instead of repeated document-wide selector scans on event paths.</li>
+              <li>Persist structural inventory changes immediately, but debounce activity-only Cloud cache writes for five seconds. Allow one request in flight and retain only the latest pending version.</li>
+              <li>Make unchanged inventory-version writes a no-op, add the relay-target lookup/order composite index, and page dashboard machine/client/target reads in batches of 100 selected fields.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="relay">
+          <h2><span class="phase-number">06</span><span>Relay routing isolation</span></h2>
+          <div class="phase">
+            <span class="status">Phase 6</span>
+            <ul>
+              <li>Split peer routes, presence, pending requests, subscriptions, and display tunnels into independently synchronized stores.</li>
+              <li>Use sharded hash maps for route and request lookups. Heartbeat and registration writes must never take the packet-routing lock.</li>
+              <li>Give peers separate bounded control and event queues with byte accounting and weighted draining.</li>
+              <li>Preserve existing backpressure behavior: request overload returns <code>target_backpressure</code>; a slow subscription closes only its own client lane.</li>
+              <li>Keep the relay transport-only. It must not inspect, retain, or become authoritative for encrypted runtime payloads.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="compatibility">
+          <h2><span class="phase-number">07</span><span>Interfaces and compatibility</span></h2>
+          <ul>
+            <li>Reuse waiting-room row deltas, history cursors, <code>SpawnAgents</code>, <code>LaunchProviderRuns</code>, <code>SubmitPrompts</code>, and batched terminal output.</li>
+            <li>Increment the shared daemon protocol version only if serialized health fields or another wire shape changes. Update protocol hashes, minimum client version, and the focused protocol drill in the same commit.</li>
+            <li>Keep the Cloud inventory-cache request shape unchanged. Change only write coalescing, idempotence, selected fields, pagination, and indexes.</li>
+            <li>Preserve prompt ordering, durable history, permissions, workspace claims, reconnect behavior, and source-gated external-provider observation.</li>
+            <li>Do not add a background provider transcript observer that mutates active prompt state.</li>
+            <li>Temporary drill-only switches are allowed for parity testing, but no permanent dual path or feature flag remains after cutover.</li>
+          </ul>
+        </section>
+
+        <section id="validation">
+          <h2><span class="phase-number">08</span><span>Validation sequence</span></h2>
+          <ol>
+            <li>Capture current release baselines and profiles in the isolated worktrees.</li>
+            <li>Land immutable read projections and require flat read latency as session count grows.</li>
+            <li>Land ready-run output and terminal-store sharding; require zero hot-path app-lock acquisitions.</li>
+            <li>Land grouped persistence and incremental checkpoints; run restart and retention tests.</li>
+            <li>Land lazy browser hydration, virtualization, and Cloud write coalescing.</li>
+            <li>Land relay-store separation and distributed execution.</li>
+            <li>Run each final gate three consecutive times, cleaning all owned resources between runs.</li>
+          </ol>
+          <div class="checklist" aria-label="Final scale matrix">
+            <div>Single-kernel synthetic 500</div>
+            <div>10 worker kernels × 50 active agents</div>
+            <div>100 sessions × 10 agents</div>
+            <div>Slow browser and background tab</div>
+            <div>Disconnected client and replay gap</div>
+            <div>Reconnect storm and slow subscriber</div>
+            <div>30-minute, 1 MB/s aggregate stream</div>
+            <div>Codex, Claude, and OpenCode parity sample</div>
+            <div>Crash/restart at persistence boundaries</div>
+            <div>Final PID, listener, and temp-state cleanup audit</div>
+          </div>
+        </section>
+
+        <section id="completion">
+          <h2><span class="phase-number">09</span><span>Definition of done</span></h2>
+          <p>The work is complete only when the full matrix passes three times in release mode, all correctness and resource budgets hold, and no hot-path operation scales with total inactive sessions, total subscribers, or full retained history.</p>
+          <div class="callout"><strong>Handoff requirement:</strong> report benchmark deltas, remaining risks, commit and branch references, preserved evidence paths, and a cleanup audit proving no owned listeners, processes, worktrees, or temporary runtime state were left behind.</div>
+          <h3>Assumptions</h3>
+          <ul>
+            <li>The guaranteed target is 500 concurrently active Arroba agents distributed across kernels, coordinated by one home kernel and browser.</li>
+            <li>A single kernel must also model and render 500 synthetic agents efficiently.</li>
+            <li>Provider quotas and provider child-process memory are reported separately from Arroba orchestration overhead.</li>
+            <li>The user's existing checkouts, relay, kernels, development server, staging services, and browser state are out of bounds.</li>
+          </ul>
+        </section>
+      </main>
     </div>
 
-    <div class="finding p2">
-      <h4>3. Global 8-command admission cap <span class="pill p2">P2</span></h4>
-      <div class="where"><code>runtime_transport.rs</code>: <code>INBOUND_REQUEST_LIMIT = 8</code></div>
-      <ul>
-        <li>A single process-wide semaphore caps the kernel to 8 concurrent in-flight commands across <em>all</em> connections, terminals, and machines. Once findings 1–2 are fixed this becomes the next throughput ceiling.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> raise the cap and make it scale with cores / configurable; consider per-connection or per-session fairness limits instead of one global cap, so one busy terminal cannot starve others. Admission control should shed load gracefully (it already returns <code>kernel_request_overloaded</code>), but the steady-state ceiling must be far above 8.</div>
-    </div>
-
-    <div class="finding p2">
-      <h4>4. Coarse pump cadence and O(all-sessions) sweeps <span class="pill p2">P2</span></h4>
-      <div class="where"><code>runtime_transport.rs</code>: <code>PUMP_INTERVAL_MS=500</code>, <code>WATCH_INTERVAL_MS=100</code>; <code>pump_active_prompt_outputs</code> iterates every session</div>
-      <ul>
-        <li>The runtime pump wakes on change signals (good) but falls back to a 500&nbsp;ms poll, and several reap/pump passes iterate <em>all</em> sessions each cycle. At hundreds of sessions these O(n) sweeps run repeatedly regardless of which sessions are active.</li>
-        <li>The external-provider discovery poller (already trimmed once this session) and the git observer are similar periodic O(n) scans.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> drive pumps from a per-session ready-set / work queue so only sessions with pending output or due timers are visited, instead of sweeping all sessions. Keep the change-signal fast path; make the fallback poll a safety net, not the primary cadence.</div>
-    </div>
-
-    <div class="finding p3">
-      <h4>5. Per-read allocations and projection clone cost <span class="pill p3">P3</span></h4>
-      <div class="where">kernel projections and read models (~5,000 <code>.clone()</code> sites)</div>
-      <ul>
-        <li>Beyond the session list, many read/projection paths deep-clone their models per request. With the B1 <code>app_lock</code> instrumentation now live, the top clone hotspots can be measured and converted to <code>Arc</code>-shared read models.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> wrap warmed read models in <code>Arc</code> so handlers share rather than copy; measure with the daemon-health <code>app_lock</code> data under real load to pick the top three by cost.</div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Multi-machine &amp; relay path</h2>
-    <div class="finding p3">
-      <h4>6. Relay routing is already RwLock-based; watch registration write contention <span class="pill p3">P3</span></h4>
-      <div class="where"><code>relay/src/server/connection.rs</code>, <code>relay/src/registry.rs</code></div>
-      <ul>
-        <li>Good news: the relay registry is an <code>Arc&lt;RwLock&gt;</code> — packet routing takes read locks and can run concurrently across peers (the live relay was healthy at 22 peers).</li>
-        <li>At scale, watch two things: registration/heartbeat writes briefly block all routing (write lock), and per-message routing does a registry lookup under the read lock for every relayed packet. With many machines × many sessions, packet routing volume is the relay's scaling axis.</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> keep heartbeat/registration writes tiny and off the hot routing path (e.g., sharded or lock-free presence updates); consider sharding the registry by realm/target so a hot realm's writes don't block another's routing. Benchmark relay packet throughput separately (fan-out of provider output across machines is the real multi-machine load).</li></ul>
-    </div>
-    <div class="finding p3">
-      <h4>7. Cloud API read endpoints and DB query shape <span class="pill p3">P3</span></h4>
-      <div class="where"><code>arroba-cloud/apps/api</code> (Prisma over Postgres)</div>
-      <ul>
-        <li>The cloud control plane is off the runtime hot path (it issues tokens, tracks presence, lists targets), so it is not the session-scale bottleneck. But at many machines the waiting-room / relay-target and presence queries run often.</li>
-        <li>Verify these list endpoints are indexed (realm + status), paginated, and cached where possible (the waiting-room inventory cache exists — confirm it is used on the hot path), and that presence upserts are cheap. Add the CI-run Postgres so query regressions are caught (CI was added this session but without a DB service).</li>
-      </ul>
-      <div class="fix"><strong>Fix:</strong> add DB indexes for the relay-target/presence/revocation queries by realm+status; ensure list endpoints paginate; load-test the relay-target and presence endpoints with a seeded DB.</div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Recommended sequence</h2>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>#</th><th>Change</th><th>Priority</th><th>Expected effect</th><th>Risk</th></tr></thead>
-        <tbody>
-          <tr><td>1</td><td>Warmed <code>Arc</code>-shared session-list projection + lightweight summaries (kill the O(n) per-read clone)</td><td>P1</td><td>List reads go from O(n)·1.1ms to O(1); removes the biggest single cost</td><td>Med — new read model, test-guarded</td></tr>
-          <tr><td>2</td><td>Session store + projection read paths → <code>RwLock</code> (concurrent reads)</td><td>P1</td><td>Reads stop serializing; throughput scales with cores instead of flat ~300 req/s</td><td>Med — lock-type change</td></tr>
-          <tr><td>3</td><td>Take provider-output pumping off the global app lock (per-run/session ownership)</td><td>P1</td><td>Streaming from hundreds of agents no longer serializes on one mutex</td><td>High — needs live verification of output ordering</td></tr>
-          <tr><td>4</td><td>Raise / make configurable the 8-command admission cap; per-session fairness</td><td>P2</td><td>Removes the next ceiling once 1–3 land</td><td>Low</td></tr>
-          <tr><td>5</td><td>Per-session ready-set pump instead of all-session sweeps</td><td>P2</td><td>Periodic CPU no longer grows O(sessions)</td><td>Med</td></tr>
-          <tr><td>6</td><td><code>Arc</code>-share top projection clones (measure with B1 first)</td><td>P3</td><td>Steady-state CPU + latency</td><td>Low</td></tr>
-          <tr><td>7</td><td>Relay registry sharding + cloud DB indexes/pagination</td><td>P3</td><td>Multi-machine routing + control-plane headroom</td><td>Low–Med</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="lede" style="margin-top: 12px">
-      Items 1 and 2 together should turn the flat ~300&nbsp;req/s / O(n)-per-read curve into
-      something that scales with cores and stays roughly constant per read as sessions grow —
-      the prerequisite for hundreds of sessions. Item 3 is the prerequisite for hundreds of
-      concurrently <em>streaming</em> agents. Verify each against the live benchmark harness
-      (create-N-sessions latency curve + N-client throughput) that produced the numbers above.
-    </p>
-  </section>
-
-  <section>
-    <h2>How these numbers were produced</h2>
-    <ul>
-      <li>Launched a debug <code>arroba-kernel</code> on an isolated port/state; drove it over the kernel WebSocket with a Node client.</li>
-      <li><strong>Session-count curve:</strong> created sessions in batches of 50, measuring median <code>ListSessions</code> latency at each step (single client).</li>
-      <li><strong>Concurrency curve:</strong> N parallel WebSocket clients each issuing sequential <code>ListSessions</code>, recording p50/p90/p99 and aggregate req/s.</li>
-      <li>Root causes traced in source: <code>SessionStateStore</code>/<code>SessionStateProjectionStore</code> lock types, <code>list_session_snapshots</code> clone shape, <code>INBOUND_REQUEST_LIMIT</code>, and the provider-output pump's <code>with_app_side_effect</code> usage.</li>
-      <li>The harness is trivial to re-run after each change to confirm the curve flattens; keep the before/after numbers next to this plan.</li>
-    </ul>
-  </section>
-</main>
+    <footer>
+      <span>Arroba runtime engineering</span>
+      <span>Measure → isolate → cut over → prove → clean up</span>
+    </footer>
+  </div>
 </body>
 </html>
