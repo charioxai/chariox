@@ -346,7 +346,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
             .spawn_agent(
                 CreateAgentRequest::new(&session_id, &provider)
                     .with_alias("remote-reviewer")
-                    .with_model("default")
+                    .with_model("native-tui-idle")
                     .with_effort("medium")
                     .with_kernel(&config_worker.daemon_id),
             )
@@ -355,21 +355,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
             .to_string()
     };
 
-    let outcome = app_home
-        .lock()
-        .await
-        .submit_prompt(
-            &session_id,
-            &attachment_id,
-            Some(&remote_agent_id),
-            "remote prompt over home session\n",
-            Vec::new(),
-        )
-        .expect("remote prompt should submit");
-    assert!(matches!(
-        outcome,
-        crate::session::PromptSubmissionOutcome::Started { .. }
-    ));
     let leased_agent_id = app_home
         .lock()
         .await
@@ -380,6 +365,107 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         .expect("remote binding should still exist")
         .leased_agent_id
         .clone();
+
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("relay accept loop should stop");
+
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(remote_agent_id.clone()),
+        prompt: "remote prompt over home session\n".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command = KernelCommand::from_local_request(
+        "command-remote-persistent-prompt",
+        None,
+        None,
+        &prompt_request,
+    );
+    let prompt_response = router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect("remote prompt should submit while new relay connections are unavailable");
+    assert!(matches!(
+        prompt_response,
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: crate::session::PromptSubmissionOutcome::Started { .. },
+            ..
+        }
+    ));
+
+    let mut worker_received_prompt = false;
+    for _ in 0..80 {
+        worker_received_prompt = {
+            let mut app = app_worker.lock().await;
+            let leased_agent = RemoteLeaseRuntime::new(&mut app)
+                .leased_agent_snapshot_for_test(&leased_agent_id)
+                .expect("worker leased agent should remain available");
+            leased_agent.active_home_prompt_id.as_deref() == Some("prompt-1")
+                && app
+                    .prompt_owner_queued_prompt_count_for_agent(
+                        &leased_agent.backing_session_id,
+                        &leased_agent.backing_agent_id,
+                    )
+                    .expect("worker queue count should load")
+                    == 0
+        };
+        if worker_received_prompt {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should restart");
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should resume accepting connections");
+        })
+    };
+    assert!(
+        worker_received_prompt,
+        "remote prompt must reuse the persistent relay lane when new relay connections are unavailable"
+    );
+
+    let mut home_provider_running = false;
+    for _ in 0..80 {
+        home_provider_running = {
+            let app = app_home.lock().await;
+            let worker_acknowledged = app
+                .agents()
+                .get_agent(&remote_agent_id)
+                .expect("remote agent should remain available")
+                .remote_execution()
+                .and_then(|remote| remote.active_worker_provider_run_id.as_deref())
+                .is_some();
+            let projected_running = app
+                .provider_run_projection_store()
+                .get_for_agent(&session_id, &remote_agent_id)
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running);
+            worker_acknowledged && projected_running
+        };
+        if home_provider_running {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        home_provider_running,
+        "home agent must project the running worker provider run before follow-up steering"
+    );
+
     {
         let mut app = app_worker.lock().await;
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
@@ -422,8 +508,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         crate::session::PromptSubmissionOutcome::Queued { prompt, .. } => prompt.id().to_string(),
         other => panic!("unexpected queued prompt outcome: {other:?}"),
     };
-    let router =
-        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
     let request = LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment_id.clone(),

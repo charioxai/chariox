@@ -76,26 +76,42 @@ async fn submit_remote_prompt_to_worker(
     unexpected_response_message: &'static str,
 ) -> Result<String, DaemonError> {
     let config = remote_dispatch_relay_config(state.config_snapshot().await, dispatch);
-    match crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-        &config,
-        ClientTarget {
-            daemon_id: Some(dispatch.worker_kernel_id.clone()),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::SubmitLeasedPrompt {
-            leased_agent_id: dispatch.leased_agent_id.clone(),
-            prompt,
-            attachments,
-            workflow_context: dispatch.workflow_context.clone(),
-            git_context: Some(remote_git_turn_context(dispatch)),
-            required_mcps,
-            required_skills,
-            remote_extension_manifest,
-        },
-        crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-    )
-    .await
-    {
+    let target = ClientTarget {
+        daemon_id: Some(dispatch.worker_kernel_id.clone()),
+        daemon_alias: None,
+    };
+    let request = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: dispatch.leased_agent_id.clone(),
+        prompt,
+        attachments,
+        workflow_context: dispatch.workflow_context.clone(),
+        git_context: Some(remote_git_turn_context(dispatch)),
+        required_mcps,
+        required_skills,
+        remote_extension_manifest,
+    };
+    let response = match state.connected_relay_state_for_config(&config).await {
+        Some(relay_state) => {
+            crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                &config,
+                &relay_state,
+                target,
+                request,
+                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+            )
+            .await
+        }
+        None => {
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                &config,
+                target,
+                request,
+                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+            )
+            .await
+        }
+    };
+    match response {
         Ok(RelayPeerResponse::LeasedPromptSubmitted {
             provider_run_id, ..
         }) => Ok(provider_run_id),

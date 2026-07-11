@@ -48,7 +48,7 @@ impl RelayClientState {
         self.peer_public_keys.get(target_ref).cloned()
     }
 
-    pub(super) fn remember_peer_public_key(
+    pub(crate) fn remember_peer_public_key(
         &mut self,
         target_ref: impl Into<String>,
         public_key: impl Into<String>,

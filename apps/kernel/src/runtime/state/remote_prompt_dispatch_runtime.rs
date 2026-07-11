@@ -567,7 +567,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn connected_relay_state_for_config(
+    pub(super) async fn connected_relay_state_for_config(
         &self,
         relay_config: &crate::config::DaemonConfig,
     ) -> Option<Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>> {

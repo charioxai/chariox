@@ -193,6 +193,7 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
+        self.remember_remote_worker_public_key(&relay_config, worker_kernel);
         let (lease, relay_peer_protocol_version) =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
                 &relay_config,
@@ -685,6 +686,28 @@ impl DaemonApp {
             config.apply_remote_relay_override(relay_url, relay_token);
         }
         config
+    }
+
+    fn remember_remote_worker_public_key(
+        &self,
+        relay_config: &DaemonConfig,
+        worker_kernel: &RelayKernelPresence,
+    ) {
+        let Some(relay_url) = relay_config.relay_url.clone() else {
+            return;
+        };
+        let relay_state = self.relay_client_state();
+        let kernel_id = worker_kernel.kernel_id.clone();
+        let public_key = worker_kernel.public_key.clone();
+        let _ = self.block_on_relay_future(async move {
+            let mut state = relay_state.write().await;
+            if state.connected()
+                && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
+            {
+                state.remember_peer_public_key(kernel_id, public_key);
+            }
+            Ok(())
+        });
     }
 }
 
