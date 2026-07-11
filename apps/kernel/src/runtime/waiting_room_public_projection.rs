@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use arroba_relay::protocol::RelayKernelPresence;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -58,6 +58,38 @@ pub(crate) fn build_waiting_room_public_snapshot(
     generated_at_ms: u64,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let runtime_sessions = runtime_sessions
+        .into_iter()
+        .map(Arc::new)
+        .collect::<Vec<_>>();
+    build_waiting_room_public_snapshot_from_shared(
+        &runtime_sessions,
+        metaagent_events,
+        external_provider_sessions,
+        external_provider_sessions_has_more,
+        external_provider_sessions_next_cursor,
+        relay_status,
+        remote_machines,
+        remote_kernels,
+        terminals,
+        generated_at_ms,
+        caller_user_id,
+    )
+}
+
+pub(crate) fn build_waiting_room_public_snapshot_from_shared(
+    runtime_sessions: &[Arc<RuntimeSession>],
+    metaagent_events: &MetaagentEventStore,
+    external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<String>,
+    relay_status: RelayStatus,
+    remote_machines: Vec<RemoteMachineRecord>,
+    remote_kernels: Vec<RelayKernelPresence>,
+    terminals: Vec<TerminalRecord>,
+    generated_at_ms: u64,
+    caller_user_id: &str,
+) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let remote_machines = remote_machines
         .into_iter()
         .map(filter_remote_machine_product_providers)
@@ -66,8 +98,11 @@ pub(crate) fn build_waiting_room_public_snapshot(
         .into_iter()
         .map(filter_remote_kernel_product_providers)
         .collect::<Vec<_>>();
-    let sessions =
-        waiting_room_session_summaries(runtime_sessions, metaagent_events, caller_user_id);
+    let sessions = waiting_room_session_summaries_from_refs(
+        runtime_sessions.iter().map(AsRef::as_ref),
+        metaagent_events,
+        caller_user_id,
+    );
     let launch_target = infer_waiting_room_launch_target();
     let inventory_version = waiting_room_inventory_version(
         &sessions,
@@ -203,6 +238,14 @@ fn waiting_room_inventory_version(
 
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
+    metaagent_events: &MetaagentEventStore,
+    caller_user_id: &str,
+) -> Vec<WaitingRoomPublicSessionSummary> {
+    waiting_room_session_summaries_from_refs(sessions.iter(), metaagent_events, caller_user_id)
+}
+
+fn waiting_room_session_summaries_from_refs<'a>(
+    sessions: impl IntoIterator<Item = &'a RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
     caller_user_id: &str,
 ) -> Vec<WaitingRoomPublicSessionSummary> {

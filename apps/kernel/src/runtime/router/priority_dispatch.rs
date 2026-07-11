@@ -297,6 +297,7 @@ impl CommandRouter {
                 execute_waiting_room_request(
                     Arc::clone(&self.app),
                     &self.runtime_state,
+                    &self.session_projection,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
                     self.remote_relay_inventory_projection.clone(),

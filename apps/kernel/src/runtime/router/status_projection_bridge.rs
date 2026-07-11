@@ -16,6 +16,7 @@ impl CommandRouter {
         projected_waiting_room_public_snapshot(
             Arc::clone(&self.app),
             &self.runtime_state,
+            &self.session_projection,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),

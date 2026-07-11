@@ -449,7 +449,7 @@ impl DaemonApp {
         self.provider_process_projection.update_list(processes);
     }
 
-    pub fn sessions_mut(&self) -> std::sync::MutexGuard<'_, SessionService> {
+    pub fn sessions_mut(&self) -> std::sync::RwLockWriteGuard<'_, SessionService> {
         self.sessions.write()
     }
 
