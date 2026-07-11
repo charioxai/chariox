@@ -164,6 +164,109 @@ fn hook_permission_tombstone_only_consumes_matching_rendered_frame() {
 }
 
 #[test]
+fn rendered_permission_resolution_does_not_reinject_native_prompt() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-claude-permission",
+            "worktree-claude-permission",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-permission",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-permission-input-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let context_file = context_file.display().to_string();
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-permission",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-native-permission".to_string(),
+            pty_target: Some("test-claude-native-permission".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "native permission prompt",
+            Vec::new(),
+        )
+        .expect("native prompt should be recorded")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(&context_file, "permission:interaction-1");
+    write_claude_permission_input(&context_file, "interaction-1", b"1\r");
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("permission input should be processed");
+
+    let marker = claude_native_marker(&context_file);
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(
+        marker.as_deref(),
+        Some(format!("permission-resolved:{}", prompt.id()).as_str()),
+        "permission approval must keep the active prompt marked as already injected",
+    );
+}
+
+#[test]
 fn native_prompt_history_uses_latest_terminal_input_attachment() {
     let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");

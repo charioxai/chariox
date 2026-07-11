@@ -120,10 +120,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         };
 
+        let resolving_permission = claude_native_marker(context_file)
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"));
+        let resolved_prompt_marker = if resolving_permission {
+            self.app
+                .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                .map(|prompt| format!("permission-resolved:{}", prompt.id()))
+        } else {
+            None
+        };
         for input in take_claude_permission_inputs(context_file) {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
-            write_claude_native_marker(context_file, "");
+            if resolving_permission {
+                write_claude_native_marker(
+                    context_file,
+                    resolved_prompt_marker.as_deref().unwrap_or_default(),
+                );
+            }
         }
         self.inject_pending_prompt(
             session_id,
