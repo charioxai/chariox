@@ -89,6 +89,81 @@ fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
 }
 
 #[test]
+fn provider_activation_accepts_and_restores_projected_remote_predecessor() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, remote_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-remote-predecessor",
+            "worktree-remote-predecessor",
+        ))
+        .expect("session should be created");
+    let local_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("local-popup"))
+        .expect("local agent should spawn");
+    let projected_run_id = "leased:leased-agent-1:worker-run-1";
+    let mut projected_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "worker-run-1",
+        "worker-session-1".to_string(),
+        Some("leased-agent-1".to_string()),
+        "dev-stub".to_string(),
+    );
+    projected_run.mark_running();
+    let projected_run = projected_run.projected_for_home_agent_with_id(
+        projected_run_id,
+        session.id(),
+        remote_agent.id(),
+    );
+    app.update_provider_run_projection(projected_run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(projected_run_id.to_string()))
+        .expect("projected remote run should be active");
+
+    let started = crate::app::provider_activation::ProviderRunActivationState::start_provider_run_for_session(
+        &mut app,
+        LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "popup-model",
+        )
+        .with_agent_id(local_agent.id()),
+    )
+    .expect("local provider should activate beside a projected remote run");
+
+    assert_eq!(
+        started.previous_active_run_id.as_deref(),
+        Some(projected_run_id)
+    );
+    let failed = app
+        .providers
+        .terminate_run_provider_only(session.id(), started.run.id())
+        .expect("simulated failed launch should terminate");
+    super::super::super::provider_liveness::clear_active_provider_run_session_pointer(
+        &mut app,
+        session.id(),
+        failed.run().id(),
+    )
+    .expect("failed local launch should clear its pointer");
+    let restored = crate::app::provider_activation::ProviderRunActivationState::resume_provider_run_for_session(
+        &mut app,
+        session.id(),
+        projected_run_id,
+    )
+    .expect("rollback should restore the projected remote predecessor");
+
+    assert_eq!(restored, projected_run);
+    assert_eq!(
+        app.sessions
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        Some(projected_run_id)
+    );
+}
+
+#[test]
 fn provider_launch_rejects_agent_from_another_session() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

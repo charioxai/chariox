@@ -77,6 +77,107 @@ async fn provider_output_pump_ignores_projected_remote_active_run() {
 }
 
 #[tokio::test]
+async fn local_provider_launch_preserves_and_restores_projected_remote_predecessor() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, remote_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-remote-predecessor",
+            "worktree-remote-predecessor",
+        ))
+        .expect("session should be created");
+    let local_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("local-popup"),
+        )
+        .expect("local agent should spawn");
+    app.agents
+        .bind_remote_execution(
+            remote_agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel-1".to_string(),
+                worker_machine_id: "worker-machine-1".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("worker-run-1".to_string()),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("remote agent should bind");
+    let projected_run_id = "leased:leased-agent-1:worker-run-1";
+    let mut projected_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "worker-run-1",
+        "worker-session-1".to_string(),
+        Some("leased-agent-1".to_string()),
+        "dev-stub".to_string(),
+    );
+    projected_run.mark_running();
+    let projected_run = projected_run.projected_for_home_agent_with_id(
+        projected_run_id,
+        session.id(),
+        remote_agent.id(),
+    );
+    app.update_provider_run_projection(projected_run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(projected_run_id.to_string()))
+        .expect("projected remote run should be active");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let started = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "popup-model",
+            )
+            .with_agent_id(local_agent.id()),
+        )
+        .expect("local provider should launch beside a projected remote run");
+
+    assert_eq!(
+        started.previous_active_run_id.as_deref(),
+        Some(projected_run_id)
+    );
+    assert_eq!(started.run.agent_instance_id(), Some(local_agent.id()));
+    assert_eq!(
+        runtime.owned.provider_run_projection.get(projected_run_id),
+        Some(projected_run.clone()),
+        "launching locally must not mutate the worker-owned projection"
+    );
+
+    let failed = runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(session.id(), started.run.id())
+        .expect("simulated failed launch should terminate");
+    runtime
+        .owned
+        .clear_active_provider_run_session_pointer(session.id(), failed.run().id())
+        .expect("failed local launch should clear its pointer");
+    let restored = runtime
+        .owned
+        .resume_provider_run_for_session(session.id(), projected_run_id)
+        .expect("rollback should restore the projected remote predecessor");
+
+    assert_eq!(restored, projected_run);
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        Some(projected_run_id)
+    );
+}
+
+#[tokio::test]
 async fn provider_switch_does_not_park_runs_with_active_prompts() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
