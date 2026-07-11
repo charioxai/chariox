@@ -11,6 +11,10 @@ use crate::transport::relay_peer::RequiredRemoteMcp;
 
 use super::RemoteLeaseRuntime;
 
+fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str) -> String {
+    format!("remote-native:{leased_agent_id}:{attachment_id}")
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn launch_leased_native_provider_run(
@@ -152,11 +156,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message: format!("data_base64 is not valid base64: {error}"),
             })?;
         let byte_count = bytes.len();
+        let source_attachment_id =
+            leased_native_source_attachment_id(leased_agent_id, attachment_id);
         crate::app::terminal_input::ProviderTerminalInput::new(self.app)
             .send_remote_provider_input(
                 provider_run.session_id(),
                 provider_run_id,
-                attachment_id,
+                &source_attachment_id,
                 &bytes,
             )?;
         Ok(byte_count)
@@ -271,11 +277,12 @@ mod tests {
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native run should launch");
+        let colliding_attachment_id = leased_agent.backing_attachment_id.clone();
         let byte_count = runtime
             .send_leased_native_provider_input(
                 &leased_agent.id,
                 run.id(),
-                "home-native-attachment",
+                &colliding_attachment_id,
                 "eA==",
             )
             .expect("native input should be sent");
@@ -288,12 +295,24 @@ mod tests {
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
         assert!(!run.client_interface().is_arroba());
+        let expected_source_attachment_id = format!(
+            "remote-native:{}:{}",
+            leased_agent.id, colliding_attachment_id
+        );
         assert_eq!(
             app.terminal()
                 .input_records()
                 .last()
                 .map(|record| record.source_attachment_id.as_str()),
-            Some("home-native-attachment")
+            Some(expected_source_attachment_id.as_str())
+        );
+        assert_ne!(
+            app.terminal()
+                .input_records()
+                .last()
+                .map(|record| record.source_attachment_id.as_str()),
+            Some(leased_agent.backing_attachment_id.as_str()),
+            "home attachment ids must not collide with the worker backing attachment",
         );
         assert_eq!(app.pty().size(run.id()), Some((80, 24)));
         assert!(crate::mcp::ArrobaMcpRegistry::user_root()
