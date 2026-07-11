@@ -297,7 +297,7 @@ impl ProviderRunActorMailbox {
     pub(super) fn worker_for_run(
         &self,
         provider_run_id: &str,
-    ) -> mpsc::SyncSender<ProviderRunActorCommand> {
+    ) -> tokio_mpsc::Sender<ProviderRunActorCommand> {
         let mut workers = self
             .workers
             .lock()
@@ -319,6 +319,7 @@ impl ProviderRunActorMailbox {
             finished_output_polls: Arc::clone(&self.finished_output_polls),
             completion_signal: self.completion_signal.clone(),
             output_poll_delays: Arc::clone(&self.output_poll_delays),
+            blocking_executor_permits: Arc::clone(&self.blocking_executor_permits),
         }
     }
 }
@@ -384,6 +385,20 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminate_completes_while_the_calling_runtime_thread_is_blocked() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let run = runtime_run("run-terminate");
+
+        mailbox.spawn_terminate("run-terminate".to_string(), run);
+
+        assert!(!mailbox
+            .workers
+            .lock()
+            .expect("worker map should not be poisoned")
+            .contains_key("run-terminate"));
+    }
+
     #[tokio::test]
     async fn finished_output_poll_wakes_completion_waiters() {
         let mailbox = ProviderRunActorMailbox::default();
@@ -423,7 +438,10 @@ mod tests {
 
     fn mailbox_with_full_run_queue(run_id: &str) -> ProviderRunActorMailbox {
         let mailbox = ProviderRunActorMailbox::default();
-        let (sender, _receiver) = std::sync::mpsc::sync_channel(0);
+        let (sender, _receiver) = tokio_mpsc::channel(1);
+        sender
+            .try_send(ProviderRunActorCommand::Stop)
+            .expect("test provider run queue should accept first command");
         mailbox
             .workers
             .lock()

@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::Notify;
+use tokio::sync::{mpsc as tokio_mpsc, Notify, Semaphore};
 
 mod command_enqueue;
 mod command_execution;
@@ -41,11 +41,11 @@ use super::{
     RuntimeProviderRun,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
     native_interaction_bridge: ProviderNativeInteractionBridgeStore,
-    workers: Arc<Mutex<BTreeMap<String, mpsc::SyncSender<ProviderRunActorCommand>>>>,
+    workers: Arc<Mutex<BTreeMap<String, tokio_mpsc::Sender<ProviderRunActorCommand>>>>,
     runtime_registry: ProviderRunRuntimeRegistry,
     in_flight: ProviderRunInFlightState,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
@@ -54,6 +54,26 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     completion_signal: ProviderRunActorCompletionSignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
+    blocking_executor_permits: Arc<Semaphore>,
+}
+
+impl Default for ProviderRunActorMailbox {
+    fn default() -> Self {
+        Self {
+            operation_lanes: ProviderRunOperationLanes::default(),
+            native_interaction_bridge: ProviderNativeInteractionBridgeStore::default(),
+            workers: Arc::new(Mutex::new(BTreeMap::new())),
+            runtime_registry: ProviderRunRuntimeRegistry::default(),
+            in_flight: ProviderRunInFlightState::default(),
+            finished_submits: Arc::new(Mutex::new(Vec::new())),
+            finished_aborts: Arc::new(Mutex::new(Vec::new())),
+            finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
+            finished_output_polls: Arc::new(Mutex::new(Vec::new())),
+            completion_signal: ProviderRunActorCompletionSignal::default(),
+            output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
+            blocking_executor_permits: Arc::new(Semaphore::new(64)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

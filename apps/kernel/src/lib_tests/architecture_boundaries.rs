@@ -30,6 +30,23 @@ fn transport_output_pump_is_ready_run_driven() {
 }
 
 #[test]
+fn provider_run_actors_use_async_mailboxes_and_bounded_blocking_work() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/provider/run_actor/worker.rs"),
+    )
+    .expect("provider run actor worker source should be readable");
+    for forbidden in ["thread::spawn", "mpsc::sync_channel"] {
+        assert!(
+            !source.contains(forbidden),
+            "provider run actors must not allocate a native worker thread per run via `{forbidden}`"
+        );
+    }
+    assert!(source.contains("tokio_mpsc::channel"));
+    assert!(source.contains("spawn_blocking"));
+    assert!(source.contains("blocking_executor_permits"));
+}
+
+#[test]
 fn runtime_command_paths_do_not_lock_daemon_app() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = BTreeSet::new();
