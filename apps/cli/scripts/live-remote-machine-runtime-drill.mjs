@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
 import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
+import { fatalProviderOutput, terminalProviderOutputSnapshot } from './lib/remote-machine-runtime-output.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -253,6 +254,23 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
   throw new Error('timed out waiting for assistant completion')
 }
 
+async function waitForProviderOutputMarker(eventLog, agentId, marker, timeoutMs, pollMs) {
+  const started = Date.now()
+  let snapshot = terminalProviderOutputSnapshot(eventLog, agentId)
+  while (Date.now() - started < timeoutMs) {
+    const fatalOutput = fatalProviderOutput(snapshot)
+    if (fatalOutput) throw new Error(`provider failed before output marker ${marker}: ${fatalOutput}`)
+    if (snapshot.providerText.includes(marker)) return snapshot
+    await sleep(pollMs)
+    snapshot = terminalProviderOutputSnapshot(eventLog, agentId)
+  }
+  throw new Error(
+    `timed out waiting for provider output marker ${marker}; records=${snapshot.recordCount}\n`
+      + `output=${snapshot.providerText.slice(-4000)}\n`
+      + `statuses=${snapshot.statuses.join('\n').slice(-4000)}`,
+  )
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -472,22 +490,13 @@ async function main() {
       }],
     ))
 
-    const started = Date.now()
-    while (Date.now() - started < options.timeoutMs / 3) {
-      if ((eventLog.filter((event) => event.event === 'terminal_output')).length > 0) break
-      await sleep(options.pollMs)
-    }
-
-    let completeResponse = null
-    try {
-      completeResponse = unwrapVariant(
-        await client.send({ CompletePrompt: { session_id: sessionId } }),
-        'PromptCompleted',
-      )
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes('has no active prompt')) throw error
-    }
+    const firstPromptOutput = await waitForProviderOutputMarker(
+      eventLog,
+      remoteAgent.id,
+      'REMOTE_MACHINE_OK',
+      options.timeoutMs,
+      options.pollMs,
+    )
     const firstCompletionEvent = await waitForCompletion(eventLog, options.timeoutMs, 0)
 
     await client.send(submitPromptRequest(
@@ -544,10 +553,11 @@ async function main() {
         rowCount: cliDisplay?.rowCount ?? 0,
       },
       firstPrompt: {
-        completePromptResponse: completeResponse?.completion?.completed?.id ?? null,
+        outputMarker: 'REMOTE_MACHINE_OK',
+        outputMarkerObserved: true,
         completionEventMessageId: firstCompletionEvent.message_id ?? null,
         terminalOutputEvents: eventLog.filter((event) => event.event === 'terminal_output').length,
-        pumpedOutputRecords: 0,
+        providerOutputRecords: firstPromptOutput.recordCount,
       },
       secondPrompt: {
         cancelledPromptId: cancelled?.cancellation?.prompt?.id ?? cancelled?.prompt?.id ?? null,
