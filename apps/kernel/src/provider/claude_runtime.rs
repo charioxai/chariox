@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
@@ -13,16 +14,19 @@ use super::{
 };
 
 const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
+const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
 mod input;
 mod process;
 mod state;
+mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
+use watchdog::ClaudeTurnStallAction;
 
 pub(crate) fn initialize_claude_runtime(
     run: &RuntimeProviderRun,
@@ -69,6 +73,8 @@ pub(crate) fn initialize_claude_runtime(
             active_permission_level: run.permission_level(),
             session_id: run.resume_state().claude_session_id().map(str::to_string),
             active_turn_id: None,
+            active_prompt_message: None,
+            turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
             result_number: 1,
@@ -94,9 +100,6 @@ pub(crate) fn submit_claude_prompt(
     write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
-    state.active_turn_id = Some(turn_id);
-    state.saw_text_delta = false;
-    state.emitted_text_offsets.clear();
     let message = json!({
         "type": "user",
         "message": {
@@ -104,7 +107,13 @@ pub(crate) fn submit_claude_prompt(
             "content": claude_user_content(&envelope.visible_user_prompt, &envelope.attachments)
         }
     });
-    write_json_line(&mut state.stdin, &message)
+    write_json_line(&mut state.stdin, &message)?;
+    state.active_turn_id = Some(turn_id);
+    state.active_prompt_message = Some(message);
+    state.turn_watchdog.begin(Instant::now());
+    state.saw_text_delta = false;
+    state.emitted_text_offsets.clear();
+    Ok(())
 }
 
 pub(crate) fn abort_claude_turn(
@@ -117,7 +126,7 @@ pub(crate) fn abort_claude_turn(
         "request": { "subtype": "interrupt" }
     });
     let _ = write_json_line(&mut state.stdin, &message);
-    state.active_turn_id = None;
+    clear_active_claude_turn(state);
     state.cancelled_turn_pending_settlement = true;
     restart_claude_runtime(run, state, "claude_restart_after_abort")
 }
@@ -130,10 +139,12 @@ pub(crate) fn drain_claude_events(
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
         match state.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
+                state.turn_watchdog.record_runtime_message(Instant::now());
                 handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
+                state.turn_watchdog.record_runtime_message(Instant::now());
                 batch
                     .notices
                     .push(format!("Claude stdout parse warning: {error}"));
@@ -155,7 +166,7 @@ pub(crate) fn drain_claude_events(
                         "Claude Code exited before completing the active turn: {status}"
                     ));
                     batch.prompt_completed = state.active_turn_id.is_some();
-                    state.active_turn_id = None;
+                    clear_active_claude_turn(state);
                 }
             }
             Ok(None) => {}
@@ -170,8 +181,80 @@ pub(crate) fn drain_claude_events(
         state.cancelled_turn_pending_settlement = false;
         batch.prompt_completed = true;
     }
+    if batch.prompt_completed {
+        clear_active_claude_turn(state);
+    } else {
+        apply_claude_turn_stall_policy(run, state, &mut batch)?;
+    }
 
     Ok(batch)
+}
+
+fn apply_claude_turn_stall_policy(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+) -> Result<(), DaemonError> {
+    match state
+        .turn_watchdog
+        .action(Instant::now(), claude_turn_stall_timeout())
+    {
+        ClaudeTurnStallAction::Wait => Ok(()),
+        ClaudeTurnStallAction::Restart => retry_stalled_claude_turn(run, state, batch),
+        ClaudeTurnStallAction::Fail => {
+            stop_child(&mut state.child);
+            clear_active_claude_turn(state);
+            batch.terminal_failure = Some(
+                "Claude Code stopped emitting runtime events; the active turn was ended after its bounded recovery attempt"
+                    .to_string(),
+            );
+            batch.prompt_completed = true;
+            Ok(())
+        }
+    }
+}
+
+fn retry_stalled_claude_turn(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+) -> Result<(), DaemonError> {
+    let message =
+        state
+            .active_prompt_message
+            .clone()
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "claude_stalled_turn_retry",
+                message: "active Claude turn did not retain its prompt message".to_string(),
+            })?;
+    restart_claude_runtime(run, state, "claude_restart_after_unacknowledged_turn_stall")?;
+    write_json_line(&mut state.stdin, &message)?;
+    let turn_id = format!("turn-{}", state.next_turn_number);
+    state.next_turn_number += 1;
+    state.active_turn_id = Some(turn_id);
+    state.active_prompt_message = Some(message);
+    state.turn_watchdog.record_restart(Instant::now());
+    batch.notices.push(
+        "Claude Code emitted no runtime events; restarted it and retried the unacknowledged turn once"
+            .to_string(),
+    );
+    Ok(())
+}
+
+fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
+    state.active_turn_id = None;
+    state.active_prompt_message = None;
+    state.turn_watchdog.settle();
+}
+
+fn claude_turn_stall_timeout() -> Duration {
+    std::env::var("ARROBA_CLAUDE_TURN_STALL_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_CLAUDE_TURN_STALL_TIMEOUT)
 }
 
 fn handle_claude_tool_uses(
@@ -296,6 +379,8 @@ fn restart_claude_runtime(
     state.active_execution_mode = run.execution_mode();
     state.active_permission_level = run.permission_level();
     state.active_turn_id = None;
+    state.active_prompt_message = None;
+    state.turn_watchdog.settle();
     state.emitted_text_offsets.clear();
     state.saw_text_delta = false;
     state.exit_reported = false;
@@ -379,6 +464,8 @@ mod tests {
                 active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
                 active_turn_id: Some("turn-1".to_string()),
+                active_prompt_message: None,
+                turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,

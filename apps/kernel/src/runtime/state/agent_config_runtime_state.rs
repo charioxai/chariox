@@ -868,9 +868,7 @@ impl KernelRuntimeState {
                 }
                 None => {
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &config,
-                        target,
-                        request,
+                        &config, target, request,
                     )
                     .await
                 }
